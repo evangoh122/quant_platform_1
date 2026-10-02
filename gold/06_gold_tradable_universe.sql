@@ -44,6 +44,26 @@ USING (
       AND volume IS NOT NULL
       AND close > 0
   ),
+  -- Dense calendar x symbols grid.  Every (symbol, market_date) pair exists
+  -- even when the symbol did not trade that day (dollar_volume IS NULL).
+  -- This prevents look-ahead: recency counts market sessions, not the
+  -- symbol's own observation count.
+  grid AS (
+    SELECT symbol, event_date AS market_date
+    FROM (SELECT DISTINCT symbol FROM bars)
+    CROSS JOIN (SELECT DISTINCT event_date AS market_date FROM bars)
+    UNION
+    SELECT symbol, event_date AS market_date
+    FROM bars
+  ),
+  grid_bars AS (
+    SELECT
+      g.symbol,
+      g.market_date AS event_date,
+      b.dollar_volume
+    FROM grid g
+    LEFT JOIN bars b ON b.symbol = g.symbol AND b.event_date = g.market_date
+  ),
   stats AS (
     SELECT
       symbol,
@@ -56,11 +76,13 @@ USING (
         PARTITION BY symbol ORDER BY event_date
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
       ) AS history,
-      COUNT(*) OVER (
+      -- Recency: count of the last 5 *market sessions* on which the symbol
+      -- traded.  A symbol missing even one of the last 5 sessions is excluded.
+      SUM(CASE WHEN dollar_volume IS NOT NULL THEN 1 ELSE 0 END) OVER (
         PARTITION BY symbol ORDER BY event_date
         ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
       ) AS recency
-    FROM bars
+    FROM grid_bars
   ),
   qualified AS (
     SELECT symbol, event_date AS trade_date, med_adv_60d

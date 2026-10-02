@@ -101,3 +101,48 @@ def test_industry_map_is_repo_taxonomy():
     mapping = load_industry_map()
     # Smoke test: mapping is non-empty and values are the repo group names.
     assert isinstance(mapping, dict) and len(mapping) > 0
+
+
+def test_missing_returns_stay_nan():
+    """compute_daily_returns must NOT fill NaN with 0."""
+    dates = pd.date_range("2024-01-01", periods=10, freq="B")
+    prices = pd.DataFrame({"A": [100, 101, 102, np.nan, 104, 105, 106, 107, 108, 109],
+                            "B": [50, 51, 52, 53, 54, 55, 56, 57, 58, 59]}, index=dates)
+    ret = compute_daily_returns(prices)
+    # First row is always NaN (no prior price).
+    assert np.isnan(ret.loc[dates[0], "A"])
+    assert np.isnan(ret.loc[dates[0], "B"])
+    # A's return on the day after the gap should be NaN, not 0.
+    assert np.isnan(ret.loc[dates[4], "A"])
+    # B's returns (except first row) should all be finite.
+    assert ret["B"].iloc[1:].notna().all()
+
+
+def test_appending_future_symbol_does_not_change_earlier_factors():
+    """Industry factors before date d are unchanged when a symbol only exists
+    after d is appended."""
+    dates = pd.date_range("2024-01-01", periods=30, freq="B")
+    rng = np.random.default_rng(99)
+    base_data = {
+        "A": rng.normal(0.0, 0.01, 30),
+        "B": rng.normal(0.0, 0.01, 30),
+        "C": rng.normal(0.0, 0.01, 30),
+        "D": rng.normal(0.0, 0.01, 30),
+    }
+    returns_base = pd.DataFrame(base_data, index=dates)
+    industry_base = {"A": "tech", "B": "tech", "C": "fin", "D": "fin"}
+
+    factor_base = compute_industry_factor(returns_base, industry_base)
+
+    # E is a tech name that only exists from day 20 onward.
+    data_with_e = {**base_data, "E": [np.nan] * 20 + list(rng.normal(0.0, 0.01, 10))}
+    returns_e = pd.DataFrame(data_with_e, index=dates)
+    industry_e = {**industry_base, "E": "tech"}
+
+    factor_e = compute_industry_factor(returns_e, industry_e)
+
+    # Factors for A, B, C, D before day 20 must be identical.
+    pd.testing.assert_frame_equal(
+        factor_base.loc[dates[:20], ["A", "B", "C", "D"]],
+        factor_e.loc[dates[:20], ["A", "B", "C", "D"]],
+    )

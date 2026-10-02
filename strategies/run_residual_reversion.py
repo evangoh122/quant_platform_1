@@ -131,6 +131,7 @@ def _capacity(adv_wide: pd.DataFrame, universe_daily: int = 300) -> float:
 
 def build_signals(
     closes: pd.DataFrame,
+    universe: pd.DataFrame,
     window: int,
     lookback: int,
     entry: float,
@@ -144,8 +145,19 @@ def build_signals(
     prices = prices[["SPY"] + tradeable]
 
     returns = compute_daily_returns(prices)
+
+    # Mask returns to the point-in-time universe.  A symbol that is not in the
+    # universe on date t must have NaN returns on t (never 0), so it does not
+    # contribute to industry factors or regressions on that date.
+    members = set(zip(universe["trade_date"], universe["symbol"]))
+    mask = pd.DataFrame(
+        [[(d, s) in members for s in tradeable] for d in returns.index],
+        index=returns.index,
+        columns=tradeable,
+    )
+    tradeable_returns = returns[tradeable].where(mask)
+
     market = returns["SPY"]
-    tradeable_returns = returns[tradeable]
     industry = pd.Series(
         {s: industry_map.get(s, "__unknown__") for s in tradeable}, dtype=object,
     )
@@ -190,7 +202,7 @@ def run_one(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--output", default="strategies/results/residual_reversion_r1.md")
+    ap.add_argument("--output", default="strategies/results/residual_reversion_r2.md")
     ap.add_argument("--book-capital", type=float, default=10_000_000.0)
     args = ap.parse_args()
 
@@ -211,7 +223,7 @@ def main() -> None:
     # Signals per max-hold candidate (shared s-scores).
     signals = {}
     for h in hold_candidates:
-        signals[h] = build_signals(closes, WINDOW, LOOKBACK, ENTRY, EXIT, h)
+        signals[h] = build_signals(closes, universe, WINDOW, LOOKBACK, ENTRY, EXIT, h)
 
     industry = signals[hold_candidates[0]]["industry"]
     beta_mkt = signals[hold_candidates[0]]["beta_mkt"]
@@ -280,11 +292,20 @@ def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
     bm = base_res["metrics"]
     gm = gated_res["metrics"]
     L = []
-    L.append("# Residual mean-reversion — round 1 baseline (real data)")
+    L.append("# Residual mean-reversion — round 2 (real data)")
     L.append("")
     L.append("Market/industry residual mean-reversion on the point-in-time top-300")
     L.append("tradable universe (`gold_tradable_universe`), 2023-01-04 → 2026-09-04.")
     L.append("Industry labels are the repo `config/tickers.yaml` taxonomy, **not** GICS.")
+    L.append("")
+    L.append("## What changed vs r1")
+    L.append("")
+    L.append("| # | Fix | Files | Rationale |")
+    L.append("|---|-----|-------|-----------|")
+    L.append("| 1 | Universe look-ahead eliminated | `gold/06_gold_tradable_universe.sql` | Dense calendar×symbols grid; recency counts last 5 *market sessions*, not the symbol's own bars |")
+    L.append("| 2 | Industry factors date-specific | `strategies/residual_reversion.py`, `strategies/run_residual_reversion.py` | NaN returns stay NaN; industry factor uses per-date eligible member count; universe mask prevents pre-IPO returns |")
+    L.append("| 3 | ADV cap constrains execution | `strategies/backtest.py` | Weight changes capped at 1% of ADV; capped positions carried forward; zero-ADV names cannot be traded |")
+    L.append("| 4 | Breadth-gated caveat | this file | Gated result is an in-sample exploratory ablation (see below) |")
     L.append("")
     L.append("## Configuration")
     L.append("")
@@ -293,6 +314,7 @@ def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
     L.append(f"- entry: long s <= -{entry}, short s >= +{entry}; exit |s| < {exit_thresh}")
     L.append(f"- book capital: ${book_capital:,.0f}; target gross 1.0 (100% long / 100% short)")
     L.append(f"- dates: {n_dates} trading days; purged walk-forward folds: {n_folds}")
+    L.append(f"- ADV cap: 1% of trailing median dollar volume per name per day")
     L.append("")
     L.append("## Results — unconditional baseline (max_hold = 5)")
     L.append("")
@@ -306,6 +328,13 @@ def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
     L.append(f"| average hold (days) | {bm['avg_hold_days']:.2f} | | |")
     L.append("")
     L.append("## Ablation — unconditioned vs gated by `breadth_regime == NARROW`")
+    L.append("")
+    L.append("**Caveat:** The gated comparison below is an **in-sample / full-period exploratory ablation**.")
+    L.append("It is not evidence of an edge. The gated net Sharpe at 2× costs is "
+             f"{gm['net_2x_sharpe']:.3f} and the deflated Sharpe ratio (DSR) is "
+             f"{gm.get('deflated_sharpe_ratio', float('nan')):.3f}. "
+             "This result should not be used to justify live deployment without "
+             "out-of-sample validation on a held-out period.")
     L.append("")
     L.append("| metric | unconditioned | gated (NARROW only) |")
     L.append("|---|---:|---:|")

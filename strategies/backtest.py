@@ -60,6 +60,42 @@ def filter_to_universe(
     return weights.where(mask, 0.0)
 
 
+def cap_weight_changes_by_adv(
+    weights: pd.DataFrame,
+    adv: pd.DataFrame,
+    book_capital: float,
+    params: Optional[CostParams] = None,
+) -> pd.DataFrame:
+    """Cap each daily weight *change* at ``adv_participation_cap`` of ADV.
+
+    The capped change is accumulated into the running position, so oversized
+    orders are spread across multiple days.  Zero-ADV names can never be traded
+    (``scale_order_to_adv_cap`` returns 0 when ``adv <= 0``).
+
+    Must be called *after* ``filter_to_universe`` and *before* cost computation.
+    """
+    if params is None:
+        params = CostParams()
+    cap_frac = params.adv_participation_cap  # e.g. 0.01
+    out = weights.copy().to_numpy(dtype=float)
+    prev = np.zeros(out.shape[1])
+    adv_np = adv.reindex(index=weights.index, columns=weights.columns).fillna(0.0).to_numpy(dtype=float)
+    for i in range(out.shape[0]):
+        cur = out[i]
+        dw = cur - prev
+        nonzero = dw != 0.0
+        if nonzero.any():
+            notional = np.abs(dw[nonzero]) * book_capital
+            caps = cap_frac * adv_np[i, nonzero]
+            over = notional > caps
+            if over.any():
+                idx = np.where(nonzero)[0][over]
+                for j_idx, cap_val in zip(idx, caps[over]):
+                    out[i, j_idx] = prev[j_idx] + np.sign(dw[j_idx]) * cap_val / book_capital
+        prev = out[i]
+    return pd.DataFrame(out, index=weights.index, columns=weights.columns)
+
+
 # ── Neutralisation ────────────────────────────────────────────────────────────
 
 def neutralize_daily(
@@ -256,6 +292,13 @@ def run_backtest(
     fills = filter_to_universe(fills, universe)
     weights = neutralize_daily(fills, beta=beta, industry=industry,
                                target_gross=target_gross)
+
+    # Cap weight changes at ADV participation limit *after* neutralisation.
+    # The capped positions are what the portfolio actually holds; P&L and
+    # borrow are computed on these, not the uncapped neutralised weights.
+    # Zero-ADV names can never accumulate a position.
+    adv_aligned = adv.reindex(index=weights.index, columns=weights.columns).fillna(0.0)
+    weights = cap_weight_changes_by_adv(weights, adv_aligned, book_capital, params=cost_params)
 
     # Book return on day t is earned by the weights established at t-1.
     gross = (weights.shift(1).fillna(0.0) * returns).sum(axis=1)

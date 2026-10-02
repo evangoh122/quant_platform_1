@@ -122,3 +122,40 @@ def test_run_backtest_reports_gross_net_and_net_2x(dates, symbols):
     for k in ("gross_ann_return", "net_ann_return", "net_2x_ann_return",
               "gross_sharpe", "net_sharpe", "net_2x_sharpe", "turnover_avg_daily"):
         assert k in m
+
+
+def test_adv_cap_constrains_execution(dates, symbols):
+    """An order over the ADV cap yields a capped position, and P&L is on the
+    capped size.  Zero-ADV names cannot be traded."""
+    returns = pd.DataFrame(0.01, index=dates, columns=symbols)
+    desired = pd.DataFrame(0.0, index=dates, columns=symbols)
+    desired.loc[dates[1], "A"] = 1.0  # want full long
+    desired.loc[dates[1], "B"] = -1.0  # want full short
+    # C and D stay at 0 (no signal).
+
+    universe = pd.DataFrame(
+        [(d, s) for d in dates for s in symbols],
+        columns=["trade_date", "symbol"],
+    )
+    # All symbols have tiny ADV: 1% cap = $100 on a $10M book → max weight = 0.00001.
+    # D has zero ADV.
+    adv = pd.DataFrame(10_000.0, index=dates, columns=symbols)
+    adv["D"] = 0.0  # zero ADV
+
+    from strategies.cost_model import CostParams
+    params = CostParams(adv_participation_cap=0.01)
+
+    res = run_backtest(desired, returns, universe, adv, target_gross=1.0,
+                       cost_params=params)
+    weights = res["weights"]
+
+    # A's position should be capped well below 1.0 (tiny ADV).
+    max_a = weights["A"].abs().max()
+    assert max_a < 0.01, f"A's max weight {max_a} should be far below 1.0 (tiny ADV)"
+
+    # D has zero ADV → must never trade.
+    assert (weights["D"] == 0.0).all(), "zero-ADV name D must never have a position"
+
+    # P&L should be computed on the capped positions (not on the desired 1.0).
+    # With tiny ADV on all names, the resulting book is minuscule.
+    assert res["gross"].abs().max() < 0.001

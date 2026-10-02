@@ -51,12 +51,11 @@ def compute_daily_returns(prices: pd.DataFrame) -> pd.DataFrame:
     """Close-to-close returns from a wide prices frame.
 
     ``prices``: DataFrame indexed by date with one column per symbol. The first
-    return of each symbol is undefined and is set to 0.0 (it never falls inside
-    a valid estimation window, which needs 60 prior bars).
+    return of each symbol is undefined and remains NaN — missing returns must
+    stay NaN so that industry factors and regressions never treat absent data as
+    a zero return.
     """
-    returns = prices.pct_change(fill_method=None)
-    returns = returns.fillna(0.0)
-    return returns
+    return prices.pct_change(fill_method=None)
 
 
 def compute_industry_factor(
@@ -69,21 +68,28 @@ def compute_industry_factor(
     to its industry. For a symbol whose industry has a single member the factor
     is 0.0 (there is no "other" name), so the regression collapses to a market
     regression for that symbol.
+
+    Missing returns (NaN) are excluded from both the sum and the member count
+    on each date.  Industry factors are date-specific: only symbols with a valid
+    return on a given date contribute to that day's factor.  This means appending
+    a symbol that only exists after date ``d`` leaves every industry factor and
+    residual before ``d`` unchanged.
     """
     symbols = list(returns.columns)
     ind = pd.Series([industry_map.get(s, "__unknown__") for s in symbols],
                     index=symbols, dtype=object)
-    counts = ind.value_counts()
-    industry_totals = returns.T.groupby(ind, sort=False).sum().T  # dates x industry
-    n = ind.map(counts).to_numpy(dtype=float)  # per-symbol industry size
-    # Industry total aligned to each symbol (ind maps symbol -> industry name).
+    # Date-specific non-NaN member count per industry.
+    n_ind = returns.notna().T.groupby(ind, sort=False).sum().T  # dates x industry
+    industry_totals = returns.T.groupby(ind, sort=False).sum().T  # NaN excluded by pandas
+    # Per-symbol industry size aligned to each date (ind maps symbol -> industry).
+    n = n_ind[ind].to_numpy(dtype=float)           # (n_dates, n_symbols)
     total = industry_totals[ind].to_numpy(dtype=float)
-    denom = np.where(n > 1.0, n - 1.0, 1.0)  # safe denominator for singletons
-    factor = np.where(
-        n > 1.0,
-        (total - returns.to_numpy(dtype=float)) / denom[None, :],
-        0.0,
-    )
+    ret = returns.to_numpy(dtype=float)
+    denom = np.maximum(n - 1.0, 1.0)
+    factor = np.where(n > 1.0, (total - ret) / denom, 0.0)
+    # Where all other members are NaN (n <= 1 after excluding self), result is
+    # 0.0 (singleton industry).  Where the stock itself is NaN, (total - ret)
+    # propagates NaN correctly since ret is NaN.
     return pd.DataFrame(factor, index=returns.index, columns=returns.columns)
 
 
