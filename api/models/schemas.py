@@ -139,7 +139,7 @@ class ChatResponse(BaseModel):
 # ── Sentiment Analysis Models ────────────────────────────────────────────────
 
 class SectionSentiment(BaseModel):
-    """Loughran-McDonald sentiment counts for a single filing section."""
+    """Dictionary sentiment counts for a single filing section (custom lists partly derived from Loughran-McDonald; not the canonical LM dictionary — see data/sentiment_dict/)."""
     section_type: str
     total_words: int = 0
     positive: int = 0
