@@ -11,6 +11,11 @@ stamped at bar **start**, so a bar's ``information_available_ts = event_ts + 60s
 (computed in silver and carried through). A trailing window over ``[t, t+15m)`` is
 therefore only knowable at ``t+15m``; ``information_available_ts`` is the max of the
 carried per-bar values, which equals the window end.
+
+This is the **windowed** path. Its emit delay is at least the watermark (5 minutes), so
+it is *not* the <60s provider-to-signal SLO path — that is the per-bar velocity path
+(``dlt_gold_ohlcv_latest``). End-to-end latency here is measured from the latest
+contributing bar's ``ingest_ts`` (max), not the earliest.
 """
 
 from pyspark import pipelines as dp
@@ -45,7 +50,12 @@ def dlt_gold_ohlcv_features():
             F.count("event_ts").alias("bar_count"),
             F.max("information_available_ts").alias("information_available_ts"),
             F.max("silver_processed_ts").alias("silver_processed_ts"),
-            F.min("ingest_ts").alias("ingest_ts"),
+            # End-to-end latency is measured from the bar that completes the window
+            # output: the latest (max) contributing ingest_ts. The earliest bar's
+            # ingest_ts (min) is kept separately as first_bar_ingest_ts so the window
+            # span can be reported as its own metric.
+            F.max("ingest_ts").alias("ingest_ts"),
+            F.min("ingest_ts").alias("first_bar_ingest_ts"),
         )
         .withColumn("window_start", F.col("window.start"))
         .withColumn("window_end", F.col("window.end"))
@@ -62,6 +72,7 @@ def dlt_gold_ohlcv_features():
             "bar_count",
             "information_available_ts",
             "ingest_ts",
+            "first_bar_ingest_ts",
             "silver_processed_ts",
             "gold_processed_ts",
         )

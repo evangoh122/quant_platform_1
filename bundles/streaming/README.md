@@ -23,8 +23,9 @@ bundle uses.
 | `dlt_bronze_ohlcv_stream`     | bronze      | Streaming copy of `bronze_ohlcv` + stream load time                |
 | `dlt_silver_ohlcv`            | silver      | Typed, UTC, deduplicated, PIT-stamped bars                         |
 | `dlt_silver_ohlcv_quarantine` | quarantine  | Malformed rows with machine-readable reasons                       |
+| `dlt_gold_ohlcv_latest`       | gold        | Per-bar velocity features (non-windowed) — the <60s SLO path       |
 | `dlt_gold_ohlcv_features`     | gold        | Trailing features over a 15-min sliding event-time window          |
-| `dlt_latency_metrics`         | metrics     | Per-stage + end-to-end latency p50/p95 (velocity evidence)         |
+| `dlt_latency_metrics`         | metrics     | Per-stage + end-to-end latency p50/p95, labelled by path           |
 
 ## Source assumption (re-check before running)
 
@@ -52,10 +53,30 @@ Minute bars are stamped at bar **start** (Polygon convention). Therefore:
 ## Latency instrumentation (velocity evidence)
 
 `ingest_ts` is carried from bronze; `silver_processed_ts` and `gold_processed_ts` are
-stamped per row. `dlt_latency_metrics` exposes p50/p95 for bronze→silver,
-silver→gold, and bronze→gold (end-to-end) over 1-minute windows. This measures the
-<60s provider-receipt-to-signal SLO rather than asserting it. Note the fast path is
-bronze→silver (per-row); gold adds a bounded window delay by design.
+stamped per row. `dlt_latency_metrics` exposes p50/p95 for bronze→silver, silver→gold,
+and provider→signal over 1-minute windows, labelled by `path` (`velocity` / `windowed`).
+This measures the <60s provider-receipt-to-signal SLO rather than asserting it.
+
+### Which path the <60s SLO applies to
+
+The <60s provider-receipt-to-signal SLO applies to the **velocity path**
+(`dlt_gold_ohlcv_latest`): a per-bar, non-windowed stream that emits as each bar
+arrives, so its end-to-end latency has no window delay by construction.
+
+The **windowed path** (`dlt_gold_ohlcv_features`) is *not* the SLO path. In append mode
+a windowed aggregation with a 5-minute watermark emits a window only after the watermark
+passes its end, so its emit delay is at least **≈5 minutes** after the window's last bar
+(the watermark length). Its `emit_delay_seconds` and `window_span_seconds` are reported
+as separate metrics, not as SLO evidence.
+
+For both paths, provider→signal latency is measured from the bar that completes the
+output: the single bar for the velocity path, and the latest (max) contributing
+`ingest_ts` for the windowed path — never the earliest bar, which would overstate
+latency by the window length.
+
+> **Unmeasured.** None of these latency numbers exist yet; they are produced only after
+> the owner chooses to run the pipeline. The schema and metric definitions above are the
+> measurement plan, not observations.
 
 ## Layout
 
@@ -69,6 +90,7 @@ bundles/streaming/
 │   └── transformations/
 │       ├── bronze_stream.py
 │       ├── silver_stream.py
+│       ├── gold_latest_stream.py
 │       ├── gold_stream.py
 │       └── latency_metrics.py
 └── tests/

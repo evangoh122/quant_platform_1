@@ -3,7 +3,7 @@ and none of them equals a real (production) table name.
 
 This is the offline counterpart of the build request's "your pipeline must never own
 or write a real table" rule. It parses the transformation source files and asserts
-exactly the five expected ``dlt_`` tables are declared, and that none collides with a
+exactly the six expected ``dlt_`` tables are declared, and that none collides with a
 production table.
 """
 
@@ -25,6 +25,7 @@ _EXPECTED_TABLES = {
     "dlt_silver_ohlcv",
     "dlt_silver_ohlcv_quarantine",
     "dlt_gold_ohlcv_features",
+    "dlt_gold_ohlcv_latest",
     "dlt_latency_metrics",
 }
 
@@ -50,7 +51,7 @@ def test_every_declared_table_is_prefixed_dlt():
         assert name.startswith("dlt_"), f"table {name!r} is not prefixed dlt_"
 
 
-def test_declared_tables_match_the_expected_five():
+def test_declared_tables_match_the_expected_six():
     assert _declared_table_names() == _EXPECTED_TABLES
 
 

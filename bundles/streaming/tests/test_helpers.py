@@ -89,6 +89,45 @@ def test_interval_seconds_supports_minute_hour_day():
         helpers.interval_seconds("week")
 
 
+# ── latency reference ─────────────────────────────────────────────────────────
+
+def test_window_completion_ingest_ts_is_latest_contributing_bar():
+    # A 15-minute window whose first and last bars arrived 10 minutes apart.
+    first = "2024-01-02T00:00:00Z"
+    last = "2024-01-02T00:10:00Z"
+    completion = helpers.window_completion_ingest_ts([first, last])
+    assert completion == helpers.to_utc(last)
+
+
+def test_end_to_end_latency_uses_latest_contributing_bar_ingest_ts():
+    # Construct a window where min and max ingest_ts differ by 10 minutes; the
+    # end-to-end latency must reflect the max (the bar that completes the output),
+    # not the min.
+    first = "2024-01-02T00:00:00Z"
+    last = "2024-01-02T00:10:00Z"
+    gold_processed = "2024-01-02T00:10:05Z"
+
+    completion = helpers.window_completion_ingest_ts([first, last])
+    latency = helpers.latency_seconds(gold_processed, completion)
+    assert latency == 5.0
+
+    # Measuring from the earliest bar would overstate latency by the window span.
+    earliest = helpers.to_utc(first)
+    assert helpers.latency_seconds(gold_processed, earliest) == 605.0
+
+
+def test_window_completion_ingest_ts_rejects_empty_window():
+    with pytest.raises(ValueError):
+        helpers.window_completion_ingest_ts([])
+
+
+def test_latency_seconds_returns_signed_wall_clock_seconds():
+    later = "2024-01-02T00:00:10Z"
+    earlier = "2024-01-02T00:00:00Z"
+    assert helpers.latency_seconds(later, earlier) == 10.0
+    assert helpers.latency_seconds(earlier, later) == -10.0
+
+
 # ── quarantine reason ─────────────────────────────────────────────────────────
 
 def test_validate_bar_accepts_well_formed_bar():

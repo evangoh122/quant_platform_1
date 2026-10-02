@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import math
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 UTC = timezone.utc
 
@@ -169,6 +169,30 @@ def safe_derive_information_available_ts(
         return derive_information_available_ts(event_ts, timespan)
     except (TypeError, ValueError):
         return None
+
+
+def latency_seconds(later_ts: Any, earlier_ts: Any) -> float:
+    """Wall-clock seconds between two UTC instants (``later - earlier``).
+
+    Turns the stamped pipeline timestamps (``ingest_ts``, ``*_processed_ts``) into
+    latency numbers. A negative result means the two timestamps are out of order.
+    """
+
+    return (to_utc(later_ts) - to_utc(earlier_ts)).total_seconds()
+
+
+def window_completion_ingest_ts(ingest_ts_values: Iterable[Any]) -> datetime:
+    """The ``ingest_ts`` that completes a window's output: the *latest* contributing bar.
+
+    End-to-end latency must be measured from the bar that completes the output, not the
+    earliest one. Measuring from the earliest would count the whole window length as
+    pipeline latency and make even an instant pipeline appear to miss the <60s SLO.
+    """
+
+    values = [to_utc(v) for v in ingest_ts_values]
+    if not values:
+        raise ValueError("cannot determine completion ingest_ts of an empty window")
+    return max(values)
 
 
 def _as_number(value: Any) -> float | None:
