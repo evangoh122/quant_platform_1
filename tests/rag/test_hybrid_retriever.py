@@ -696,7 +696,7 @@ class TestEmbeddingBuildIdempotency:
                 "chunk_text": f"Text for {cid}",
                 "accession_number": "0000723125-25-000042",
                 "ticker": "NVDA",
-                "accepted_ts": "2025-01-15",
+                "accepted_epoch": 1736899200,  # 2025-01-15 00:00:00 UTC
             }.get(k))
             for cid in existing_chunks
         ]
@@ -763,7 +763,7 @@ class TestEmbeddingBuildIdempotency:
             "chunk_text": "NVIDIA revenue growth",
             "accession_number": "0000723125-25-000042",
             "ticker": "NVDA",
-            "accepted_ts": "2025-01-15",
+            "accepted_epoch": 1736899200,  # 2025-01-15 00:00:00 UTC
         }
 
         mock_existing_df = MagicMock()
@@ -809,7 +809,8 @@ class TestEmbeddingBuildIdempotency:
         assert row[0] == "c1"
         assert row[1] == "0000723125-25-000042"
         assert row[2] == "NVDA"
-        assert row[3] == "2025-01-15"
+        # accepted_ts should be a UTC datetime derived from epoch
+        assert row[3] == datetime(2025, 1, 15, 0, 0, 0, tzinfo=timezone.utc)
         assert len(row[4]) == 384
         assert row[5] == "BAAI/bge-small-en-v1.5"
 
@@ -841,7 +842,7 @@ class TestEmbeddingBuildIdempotency:
                 "chunk_text": f"Text {cid}",
                 "accession_number": "ACC",
                 "ticker": "TICK",
-                "accepted_ts": "2025-01-01",
+                "accepted_epoch": 1735689600,  # 2025-01-01 00:00:00 UTC
             }
             for cid in all_chunks
         }
@@ -871,6 +872,195 @@ class TestEmbeddingBuildIdempotency:
 
         assert result["rows_written"] == 3
         assert result["rows_already_embedded"] == 2
+
+
+# ── Timezone-safe accepted_ts tests ─────────────────────────────────────────
+
+class TestAcceptedEpochTimezoneSafe:
+    """Verify that accepted_epoch from Spark produces correct UTC timestamps
+    regardless of the client machine's local timezone.
+
+    The old code (naive datetime → assume UTC) is 8 hours off when the client
+    is in UTC+8 (e.g. WSL Singapore).  The new code uses unix_timestamp()
+    epoch seconds which are timezone-invariant.
+    """
+
+    def test_epoch_produces_correct_utc_in_sgt(self, monkeypatch):
+        """accepted_epoch=1734733606 must yield 2024-12-20 22:26:46 UTC in any TZ."""
+        import subprocess
+        import textwrap
+
+        script = textwrap.dedent("""\
+            import os, sys
+            os.environ["TZ"] = "Asia/Singapore"
+            try:
+                import time; time.tzset()
+            except AttributeError:
+                pass  # Windows — TZ env var still affects datetime
+
+            from datetime import datetime, timezone
+            epoch = 1734733606
+            result = datetime.fromtimestamp(epoch, tz=timezone.utc)
+            expected = datetime(2024, 12, 20, 22, 26, 46, tzinfo=timezone.utc)
+            if result != expected:
+                print(f"FAIL: got {result}, expected {expected}", file=sys.stderr)
+                sys.exit(1)
+            print("PASS")
+        """)
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, f"TZ=Asia/Singapore failed:\n{proc.stderr}\n{proc.stdout}"
+
+    def test_epoch_produces_correct_utc_in_est(self, monkeypatch):
+        """Same epoch must also yield correct UTC in US/Eastern."""
+        import subprocess
+        import textwrap
+
+        script = textwrap.dedent("""\
+            import os, sys
+            os.environ["TZ"] = "America/New_York"
+            try:
+                import time; time.tzset()
+            except AttributeError:
+                pass
+
+            from datetime import datetime, timezone
+            epoch = 1734733606
+            result = datetime.fromtimestamp(epoch, tz=timezone.utc)
+            expected = datetime(2024, 12, 20, 22, 26, 46, tzinfo=timezone.utc)
+            if result != expected:
+                print(f"FAIL: got {result}, expected {expected}", file=sys.stderr)
+                sys.exit(1)
+            print("PASS")
+        """)
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, f"TZ=America/New_York failed:\n{proc.stderr}\n{proc.stdout}"
+
+    def test_old_code_fails_in_sgt(self):
+        """Demonstrate the round-6 bug: naive datetime treated as UTC is wrong in SGT.
+
+        The old code did:
+            accepted_ts = accepted_ts_raw.replace(tzinfo=timezone.utc)
+        But accepted_ts_raw from Spark is in the *client* TZ (SGT = UTC+8),
+        so tagging it as UTC shifts the timestamp by +8 hours.
+        """
+        import subprocess
+        import textwrap
+
+        script = textwrap.dedent("""\
+            import os, sys
+            os.environ["TZ"] = "Asia/Singapore"
+            try:
+                import time; time.tzset()
+            except AttributeError:
+                pass
+
+            from datetime import datetime, timezone
+
+            # Simulate what Spark returns for unix_timestamp=1734733606
+            # in the client's local TZ (SGT = UTC+8): 2024-12-21 06:26:46 (naive)
+            spark_naive = datetime(2024, 12, 21, 6, 26, 46)
+
+            # Old code: treat naive as UTC
+            old_result = spark_naive.replace(tzinfo=timezone.utc)
+
+            # Correct UTC instant from epoch
+            correct = datetime.fromtimestamp(1734733606, tz=timezone.utc)
+
+            # They must NOT be equal — old code is 8 hours off
+            if old_result == correct:
+                print("UNEXPECTED: old code matched — TZ may not be set", file=sys.stderr)
+                sys.exit(1)
+
+            # Verify the old code is exactly 8 hours off
+            diff = (old_result - correct).total_seconds()
+            if diff != 28800.0:
+                print(f"Expected 28800s diff, got {diff}", file=sys.stderr)
+                sys.exit(1)
+            print(f"PASS — old code is {diff}s ({diff/3600}h) off")
+        """)
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, f"Old-code failure demonstration failed:\n{proc.stderr}\n{proc.stdout}"
+
+    def test_load_corpus_uses_epoch(self, monkeypatch):
+        """_load_corpus with accepted_epoch rows stores correct UTC ISO strings."""
+        from api.services import hybrid_retriever as hr
+
+        # Reset module state
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+
+        # Mock Spark session
+        mock_spark = MagicMock()
+
+        # epoch 1734733606 = 2024-12-20 22:26:46 UTC
+        mock_chunk_row = MagicMock()
+        mock_chunk_row.__getitem__ = lambda self, k: {
+            "chunk_id": "c1",
+            "ticker": "NVDA",
+            "chunk_text": "NVIDIA revenue growth",
+            "accession_number": "ACC1",
+            "accepted_epoch": 1734733606,
+            "form_type": "10-K",
+            "filing_section": "item_7",
+            "chunk_index": 0,
+            "source_url": "https://sec.gov/filing",
+        }.get(k)
+
+        mock_chunks_df = MagicMock()
+        mock_chunks_df.select.return_value = mock_chunks_df
+        mock_chunks_df.collect.return_value = [mock_chunk_row]
+
+        mock_embed_row = MagicMock()
+        mock_embed_row.__getitem__ = lambda self, k: {
+            "chunk_id": "c1",
+            "embedding": [0.1] * 384,
+        }.get(k)
+
+        mock_embed_df = MagicMock()
+        mock_embed_df.select.return_value = mock_embed_df
+        mock_embed_df.collect.return_value = [mock_embed_row]
+
+        def table_side_effect(name):
+            if "embeddings" in name:
+                return mock_embed_df
+            return mock_chunks_df
+
+        mock_spark.table.side_effect = table_side_effect
+
+        # Mock F.unix_timestamp and F.col to be pass-throughs for the select call
+        # We need to mock pyspark.sql.functions
+        mock_f = MagicMock()
+        mock_f.unix_timestamp.return_value = mock_f
+        mock_f.col.return_value = mock_f
+        mock_f.alias.return_value = mock_f
+
+        monkeypatch.setattr(hr, "_get_spark", lambda: mock_spark)
+
+        # Patch F in the module where it's imported
+        with patch("pyspark.sql.functions", mock_f):
+            result = hr._load_corpus()
+
+        assert result is True
+
+        # Check the stored accepted_ts is the correct UTC ISO string
+        entry = hr._corpus["c1"]
+        accepted_ts = entry[3]  # 4th element of the tuple
+        assert accepted_ts == "2024-12-20T22:26:46+00:00", (
+            f"Expected UTC ISO string, got: {accepted_ts}"
+        )
 
 
 # ── CorpusUnavailableError tests ─────────────────────────────────────────────

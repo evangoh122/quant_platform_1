@@ -78,8 +78,12 @@ def build(spark) -> dict:
         existing_ids = set()
 
     # 2. Get all chunks (including metadata columns)
+    # Use unix_timestamp to avoid client-tz drift on Spark TIMESTAMP columns.
+    from pyspark.sql import functions as F
+
     chunks_df = spark.table(CHUNKS_TABLE).select(
-        "chunk_id", "chunk_text", "accession_number", "ticker", "accepted_ts",
+        "chunk_id", "chunk_text", "accession_number", "ticker",
+        F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
     ).filter("chunk_text IS NOT NULL AND chunk_id IS NOT NULL")
     all_rows = chunks_df.collect()
 
@@ -107,11 +111,18 @@ def build(spark) -> dict:
         vecs = embeddings.embed_documents(texts)
 
         for r, vec in zip(batch, vecs):
+            # Convert epoch to UTC datetime for storage
+            epoch = r["accepted_epoch"]
+            accepted_ts = (
+                datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+                if epoch is not None
+                else None
+            )
             out_rows.append((
                 r["chunk_id"],
                 r["accession_number"],
                 r["ticker"],
-                r["accepted_ts"],
+                accepted_ts,
                 vec,
                 EMBEDDING_MODEL,
                 now,

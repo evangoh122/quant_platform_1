@@ -260,10 +260,15 @@ def _load_corpus() -> bool:
         try:
             spark = _get_spark()
 
-            # Load chunk text
+            # Load chunk text — use unix_timestamp to avoid client-tz drift.
+            # Spark returns naive datetimes in the *client* machine's local
+            # timezone, not UTC, so we pull epoch seconds and convert in Python.
+            from pyspark.sql import functions as F
+
             chunks_df = spark.table(CHUNKS_TABLE).select(
                 "chunk_id", "ticker", "chunk_text", "accession_number",
-                "accepted_ts", "form_type", "filing_section", "chunk_index",
+                F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+                "form_type", "filing_section", "chunk_index",
                 "source_url",
             )
             chunks_rows = chunks_df.collect()
@@ -290,15 +295,11 @@ def _load_corpus() -> bool:
                 text = row["chunk_text"] or ""
                 ticker = row["ticker"] or ""
                 accession = row["accession_number"] or ""
-                accepted_ts_raw = row["accepted_ts"]
-                if accepted_ts_raw is not None:
-                    # Ensure we always store UTC ISO format regardless of Spark session tz
-                    if isinstance(accepted_ts_raw, datetime):
-                        if accepted_ts_raw.tzinfo is None:
-                            accepted_ts_raw = accepted_ts_raw.replace(tzinfo=timezone.utc)
-                        accepted_ts = accepted_ts_raw.astimezone(timezone.utc).isoformat()
-                    else:
-                        accepted_ts = str(accepted_ts_raw)
+                accepted_epoch = row["accepted_epoch"]
+                if accepted_epoch is not None:
+                    accepted_ts = datetime.fromtimestamp(
+                        int(accepted_epoch), tz=timezone.utc
+                    ).isoformat()
                 else:
                     accepted_ts = ""
                 form_type = row["form_type"] or ""
