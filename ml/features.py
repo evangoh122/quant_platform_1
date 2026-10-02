@@ -420,29 +420,50 @@ def _detect_market_wide_columns(
     time_col: str = "prediction_ts",
     symbol_col: str = "symbol",
     threshold: float = 0.9,
-) -> List[str]:
+    min_non_null: int = 2,
+) -> Tuple[List[str], List[str]]:
     """Detect features that are cross-sectionally constant within timestamps.
 
     A column is market-wide if its values are (approximately) constant across
-    symbols in at least ``threshold`` fraction of timestamps.  These are regime
-    signals (e.g. COT) that would be erased by cross-sectional residualisation.
+    symbols in at least ``threshold`` fraction of timestamps where the feature
+    has ``>= min_non_null`` non-null values.  Timestamps with fewer than
+    ``min_non_null`` non-null observations are excluded from the decision to
+    avoid misclassifying sparse cross-sectional features as market-wide.
 
-    Returns the list of column names detected as market-wide.
+    Returns ``(market_wide, insufficient_coverage)`` — the second list
+    contains columns with too few qualifying timestamps to make a confident
+    classification (caller should log a warning).
     """
+    import logging
+
+    log = logging.getLogger(__name__)
+
     market_wide: List[str] = []
-    n_ts = 0
+    insufficient_coverage: List[str] = []
+
     for col in feature_cols:
+        n_qualifying = 0
         n_constant = 0
-        n_ts = 0
         for _, idx in matrix.groupby(time_col).groups.items():
             frame = matrix.loc[idx]
-            n_ts += 1
             vals = pd.to_numeric(frame[col], errors="coerce")
+            if vals.notna().sum() < min_non_null:
+                continue
+            n_qualifying += 1
             if vals.nunique(dropna=True) <= 1:
                 n_constant += 1
-        if n_ts > 0 and n_constant / n_ts >= threshold:
+        if n_qualifying == 0:
+            insufficient_coverage.append(col)
+            log.warning(
+                "market-wide detection: column '%s' has no timestamps with "
+                ">= %d non-null values — skipping classification",
+                col, min_non_null,
+            )
+        elif n_constant / n_qualifying >= threshold:
             market_wide.append(col)
-    return market_wide
+        # else: genuinely varying cross-sectionally → not market-wide
+
+    return market_wide, insufficient_coverage
 
 
 def _filter_numeric_features(
@@ -534,9 +555,15 @@ def neutralize_features(
     if market_wide_cols is not None:
         detected_market_wide = list(market_wide_cols)
     else:
-        detected_market_wide = _detect_market_wide_columns(
+        detected_market_wide, insufficient = _detect_market_wide_columns(
             out, numeric_cols, time_col=time_col,
         )
+        if insufficient:
+            log.warning(
+                "neutralisation: columns with insufficient timestamps for "
+                "market-wide classification (not neutralised): %s",
+                insufficient,
+            )
 
     # Columns to actually residualise = numeric, non-market-wide
     residualise_cols = [c for c in numeric_cols if c not in detected_market_wide]

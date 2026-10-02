@@ -19,6 +19,8 @@ import pandas as pd
 
 from ml.features import (
     FEATURE_SETS,
+    _detect_market_wide_columns,
+    _filter_numeric_features,
     assert_no_lookahead,
     average_uniqueness_weights,
     neutralize_features,
@@ -249,13 +251,42 @@ def run_ablation(
         missing = [c for c in feature_cols if c not in matrix.columns]
         if missing:
             raise ValueError(f"arm '{arm_name}' missing columns: {missing}")
-        arm_matrix = neutralize_features(matrix, feature_cols) if neutralize else matrix
-        X = prepare_features(arm_matrix, feature_cols)
+
+        if not neutralize:
+            arm_matrix = matrix
+            fold_market_wide = {i: [] for i in range(len(splits))}
+        else:
+            # Detect market-wide columns from training rows only (fold-local)
+            # to prevent validation timestamps from influencing the classification.
+            numeric_cols, _ = _filter_numeric_features(matrix, feature_cols)
+            fold_market_wide: Dict[int, list] = {}
+            for fold_i, (train_idx, _) in enumerate(splits):
+                train_rows = matrix.iloc[train_idx]
+                detected, _ = _detect_market_wide_columns(
+                    train_rows, numeric_cols, time_col=prediction_col,
+                )
+                fold_market_wide[fold_i] = detected
+
+            # Neutralize once per unique market-wide set across folds.
+            # Most folds share the same set, so this avoids redundant work.
+            unique_mw = {tuple(sorted(v)) for v in fold_market_wide.values()}
+            mw_cache: Dict[tuple, pd.DataFrame] = {}
+            for mw_key in unique_mw:
+                mw_cache[mw_key] = neutralize_features(
+                    matrix, feature_cols, market_wide_cols=list(mw_key),
+                )
+            arm_matrix = matrix  # fallback; overwritten per fold
+
+        X_full = prepare_features(matrix, feature_cols)
         features_used[arm_name] = list(feature_cols)
 
         for model_name, factory in models.items():
             oof_prob = np.full(len(matrix), np.nan)
-            for train_idx, val_idx in splits:
+            for fold_i, (train_idx, val_idx) in enumerate(splits):
+                if neutralize:
+                    mw_key = tuple(sorted(fold_market_wide[fold_i]))
+                    arm_matrix = mw_cache[mw_key]
+                X = prepare_features(arm_matrix, feature_cols)
                 model = factory(seed)
                 fit_kwargs = {}
                 if use_uniqueness_weights:

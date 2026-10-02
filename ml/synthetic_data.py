@@ -187,6 +187,10 @@ def make_synthetic_matrix(
         )
         var = grp["mkt_return"].rolling(20, min_periods=5).var()
         beta = (cov / var).rename("market_beta")
+        # Shift beta by 1 bar within symbol to avoid look-ahead:
+        # the return at t uses close at t, so beta at t incorporates info
+        # not yet available at the bar's start timestamp.
+        beta = beta.shift(1)
         piece = pd.DataFrame(
             {"symbol": sym, "event_ts": grp["event_ts"].values, "market_beta": beta.values}
         )
