@@ -702,7 +702,7 @@ class TestSearchSecFilingsError:
 
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
-        assert "Delta table not found" in result[0]["message"]
+        assert "SEC filing corpus could not be loaded" in result[0]["message"]
         assert result[0]["ticker"] == "NVDA"
 
     def test_returns_empty_list_still_works_when_corpus_loaded(self, monkeypatch):
@@ -721,3 +721,109 @@ class TestSearchSecFilingsError:
             result = search_sec_filings("ZZZZ", query="nonexistent")
 
         assert result == []
+
+    def test_fallback_results_tagged_with_retrieval_mode(self, monkeypatch):
+        """Non-corpus exception must return results tagged with retrieval_mode."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+
+        def fake_retrieve(*args, **kwargs):
+            raise RuntimeError("connection timeout")
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {
+            "chunk_text": "NVIDIA revenue growth",
+            "ticker": "NVDA",
+            "accession_number": "ACC1",
+        }
+        mock_spark = MagicMock()
+        mock_spark.table.return_value.where.return_value.limit.return_value.collect.return_value = [mock_row]
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("agent.tools_retrieval._spark", return_value=mock_spark):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) == 1
+        assert result[0]["retrieval_mode"] == "substring_fallback"
+        assert result[0]["_warning"] == "hybrid_retrieval_failed"
+
+    def test_unavailable_result_contains_no_exception_text(self, monkeypatch):
+        """The error message must not leak raw exception text."""
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+
+        def fake_retrieve(*args, **kwargs):
+            raise CorpusUnavailableError("secret_table_name connection string leaked")
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="test")
+
+        msg = result[0]["message"]
+        assert "secret_table_name" not in msg
+        assert "connection string leaked" not in msg
+
+    def test_spark_uses_databricks_session_outside_runtime(self, monkeypatch):
+        """_spark() must delegate to hybrid_retriever._get_spark."""
+        from api.services import hybrid_retriever as hr
+
+        monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
+
+        mock_session_cls = MagicMock()
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = MagicMock()
+        mock_session_cls.builder = mock_builder
+
+        with patch.dict("sys.modules", {"databricks.connect": MagicMock(DatabricksSession=mock_session_cls)}):
+            from agent.tools_retrieval import _spark
+            spark = _spark()
+
+        mock_builder.serverless.assert_called_once_with(True)
+        mock_builder.getOrCreate.assert_called_once()
+
+    def test_normal_results_tagged_with_retrieval_mode_hybrid(self, monkeypatch):
+        """Normal results must carry retrieval_mode=hybrid."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from langchain_core.documents import Document
+
+        mock_doc = Document(
+            page_content="NVIDIA AI revenue",
+            metadata={
+                "accession": "ACC1",
+                "form_type": "10-K",
+                "accepted_ts": "2025-01-15",
+                "source_url": "https://sec.gov/filing",
+                "ticker": "NVDA",
+                "section_id": "item_7",
+                "chunk_index": 0,
+                "similarity": 0.95,
+                "distance": 0.05,
+            },
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = [mock_doc]
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("api.services.reranker.rerank", side_effect=lambda q, d, top_k: d):
+            result = search_sec_filings("NVDA", query="AI revenue")
+
+        assert len(result) == 1
+        assert result[0]["retrieval_mode"] == "hybrid"

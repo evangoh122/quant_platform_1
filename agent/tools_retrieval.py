@@ -24,9 +24,9 @@ _OPEN_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SUBMITTED", "PARTIALLY_
 
 
 def _spark():
-    from pyspark.sql import SparkSession
+    from api.services.hybrid_retriever import _get_spark
 
-    return SparkSession.builder.getOrCreate()
+    return _get_spark()
 
 
 def _fqn(table: str) -> str:
@@ -113,6 +113,7 @@ def search_sec_filings(
                 "chunk_index": d.metadata.get("chunk_index", 0),
                 "similarity": d.metadata.get("similarity"),
                 "distance": d.metadata.get("distance"),
+                "retrieval_mode": "hybrid",
             }
             for d in docs
         ]
@@ -121,11 +122,10 @@ def search_sec_filings(
         logging.error("SEC filing retrieval unavailable: %s", e)
         return [{
             "error": "retrieval_unavailable",
-            "message": f"SEC filing corpus could not be loaded: {e}",
+            "message": "SEC filing corpus could not be loaded. Check Delta table connectivity.",
             "ticker": symbol,
         }]
     except Exception as e:
-        # Graceful fallback to substring filter
         import logging
         logging.warning("Hybrid retriever failed (%s), falling back to substring filter", e)
         from pyspark.sql import functions as F
@@ -139,6 +139,9 @@ def search_sec_filings(
                 r for r in results
                 if query.lower() in (r.get("chunk_text", "") or "").lower()
             ]
+        for r in results:
+            r["retrieval_mode"] = "substring_fallback"
+            r["_warning"] = "hybrid_retrieval_failed"
         return results[:top_k]
 
 
