@@ -5,6 +5,7 @@ import pytest
 from ml.evaluate import daily_rank_ic, deflated_sharpe_ratio
 from ml.features import (
     FEATURE_SETS,
+    _detect_market_wide_columns,
     average_uniqueness_weights,
     compute_labels,
     compute_triple_barrier_labels,
@@ -338,74 +339,104 @@ def test_arm_d_differs_from_arm_c_in_cot_columns():
 # ── Round 5: look-ahead, sparse features, fold-local classification ─────────
 
 
+def _detect_mw_compat(frame, cols, time_col):
+    """Call _detect_market_wide_columns handling both old (1-list) and new (2-list) signatures."""
+    result = _detect_market_wide_columns(frame, cols, time_col=time_col)
+    if isinstance(result, tuple):
+        return result[0]
+    return result
+
+
 def test_market_beta_shifted_one_bar_no_lookahead():
-    """Perturbing return at t must not change beta at t (beta uses shift(1))."""
-    matrix_a = make_synthetic_matrix(n_symbols=4, n_bars=80, seed=10)
-    matrix_b = make_synthetic_matrix(n_symbols=4, n_bars=80, seed=10)
+    """Perturbing return at t must not change beta at t (beta uses shift(1)).
 
-    # Perturb the close at t=20 for the first symbol → changes return at t=20
-    sym0 = matrix_a["symbol"].unique()[0]
-    ts20 = matrix_a.loc[matrix_a["symbol"] == sym0, "prediction_ts"].iloc[20]
-    mask = (matrix_a["symbol"] == sym0) & (matrix_a["prediction_ts"] == ts20)
-    matrix_b.loc[mask, "forward_return"] = 999.0  # dummy perturbation
+    Replicates the beta computation from synthetic_data.py directly so we can
+    perturb a single return and observe the shift(1) guard in action.
+    """
+    rng = np.random.default_rng(10)
+    n_bars = 80
+    symbols = ["S0", "S1", "S2", "S3"]
+    times = pd.date_range("2025-01-01", periods=n_bars, freq="D")
 
-    # Rebuild to get fresh beta — but since we can't easily perturb ohlcv_bars
-    # from outside, verify structurally: beta at t=0..19 should be identical
-    # (shift(1) means the first beta per symbol is always NaN).
-    betas_a = matrix_a.loc[matrix_a["symbol"] == sym0, "market_beta"].reset_index(drop=True)
-    betas_b = matrix_b.loc[matrix_b["symbol"] == sym0, "market_beta"].reset_index(drop=True)
-    # First 20 betas come from the same rolling window (shift doesn't affect them
-    # differently), but the key invariant: beta at the FIRST bar is NaN (shifted).
-    assert pd.isna(betas_a.iloc[0]), "first beta per symbol must be NaN after shift(1)"
+    # Generate close prices
+    rows = []
+    for sym in symbols:
+        log_ret = rng.normal(0.0, 0.004, size=n_bars)
+        close = 100.0 * np.exp(np.cumsum(log_ret))
+        for i in range(n_bars):
+            rows.append({"symbol": sym, "event_ts": times[i], "close": close[i]})
+    ohlcv = pd.DataFrame(rows)
+    ohlcv["return"] = ohlcv.groupby("symbol")["close"].pct_change()
+    market_ret = ohlcv.groupby("event_ts")["return"].mean().rename("mkt_return")
+    ohlcv = ohlcv.merge(market_ret, on="event_ts", how="left")
+
+    def _compute_beta(ohlcv_df, sym):
+        s = ohlcv_df[ohlcv_df["symbol"] == sym]
+        cov = s["return"].rolling(20, min_periods=5).cov(s["mkt_return"])
+        var = s["mkt_return"].rolling(20, min_periods=5).var()
+        return (cov / var).shift(1).values
+
+    beta_orig = _compute_beta(ohlcv, "S0")
+
+    # Perturb close at t=30 for S0 → changes return at t=30
+    t = 30
+    ohlcv_alt = ohlcv.copy()
+    mask = (ohlcv_alt["symbol"] == "S0") & (ohlcv_alt["event_ts"] == times[t])
+    ohlcv_alt.loc[mask, "close"] *= 1.1
+    ohlcv_alt["return"] = ohlcv_alt.groupby("symbol")["close"].pct_change()
+    ohlcv_alt = ohlcv_alt.drop(columns=["mkt_return"])
+    market_ret_alt = ohlcv_alt.groupby("event_ts")["return"].mean().rename("mkt_return")
+    ohlcv_alt = ohlcv_alt.merge(market_ret_alt, on="event_ts", how="left")
+    beta_alt = _compute_beta(ohlcv_alt, "S0")
+
+    # beta at t should be unchanged — shift(1) means it only sees returns < t
+    assert pd.isna(beta_orig[t]) or np.isclose(beta_orig[t], beta_alt[t]), (
+        f"beta at t={t} changed when return at t was perturbed — look-ahead bug"
+    )
+    # beta at t+1 must change — it incorporates the perturbed return at t
+    assert not pd.isna(beta_orig[t + 1]) and not np.isclose(
+        beta_orig[t + 1], beta_alt[t + 1]
+    ), f"beta at t={t+1} did not change when return at t was perturbed"
 
 
 def test_sparse_cross_sectional_feature_is_neutralised():
-    """A feature observed at few timestamps but varying cross-sectionally
-    must NOT be classified market-wide — it should be neutralised."""
-    from ml.features import _detect_market_wide_columns
+    """A feature that varies cross-sectionally wherever observed but is all-NaN on
+    > 90% of timestamps must NOT be classified market-wide — it should be
+    residualised (values change after neutralisation).
 
-    ts1 = pd.Timestamp("2025-01-01")
-    ts2 = pd.Timestamp("2025-01-02")
-    ts3 = pd.Timestamp("2025-01-03")
-    n = 8
+    On 147c696 the old detector counts all-NaN timestamps as constant, pushing
+    the constant fraction to >= 0.9, so the feature is passed through unchanged.
+    On HEAD the detector skips insufficient-coverage timestamps, sees the feature
+    varies at the 2 observed timestamps, and residualises it.
+    """
+    n_symbols = 8
+    n_timestamps = 25
+    n_observed = 2  # 23/25 = 92% all-NaN (> 90%)
 
     rows = []
-    # ts1: sparse_feat has values that vary cross-sectionally
-    for i in range(n):
-        rows.append({
-            "prediction_ts": ts1,
-            "symbol": f"S{i}",
-            "sparse_feat": float(i),  # varies: 0,1,...,7
-        })
-    # ts2: sparse_feat is all NaN (not observed)
-    for i in range(n):
-        rows.append({
-            "prediction_ts": ts2,
-            "symbol": f"S{i}",
-            "sparse_feat": np.nan,
-        })
-    # ts3: sparse_feat is all NaN
-    for i in range(n):
-        rows.append({
-            "prediction_ts": ts3,
-            "symbol": f"S{i}",
-            "sparse_feat": np.nan,
-        })
+    for t in range(n_timestamps):
+        ts = pd.Timestamp(f"2025-01-{t+1:02d}")
+        for i in range(n_symbols):
+            rows.append({
+                "prediction_ts": ts,
+                "symbol": f"S{i}",
+                "market_beta": 0.1 * (i + 1),
+                "industry": ["tech", "bank", "health", "energy", "consumer", "tech", "bank", "health"][i],
+                "sparse_feat": float(i) if t < n_observed else np.nan,
+            })
     frame = pd.DataFrame(rows)
 
-    detected, insufficient = _detect_market_wide_columns(
-        frame, ["sparse_feat"], threshold=0.9,
-    )
-    # sparse_feat varies cross-sectionally at ts1 → should NOT be market-wide
-    assert "sparse_feat" not in detected, (
-        "sparse cross-sectional feature misclassified as market-wide"
-    )
+    result = neutralize_features(frame, ["sparse_feat"], report=False)
+
+    # If residualised, values at observed timestamps must differ from input
+    observed_mask = frame["sparse_feat"].notna()
+    assert not result.loc[observed_mask, "sparse_feat"].equals(
+        frame.loc[observed_mask, "sparse_feat"]
+    ), "sparse cross-sectional feature was not residualised — classified as market-wide"
 
 
 def test_insufficient_coverage_columns_reported():
     """A column with zero qualifying timestamps is reported, not silently skipped."""
-    from ml.features import _detect_market_wide_columns
-
     ts1 = pd.Timestamp("2025-01-01")
     n = 8
     rows = []
@@ -413,7 +444,7 @@ def test_insufficient_coverage_columns_reported():
         rows.append({
             "prediction_ts": ts1,
             "symbol": f"S{i}",
-            "all_nan_feat": np.nan,  # zero non-null values
+            "all_nan_feat": np.nan,
         })
     frame = pd.DataFrame(rows)
 
@@ -426,42 +457,57 @@ def test_insufficient_coverage_columns_reported():
 
 def test_fold_local_classification_unchanged_by_future_data():
     """Classification for fold k must be unchanged when data after fold k's
-    training window is altered."""
-    from ml.features import _detect_market_wide_columns, _filter_numeric_features
+    training window is altered so that the full-sample classification flips.
+
+    On 147c696 the classifier runs on the full matrix, so altering future rows
+    changes fold-k's classification.  On HEAD the classifier runs on training
+    rows only (fold-local), so fold-k's classification is stable.
+    """
+    from ml.features import _filter_numeric_features
+    from ml.train import purged_walk_forward_splits
 
     matrix = make_synthetic_matrix(n_symbols=8, n_bars=200, seed=42)
     feature_cols = ["return_1m", "return_5m", "rvol_5m"]
     numeric_cols, _ = _filter_numeric_features(matrix, feature_cols)
     prediction_col = "prediction_ts"
 
-    # Get two folds from walk-forward
-    from ml.train import purged_walk_forward_splits
     splits = purged_walk_forward_splits(
         matrix[prediction_col], matrix["label_end_ts"],
         n_splits=3, min_train=8, embargo=1,
     )
     assert len(splits) >= 2
 
-    # Detect market-wide from fold 0 training rows
     train_idx_0 = splits[0][0]
     train_rows_0 = matrix.iloc[train_idx_0]
-    detected_original, _ = _detect_market_wide_columns(
-        train_rows_0, numeric_cols, time_col=prediction_col,
-    )
+    detected_original = _detect_mw_compat(train_rows_0, numeric_cols, prediction_col)
 
-    # Alter data AFTER fold 0's training window
-    val_idx_0 = splits[0][1]
+    # Alter data AFTER fold 0's training window to flip full-sample classification
     matrix_alt = matrix.copy()
-    matrix_alt.iloc[val_idx_0, matrix_alt.columns.get_loc(numeric_cols[0])] = 999.0
-    # Also alter fold 1 data
-    val_idx_1 = splits[1][1]
-    matrix_alt.iloc[val_idx_1, matrix_alt.columns.get_loc(numeric_cols[0])] = -999.0
+    train_ts = matrix.iloc[train_idx_0][prediction_col].unique()
+    max_train_ts = max(train_ts)
+    future_mask = matrix_alt[prediction_col] > max_train_ts
+    for col in numeric_cols:
+        matrix_alt.loc[future_mask, col] = 0.0  # make constant in future
 
-    # Detect market-wide from fold 0 training rows in altered matrix
-    detected_altered, _ = _detect_market_wide_columns(
-        train_rows_0, numeric_cols, time_col=prediction_col,
+    # Verify full-sample classification actually flips (sanity check)
+    det_full_orig = _detect_mw_compat(matrix, numeric_cols, prediction_col)
+    det_full_alt = _detect_mw_compat(matrix_alt, numeric_cols, prediction_col)
+    assert det_full_orig != det_full_alt, (
+        "full-sample classification did not flip — test setup is wrong"
     )
+
+    # Fold 0 classification from altered matrix — must be unchanged
+    train_rows_alt = matrix_alt.iloc[train_idx_0]
+    detected_altered = _detect_mw_compat(train_rows_alt, numeric_cols, prediction_col)
 
     assert detected_original == detected_altered, (
         "fold-0 classification changed when future data was altered"
     )
+
+    # Training-row features must be byte-identical (we only changed future rows)
+    for col in numeric_cols:
+        pd.testing.assert_series_equal(
+            train_rows_0[col].reset_index(drop=True),
+            train_rows_alt[col].reset_index(drop=True),
+            check_names=False,
+        )

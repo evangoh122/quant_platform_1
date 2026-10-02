@@ -277,7 +277,6 @@ def run_ablation(
                 )
             arm_matrix = matrix  # fallback; overwritten per fold
 
-        X_full = prepare_features(matrix, feature_cols)
         features_used[arm_name] = list(feature_cols)
 
         for model_name, factory in models.items():

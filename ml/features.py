@@ -561,7 +561,7 @@ def neutralize_features(
         if insufficient:
             log.warning(
                 "neutralisation: columns with insufficient timestamps for "
-                "market-wide classification (not neutralised): %s",
+                "market-wide classification (residualised as normal): %s",
                 insufficient,
             )
 
