@@ -1,11 +1,18 @@
 import pytest
-pytest.importorskip("api.routes.conjoint", reason="api.routes.conjoint module removed")
-from api.services.guardrails.persona_rails import check_persona_fit
-from api.routes.conjoint import role_guidance_for, ROLES
+from api.services.guardrails.persona_rails import check_persona_fit, _has_financial_figure
+
+try:
+    from api.routes.conjoint import role_guidance_for, ROLES
+    _HAS_CONJOINT = True
+except ImportError:
+    _HAS_CONJOINT = False
+
+requires_conjoint = pytest.mark.skipif(not _HAS_CONJOINT, reason="api.routes.conjoint module removed")
 
 
 # ── role_guidance_for: tone vs requirements are both present and labelled ──────
 
+@requires_conjoint
 def test_role_guidance_splits_tone_and_requirements():
     g = role_guidance_for("compliance_officer")
     assert g is not None
@@ -15,6 +22,7 @@ def test_role_guidance_splits_tone_and_requirements():
     assert "Compliance Officer" in g
 
 
+@requires_conjoint
 def test_role_guidance_omits_requirements_when_blank():
     # Relationship Manager has no hard requirements -> no Requirements clause.
     g = role_guidance_for("relationship_manager")
@@ -23,12 +31,14 @@ def test_role_guidance_omits_requirements_when_blank():
     assert "Requirements (the answer must satisfy these):" not in g
 
 
+@requires_conjoint
 def test_role_guidance_unknown_role_is_none():
     assert role_guidance_for(None) is None
     assert role_guidance_for("") is None
     assert role_guidance_for("not_a_role") is None
 
 
+@requires_conjoint
 def test_every_role_has_requirements_field():
     for r in ROLES:
         assert "answer_requirements" in r
@@ -93,7 +103,6 @@ def test_credit_qualitative_citation_not_treated_as_figure():
 
 
 def test_has_financial_figure_distinguishes_amounts_from_labels():
-    from api.services.guardrails.persona_rails import _has_financial_figure
     # Real figures:
     assert _has_financial_figure("$3.4 billion")
     assert _has_financial_figure("revenue rose 12.5%")

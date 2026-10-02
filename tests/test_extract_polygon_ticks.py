@@ -3,7 +3,7 @@ tests/test_extract_polygon_ticks.py
 Tests for the Polygon ticks ETL extractor.
 """
 import pytest
-pytest.importorskip("etl.extract_polygon_ticks", reason="etl.extract_polygon_ticks removed; consolidated into etl.extract_polygon")
+pytest.importorskip("etl.extract_polygon_ticks", reason="etl.extract_polygon_ticks removed; not carried forward")
 from unittest.mock import MagicMock, patch
 from etl.extract_polygon_ticks import run_polygon_ticks_etl
 from db.database import get_connection

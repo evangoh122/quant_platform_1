@@ -16,8 +16,18 @@ from typing import List, Optional
 from loguru import logger
 from polygon import RESTClient
 
-from db.database import get_connection
 from etl.utils import utcnow as _utcnow
+
+
+def _get_connection():
+    try:
+        from db.database import get_connection
+    except ImportError:
+        raise RuntimeError(
+            "DuckDB local store was retired; production ingestion writes Delta "
+            "via notebooks/01_ingest_market_data.py"
+        )
+    return get_connection()
 
 
 # ── OHLCV bars ────────────────────────────────────────────────────────────────
@@ -37,7 +47,7 @@ def run_polygon_bars_etl(
     n_total = len(tickers)
     logger.info(f"polygon-bars: {n_total} tickers, {from_} -> {to_} ({timespan})")
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for idx, t_def in enumerate(tickers, 1):
             symbol = t_def.get("symbol")
             try:
@@ -105,7 +115,7 @@ def run_polygon_snapshots_etl(
         else:
             logger.debug(f"Skipping unsupported snapshot secType: {sec_type} for {t_def.get('symbol')}")
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for market, poly_tickers in groups.items():
             try:
                 time.sleep(_RATE_DELAY)
@@ -149,7 +159,7 @@ def run_polygon_options_etl(
     total = 0
     ts    = _utcnow()
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for t_def in tickers:
             symbol = t_def.get("symbol")
             if t_def.get("secType") in ("CASH",):
@@ -222,7 +232,7 @@ def run_polygon_reference_etl(
     n_total  = len(stk_only)
     logger.info(f"polygon-ref: {n_total} STK tickers to fetch")
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for idx, t_def in enumerate(stk_only, 1):
             symbol = t_def.get("symbol")
             poly_ticker = _polygon_ticker(t_def)
@@ -303,7 +313,7 @@ def run_polygon_option_bars_etl(
         f"up to {max_contracts} contracts each"
     )
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for t_def in stk_tickers:
             underlying  = t_def.get("symbol", "")
             poly_ticker = _polygon_ticker(t_def)

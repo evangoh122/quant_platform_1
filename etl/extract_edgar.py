@@ -18,7 +18,16 @@ from typing import Dict, List, Optional
 import requests
 from loguru import logger
 
-from db.database import get_connection
+def _get_connection():
+    try:
+        from db.database import get_connection
+    except ImportError:
+        raise RuntimeError(
+            "DuckDB local store was retired; production ingestion writes Delta "
+            "via notebooks/01_ingest_market_data.py"
+        )
+    return get_connection()
+
 
 # SEC requires a descriptive User-Agent: "Name email@domain.com"
 _EMAIL   = os.getenv("EDGAR_EMAIL", "")
@@ -75,7 +84,7 @@ def run_edgar_filings_etl(
     symbols  = [_symbol(t) for t in _stk_only(tickers)]
     cik_map  = _build_cik_map(symbols)
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for ticker in symbols:
             cik = cik_map.get(ticker.upper())
             if not cik:
@@ -138,7 +147,7 @@ def run_edgar_facts_etl(tickers) -> int:
     symbols = [_symbol(t) for t in _stk_only(tickers)]
     cik_map = _build_cik_map(symbols)
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for ticker in symbols:
             cik = cik_map.get(ticker.upper())
             if not cik:
@@ -211,7 +220,7 @@ def run_edgar_13f_etl(tickers, lookback_quarters: int = 8) -> int:
     # Date cutoff
     cutoff = (date.today() - timedelta(days=lookback_quarters * 92)).isoformat()
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for ticker in symbols:
             cik = cik_map.get(ticker.upper())
             if not cik:
