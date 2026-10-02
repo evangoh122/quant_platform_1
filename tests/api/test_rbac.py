@@ -1,4 +1,4 @@
-"""Role-based authorization: viewer cannot approve; approver can."""
+"""Role-based authorization: viewer and other roles cannot approve; trader can."""
 
 from __future__ import annotations
 
@@ -12,12 +12,14 @@ def test_new_viewer_cannot_approve_order(client, fake_lakebase):
     assert fake_lakebase.roles["viewer@example.com"] == "viewer"
 
 
-def test_approver_without_role_cannot_approve(client, fake_lakebase):
-    # A trader (not an approver) is still forbidden from approving.
-    fake_lakebase.roles["trader@example.com"] = "trader"
+def test_non_trader_role_cannot_approve(client, fake_lakebase):
+    # One role model: only `trader` may approve (its own orders; owner match is
+    # enforced in agent.tools_write.record_approval and tested there). Any other
+    # role, including an unrecognised one, is refused at the route.
+    fake_lakebase.roles["analyst@example.com"] = "analyst"
     resp = client.post(
         "/api/orders/ord_123/approve",
-        headers={"x-forwarded-email": "trader@example.com"},
+        headers={"x-forwarded-email": "analyst@example.com"},
     )
     assert resp.status_code == 403
 
@@ -46,7 +48,7 @@ def test_approver_reaches_approval_path(client, fake_lakebase, monkeypatch):
     monkeypatch.setattr(tools_write, "record_approval", fake_record_approval, raising=False)
     monkeypatch.setattr(tools_write, "approve_and_place_paper_order", fake_place, raising=False)
 
-    fake_lakebase.roles["approver@example.com"] = "approver"
+    fake_lakebase.roles["approver@example.com"] = "trader"
     resp = client.post(
         "/api/orders/ord_123/approve",
         headers={"x-forwarded-email": "approver@example.com"},

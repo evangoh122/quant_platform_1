@@ -287,6 +287,13 @@ class RiskEngine:
                 "idempotency_key is required",
                 {},
             )
+        # Note: this DUPLICATE branch is a pure guardrail contract. In the real
+        # placement path it is structurally unreachable — `orders.idempotency_key`
+        # is UNIQUE, and a repeated key is handled as an idempotent replay by
+        # `create_order_intent` (which returns the existing order with reason
+        # DUPLICATE_IDEMPOTENCY_KEY) before placement ever runs. It is retained
+        # (and unit-tested) as a defensive assertion of the "key must be fresh"
+        # contract.
         if ctx.idempotency_key_seen:
             return RiskViolation(
                 DUPLICATE_IDEMPOTENCY_KEY,

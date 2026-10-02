@@ -68,7 +68,7 @@ def create_intent(
 @router.post("/{order_id}/approve", response_model=OrderActionResult)
 def approve_order(
     order_id: str,
-    user: AppUser = Depends(require_role("approver")),
+    user: AppUser = Depends(require_role("trader")),
 ) -> OrderActionResult:
     try:
         from agent.tools_write import (
