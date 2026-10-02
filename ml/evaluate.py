@@ -1,0 +1,181 @@
+"""Evaluation for the ML ablation lane.
+
+Three families of metrics, per the build request:
+
+* **Predictive** — ROC-AUC, precision/recall, directional accuracy, Brier
+  score/calibration, information coefficient (rank IC).
+* **Economic** — transaction-cost-adjusted return, Sharpe, max drawdown, hit
+  rate, turnover, average holding period. Costs reuse
+  ``strategies/cost_model.py``; nothing here re-implements them.
+* **Operational** — p50/p95 inference latency.
+
+Everything is pure ``pandas``/``numpy``/``scikit-learn`` so it runs without a
+Spark cluster.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+from sklearn import metrics as skm
+
+from strategies.cost_model import CostParams, cost_per_trade
+
+
+# ── Predictive ───────────────────────────────────────────────────────────────
+
+def predictive_metrics(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    y_cont: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """Predictive metrics for a binary (up/down) probability model.
+
+    Args:
+        y_true: binary labels (1 = forward return > 0).
+        y_prob: predicted P(forward return > 0).
+        y_cont: continuous forward returns (optional). Enables information
+            coefficient (rank IC); set to NaN when absent.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_prob = np.asarray(y_prob, dtype=float)
+
+    if len(np.unique(y_true)) < 2:
+        auc = float("nan")
+    else:
+        auc = float(skm.roc_auc_score(y_true, y_prob))
+
+    pred = (y_prob >= 0.5).astype(int)
+    out: Dict[str, float] = {
+        "roc_auc": auc,
+        "precision": float(skm.precision_score(y_true, pred, zero_division=0)),
+        "recall": float(skm.recall_score(y_true, pred, zero_division=0)),
+        "directional_accuracy": float(np.mean(pred == y_true)),
+        "brier_score": float(skm.brier_score_loss(y_true, y_prob)),
+    }
+
+    if y_cont is not None and len(y_cont) == len(y_prob):
+        out["information_coefficient"] = float(
+            pd.Series(y_prob).rank().corr(pd.Series(y_cont).rank())
+        )
+    else:
+        out["information_coefficient"] = float("nan")
+    return out
+
+
+# ── Economic ─────────────────────────────────────────────────────────────────
+
+def build_backtest(
+    signals: pd.DataFrame,
+    cost_params: Optional[CostParams] = None,
+    periods_per_year: int = 3276,  # 252 trading days x 13 half-hour bars
+) -> Dict[str, float]:
+    """Transaction-cost-adjusted strategy metrics from per-row signals.
+
+    ``signals`` must contain ``symbol``, ``prediction_ts``, ``y_prob`` and
+    ``forward_return``. Position is +1 when ``y_prob >= 0.5`` and -1 otherwise
+    (long/short). Turnover is the fraction of positions flipped between
+    consecutive bars of the same symbol, and each flip is charged one-way cost
+    via ``strategies/cost_model.py``.
+    """
+    if cost_params is None:
+        cost_params = CostParams()
+
+    df = signals.sort_values(["symbol", "prediction_ts"]).copy()
+    df["position"] = np.where(df["y_prob"] >= 0.5, 1.0, -1.0)
+    df["gross_return"] = df["position"] * df["forward_return"]
+
+    # Turnover: |position_t - position_{t-1}| per symbol (0/2).
+    df["prev_position"] = df.groupby("symbol")["position"].shift(1)
+    df["turnover"] = (df["position"] - df["prev_position"].fillna(df["position"])).abs()
+    # A long→short (or reverse) flip = |Δ| of 2; scale to fraction [0,1].
+    df["turnover"] = (df["turnover"] / 2.0).clip(0.0, 1.0)
+
+    # One-way cost in bps per trade; cost drag = turnover * cost_bps / 1e4.
+    cost_bps = cost_per_trade(1.0, adv=1.0, params=cost_params)
+    df["cost_drag"] = df["turnover"] * cost_bps / 1e4
+    df["net_return"] = df["gross_return"] - df["cost_drag"]
+
+    net = df["net_return"].dropna()
+    if net.empty:
+        return {
+            "net_return": float("nan"),
+            "sharpe": float("nan"),
+            "max_drawdown": float("nan"),
+            "hit_rate": float("nan"),
+            "turnover": float("nan"),
+            "avg_holding_period": float("nan"),
+        }
+
+    mean = float(net.mean())
+    std = float(net.std(ddof=0)) if len(net) > 1 else 0.0
+    sharpe = (mean / std * np.sqrt(periods_per_year)) if std > 0 else float("nan")
+
+    equity = (1.0 + net).cumprod()
+    running_max = equity.cummax()
+    max_dd = float(((equity - running_max) / running_max).min())
+
+    hit = float(np.mean(np.sign(df["forward_return"]) == np.sign(df["position"])))
+
+    avg_turnover = float(df["turnover"].mean()) if len(df) else float("nan")
+
+    # Average holding period: mean run length of an unchanged position sign.
+    runs: List[int] = []
+    for _, grp in df.groupby("symbol"):
+        pos = grp["position"].values
+        if len(pos) == 0:
+            continue
+        run = 1
+        for i in range(1, len(pos)):
+            if pos[i] == pos[i - 1]:
+                run += 1
+            else:
+                runs.append(run)
+                run = 1
+        runs.append(run)
+    avg_holding = float(np.mean(runs)) if runs else float("nan")
+
+    return {
+        "net_return": mean,
+        "sharpe": sharpe,
+        "max_drawdown": max_dd,
+        "hit_rate": hit,
+        "turnover": avg_turnover,
+        "avg_holding_period": avg_holding,
+    }
+
+
+# ── Operational ──────────────────────────────────────────────────────────────
+
+def operational_metrics(latencies_ms: List[float]) -> Dict[str, float]:
+    """Inference latency percentiles (p50, p95) in milliseconds."""
+    if not latencies_ms:
+        return {"p50_latency_ms": float("nan"), "p95_latency_ms": float("nan")}
+    arr = np.asarray(latencies_ms, dtype=float)
+    return {
+        "p50_latency_ms": float(np.percentile(arr, 50)),
+        "p95_latency_ms": float(np.percentile(arr, 95)),
+    }
+
+
+def evaluate_predictions(
+    pred_df: pd.DataFrame,
+    cost_params: Optional[CostParams] = None,
+    latencies_ms: Optional[List[float]] = None,
+) -> Dict[str, float]:
+    """Combined predictive + economic + operational metric bundle for one arm.
+
+    ``pred_df`` must contain ``y_true``, ``y_prob`` and ``forward_return``.
+    """
+    metrics = predictive_metrics(
+        pred_df["y_true"].values,
+        pred_df["y_prob"].values,
+        pred_df["forward_return"].values
+        if "forward_return" in pred_df.columns
+        else None,
+    )
+    metrics.update(build_backtest(pred_df, cost_params=cost_params))
+    metrics.update(operational_metrics(latencies_ms or []))
+    return metrics
