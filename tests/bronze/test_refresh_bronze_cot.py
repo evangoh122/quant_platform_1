@@ -19,6 +19,9 @@ from notebooks.refresh_bronze_cot import (
     sanitize_columns,
     compute_release_ts,
     validate_contract_code_column,
+    anti_join_new_rows,
+    detect_revision_conflicts,
+    to_bronze,
     REPORT_DATE_COL,
     BASE_URL,
     RELEASE_SAFETY_DAYS,
@@ -34,6 +37,32 @@ except ImportError:
     _HAS_SPARK = False
 
 requires_spark = pytest.mark.skipif(not _HAS_SPARK, reason="PySpark not available")
+
+
+@pytest.fixture(scope="session")
+def spark():
+    """Create a Spark session for tests. Tries Databricks Connect first, then local."""
+    try:
+        from databricks.connect import DatabricksSession
+        session = DatabricksSession.builder.serverless(True).getOrCreate()
+    except Exception:
+        try:
+            from pyspark.sql import SparkSession
+            session = (
+                SparkSession.builder
+                .master("local[2]")
+                .appName("test_bronze_cot")
+                .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+                .config(
+                    "spark.sql.catalog.spark_catalog",
+                    "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+                )
+                .config("spark.ui.enabled", "false")
+                .getOrCreate()
+            )
+        except Exception:
+            pytest.skip("No Spark session available (neither Databricks Connect nor local)")
+    yield session
 
 
 # =============================================================================
@@ -152,27 +181,37 @@ class TestComputeReleaseTs:
 
 class TestValidateContractCodeColumn:
     def test_exact_match(self):
-        """Exact CFTC_Contract_Market_Code column is found."""
-        # We can't create a real DataFrame without Spark, so test the logic
-        # by checking that the function handles known column names
-        assert "CFTC_Contract_Market_Code" == "CFTC_Contract_Market_Code"
+        """Exact CFTC_Contract_Market_Code column is found by validate_contract_code_column."""
+        df = pd.DataFrame({
+            "CFTC_Contract_Market_Code": ["001"],
+            "Market_and_Exchange_Names": ["FOO"],
+        })
+        result = validate_contract_code_column(df, "test_ds")
+        assert result == "CFTC_Contract_Market_Code"
 
-    def test_column_detection_case_insensitive(self):
-        """Column detection should be case-insensitive."""
-        columns = ["Source_Year", "Market_and_Exchange_Names", "cftc_contract_market_code"]
-        cols_lower = {c.lower().strip(): c for c in columns}
-        assert "cftc_contract_market_code" in cols_lower
+    def test_case_insensitive_match(self):
+        """Lowercase variant is found case-insensitively."""
+        df = pd.DataFrame({
+            "Source_Year": ["2026"],
+            "cftc_contract_market_code": ["002"],
+        })
+        result = validate_contract_code_column(df, "test_ds")
+        assert result == "cftc_contract_market_code"
 
     def test_fuzzy_fallback(self):
-        """Fuzzy matching finds column containing 'contract_market_code'."""
-        columns = ["Some_Other_Col", "CFTC_Contract_Market_Code_Extended"]
-        cols_lower = {c.lower().strip(): c for c in columns}
-        found = False
-        for col_lower, col_orig in cols_lower.items():
-            if "contract_market_code" in col_lower:
-                found = True
-                assert col_orig == "CFTC_Contract_Market_Code_Extended"
-        assert found
+        """Fuzzy fallback finds column containing 'contract_market_code'."""
+        df = pd.DataFrame({
+            "Some_Other_Col": ["x"],
+            "CFTC_Contract_Market_Code_Extended": ["003"],
+        })
+        result = validate_contract_code_column(df, "test_ds")
+        assert result == "CFTC_Contract_Market_Code_Extended"
+
+    def test_raises_when_missing(self):
+        """RuntimeError raised when no contract code column exists."""
+        df = pd.DataFrame({"Random_Col": ["x"]})
+        with pytest.raises(RuntimeError, match="no stable CFTC contract market code"):
+            validate_contract_code_column(df, "test_ds")
 
 
 # =============================================================================
@@ -180,21 +219,49 @@ class TestValidateContractCodeColumn:
 # =============================================================================
 
 class TestNaturalKey:
-    def test_key_components(self):
-        """Natural key is (source_dataset, cftc_contract_market_code, report_date)."""
-        key_cols = ["source_dataset", "CFTC_Contract_Market_Code", "report_date"]
-        assert len(key_cols) == 3
-        assert "source_dataset" in key_cols
-        assert "report_date" in key_cols
-        assert any("contract_market_code" in k.lower() for k in key_cols)
+    @requires_spark
+    def test_anti_join_filters_existing_keys(self, spark):
+        """anti_join_new_rows keeps only rows whose key is absent from target."""
+        contract_code_col = "CFTC_Contract_Market_Code"
+        incoming = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+            ("com_fin", "002", "2026-09-01"),
+            ("com_fin", "003", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        target = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        result = anti_join_new_rows(incoming, target, None, contract_code_col)
+        result_codes = sorted([r[contract_code_col] for r in result.collect()])
+        assert result_codes == ["002", "003"]
 
-    def test_com_fin_and_fut_fin_separate(self):
-        """com_fin and fut_fin rows are distinguished by source_dataset."""
-        row_com = {"source_dataset": "com_fin", "CFTC_Contract_Market_Code": "12345", "report_date": "2026-09-01"}
-        row_fut = {"source_dataset": "fut_fin", "CFTC_Contract_Market_Code": "12345", "report_date": "2026-09-01"}
-        # Same contract/date but different dataset → different keys
-        assert (row_com["source_dataset"], row_com["CFTC_Contract_Market_Code"], row_com["report_date"]) != \
-               (row_fut["source_dataset"], row_fut["CFTC_Contract_Market_Code"], row_fut["report_date"])
+    @requires_spark
+    def test_anti_join_deduplicates_incoming(self, spark):
+        """anti_join_new_rows deduplicates the incoming batch."""
+        contract_code_col = "CFTC_Contract_Market_Code"
+        incoming = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+            ("com_fin", "001", "2026-09-01"),
+            ("com_fin", "002", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        target = incoming.filter("1=0")  # empty DF with same schema
+        result = anti_join_new_rows(incoming, target, None, contract_code_col)
+        assert result.count() == 2
+
+    @requires_spark
+    def test_com_fin_and_fut_fin_separate_keys(self, spark):
+        """com_fin and fut_fin rows with same code/date are different keys."""
+        contract_code_col = "CFTC_Contract_Market_Code"
+        incoming = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+            ("fut_fin", "001", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        target = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        result = anti_join_new_rows(incoming, target, None, contract_code_col)
+        assert result.count() == 1
+        assert result.collect()[0]["source_dataset"] == "fut_fin"
 
 
 # =============================================================================
@@ -203,12 +270,12 @@ class TestNaturalKey:
 
 class TestIncrementalWindow:
     def test_filter_after_start_date(self):
-        """Rows with report_date <= start_date are excluded."""
+        """Rows with report_date < start_date are excluded; start_date is included."""
         dates = [date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 8), date(2026, 10, 3)]
         start_date = date(2026, 9, 1)
         end_date = date(2026, 10, 3)
-        filtered = [d for d in dates if d > start_date and d <= end_date]
-        assert filtered == [date(2026, 9, 8), date(2026, 10, 3)]
+        filtered = [d for d in dates if d >= start_date and d <= end_date]
+        assert filtered == [date(2026, 9, 1), date(2026, 9, 8), date(2026, 10, 3)]
 
     def test_filter_before_end_date(self):
         """Rows with report_date > end_date are excluded."""
@@ -222,7 +289,7 @@ class TestIncrementalWindow:
         dates = [date(2026, 8, 1), date(2026, 8, 15)]
         start_date = date(2026, 9, 1)
         end_date = date(2026, 10, 3)
-        filtered = [d for d in dates if d > start_date and d <= end_date]
+        filtered = [d for d in dates if d >= start_date and d <= end_date]
         assert filtered == []
 
 
@@ -254,36 +321,68 @@ class TestReportDateParsing:
 # =============================================================================
 
 class TestIdempotency:
-    def test_drop_duplicates_on_key(self):
-        """dropDuplicates on natural key removes exact duplicates."""
-        df = pd.DataFrame({
-            "source_dataset": ["com_fin", "com_fin", "com_fin"],
-            "CFTC_Contract_Market_Code": ["12345", "12345", "67890"],
-            "report_date": ["2026-09-01", "2026-09-01", "2026-09-01"],
-            "value": ["100", "200", "300"],
-        })
-        deduped = df.drop_duplicates(subset=["source_dataset", "CFTC_Contract_Market_Code", "report_date"])
-        assert len(deduped) == 2
-        # First occurrence kept
-        assert deduped.iloc[0]["value"] == "100"
-        assert deduped.iloc[1]["value"] == "300"
+    @requires_spark
+    def test_detect_revision_conflicts(self, spark):
+        """detect_revision_conflicts counts rows with existing keys."""
+        contract_code_col = "CFTC_Contract_Market_Code"
+        incoming = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+            ("com_fin", "002", "2026-09-01"),
+            ("com_fin", "003", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        target = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+            ("com_fin", "002", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        conflicts = detect_revision_conflicts(incoming, target, contract_code_col)
+        assert conflicts == 2
 
-    def test_anti_join_semantics(self):
-        """Anti-join keeps only rows whose key is not in target."""
-        incoming = pd.DataFrame({
-            "source_dataset": ["com_fin", "com_fin", "com_fin"],
-            "code": ["A", "B", "C"],
-            "report_date": ["2026-09-01", "2026-09-01", "2026-09-01"],
+    @requires_spark
+    def test_detect_revision_conflicts_zero(self, spark):
+        """detect_revision_conflicts returns 0 when no key overlap."""
+        contract_code_col = "CFTC_Contract_Market_Code"
+        incoming = spark.createDataFrame([
+            ("com_fin", "003", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        target = spark.createDataFrame([
+            ("com_fin", "001", "2026-09-01"),
+        ], ["source_dataset", contract_code_col, "report_date"])
+        conflicts = detect_revision_conflicts(incoming, target, contract_code_col)
+        assert conflicts == 0
+
+    @requires_spark
+    def test_to_bronze_adds_derived_columns(self, spark):
+        """to_bronze adds report_date, release_ts, source_dataset, ingest_ts."""
+        pdf = pd.DataFrame({
+            REPORT_DATE_COL: ["2026-09-01", "2026-09-08"],
+            "Market_and_Exchange_Names": ["CME E-MINI S&P 500", "CBOE VOLATILITY INDEX"],
+            "CFTC_Contract_Market_Code": ["13874P", "1170E1"],
         })
-        target = pd.DataFrame({
-            "source_dataset": ["com_fin", "com_fin"],
-            "code": ["A", "B"],
-            "report_date": ["2026-09-01", "2026-09-01"],
+        from datetime import datetime, timezone
+        ingest_ts = datetime.now(timezone.utc)
+        result = to_bronze(pdf, dataset="com_fin", url="https://example.com/test.zip", ingest_ts=ingest_ts, spark=spark)
+        assert "report_date" in result.columns
+        assert "release_ts" in result.columns
+        assert "source_dataset" in result.columns
+        assert "ingest_ts" in result.columns
+        assert "report_year" in result.columns
+        assert result.count() == 2
+        row = result.collect()[0]
+        assert row["source_dataset"] == "com_fin"
+        assert row["source_file"] == "https://example.com/test.zip"
+
+    @requires_spark
+    def test_to_bronze_report_date_not_null(self, spark):
+        """to_bronze parses report_date as non-null for valid inputs."""
+        pdf = pd.DataFrame({
+            REPORT_DATE_COL: ["2026-09-01"],
+            "CFTC_Contract_Market_Code": ["001"],
         })
-        merged = incoming.merge(target, on=["source_dataset", "code", "report_date"], how="left", indicator=True)
-        new_rows = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
-        assert len(new_rows) == 1
-        assert new_rows.iloc[0]["code"] == "C"
+        from datetime import datetime, timezone
+        ingest_ts = datetime.now(timezone.utc)
+        result = to_bronze(pdf, dataset="test", url="https://example.com", ingest_ts=ingest_ts, spark=spark)
+        row = result.collect()[0]
+        assert row["report_date"] is not None
 
 
 # =============================================================================

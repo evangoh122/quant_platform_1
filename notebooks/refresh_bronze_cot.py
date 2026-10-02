@@ -404,8 +404,8 @@ def refresh_dataset(
             pdf[REPORT_DATE_COL], format="%Y-%m-%d", errors="coerce"
         ).dt.date
 
-        # Filter: start_date < report_date <= end_date
-        mask = (pdf["_parsed_date"] > start_date) & (pdf["_parsed_date"] <= end_date)
+        # Filter: start_date <= report_date <= end_date
+        mask = (pdf["_parsed_date"] >= start_date) & (pdf["_parsed_date"] <= end_date)
         pdf_filtered = pdf[mask].drop(columns=["_parsed_date"]).copy()
 
         if len(pdf_filtered) == 0:
@@ -454,19 +454,46 @@ def refresh_dataset(
 
         # 9. Write — append only new rows
         if new_count > 0:
-            # Ensure table exists
+            # Ensure table exists via DDL (never overwrite)
             if not spark.catalog.tableExists(table):
-                # Create empty table with same schema
-                spark.createDataFrame([], new_df.schema).write.format("delta") \
-                    .mode("overwrite").saveAsTable(table)
+                cols_ddl = ", ".join(
+                    f"`{f.name}` {f.dataType.simpleString()}" for f in new_df.schema.fields
+                )
+                spark.sql(
+                    f"CREATE TABLE IF NOT EXISTS {table} ({cols_ddl}) USING DELTA"
+                )
 
             new_df.write.format("delta").mode("append").option("mergeSchema", "true") \
                 .saveAsTable(table)
 
-        # 10. Post-snapshot
+        # 10. Verify and set status
         post_count, post_max_date = get_target_stats(spark, table)
         report["post_count"] = post_count
         report["post_max_date"] = str(post_max_date) if post_max_date else "N/A"
+
+        if post_count - pre_count != new_count:
+            report["status"] = "FAILED"
+            report["error"] = (
+                f"Count mismatch: post_count({post_count}) - pre_count({pre_count}) "
+                f"!= new_count({new_count})"
+            )
+            return report
+
+        # Verify no duplicate keys in target
+        if post_count > 0:
+            target_df_check = spark.table(table)
+            full_key = ["source_dataset", contract_code_col, "report_date"]
+            dup_count = (
+                target_df_check.groupBy(*full_key)
+                .count()
+                .filter(F.col("count") > 1)
+                .count()
+            )
+            if dup_count > 0:
+                report["status"] = "FAILED"
+                report["error"] = f"Duplicate keys found in target: {dup_count}"
+                return report
+
         report["status"] = "OK"
 
     except Exception as e:
@@ -535,7 +562,7 @@ def main():
                 start_date = date(TARGET_YEAR, 1, 1)
 
         print(f"\n--- {ds['name'].upper()} -> {table_short} ---")
-        print(f"    Window: {start_date} < report_date <= {end_date}")
+        print(f"    Window: {start_date} <= report_date <= {end_date}")
 
         report = refresh_dataset(
             spark=spark,
