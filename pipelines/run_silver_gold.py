@@ -129,18 +129,23 @@ def run_availability_invariant(spark):
 
     For daily options, a feature for day d must be available at/after the session
     close (16:00 America/New_York) of day d — not at the provider's start-of-day
-    stamp. For COT, the release must be at/after the report week end. Raises
+    stamp. For COT, the release must be at/after the report week end. For minute
+    OHLCV, a bar labelled [t, t+1min) is only known at t+1min, so
+    information_available_ts must be >= event_ts + the bar interval. Raises
     RuntimeError (failing the build) on any violating row."""
     print("\n=== availability invariant ===")
     checks = [
         ("options info_ts >= session close",
          f"""SELECT COUNT(*) FROM {FQN}.gold_options_features
-             WHERE information_available_ts < convert_timezone(
-                 'America/New_York', 'UTC',
-                 to_timestamp(concat(cast(DATE(feature_ts) AS STRING), ' 16:00:00')))"""),
+              WHERE information_available_ts < convert_timezone(
+                  'America/New_York', 'UTC',
+                  to_timestamp(concat(cast(DATE(feature_ts) AS STRING), ' 16:00:00')))"""),
         ("cot info_ts >= report_date",
          f"""SELECT COUNT(*) FROM {FQN}.gold_cot_features
-             WHERE information_available_ts < CAST(report_date AS TIMESTAMP)"""),
+              WHERE information_available_ts < CAST(report_date AS TIMESTAMP)"""),
+        ("ohlcv minute info_ts >= event_ts + 1 minute",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_ohlcv_features
+              WHERE information_available_ts < feature_ts + INTERVAL 1 MINUTE"""),
     ]
     violations = 0
     for label, sql in checks:
@@ -164,8 +169,8 @@ def run_checks(spark):
          f"SELECT COUNT(*) FROM {FQN}.gold_sec_features WHERE information_available_ts IS NULL"),
         ("cot info_ts non-null",
          f"SELECT COUNT(*) FROM {FQN}.gold_cot_features WHERE information_available_ts IS NULL"),
-        ("ohlcv info_ts == feature_ts",
-         f"SELECT COUNT(*) FROM {FQN}.gold_ohlcv_features WHERE information_available_ts <> feature_ts"),
+        ("ohlcv info_ts == feature_ts + 1 minute",
+         f"SELECT COUNT(*) FROM {FQN}.gold_ohlcv_features WHERE information_available_ts <> feature_ts + INTERVAL 1 MINUTE"),
         ("gold_model_features null snapshot_id",
          f"SELECT COUNT(*) FROM {FQN}.gold_model_features WHERE feature_snapshot_id IS NULL"),
         ("silver_ohlcv range violations",

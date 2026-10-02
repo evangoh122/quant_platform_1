@@ -9,7 +9,9 @@
 --
 -- PIT rule (no-look-ahead): every feature is joined AS-OF with
 --   feature.information_available_ts <= prediction_ts.
---   ohlcv  : information_available_ts = bar close (== prediction_ts)
+--   ohlcv  : information_available_ts = feature_ts + bar interval (the close
+--            is known one minute after a minute bar's start); ohlcv is joined
+--            directly on feature_ts == prediction_ts (not AS-OF on info_ts).
 --   options: latest daily feature with info_ts <= prediction_ts
 --   sec    : latest filing with accepted_ts <= prediction_ts
 --   cot    : latest equity_index release with release_ts <= prediction_ts

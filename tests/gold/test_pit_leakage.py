@@ -281,3 +281,51 @@ def test_model_features_asof_join_excludes_same_day_options_intraday():
     assert broken[pred[0][1]] == 2.0, (
         "negative control failed: start-of-day stamp did not leak same-day options"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 6: minute-bar availability (start-of-bar stamp leak)
+#
+# gold_ohlcv_features stamped information_available_ts = event_ts, but minute
+# bars are labelled at their START (Polygon: event_ts marks [t, t+1min)); a
+# bar's close is known only at t+1min. These tests pin (1) that the build SQL
+# derives availability from timespan (event_ts + INTERVAL 1 MINUTE for minute
+# bars, not the raw event_ts) and (2) that the availability invariant flags the
+# old stamp and passes the fixed one.
+# ---------------------------------------------------------------------------
+
+OHLCV_SQL_PATH = os.path.join(REPO, "gold", "01_gold_ohlcv_features.sql")
+
+
+def test_ohlcv_availability_derived_from_timespan():
+    """Guard: the OHLCV build must not timestamp availability with the raw bar
+    event_ts. The old `event_ts AS information_available_ts` is the leak."""
+    text = open(OHLCV_SQL_PATH, encoding="utf-8").read()
+    assert "event_ts                                   AS information_available_ts" not in text
+    assert "CASE timespan" in text
+    assert "event_ts + INTERVAL 1 MINUTE" in text
+
+
+def _run_minute_invariant(info_ts_rows: list[tuple]) -> int:
+    """Portable reproduction of the build's minute availability invariant:
+    COUNT rows where information_available_ts < feature_ts + INTERVAL 1 MINUTE."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE ohlcv(symbol VARCHAR, feature_ts TIMESTAMP, "
+        "information_available_ts TIMESTAMP)"
+    )
+    con.executemany("INSERT INTO ohlcv VALUES (?,?,?)", info_ts_rows)
+    n = con.execute(
+        "SELECT COUNT(*) FROM ohlcv "
+        "WHERE information_available_ts < feature_ts + INTERVAL 1 MINUTE"
+    ).fetchone()[0]
+    con.close()
+    return n
+
+
+def test_minute_availability_invariant_catches_start_of_bar_stamp():
+    """The invariant must flag the old event_ts stamp and pass event_ts + 1 min."""
+    fixed = [("AAA", "2026-07-07 15:59:00", "2026-07-07 16:00:00")]
+    broken = [("AAA", "2026-07-07 15:59:00", "2026-07-07 15:59:00")]
+    assert _run_minute_invariant(fixed) == 0, "fixed info_ts must satisfy invariant"
+    assert _run_minute_invariant(broken) == 1, "start-of-bar stamp must violate invariant"

@@ -4,8 +4,11 @@
 -- by (symbol, trading day) so returns/momentum/ATR/RSI do not leak across
 -- sessions. session_high/session_low are trailing (ROWS BETWEEN UNBOUNDED
 -- PRECEDING AND CURRENT ROW) so a bar never sees a later bar's high/low within
--- the same day. information_available_ts = event_ts (the bar close is when the
--- bar becomes observable) — this is the PIT key for market features.
+-- the same day. Minute bars are labelled at their START (Polygon convention:
+-- event_ts marks the [t, t+1min) window); a bar's close is therefore known only
+-- at event_ts + bar interval. information_available_ts = event_ts + the bar
+-- interval derived from timespan (INTERVAL 1 MINUTE for minute bars) — this is
+-- the PIT key for market features.
 --
 -- Chunked by date partition by the orchestrator via {date_start}/{date_end}.
 -- Idempotent: MERGE on (symbol, feature_ts).
@@ -16,6 +19,10 @@ USING (
     SELECT
       symbol,
       event_ts,
+      CASE timespan
+        WHEN 'minute' THEN event_ts + INTERVAL 1 MINUTE
+        ELSE event_ts
+      END AS information_available_ts,
       close,
       high,
       low,
@@ -34,7 +41,7 @@ USING (
   ),
   returns AS (
     SELECT
-      symbol, event_ts, close, high, low, volume, vwap,
+      symbol, event_ts, information_available_ts, close, high, low, volume, vwap,
       r1, r5, r15, r30,
       session_high, session_low,
       CASE WHEN r1 > 0 THEN r1 ELSE 0 END AS gain,
@@ -46,6 +53,7 @@ USING (
     SELECT
       symbol,
       event_ts,
+      information_available_ts,
       r1  AS return_1m,
       r5  AS return_5m,
       r15 AS return_15m,
@@ -76,7 +84,7 @@ USING (
   SELECT
     symbol,
     event_ts                                   AS feature_ts,
-    event_ts                                   AS information_available_ts,
+    information_available_ts                   AS information_available_ts,
     return_1m, return_5m, return_15m, return_30m,
     rvol_5m, rvol_15m, rvol_30m,
     atr_14, momentum_5m, momentum_15m, rsi_14,
