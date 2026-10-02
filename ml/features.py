@@ -577,6 +577,11 @@ def neutralize_features(
     if report:
         _report_beta_correlations(out, residualise_cols, beta_col, time_col, stage="before")
 
+    # Residuals are floats. Cast first so writing them back cannot hit an integer
+    # column: pandas 2 silently upcast on a lossy setitem, pandas 3 raises instead.
+    for col in residualise_cols:
+        out[col] = pd.to_numeric(out[col], errors="coerce").astype(float)
+
     neutralised_timestamps: set = set()
     skipped_timestamps: set = set()
 
