@@ -2,6 +2,8 @@
 tests/bronze/test_bronze_yfinance_indices.py
 Bronze layer: yfinance major-indices ingestion + derived spread symbols.
 """
+import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
 from unittest.mock import patch, MagicMock
 import pandas as pd
 

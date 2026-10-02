@@ -3,6 +3,9 @@ tests/test_chat_engine.py — Unit tests for the SQL-based chat engine.
 """
 from __future__ import annotations
 
+import pytest
+pytest.importorskip("openai", reason="openai is an optional dependency")
+
 from unittest.mock import MagicMock, patch
 import pandas as pd
 from api.services.chat_engine import (

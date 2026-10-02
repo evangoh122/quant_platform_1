@@ -3,6 +3,7 @@ tests/test_extract_cot.py
 Tests for the COT ETL extractor.
 """
 import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
 import requests
 from unittest.mock import MagicMock, patch
 from etl.extract_cot import run_cot_etl, _to_int

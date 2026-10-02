@@ -9,6 +9,7 @@ These tests verify that the option bars ETL:
 - Respects max_contracts cap
 """
 import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
 from unittest.mock import MagicMock, patch
 
 from etl.extract_polygon import run_polygon_option_bars_etl

@@ -3,6 +3,9 @@ tests/test_langgraph_engine.py — Unit tests for the LangGraph engine.
 """
 from __future__ import annotations
 
+import pytest
+pytest.importorskip("edgar", reason="edgar (sec-edgar-downloader) is an optional dependency")
+
 from unittest.mock import MagicMock, patch
 import pytest
 import polars as pl

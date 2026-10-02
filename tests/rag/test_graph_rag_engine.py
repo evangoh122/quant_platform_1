@@ -3,6 +3,9 @@ tests/test_graph_rag_engine.py — Unit tests for the GraphRAG engine.
 """
 from __future__ import annotations
 
+import pytest
+pytest.importorskip("langchain_openai", reason="langchain_openai is an optional dependency")
+
 from unittest.mock import MagicMock, patch
 from api.services.graph_rag_engine import (
     extract_entities, query_graph, generate_answer, run_graph_rag,

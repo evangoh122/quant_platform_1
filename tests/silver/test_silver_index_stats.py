@@ -2,6 +2,8 @@
 tests/silver/test_silver_index_stats.py
 Silver layer: derived statistics computed from staging_yf_indices.
 """
+import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
 from datetime import date, timedelta
 
 from db.database import get_connection

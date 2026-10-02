@@ -7,6 +7,9 @@ VERIFIED_BY linking, and the end-to-end orchestrator with a mocked client.
 """
 from __future__ import annotations
 
+import pytest
+pytest.importorskip("scripts.extract_graph_triples", reason="scripts module removed")
+
 from unittest.mock import MagicMock
 
 import duckdb

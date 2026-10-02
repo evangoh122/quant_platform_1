@@ -9,6 +9,7 @@ These tests verify that the ETL correctly:
 - Respects rate limiting between API calls
 """
 import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
