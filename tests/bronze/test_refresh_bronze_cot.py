@@ -22,6 +22,7 @@ from notebooks.refresh_bronze_cot import (
     anti_join_new_rows,
     detect_revision_conflicts,
     to_bronze,
+    filter_report_window,
     REPORT_DATE_COL,
     BASE_URL,
     RELEASE_SAFETY_DAYS,
@@ -265,55 +266,103 @@ class TestNaturalKey:
 
 
 # =============================================================================
-# Incremental window filtering logic (pure Python)
+# Incremental window filtering — exercises filter_report_window()
 # =============================================================================
 
 class TestIncrementalWindow:
-    def test_filter_after_start_date(self):
-        """Rows with report_date < start_date are excluded; start_date is included."""
-        dates = [date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 8), date(2026, 10, 3)]
-        start_date = date(2026, 9, 1)
-        end_date = date(2026, 10, 3)
-        filtered = [d for d in dates if d >= start_date and d <= end_date]
-        assert filtered == [date(2026, 9, 1), date(2026, 9, 8), date(2026, 10, 3)]
+    """Tests that call the production filter_report_window() function.
 
-    def test_filter_before_end_date(self):
-        """Rows with report_date > end_date are excluded."""
-        dates = [date(2026, 9, 8), date(2026, 10, 3), date(2026, 10, 10)]
-        end_date = date(2026, 10, 3)
-        filtered = [d for d in dates if d <= end_date]
-        assert filtered == [date(2026, 9, 8), date(2026, 10, 3)]
+    These guard the off-by-one bug (>= vs >) at refresh_bronze_cot.py:408.
+    Reverting >= to > in production MUST cause test_filter_on_max_plus_one to fail.
+    """
 
-    def test_empty_window(self):
-        """No rows in window returns empty list."""
-        dates = [date(2026, 8, 1), date(2026, 8, 15)]
-        start_date = date(2026, 9, 1)
-        end_date = date(2026, 10, 3)
-        filtered = [d for d in dates if d >= start_date and d <= end_date]
-        assert filtered == []
+    def _make_pdf(self, dates):
+        """Build a minimal DataFrame with a report-date column."""
+        raw = [d.strftime("%Y-%m-%d") for d in dates]
+        return pd.DataFrame({REPORT_DATE_COL: raw})
+
+    def test_filter_includes_start_date(self):
+        """start_date itself is included in the window."""
+        pdf = self._make_pdf([date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 8)])
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
+        assert len(result) == 2
+        assert result[REPORT_DATE_COL].tolist() == ["2026-09-01", "2026-09-08"]
+
+    def test_filter_includes_end_date(self):
+        """end_date itself is included in the window."""
+        pdf = self._make_pdf([date(2026, 9, 8), date(2026, 10, 3), date(2026, 10, 10)])
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
+        assert len(result) == 2
+        assert result[REPORT_DATE_COL].tolist() == ["2026-09-08", "2026-10-03"]
+
+    def test_filter_on_max_plus_one(self):
+        """A report dated exactly max+1 day must be included.
+
+        This is the critical regression test: if production used > instead of
+        >=, this row would be silently dropped.
+        """
+        max_date = date(2026, 10, 3)
+        max_plus_one = max_date + timedelta(days=1)
+        pdf = self._make_pdf([max_date, max_plus_one])
+        result = filter_report_window(pdf, max_plus_one, max_plus_one)
+        assert len(result) == 1
+        assert result[REPORT_DATE_COL].iloc[0] == max_plus_one.strftime("%Y-%m-%d")
+
+    def test_filter_excludes_before_start(self):
+        """Rows before start_date are excluded."""
+        pdf = self._make_pdf([date(2026, 8, 1), date(2026, 8, 15)])
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
+        assert len(result) == 0
+
+    def test_filter_empty_input(self):
+        """Empty DataFrame returns empty result."""
+        pdf = pd.DataFrame({REPORT_DATE_COL: []})
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
+        assert len(result) == 0
+
+    def test_invalid_date_excluded(self):
+        """Unparseable date strings are coerced to NaT and filtered out."""
+        pdf = pd.DataFrame({REPORT_DATE_COL: ["2026-09-01", "not-a-date", "2026-10-03"]})
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
+        assert len(result) == 2
+
+    def test_whitespace_stripped(self):
+        """Leading/trailing whitespace in date strings is handled."""
+        pdf = pd.DataFrame({REPORT_DATE_COL: ["  2026-09-01  ", "2026-10-03 "]})
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
+        assert len(result) == 2
+
+    def test_missing_column_raises(self):
+        """DataFrame without the report-date column raises KeyError."""
+        pdf = pd.DataFrame({"other_col": ["2026-09-01"]})
+        with pytest.raises(KeyError):
+            filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
 
 
 # =============================================================================
-# Report date parsing (pure Python)
+# Report date parsing — exercises filter_report_window() parsing path
 # =============================================================================
 
 class TestReportDateParsing:
+    """Tests that the parsing inside filter_report_window handles edge cases."""
+
     def test_iso_date_format(self):
-        """Standard YYYY-MM-DD parses correctly."""
-        result = pd.to_datetime("2026-09-01", format="%Y-%m-%d", errors="coerce")
-        assert result == pd.Timestamp("2026-09-01")
+        """Standard YYYY-MM-DD parses and filters correctly."""
+        pdf = pd.DataFrame({REPORT_DATE_COL: ["2026-09-01"]})
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 9, 1))
+        assert len(result) == 1
 
-    def test_invalid_date_returns_nat(self):
-        """Invalid date string returns NaT."""
-        result = pd.to_datetime("not-a-date", format="%Y-%m-%d", errors="coerce")
-        assert pd.isna(result)
+    def test_invalid_date_returns_nat_excluded(self):
+        """Invalid date string produces NaT, which is filtered out."""
+        pdf = pd.DataFrame({REPORT_DATE_COL: ["not-a-date"]})
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 10, 3))
+        assert len(result) == 0
 
-    def test_whitespace_stripped(self):
-        """Leading/trailing whitespace is stripped before parsing."""
-        val = "  2026-09-01  "
-        cleaned = val.strip()
-        result = pd.to_datetime(cleaned, format="%Y-%m-%d", errors="coerce")
-        assert result == pd.Timestamp("2026-09-01")
+    def test_whitespace_stripped_before_parse(self):
+        """Whitespace is stripped before parsing, so date is found in window."""
+        pdf = pd.DataFrame({REPORT_DATE_COL: ["  2026-09-01  "]})
+        result = filter_report_window(pdf, date(2026, 9, 1), date(2026, 9, 1))
+        assert len(result) == 1
 
 
 # =============================================================================

@@ -340,6 +340,35 @@ def detect_revision_conflicts(
 # MAIN REFRESH LOGIC
 # =============================================================================
 
+def filter_report_window(
+    pdf: "pd.DataFrame", start_date: date, end_date: date
+) -> "pd.DataFrame":
+    """Filter a raw CFTC DataFrame to rows whose report date falls in [start_date, end_date].
+
+    Parses the report-date column, strips whitespace, and applies the
+    inclusive date-range filter used by the incremental refresh.
+
+    Raises KeyError if ``REPORT_DATE_COL`` is not present in *pdf*.
+    """
+    if REPORT_DATE_COL not in pdf.columns:
+        raise KeyError(f"Column '{REPORT_DATE_COL}' not found")
+
+    if len(pdf) == 0:
+        return pdf.copy()
+
+    pdf = pdf.copy()
+    pdf[REPORT_DATE_COL] = pdf[REPORT_DATE_COL].astype(str).str.strip()
+    parsed = pd.to_datetime(
+        pdf[REPORT_DATE_COL], format="%Y-%m-%d", errors="coerce"
+    )
+    pdf["_parsed_date"] = parsed
+
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
+    mask = (parsed >= start_ts) & (parsed <= end_ts)
+    return pdf.loc[mask].drop(columns=["_parsed_date"]).copy()
+
+
 def refresh_dataset(
     spark,
     ds: dict,
@@ -394,19 +423,12 @@ def refresh_dataset(
             return report
 
         # 3. Filter to incremental window
-        if REPORT_DATE_COL not in pdf.columns:
+        try:
+            pdf_filtered = filter_report_window(pdf, start_date, end_date)
+        except KeyError as exc:
             report["status"] = "FAILED"
-            report["error"] = f"Column '{REPORT_DATE_COL}' not found"
+            report["error"] = str(exc)
             return report
-
-        pdf[REPORT_DATE_COL] = pdf[REPORT_DATE_COL].str.strip()
-        pdf["_parsed_date"] = pd.to_datetime(
-            pdf[REPORT_DATE_COL], format="%Y-%m-%d", errors="coerce"
-        ).dt.date
-
-        # Filter: start_date <= report_date <= end_date
-        mask = (pdf["_parsed_date"] >= start_date) & (pdf["_parsed_date"] <= end_date)
-        pdf_filtered = pdf[mask].drop(columns=["_parsed_date"]).copy()
 
         if len(pdf_filtered) == 0:
             report["status"] = "OK"
