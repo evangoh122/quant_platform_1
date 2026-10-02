@@ -75,8 +75,12 @@ def search_sec_filings(
     fused/rerank scores for auditability.  Point-in-time: only chunks with
     ``accepted_ts <= as_of`` are eligible.
 
-    Falls back to substring filter if the hybrid retriever is unavailable.
+    Returns a structured ``{"error": "retrieval_unavailable", ...}`` dict (as a
+    single-element list) when the corpus cannot be loaded — never an empty list
+    that the agent cannot distinguish from "no matching filings".
     """
+    from api.services.hybrid_retriever import CorpusUnavailableError
+
     symbol = normalize_symbol(symbol)
     if as_of is None:
         as_of = datetime.now(timezone.utc)
@@ -112,6 +116,14 @@ def search_sec_filings(
             }
             for d in docs
         ]
+    except CorpusUnavailableError as e:
+        import logging
+        logging.error("SEC filing retrieval unavailable: %s", e)
+        return [{
+            "error": "retrieval_unavailable",
+            "message": f"SEC filing corpus could not be loaded: {e}",
+            "ticker": symbol,
+        }]
     except Exception as e:
         # Graceful fallback to substring filter
         import logging

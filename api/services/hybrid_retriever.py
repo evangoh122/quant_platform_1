@@ -35,6 +35,14 @@ from rank_bm25 import BM25Okapi
 
 from api.services.embeddings import EMBEDDING_DIM, get_embeddings
 
+
+class CorpusUnavailableError(Exception):
+    """Raised when the retrieval corpus cannot be loaded from Delta tables.
+
+    Callers must surface this as a structured "retrieval unavailable" result
+    so the agent can report the failure — never silently return an empty list.
+    """
+
 # ── Catalog / schema ─────────────────────────────────────────────────────────
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
@@ -198,25 +206,43 @@ _bm25_index: Optional[BM25Okapi] = None
 _embeddings_map: Dict[str, np.ndarray] = {}
 
 
+def _get_spark():
+    """Get a Spark session, using DatabricksSession outside a Databricks runtime.
+
+    Inside a Databricks runtime (DATABRICKS_RUNTIME_VERSION set), the ambient
+    session is used.  Outside, DatabricksSession (databricks-connect) is required.
+    """
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        from pyspark.sql import SparkSession
+        return SparkSession.builder.getOrCreate()
+    else:
+        from databricks.connect import DatabricksSession
+        return DatabricksSession.builder.serverless(True).getOrCreate()
+
+
 def _load_corpus() -> bool:
     """Load chunk text + embeddings from Delta tables into process memory.
 
     Returns True if the corpus was loaded successfully.
+    Raises CorpusUnavailableError on any load failure so callers can surface
+    a structured error instead of silently returning empty results.
     """
     global _corpus_loaded, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
 
     if _corpus_loaded:
-        return bool(_corpus)
+        if not _corpus:
+            raise CorpusUnavailableError("Corpus cache is empty after previous load failure")
+        return True
 
     with _corpus_lock:
         if _corpus_loaded:
-            return bool(_corpus)
+            if not _corpus:
+                raise CorpusUnavailableError("Corpus cache is empty after previous load failure")
+            return True
 
         t0 = time.monotonic()
         try:
-            from pyspark.sql import SparkSession
-
-            spark = SparkSession.builder.getOrCreate()
+            spark = _get_spark()
 
             # Load chunk text
             chunks_df = spark.table(CHUNKS_TABLE).select(
@@ -286,14 +312,19 @@ def _load_corpus() -> bool:
             _corpus_loaded = True
             return bool(_corpus)
 
+        except CorpusUnavailableError:
+            raise
         except Exception as e:
             logger.error("Failed to load corpus: {}", e)
             _corpus_loaded = True
-            return False
+            raise CorpusUnavailableError(f"Failed to load corpus: {e}") from e
 
 
 def reload_corpus() -> bool:
-    """Force a reload of the corpus (e.g. after new embeddings are built)."""
+    """Force a reload of the corpus (e.g. after new embeddings are built).
+
+    Raises CorpusUnavailableError if the reload fails.
+    """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
     with _corpus_lock:
         _corpus_loaded = False
@@ -360,9 +391,10 @@ def bm25_search(
 
     When ticker is provided, raw BM25 scores for matching docs are multiplied
     by ticker_boost before ranking.
+
+    Raises CorpusUnavailableError if the corpus cannot be loaded.
     """
-    if not _load_corpus():
-        return []
+    _load_corpus()
     if _bm25_index is None or _bm25_docs is None:
         return []
 
@@ -408,9 +440,10 @@ def vector_search(
 
     Loads the query embedding via the configured provider, then scores against
     all cached embeddings.  Returns top_k documents sorted by similarity.
+
+    Raises CorpusUnavailableError if the corpus cannot be loaded.
     """
-    if not _load_corpus():
-        return []
+    _load_corpus()
     if not _embeddings_map:
         return []
 

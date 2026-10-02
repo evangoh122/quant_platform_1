@@ -6,6 +6,8 @@ Live integration tests are marked @pytest.mark.databricks.
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -548,3 +550,174 @@ class TestEmbeddingBuildIdempotency:
 
         assert result["rows_written"] == 3
         assert result["rows_already_embedded"] == 2
+
+
+# ── CorpusUnavailableError tests ─────────────────────────────────────────────
+
+class TestCorpusUnavailableError:
+    """Verify that corpus load failures raise CorpusUnavailableError, not silent []."""
+
+    def test_load_corpus_raises_on_spark_failure(self, monkeypatch):
+        """When Spark/table read fails, CorpusUnavailableError must be raised."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Reset module state so _load_corpus actually attempts a load
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+
+        # Make _get_spark raise (simulates databricks-connect failure)
+        def boom():
+            raise RuntimeError("Only remote Spark sessions using Databricks Connect are supported")
+
+        monkeypatch.setattr(hr, "_get_spark", boom)
+
+        with pytest.raises(CorpusUnavailableError, match="Failed to load corpus"):
+            hr._load_corpus()
+
+    def test_bm25_search_propagates_corpus_unavailable(self, monkeypatch):
+        """bm25_search must propagate CorpusUnavailableError, not swallow it."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+
+        def boom():
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(hr, "_get_spark", boom)
+
+        with pytest.raises(CorpusUnavailableError):
+            hr.bm25_search("test query")
+
+    def test_vector_search_propagates_corpus_unavailable(self, monkeypatch):
+        """vector_search must propagate CorpusUnavailableError, not swallow it."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+
+        def boom():
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(hr, "_get_spark", boom)
+
+        with pytest.raises(CorpusUnavailableError):
+            hr.vector_search("test query")
+
+    def test_empty_cache_after_load_raises(self, monkeypatch):
+        """If _corpus_loaded is True but _corpus is empty, raise immediately."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {})
+
+        with pytest.raises(CorpusUnavailableError, match="empty after previous load failure"):
+            hr._load_corpus()
+
+
+# ── Session selection tests ──────────────────────────────────────────────────
+
+class TestSessionSelection:
+    """Verify _get_spark picks the right session based on runtime environment."""
+
+    def test_uses_databricks_session_outside_runtime(self, monkeypatch):
+        """Outside Databricks runtime, DatabricksSession must be used."""
+        from api.services import hybrid_retriever as hr
+
+        # Ensure DATABRICKS_RUNTIME_VERSION is NOT set
+        monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
+
+        mock_session_cls = MagicMock()
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = MagicMock()
+        mock_session_cls.builder = mock_builder
+
+        with patch.dict("sys.modules", {"databricks.connect": MagicMock(DatabricksSession=mock_session_cls)}):
+            spark = hr._get_spark()
+
+        mock_builder.serverless.assert_called_once_with(True)
+        mock_builder.getOrCreate.assert_called_once()
+
+    def test_uses_ambient_session_inside_runtime(self, monkeypatch):
+        """Inside Databricks runtime, SparkSession.builder.getOrCreate() is used."""
+        from api.services import hybrid_retriever as hr
+
+        monkeypatch.setenv("DATABRICKS_RUNTIME_VERSION", "15.4")
+
+        mock_spark_session = MagicMock()
+        mock_builder = MagicMock()
+        mock_builder.getOrCreate.return_value = mock_spark_session
+
+        mock_pyspark = MagicMock()
+        mock_pyspark.SparkSession.builder = mock_builder
+
+        with patch.dict("sys.modules", {"pyspark.sql": mock_pyspark}):
+            spark = hr._get_spark()
+
+        mock_builder.getOrCreate.assert_called_once()
+
+
+# ── search_sec_filings structured error tests ───────────────────────────────
+
+class TestSearchSecFilingsError:
+    """Verify search_sec_filings surfaces structured errors on corpus failure."""
+
+    def test_returns_structured_error_on_corpus_unavailable(self, monkeypatch):
+        """CorpusUnavailableError must produce a structured error dict, not []."""
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Mock db.lakebase before importing agent.tools_retrieval
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+
+        # Make HybridRetriever.retrieve raise CorpusUnavailableError
+        def fake_retrieve(*args, **kwargs):
+            raise CorpusUnavailableError("Delta table not found")
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="test query")
+
+        assert len(result) == 1
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert "Delta table not found" in result[0]["message"]
+        assert result[0]["ticker"] == "NVDA"
+
+    def test_returns_empty_list_still_works_when_corpus_loaded(self, monkeypatch):
+        """Normal empty result (no matches) is still a plain empty list."""
+        # Mock db.lakebase before importing agent.tools_retrieval
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = []
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("ZZZZ", query="nonexistent")
+
+        assert result == []
