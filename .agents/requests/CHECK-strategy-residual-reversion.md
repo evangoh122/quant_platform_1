@@ -5,7 +5,7 @@ You are the **checker**: read and run, do not modify production code. Branch
 Codex's round-1 findings: `.agents/codex/VERDICT-strategy-residual-reversion.md` (item A).
 Requests: `BUILD-strategy-residual-reversion-round2.md`, `-round3.md`. Diff: `git diff fe72d1d..HEAD`.
 
-Claude verified LIVE: `gold_tradable_universe` version 2 MERGE deleted 4,077 stale memberships (the
+**Re-check after round 4** (your previous verdict: `.agents/deepseek/VERDICT-strategy-check.md`, min-history gate). Diff since: `git diff e066997..HEAD`. LIVE after round 4: 0 universe members with < 252 own sessions before their membership date; 300 members on each of 939 days; results in `residual_reversion_r3.md` (net Sharpe -0.335, OOS -0.411, DSR 0.000, gated +0.330 / -0.203 at 2x). Earlier: `gold_tradable_universe` version 2 MERGE deleted 4,077 stale memberships (the
 round-1 look-ahead universe); now exactly 300 members on each of 930 days. Results regenerated
 after the rebuild: net Sharpe -0.359, OOS net Sharpe -0.514, DSR 0.000; breadth-gated net Sharpe fell
 from +0.346 (pre-universe-fix) to +0.007.
@@ -21,4 +21,4 @@ Check independently, hardest first:
 
 Run `python3 -m pytest tests/strategies -q` from WSL (`wsl -e bash -lc ...`). Verdict APPROVED or
 CHANGES_REQUESTED with file:line evidence between `===VERDICT START===` and `===VERDICT END===`;
-write it to `.agents/deepseek/VERDICT-strategy-check.md` and commit only that file.
+write it to `.agents/deepseek/VERDICT-strategy-check2.md` and commit only that file.
