@@ -33,6 +33,16 @@ def _cleanup_account(db, account_id):
             cur.execute("DELETE FROM accounts WHERE account_id = %s", (account_id,))
 
 
+def _seed_user(db, user_id, role="trader"):
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (user_id, display_name, role) VALUES (%s, %s, %s) "
+                "ON CONFLICT (user_id) DO NOTHING",
+                (user_id, user_id, role),
+            )
+
+
 def _allowlisted_symbol():
     from config.tickers import get_all_ticker_symbols
 
@@ -173,6 +183,7 @@ def test_get_open_orders_reads_lakebase(migrated, cleanup_user):
 def test_record_approval_roundtrip(migrated, cleanup_user):
     uid = cleanup_user()
     approver = cleanup_user()
+    _seed_user(migrated, approver)
     order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
                                    user_id=uid, db=migrated)
     res = tw.record_approval(order["order_id"], tw.ApprovalContext(approver_id=approver), db=migrated)
@@ -187,6 +198,42 @@ def test_record_approval_roundtrip(migrated, cleanup_user):
         (order["order_id"],),
     )
     assert arow == (approver,)
+
+
+def test_record_approval_rejects_unknown_approver(migrated, cleanup_user, monkeypatch):
+    uid = cleanup_user()
+    order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
+                                   user_id=uid, db=migrated)
+    unknown = f"nobody_{uuid.uuid4().hex}"
+    res = tw.record_approval(order["order_id"],
+                             tw.ApprovalContext(approver_id=unknown), db=migrated)
+    assert res["ok"] is False
+    assert res["reason"] == "UNKNOWN_APPROVER"
+
+    # No approval row was written, so placement is rejected without a broker call.
+    monkeypatch.setattr(tw, "is_market_session_open", lambda: True)
+    monkeypatch.setattr(tw, "get_lakebase", lambda: migrated)
+    mock_bridge = MagicMock()
+    mock_bridge.submit_order.return_value = {
+        "status": "SUBMITTED", "broker_order_id": "PAPER-1",
+    }
+    monkeypatch.setattr(tw, "IBKRBridge", lambda: mock_bridge)
+    res2 = tw.approve_and_place_paper_order(order["order_id"])
+    assert res2["ok"] is False
+    mock_bridge.submit_order.assert_not_called()
+
+
+def test_record_approval_rejects_non_approver_role(migrated, cleanup_user):
+    uid = cleanup_user()
+    approver = cleanup_user()
+    _seed_user(migrated, approver, role="observer")
+    order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
+                                   user_id=uid, db=migrated)
+    res = tw.record_approval(order["order_id"],
+                             tw.ApprovalContext(approver_id=approver), db=migrated)
+    assert res["ok"] is False
+    assert res["reason"] == "APPROVER_NOT_PERMITTED"
+    assert res["detail"]["role"] == "observer"
 
 
 def test_approve_places_via_public_signature(migrated, cleanup_user, monkeypatch):

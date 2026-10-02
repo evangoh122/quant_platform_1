@@ -3,19 +3,28 @@
 Every tool performs a real transactional write against the Lakebase Postgres.
 Queries are parameterized (``%s`` placeholders only) — never f-string SQL.
 
-The execution boundary is non-bypassable by construction. The agent-facing tool
-surface accepts only order identities and the acting user; it never accepts
-trusted risk state (``engine``, ``market_session_open``, ``human_approved``,
-``approved_by``, ``bridge``, buying power, ``db``, or paper-mode flags). Those are
-acquired by the production entry point from the store / market clock / broker
-bridge. Test injection lives only behind private ``_``-prefixed seams that the
-tool surface does not expose (see ``__all__``).
+The agent-facing / trusted-internal separation is *advisory within this
+process*, not an enforcement boundary. What is actually true today:
 
-One boundary concern is intentionally NOT enforced here yet and is tracked
-separately: *tool-surface isolation* — proving the agent-facing tool registry
-cannot reach the private ``_``-prefixed seams — must be enforced and tested when
-the agent runtime / tool-registration layer lands. This repo has no such layer
-yet, so there is nothing real to assert against.
+* The public placement entry point ``approve_and_place_paper_order(order_id)``
+  accepts only an order identity and acquires the database connection, risk
+  engine, market clock, and broker bridge itself. It never accepts trusted risk
+  state (``engine``, ``market_session_open``, ``human_approved``,
+  ``approved_by``, ``bridge``, buying power, ``db``, or paper-mode flags).
+* ``record_approval`` verifies the ``approver_id`` it is given resolves to an
+  existing ``users`` row whose role is permitted to approve, rather than
+  trusting the bare string. This stops fabricated identities; it does not stop
+  a same-process caller from reaching the private seam below.
+* The ``_``-prefixed seams (``_approve_and_place_paper_order``,
+  ``_cancel_paper_order``) exist for test injection and are **not** an
+  enforcement boundary: Python permits importing them directly, and ``__all__``
+  governs only wildcard imports.
+
+Two boundaries are intentionally NOT enforced here and are tracked separately,
+pending the authenticated API / agent-runtime layer (which does not exist in
+this repo yet): *tool-surface isolation* — proving the agent-facing tool
+registry cannot reach the private seams — and *approver authentication* —
+proving the caller really is the ``approver_id`` they assert.
 
 Idempotency: ``orders.idempotency_key`` is ``UNIQUE``. That constraint is the
 real duplicate guard; a repeated key is an idempotent replay handled by
@@ -83,19 +92,24 @@ _TERMINAL_STATUSES = ("CANCELLED", "REJECTED", "FAILED", "FILLED")
 # Sentinel user for audit rows that have no attributable user (e.g. NOT_FOUND).
 _SYSTEM_USER = "system"
 
+# users.role values permitted to record an approval. The platform currently
+# provisions a single 'trader' role (see _ensure_user); this allow-list is a
+# coarse, provisional gate over that column. Real approver authorization — who
+# may approve which orders, for whom, from the authenticated principal — is the
+# authenticated API layer's job and is pending (see module docstring).
+_APPROVER_ROLES = ("trader",)
+
 
 @dataclass(frozen=True)
 class ApprovalContext:
-    """Authenticated approval context for ``record_approval``.
+    """Approval context carrying the caller-asserted approver identity.
 
-    ``approver_id`` is the authenticated principal, threaded from the request /
-    orchestration layer. Approval tools accept this object rather than a bare
-    string so a caller cannot pass an arbitrary ``"someone"`` and have it
-    recorded as proof of human approval.
-
-    No auth runtime exists in this slice yet, so constructing this object is the
-    caller's explicit assertion that the identity was authenticated upstream.
-    ``record_approval`` never fabricates one itself.
+    ``approver_id`` is the principal the caller asserts performed the approval;
+    it is a plain string and nothing here authenticates it. ``record_approval``
+    verifies the id resolves to an existing ``users`` row whose role permits
+    approval, which stops fabricated identities. It cannot prove the caller
+    *is* that principal — approver authentication belongs to the pending
+    authenticated API layer.
     """
 
     approver_id: str
@@ -271,9 +285,12 @@ def record_approval(order_id: str, approver: ApprovalContext, *,
     """Persist a durable human-approval record for a PENDING_APPROVAL order.
 
     Placement reads this record back; it does not trust a caller-supplied
-    boolean. The ``approver`` is an explicit :class:`ApprovalContext` whose
-    ``approver_id`` is the authenticated principal — never a bare agent-supplied
-    string.
+    boolean. The ``approver`` is an explicit :class:`ApprovalContext`. Before
+    writing anything, this verifies ``approver_id`` resolves to an existing
+    ``users`` row whose role is in ``_APPROVER_ROLES``; an unknown or
+    non-permitted approver is rejected with a structured reason and no approval
+    row is written. This stops fabricated identities, not a same-process caller
+    (see module docstring).
     """
     db = db or get_lakebase()
     approver_id = approver.approver_id
@@ -306,7 +323,36 @@ def record_approval(order_id: str, approver: ApprovalContext, *,
                     "reason": f"cannot approve order in state {status}",
                 }
 
-            _ensure_user(cur, approver_id)
+            # Verify the approver is a real, permitted principal before writing
+            # the approval. This stops a fabricated identity; it does not stop a
+            # same-process caller (see module docstring).
+            cur.execute(
+                "SELECT role FROM users WHERE user_id = %s",
+                (approver_id,),
+            )
+            urow = cur.fetchone()
+            if urow is None:
+                _log_action(
+                    cur, user_id, "record_approval", "write",
+                    f"order_id={order_id}", "unknown approver", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": "UNKNOWN_APPROVER",
+                    "detail": {"approver_id": approver_id},
+                }
+            approver_role = urow[0]
+            if approver_role not in _APPROVER_ROLES:
+                _log_action(
+                    cur, user_id, "record_approval", "write",
+                    f"order_id={order_id}", "approver role not permitted", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": "APPROVER_NOT_PERMITTED",
+                    "detail": {"approver_id": approver_id, "role": approver_role},
+                }
+
             cur.execute(
                 """
                 INSERT INTO approvals (approval_id, order_id, approver_id, created_at)
@@ -341,10 +387,12 @@ def approve_and_place_paper_order(order_id: str) -> dict:
     """Re-run risk checks against trusted state, require a recorded approval,
     then place via the broker bridge.
 
-    This public signature intentionally exposes only the order identity. The
-    database connection, risk engine, market session, account buying power,
-    allow-list, approval record, and broker bridge are all acquired by this
-    entry point, so the agent cannot override or fabricate any of them.
+    The public signature exposes only the order identity. The database
+    connection, risk engine, market session, account buying power, allow-list,
+    approval record, and broker bridge are all acquired by this entry point
+    rather than accepted as arguments, so the tool surface cannot pass them in.
+    This is not an enforcement boundary against a same-process caller: the
+    private test seam below remains importable (see module docstring).
     """
     db = get_lakebase()
     engine = RiskEngine(load_allowlist=True)
@@ -368,12 +416,15 @@ def _approve_and_place_paper_order(
     market_session_open: bool,
     now: Optional[datetime] = None,
 ) -> dict:
-    """TEST-ONLY seam: full placement logic with injectable dependencies.
+    """Test seam: full placement logic with injectable dependencies.
 
-    Not exported (absent from ``__all__``). Production code reaches this only
-    through :func:`approve_and_place_paper_order`, which acquires every
-    dependency itself. Tests inject fake stores / bridges / engines here; the
-    agent-facing tool surface must never call it directly.
+    Absent from ``__all__`` (which governs only ``import *``), and production
+    code reaches this only through :func:`approve_and_place_paper_order`, which
+    acquires every dependency itself. Tests inject fake stores / bridges /
+    engines here. This seam is **not** an enforcement boundary: Python permits
+    importing and calling it directly with injected ``db``/``bridge``/``engine``/
+    ``market_session_open``/``now``. Isolating the agent-facing tool surface from
+    it is the authenticated API layer's job and is pending.
     """
     # Phase 1 — validate against trusted state and commit submission intent.
     with db.transaction() as conn:

@@ -284,13 +284,17 @@ def test_public_cancel_signature_has_no_bridge():
     assert "bridge" not in sig.parameters
 
 
-def test_private_seam_not_exported():
-    assert hasattr(tw, "__all__")
+def test_private_seam_excluded_from_star_import_only():
+    # ``__all__`` governs ``from agent.tools_write import *``. It is not an
+    # enforcement boundary: the private seams remain directly reachable by a
+    # same-process caller. Assert both halves so the test does not overclaim.
     assert "approve_and_place_paper_order" in tw.__all__
     assert "record_approval" in tw.__all__
     assert "ApprovalContext" in tw.__all__
     assert "_approve_and_place_paper_order" not in tw.__all__
     assert "_cancel_paper_order" not in tw.__all__
+    assert hasattr(tw, "_approve_and_place_paper_order")
+    assert hasattr(tw, "_cancel_paper_order")
 
 
 def test_record_approval_requires_context_object():
