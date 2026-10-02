@@ -221,6 +221,15 @@ def run_matrix_invariant(spark):
                      COALESCE(sec_available_ts, {epoch}),
                      COALESCE(cot_available_ts, {epoch})
                    ) > prediction_ts"""),
+        ("ohlcv features imply ohlcv_available_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
+             WHERE ohlcv_available_ts IS NULL
+               AND (return_1m IS NOT NULL OR return_5m IS NOT NULL
+                    OR return_15m IS NOT NULL OR return_30m IS NOT NULL
+                    OR rvol_5m IS NOT NULL OR rvol_15m IS NOT NULL
+                    OR rvol_30m IS NOT NULL OR atr_14 IS NOT NULL
+                    OR rsi_14 IS NOT NULL OR vwap_deviation IS NOT NULL
+                    OR relative_volume IS NOT NULL)"""),
         ("options features imply options_available_ts",
          f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
              WHERE options_available_ts IS NULL
@@ -233,7 +242,8 @@ def run_matrix_invariant(spark):
          f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
              WHERE sec_available_ts IS NULL
                AND (sec_sentiment_score IS NOT NULL
-                    OR sec_risk_factor_change IS NOT NULL)"""),
+                    OR sec_risk_factor_change IS NOT NULL
+                    OR sec_material_event IS NOT NULL)"""),
         ("cot features imply cot_available_ts",
          f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
              WHERE cot_available_ts IS NULL

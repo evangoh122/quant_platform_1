@@ -96,7 +96,7 @@ def get_tickers_by_group() -> Dict[str, List[str]]:
     """Return tickers organised by group name."""
     cfg = load_config()
     return {
-        name: group.get("tickers", [])
+        name: [_validate_ticker(t, name) for t in group.get("tickers", [])]
         for name, group in cfg.get("groups", {}).items()
     }
 

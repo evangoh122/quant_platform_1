@@ -1,8 +1,10 @@
 """
-sentiment.py — Loughran-McDonald dictionary-based SEC filing sentiment analysis.
+sentiment.py — dictionary-based SEC filing sentiment analysis.
 
 Provides deterministic, zero-LLM-cost sentiment scoring per filing section using
-the financial-specific Loughran-McDonald dictionary (6 sentiment categories).
+bundled financial sentiment word lists (6 categories). These are custom lists
+partly derived from Loughran-McDonald — NOT the canonical LM master dictionary;
+see data/sentiment_dict/ for provenance and the list-size mismatch.
 
 Usage:
     from api.services.sentiment import get_filing_sentiment, compare_filing_sentiment
@@ -35,7 +37,7 @@ _SENTIMENT_CATEGORIES = (
 
 @dataclass(frozen=True)
 class SentimentDictionary:
-    """Immutable snapshot of the Loughran-McDonald word lists."""
+    """Immutable snapshot of the bundled sentiment word lists."""
     positive: frozenset[str]
     negative: frozenset[str]
     uncertainty: frozenset[str]
@@ -49,14 +51,14 @@ class SentimentDictionary:
 
 
 def load_lm_dictionary() -> SentimentDictionary:
-    """Load the bundled Loughran-McDonald word lists (cached across calls)."""
+    """Load the bundled sentiment word lists (cached across calls)."""
     return _load_lm_dictionary_cached()
 
 
 @lru_cache(maxsize=1)
 def _load_lm_dictionary_cached() -> SentimentDictionary:
     if not _DICT_PATH.exists():
-        logger.error("Loughran-McDonald dictionary not found at {}", _DICT_PATH)
+        logger.error("sentiment dictionary not found at {}", _DICT_PATH)
         return SentimentDictionary(
             positive=frozenset(), negative=frozenset(), uncertainty=frozenset(),
             litigious=frozenset(), constraining=frozenset(),
@@ -81,7 +83,7 @@ _TOKEN_RE = re.compile(r"[a-z][a-z\-']*[a-z]|[a-z]", re.IGNORECASE)
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercase tokenization matching Loughran-McDonald bag-of-words design.
+    """Lowercase bag-of-words tokenization (Loughran-McDonald style).
 
     Strips numbers and punctuation.  Keeps hyphenated compounds like
     ``well-known`` and ``year-over-year``, and apostrophes (e.g. ``don't``).
@@ -129,7 +131,7 @@ class SentimentCounts:
 
 
 def count_sentiment(text: str, dictionary: Optional[SentimentDictionary] = None) -> SentimentCounts:
-    """Count Loughran-McDonald sentiment words in *text*.
+    """Count dictionary sentiment words in *text*.
 
     Parameters
     ----------
@@ -232,7 +234,7 @@ def get_filing_sentiment(
     """Compute sentiment for a filing's embedded chunks, grouped by section.
 
     Queries ``edgar_embeddings`` for the specified ticker and computes
-    Loughran-McDonald scores per section and in aggregate.
+    dictionary sentiment scores per section and in aggregate.
 
     Parameters
     ----------
@@ -506,7 +508,7 @@ def generate_tone_analysis(ticker: str) -> dict:
 
         system = (
             "You are a financial analyst reviewing management tone in SEC filings. "
-            "You are given Loughran-McDonald sentiment scores for the current filing "
+            "You are given dictionary-based sentiment scores for the current filing "
             "and year-over-year percentage changes. "
             "CRITICAL: Only reference the data provided. Do not invent numbers or facts. "
             "Respond with STRICT JSON only, no markdown, with exactly these keys: "
