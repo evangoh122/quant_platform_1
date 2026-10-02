@@ -13,7 +13,6 @@ Expected: ~10,720 rows on first run, 0 on second run (idempotent).
 from __future__ import annotations
 
 import os
-import sys
 import time
 from datetime import datetime, timezone
 
@@ -30,11 +29,33 @@ EMBEDDING_MODEL = os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
 
+EMBEDDINGS_SCHEMA = (
+    "chunk_id STRING, accession_number STRING, ticker STRING, "
+    "accepted_ts TIMESTAMP, embedding ARRAY<FLOAT>, "
+    "embedding_model STRING, embedded_ts TIMESTAMP"
+)
+
+
+def _ensure_table(spark) -> None:
+    """Create the embeddings table if it does not exist."""
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {EMBEDDINGS_TABLE} (
+            chunk_id STRING,
+            accession_number STRING,
+            ticker STRING,
+            accepted_ts TIMESTAMP,
+            embedding ARRAY<FLOAT>,
+            embedding_model STRING,
+            embedded_ts TIMESTAMP
+        )
+        USING DELTA
+    """)
+
 
 def build(spark) -> dict:
     """Build embeddings for chunks not yet embedded.
 
-    Returns dict with keys: rows_written, embedding_dim, second_run_rows.
+    Returns dict with keys: rows_written, embedding_dim, rows_already_embedded.
     """
     from api.services.embeddings import get_embeddings
 
@@ -44,6 +65,9 @@ def build(spark) -> dict:
 
     t0 = time.monotonic()
 
+    # 0. Ensure target table exists
+    _ensure_table(spark)
+
     # 1. Get chunk_ids already embedded for this model
     try:
         existing_df = spark.table(EMBEDDINGS_TABLE).filter(
@@ -51,24 +75,24 @@ def build(spark) -> dict:
         ).select("chunk_id")
         existing_ids = set(r["chunk_id"] for r in existing_df.collect())
     except Exception:
-        # Table may not exist yet
         existing_ids = set()
 
-    # 2. Get all chunks
+    # 2. Get all chunks (including metadata columns)
     chunks_df = spark.table(CHUNKS_TABLE).select(
-        "chunk_id", "chunk_text",
+        "chunk_id", "chunk_text", "accession_number", "ticker", "accepted_ts",
     ).filter("chunk_text IS NOT NULL AND chunk_id IS NOT NULL")
     all_rows = chunks_df.collect()
 
     # 3. Filter to only unembedded chunks
     new_rows = [r for r in all_rows if r["chunk_id"] not in existing_ids]
+    rows_already_embedded = len(all_rows) - len(new_rows)
 
     if not new_rows:
         elapsed = time.monotonic() - t0
         return {
             "rows_written": 0,
             "embedding_dim": EMBEDDING_DIM,
-            "second_run_rows": 0,
+            "rows_already_embedded": rows_already_embedded,
             "elapsed_seconds": round(elapsed, 1),
         }
 
@@ -85,6 +109,9 @@ def build(spark) -> dict:
         for r, vec in zip(batch, vecs):
             out_rows.append((
                 r["chunk_id"],
+                r["accession_number"],
+                r["ticker"],
+                r["accepted_ts"],
                 vec,
                 EMBEDDING_MODEL,
                 now,
@@ -95,11 +122,7 @@ def build(spark) -> dict:
             print(f"  Embedded {done}/{total}")
 
     # 5. Write to Delta via MERGE
-    schema = (
-        "chunk_id string, embedding array<float>, "
-        "embedding_model string, embedded_ts timestamp"
-    )
-    src_df = spark.createDataFrame(out_rows, schema=schema)
+    src_df = spark.createDataFrame(out_rows, schema=EMBEDDINGS_SCHEMA)
     src_df.createOrReplaceTempView("_embed_src")
 
     spark.sql(f"""
@@ -114,7 +137,7 @@ def build(spark) -> dict:
     return {
         "rows_written": len(out_rows),
         "embedding_dim": EMBEDDING_DIM,
-        "second_run_rows": 0,
+        "rows_already_embedded": rows_already_embedded,
         "elapsed_seconds": round(elapsed, 1),
     }
 

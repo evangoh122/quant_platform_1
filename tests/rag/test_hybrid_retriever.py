@@ -355,22 +355,25 @@ class TestEmbeddingBuildIdempotency:
 
         mock_spark = MagicMock()
 
-        # All chunk_ids already exist in the embeddings table
         existing_chunks = ["chunk_1", "chunk_2", "chunk_3"]
 
-        # Mock the existing embeddings query
         mock_existing_df = MagicMock()
+        mock_existing_df.filter.return_value = mock_existing_df
+        mock_existing_df.select.return_value = mock_existing_df
         mock_existing_df.collect.return_value = [
-            MagicMock(__getitem__=lambda self, k: cid) for cid in existing_chunks
+            MagicMock(__getitem__=lambda self, k, cid=cid: cid) for cid in existing_chunks
         ]
 
-        # Mock the chunks query
         mock_chunks_df = MagicMock()
+        mock_chunks_df.select.return_value = mock_chunks_df
         mock_chunks_df.filter.return_value = mock_chunks_df
         mock_chunks_df.collect.return_value = [
-            MagicMock(__getitem__=lambda self, k: {
+            MagicMock(__getitem__=lambda self, k, cid=cid: {
                 "chunk_id": cid,
                 "chunk_text": f"Text for {cid}",
+                "accession_number": "0000723125-25-000042",
+                "ticker": "NVDA",
+                "accepted_ts": "2025-01-15",
             }.get(k))
             for cid in existing_chunks
         ]
@@ -383,7 +386,6 @@ class TestEmbeddingBuildIdempotency:
         mock_spark.table.side_effect = table_side_effect
         mock_spark.sql.return_value = MagicMock()
 
-        # Stub embeddings
         class StubEmbeddings:
             def embed_documents(self, texts):
                 return [[0.1] * 384 for _ in texts]
@@ -391,6 +393,158 @@ class TestEmbeddingBuildIdempotency:
         with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
             result = build(mock_spark)
 
-        # Should write 0 rows since all chunks already have embeddings
         assert result["rows_written"] == 0
         assert result["embedding_dim"] == 384
+        assert result["rows_already_embedded"] == 3
+
+    def test_create_table_called(self):
+        """CREATE TABLE IF NOT EXISTS must be issued before MERGE."""
+        from pipelines.build_sec_embeddings import build
+
+        mock_spark = MagicMock()
+
+        mock_empty = MagicMock()
+        mock_empty.filter.return_value = mock_empty
+        mock_empty.select.return_value = mock_empty
+        mock_empty.collect.return_value = []
+
+        def table_side_effect(name):
+            return mock_empty
+
+        mock_spark.table.side_effect = table_side_effect
+
+        class StubEmbeddings:
+            def embed_documents(self, texts):
+                return [[0.1] * 384 for _ in texts]
+
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            build(mock_spark)
+
+        calls = mock_spark.sql.call_args_list
+        assert len(calls) >= 1
+        create_sql = calls[0][0][0]
+        assert "CREATE TABLE IF NOT EXISTS" in create_sql
+        assert "gold_sec_chunk_embeddings" in create_sql
+        assert "accession_number" in create_sql
+        assert "ticker" in create_sql
+        assert "accepted_ts" in create_sql
+
+    def test_metadata_columns_included_in_output(self):
+        """Embedded rows must carry accession_number, ticker, accepted_ts."""
+        from pipelines.build_sec_embeddings import build
+
+        mock_spark = MagicMock()
+
+        chunk_data = {
+            "chunk_id": "c1",
+            "chunk_text": "NVIDIA revenue growth",
+            "accession_number": "0000723125-25-000042",
+            "ticker": "NVDA",
+            "accepted_ts": "2025-01-15",
+        }
+
+        mock_existing_df = MagicMock()
+        mock_existing_df.filter.return_value = mock_existing_df
+        mock_existing_df.select.return_value = mock_existing_df
+        mock_existing_df.collect.return_value = []
+
+        mock_chunks_df = MagicMock()
+        mock_chunks_df.select.return_value = mock_chunks_df
+        mock_chunks_df.filter.return_value = mock_chunks_df
+        mock_chunks_df.collect.return_value = [
+            MagicMock(__getitem__=lambda self, k, d=chunk_data: d.get(k))
+        ]
+
+        def table_side_effect(name):
+            if "embeddings" in name:
+                return mock_existing_df
+            return mock_chunks_df
+
+        mock_spark.table.side_effect = table_side_effect
+
+        captured_rows = []
+        captured_schema = []
+
+        def capture_create_df(rows, schema=None):
+            captured_rows.extend(rows)
+            if schema:
+                captured_schema.append(schema)
+            return MagicMock()
+
+        mock_spark.createDataFrame.side_effect = capture_create_df
+        mock_spark.sql.return_value = MagicMock()
+
+        class StubEmbeddings:
+            def embed_documents(self, texts):
+                return [[0.1] * 384 for _ in texts]
+
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            build(mock_spark)
+
+        assert len(captured_rows) == 1
+        row = captured_rows[0]
+        assert row[0] == "c1"
+        assert row[1] == "0000723125-25-000042"
+        assert row[2] == "NVDA"
+        assert row[3] == "2025-01-15"
+        assert len(row[4]) == 384
+        assert row[5] == "BAAI/bge-small-en-v1.5"
+
+        assert len(captured_schema) == 1
+        schema_str = captured_schema[0]
+        assert "accession_number" in schema_str
+        assert "ticker" in schema_str
+        assert "accepted_ts" in schema_str
+
+    def test_real_idempotency_count(self):
+        """rows_already_embedded must reflect actual count, not hardcoded."""
+        from pipelines.build_sec_embeddings import build
+
+        mock_spark = MagicMock()
+
+        all_chunks = ["c1", "c2", "c3", "c4", "c5"]
+        already_embedded = ["c1", "c2"]
+
+        mock_existing_df = MagicMock()
+        mock_existing_df.filter.return_value = mock_existing_df
+        mock_existing_df.select.return_value = mock_existing_df
+        mock_existing_df.collect.return_value = [
+            MagicMock(__getitem__=lambda self, k, cid=cid: cid) for cid in already_embedded
+        ]
+
+        chunk_data_map = {
+            cid: {
+                "chunk_id": cid,
+                "chunk_text": f"Text {cid}",
+                "accession_number": "ACC",
+                "ticker": "TICK",
+                "accepted_ts": "2025-01-01",
+            }
+            for cid in all_chunks
+        }
+
+        mock_chunks_df = MagicMock()
+        mock_chunks_df.select.return_value = mock_chunks_df
+        mock_chunks_df.filter.return_value = mock_chunks_df
+        mock_chunks_df.collect.return_value = [
+            MagicMock(__getitem__=lambda self, k, d=d: d.get(k))
+            for d in chunk_data_map.values()
+        ]
+
+        def table_side_effect(name):
+            if "embeddings" in name:
+                return mock_existing_df
+            return mock_chunks_df
+
+        mock_spark.table.side_effect = table_side_effect
+        mock_spark.sql.return_value = MagicMock()
+
+        class StubEmbeddings:
+            def embed_documents(self, texts):
+                return [[0.1] * 384 for _ in texts]
+
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            result = build(mock_spark)
+
+        assert result["rows_written"] == 3
+        assert result["rows_already_embedded"] == 2
