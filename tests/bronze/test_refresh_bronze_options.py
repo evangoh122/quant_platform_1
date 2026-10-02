@@ -25,7 +25,7 @@ def test_parse_opra_symbol_call():
     )
     assert underlying == "AAPL"
     assert expiry.isoformat() == "2025-01-17"
-    assert right == "CALL"
+    assert right == "call"
     assert strike == 200.0
 
 
@@ -35,7 +35,7 @@ def test_parse_opra_symbol_put():
     )
     assert underlying == "SPY"
     assert expiry.isoformat() == "2025-12-19"
-    assert right == "PUT"
+    assert right == "put"
     assert strike == 430.0
 
 
@@ -185,7 +185,7 @@ def test_shape_quote_row_full():
     assert row["underlying"] == "SPY"
     assert row["expiry"] == "2026-12-18"
     assert row["strike"] == 600.0
-    assert row["right"] == "C"
+    assert row["right"] == "call"
     assert row["midpoint"] == 10.25  # (10.0 + 10.5) / 2
     assert row["delta"] == 0.6
     assert row["gamma"] == 0.01
@@ -201,7 +201,7 @@ def test_shape_quote_row_full():
 def test_shape_quote_row_right_put():
     snap_ts = datetime(2026, 10, 3, 16, 0, tzinfo=timezone.utc)
     row = m.shape_quote_row(_make_snapshot(contract_type="put"), "SPY", snap_ts)
-    assert row["right"] == "P"
+    assert row["right"] == "put"
 
 
 def test_shape_quote_row_uses_provider_ts():
@@ -229,9 +229,64 @@ def test_shape_quote_row_no_symbol_returns_none():
 
 
 def test_shape_quote_row_right_normalisation():
-    assert m._right_from_contract_type("call") == "C"
-    assert m._right_from_contract_type("CALL") == "C"
-    assert m._right_from_contract_type("put") == "P"
-    assert m._right_from_contract_type("P") == "P"
+    assert m._right_from_contract_type("call") == "call"
+    assert m._right_from_contract_type("CALL") == "call"
+    assert m._right_from_contract_type("put") == "put"
+    assert m._right_from_contract_type("P") == "put"
     assert m._right_from_contract_type("weird") is None
     assert m._right_from_contract_type(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_write_columns: schema mismatch raises
+# ---------------------------------------------------------------------------
+
+def test_resolve_write_columns_reorders_matching():
+    """When column sets match but order differs, return table order."""
+    spark = MagicMock()
+    spark.sql.return_value.collect.return_value = [
+        {"col_name": "b"}, {"col_name": "a"}, {"col_name": "c"},
+    ]
+    df = MagicMock()
+    df.columns = ["a", "b", "c"]
+    result = m._resolve_write_columns(spark, df, "some_table")
+    assert result == ["b", "a", "c"]
+
+
+def test_resolve_write_columns_raises_on_extra_df_columns():
+    """DataFrame has columns the live table lacks → ValueError."""
+    spark = MagicMock()
+    spark.sql.return_value.collect.return_value = [
+        {"col_name": "a"}, {"col_name": "b"},
+    ]
+    df = MagicMock()
+    df.columns = ["a", "b", "extra_col"]
+    with pytest.raises(ValueError, match="extra in DataFrame"):
+        m._resolve_write_columns(spark, df, "some_table")
+
+
+def test_resolve_write_columns_raises_on_missing_df_columns():
+    """Live table has columns the DataFrame lacks → ValueError."""
+    spark = MagicMock()
+    spark.sql.return_value.collect.return_value = [
+        {"col_name": "a"}, {"col_name": "b"}, {"col_name": "needed"},
+    ]
+    df = MagicMock()
+    df.columns = ["a", "b"]
+    with pytest.raises(ValueError, match="missing from DataFrame"):
+        m._resolve_write_columns(spark, df, "some_table")
+
+
+def test_resolve_write_columns_skips_comment_rows():
+    """DESCRIBE TABLE returns '#' comment rows; skip them."""
+    spark = MagicMock()
+    spark.sql.return_value.collect.return_value = [
+        {"col_name": "# Partition Information"},
+        {"col_name": "# col_name"},
+        {"col_name": "a"},
+        {"col_name": "b"},
+    ]
+    df = MagicMock()
+    df.columns = ["a", "b"]
+    result = m._resolve_write_columns(spark, df, "some_table")
+    assert result == ["a", "b"]

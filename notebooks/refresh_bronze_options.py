@@ -161,7 +161,7 @@ def parse_opra_symbol(ticker):
         strike = int(strike_raw) / 1000.0
     except (ValueError, OverflowError):
         return None
-    right = "CALL" if right_raw == "C" else "PUT"
+    right = "call" if right_raw == "C" else "put"
     return underlying, expiry, right, strike
 
 
@@ -203,12 +203,12 @@ def resolve_snapshot_ts(provider_ts, snapshot_ts):
 
 
 def _right_from_contract_type(contract_type):
-    """Normalise a Polygon ``contract_type`` (call/put) to 'C'/'P'."""
+    """Normalise a Polygon ``contract_type`` (call/put) to 'call'/'put'."""
     ctype = (contract_type or "").lower()
     if ctype in ("call", "c"):
-        return "C"
+        return "call"
     if ctype in ("put", "p"):
-        return "P"
+        return "put"
     return None
 
 
@@ -423,8 +423,8 @@ def _shape_day(spark, vol_file, source_file, ingest_ts):
         F.to_date(F.regexp_extract("ticker", pattern, 2), "yyMMdd").alias("expiry"),
         (F.regexp_extract("ticker", pattern, 4).cast("double") / F.lit(1000.0))
         .alias("strike"),
-        F.when(F.regexp_extract("ticker", pattern, 3) == F.lit("C"), F.lit("CALL"))
-        .when(F.regexp_extract("ticker", pattern, 3) == F.lit("P"), F.lit("PUT"))
+        F.when(F.regexp_extract("ticker", pattern, 3) == F.lit("C"), F.lit("call"))
+        .when(F.regexp_extract("ticker", pattern, 3) == F.lit("P"), F.lit("put"))
         .otherwise(F.lit(None).cast("string"))
         .alias("right"),
         event_ts.alias("event_ts"),
@@ -493,22 +493,39 @@ def _clear_staged(s3_key, dbutils_present, sdk_client):
 
 
 def _resolve_write_columns(spark, df, table):
-    """Return the column names present in both *df* and the live *table*.
+    """Return *df* columns reordered to match the live *table* schema.
 
-    This prevents schema-mismatch failures when the live table has a different
-    column set than the DataFrame (e.g. missing Greeks, different ``right``
-    encoding column names, or extra lineage columns).
+    Raises ``ValueError`` when the column sets differ (names).  This prevents
+    silent data loss from the old behaviour that silently dropped columns the
+    live table lacked.
     """
     try:
-        table_cols = set(
+        table_cols = [
             r["col_name"]
             for r in spark.sql(f"DESCRIBE TABLE {table}").collect()
-        )
+            if r["col_name"] and not r["col_name"].startswith("#")
+        ]
     except Exception:
-        table_cols = None
-    if table_cols is not None:
-        return [c for c in df.columns if c in table_cols]
-    return list(df.columns)
+        return list(df.columns)
+
+    df_set = set(df.columns)
+    table_set = set(table_cols)
+
+    missing_in_df = table_set - df_set
+    extra_in_df = df_set - table_set
+
+    if missing_in_df or extra_in_df:
+        parts = []
+        if missing_in_df:
+            parts.append(f"missing from DataFrame: {sorted(missing_in_df)}")
+        if extra_in_df:
+            parts.append(f"extra in DataFrame: {sorted(extra_in_df)}")
+        raise ValueError(
+            f"Schema mismatch between DataFrame and table {table}: "
+            + "; ".join(parts)
+        )
+
+    return [c for c in table_cols if c in df_set]
 
 
 def _anti_join_new(spark, incoming_df, key_columns, table, date_col, start_date, end_date):
