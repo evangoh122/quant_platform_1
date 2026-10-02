@@ -124,3 +124,77 @@ def test_deflated_sharpe_decreases_with_more_trials():
     dsr_low = deflated_sharpe_ratio(returns, n_trials=2)
     dsr_high = deflated_sharpe_ratio(returns, n_trials=100)
     assert dsr_high <= dsr_low
+
+
+def test_underdetermined_cross_section_raises():
+    """Symbols <= design columns and all timestamps underdetermined → raise."""
+    ts = pd.Timestamp("2025-01-01")
+    # 5 industries, so design = beta + 5 dummies = 6 cols. Need > 6 symbols.
+    # Only 5 symbols → underdetermined.
+    frame = pd.DataFrame(
+        {
+            "prediction_ts": ts,
+            "market_beta": [0.1, 0.2, 0.3, 0.4, 0.5],
+            "industry": ["tech", "bank", "health", "energy", "consumer"],
+            "feature": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    )
+    with pytest.raises(ValueError, match="all.*timestamps were skipped"):
+        neutralize_features(frame, ["feature"], report=False)
+
+
+def test_mixed_underdetermined_cross_section_warns(caplog):
+    """Some timestamps OK, some underdetermined → warning with counts."""
+    ts1 = pd.Timestamp("2025-01-01")
+    ts2 = pd.Timestamp("2025-01-02")
+    # ts1: 8 symbols (OK), ts2: 5 symbols (underdetermined with 5 industries)
+    rows = []
+    for i in range(8):
+        rows.append({
+            "prediction_ts": ts1,
+            "market_beta": 0.1 * (i + 1),
+            "industry": ["tech", "bank", "health", "energy", "consumer", "tech", "bank", "health"][i],
+            "feature": float(i),
+        })
+    for i in range(5):
+        rows.append({
+            "prediction_ts": ts2,
+            "market_beta": 0.1 * (i + 1),
+            "industry": ["tech", "bank", "health", "energy", "consumer"][i],
+            "feature": float(i),
+        })
+    frame = pd.DataFrame(rows)
+    import logging
+    with caplog.at_level(logging.WARNING, logger="ml.features"):
+        result = neutralize_features(frame, ["feature"], report=False)
+    assert "skipped" in caplog.text
+    # ts1 should have been neutralised (residuals should differ from input)
+    ts1_result = result[result["prediction_ts"] == ts1]
+    # The feature should have been residualised for ts1
+    assert not ts1_result["feature"].equals(frame[frame["prediction_ts"] == ts1]["feature"])
+
+
+def test_real_runner_neutralises_timestamps():
+    """The real runner path neutralises > 0 timestamps and removes beta correlation."""
+    from ml.synthetic_data import make_synthetic_matrix
+    from ml.features import neutralize_features
+
+    matrix = make_synthetic_matrix(n_symbols=18, n_bars=100, seed=7)
+    feature_cols = ["return_1m", "return_5m", "rvol_5m"]
+    result = neutralize_features(matrix, feature_cols, report=False)
+    # Check that the function actually ran (not all skipped — would have raised)
+    # Verify post-neutralisation |corr(feature, beta)| < 1e-6 on neutralised timestamps
+    corrs = []
+    for ts_val, idx in result.groupby("prediction_ts").groups.items():
+        frame = result.loc[idx]
+        beta_vals = pd.to_numeric(frame["market_beta"], errors="coerce")
+        if beta_vals.nunique() < 2:
+            continue
+        for col in feature_cols:
+            feat_vals = pd.to_numeric(frame[col], errors="coerce")
+            c = feat_vals.corr(beta_vals)
+            if np.isfinite(c):
+                corrs.append(abs(c))
+    assert len(corrs) > 0, "no timestamps were evaluated"
+    mean_abs_corr = float(np.mean(corrs))
+    assert mean_abs_corr < 1e-6, f"mean |corr| after neutralisation = {mean_abs_corr}"

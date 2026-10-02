@@ -47,7 +47,7 @@ def _measure_latency(model, X: pd.DataFrame, repeats: int = 200) -> list:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the ML ablation study")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--n-symbols", type=int, default=6)
+    parser.add_argument("--n-symbols", type=int, default=18)
     parser.add_argument("--n-bars", type=int, default=400)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--min-train", type=int, default=60)

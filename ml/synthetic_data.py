@@ -32,7 +32,7 @@ def _rng(seed: int) -> np.random.Generator:
 
 
 def make_synthetic_matrix(
-    n_symbols: int = 6,
+    n_symbols: int = 18,
     n_bars: int = 400,
     seed: int = 42,
     bar_freq: str = "1min",

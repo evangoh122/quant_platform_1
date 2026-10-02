@@ -20,7 +20,7 @@ def test_feature_sets_are_strictly_nested():
 
 
 def test_ablation_runner_varies_feature_set_between_arms():
-    matrix = make_synthetic_matrix(n_symbols=4, n_bars=200, seed=7)
+    matrix = make_synthetic_matrix(n_symbols=18, n_bars=200, seed=7)
 
     result = run_ablation(
         matrix,

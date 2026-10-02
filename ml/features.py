@@ -427,13 +427,24 @@ def neutralize_features(
     ``industry`` is expected to come from the repository's
     ``config/tickers.yaml`` grouping, not a vendor taxonomy.
 
+    The design matrix uses beta + industry dummies **without** an intercept to
+    avoid the dummy-variable trap (intercept + K dummies are collinear).
+
+    Returns
+    -------
+    pd.DataFrame
+        The residualised matrix (copy).
+
     Raises
     ------
     ValueError
-        If ``beta_col`` or ``industry_col`` is absent from the matrix.  A
-        reported-but-skipped step is worse than a missing one — callers that
-        request neutralisation must supply the required columns.
+        If ``beta_col`` or ``industry_col`` is absent, or if **every**
+        timestamp is skipped (underdetermined cross-section at every step).
     """
+    import logging
+
+    log = logging.getLogger(__name__)
+
     out = matrix.copy()
     if beta_col not in out.columns or industry_col not in out.columns:
         missing = [c for c in (beta_col, industry_col) if c not in out.columns]
@@ -445,14 +456,18 @@ def neutralize_features(
     if report:
         _report_beta_correlations(out, feature_cols, beta_col, time_col, stage="before")
 
-    for _, idx in out.groupby(time_col).groups.items():
+    neutralised_timestamps: set = set()
+    skipped_timestamps: set = set()
+
+    for ts_val, idx in out.groupby(time_col).groups.items():
         frame = out.loc[idx]
+        # No intercept — avoids collinearity with K industry dummies.
         controls = pd.concat(
             [frame[[beta_col]].astype(float), pd.get_dummies(frame[industry_col], dtype=float)],
             axis=1,
         )
-        controls.insert(0, "intercept", 1.0)
         design = controls.to_numpy(dtype=float)
+        ts_neutralised = False
         for col in feature_cols:
             values = pd.to_numeric(frame[col], errors="coerce")
             valid = values.notna() & np.isfinite(design).all(axis=1)
@@ -460,9 +475,40 @@ def neutralize_features(
                 continue
             coef, *_ = np.linalg.lstsq(design[valid], values[valid], rcond=None)
             out.loc[frame.index[valid], col] = values[valid] - design[valid] @ coef
+            ts_neutralised = True
+        if ts_neutralised:
+            neutralised_timestamps.add(ts_val)
+        else:
+            skipped_timestamps.add(ts_val)
+
+    n_neutralised = len(neutralised_timestamps)
+    n_skipped = len(skipped_timestamps)
+    n_total = n_neutralised + n_skipped
+
+    if n_skipped > 0:
+        log.warning(
+            "neutralisation: %d/%d timestamps skipped (underdetermined cross-section), "
+            "%d neutralised",
+            n_skipped,
+            n_total,
+            n_neutralised,
+        )
+    if n_neutralised == 0 and n_total > 0:
+        raise ValueError(
+            f"neutralisation: all {n_total} timestamps were skipped — "
+            f"cross-section too small for design matrix "
+            f"(need > {design.shape[1]} symbols per timestamp with current industry count)"
+        )
 
     if report:
-        _report_beta_correlations(out, feature_cols, beta_col, time_col, stage="after")
+        _report_beta_correlations(
+            out, feature_cols, beta_col, time_col,
+            stage="after", only_timestamps=neutralised_timestamps,
+        )
+        log.info(
+            "neutralisation counts: neutralised=%d  skipped=%d  total=%d",
+            n_neutralised, n_skipped, n_total,
+        )
 
     return out
 
@@ -473,10 +519,18 @@ def _report_beta_correlations(
     beta_col: str,
     time_col: str,
     stage: str,
+    only_timestamps: Optional[set] = None,
 ) -> None:
-    """Log cross-sectional correlation of each feature with market beta."""
+    """Log cross-sectional correlation of each feature with market beta.
+
+    When ``only_timestamps`` is provided, only those timestamps are included
+    in the correlation computation (used for the "after" stage to exclude
+    skipped timestamps).
+    """
     corrs: Dict[str, List[float]] = {col: [] for col in feature_cols}
-    for _, idx in matrix.groupby(time_col).groups.items():
+    for ts_val, idx in matrix.groupby(time_col).groups.items():
+        if only_timestamps is not None and ts_val not in only_timestamps:
+            continue
         frame = matrix.loc[idx]
         beta_vals = pd.to_numeric(frame[beta_col], errors="coerce")
         if beta_vals.nunique() < 2:
