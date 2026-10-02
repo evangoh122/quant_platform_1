@@ -1,10 +1,15 @@
 -- =============================================================================
 -- 002_approvals_accounts.sql
--- Round-2 additions to support a non-bypassable execution boundary:
+-- Round-2 additions to support the execution boundary:
 --
---   * approvals — a durable, trusted human-approval record. Placement reads the
---     record back; it never accepts a caller-supplied boolean asserting that "a
---     human approved this".
+--   * approvals — a durable human-approval record. Placement reads the record
+--     back; it never accepts a caller-supplied boolean asserting that "a human
+--     approved this".
+--
+-- Note: this is NOT a non-bypassable boundary against a same-process caller;
+-- the private test seams in agent/tools_write.py remain directly importable,
+-- and approval authority is separated from identity existence in round 5 (see
+-- 003_revoke_auto_provisioned_approvers.sql).
 --   * accounts   — the trusted source for buying power. Placement no longer
 --     fabricates a $100k constant.
 --   * orders.status gains SUBMITTING so the broker call can be moved outside

@@ -11,20 +11,24 @@ process*, not an enforcement boundary. What is actually true today:
   engine, market clock, and broker bridge itself. It never accepts trusted risk
   state (``engine``, ``market_session_open``, ``human_approved``,
   ``approved_by``, ``bridge``, buying power, ``db``, or paper-mode flags).
-* ``record_approval`` verifies the ``approver_id`` it is given resolves to an
-  existing ``users`` row whose role is permitted to approve, rather than
-  trusting the bare string. This stops fabricated identities; it does not stop
-  a same-process caller from reaching the private seam below.
+* Approval authority is separated from existence. ``_ensure_user`` provisions
+  previously-unseen identities with the non-approving ``'viewer'`` role; the
+  ``'trader'`` role (the only value in ``_APPROVER_ROLES``) is granted only by
+  the out-of-band admin CLI ``scripts/grant_approver.py`` — never by an agent
+  tool. ``record_approval`` therefore rejects auto-provisioned identities and
+  cross-user approvals, but it does not stop a same-process Python caller from
+  reaching the private seam below.
 * The ``_``-prefixed seams (``_approve_and_place_paper_order``,
   ``_cancel_paper_order``) exist for test injection and are **not** an
   enforcement boundary: Python permits importing them directly, and ``__all__``
   governs only wildcard imports.
 
-Two boundaries are intentionally NOT enforced here and are tracked separately,
-pending the authenticated API / agent-runtime layer (which does not exist in
-this repo yet): *tool-surface isolation* — proving the agent-facing tool
-registry cannot reach the private seams — and *approver authentication* —
-proving the caller really is the ``approver_id`` they assert.
+Boundaries intentionally NOT enforced here and tracked separately, pending the
+authenticated API / agent-runtime layer (which does not exist in this repo yet):
+*tool-surface isolation* — proving the agent-facing tool registry cannot reach
+the private seams — and *approver authentication* — proving the caller really is
+the ``approver_id`` they assert. A same-process Python caller that can import
+this module and reach the private seams is **not** prevented by anything here.
 
 Idempotency: ``orders.idempotency_key`` is ``UNIQUE``. That constraint is the
 real duplicate guard; a repeated key is an idempotent replay handled by
@@ -92,9 +96,10 @@ _TERMINAL_STATUSES = ("CANCELLED", "REJECTED", "FAILED", "FILLED")
 # Sentinel user for audit rows that have no attributable user (e.g. NOT_FOUND).
 _SYSTEM_USER = "system"
 
-# users.role values permitted to record an approval. The platform currently
-# provisions a single 'trader' role (see _ensure_user); this allow-list is a
-# coarse, provisional gate over that column. Real approver authorization — who
+# users.role values permitted to record an approval. Only 'trader' is
+# approver-authorized. 'trader' is NEVER granted by auto-provisioning
+# (_ensure_user creates 'viewer') nor by any agent tool: it is granted solely
+# out-of-band by scripts/grant_approver.py. Real approver authentication — who
 # may approve which orders, for whom, from the authenticated principal — is the
 # authenticated API layer's job and is pending (see module docstring).
 _APPROVER_ROLES = ("trader",)
@@ -106,10 +111,11 @@ class ApprovalContext:
 
     ``approver_id`` is the principal the caller asserts performed the approval;
     it is a plain string and nothing here authenticates it. ``record_approval``
-    verifies the id resolves to an existing ``users`` row whose role permits
-    approval, which stops fabricated identities. It cannot prove the caller
-    *is* that principal — approver authentication belongs to the pending
-    authenticated API layer.
+    verifies the id is (1) an actual ``ApprovalContext``, (2) resolves to an
+    existing ``users`` row whose role permits approval, and (3) is the order's
+    owner. This rejects fabricated identities, auto-provisioned identities, and
+    cross-user approvals. It cannot prove the caller *is* that principal —
+    approver authentication belongs to the pending authenticated API layer.
     """
 
     approver_id: str
@@ -126,11 +132,16 @@ def _dec(value, scale: str = "0.00000001") -> Optional[Decimal]:
 
 
 def _ensure_user(cur, user_id: str) -> None:
-    """Guarantee the referenced user row exists (idempotent upsert)."""
+    """Guarantee the referenced user row exists (idempotent upsert).
+
+    New identities are provisioned with the non-approving ``'viewer'`` role.
+    Approval authority (``'trader'``) is granted only out-of-band by
+    ``scripts/grant_approver.py``; no agent tool may mint an approver.
+    """
     cur.execute(
         """
         INSERT INTO users (user_id, display_name, role, created_at)
-        VALUES (%s, %s, 'trader', now())
+        VALUES (%s, %s, 'viewer', now())
         ON CONFLICT (user_id) DO NOTHING
         """,
         (user_id, user_id),
@@ -285,13 +296,26 @@ def record_approval(order_id: str, approver: ApprovalContext, *,
     """Persist a durable human-approval record for a PENDING_APPROVAL order.
 
     Placement reads this record back; it does not trust a caller-supplied
-    boolean. The ``approver`` is an explicit :class:`ApprovalContext`. Before
-    writing anything, this verifies ``approver_id`` resolves to an existing
-    ``users`` row whose role is in ``_APPROVER_ROLES``; an unknown or
-    non-permitted approver is rejected with a structured reason and no approval
-    row is written. This stops fabricated identities, not a same-process caller
-    (see module docstring).
+    boolean. The ``approver`` must be an actual :class:`ApprovalContext`
+    instance; anything else is rejected with ``INVALID_APPROVAL_CONTEXT``
+    before any database work. Before writing anything, this verifies
+    ``approver_id`` resolves to an existing ``users`` row whose role is in
+    ``_APPROVER_ROLES`` (auto-provisioned identities are ``'viewer'`` and are
+    therefore rejected with ``APPROVER_NOT_PERMITTED``), then verifies the
+    approver is the order's owner (``APPROVER_NOT_OWNER``). An unknown,
+    non-permitted, or non-owner approver is rejected with a structured reason
+    and no approval row is written. This stops fabricated identities and
+    cross-user approval, not a same-process caller (see module docstring).
     """
+    if not isinstance(approver, ApprovalContext):
+        return {
+            "order_id": order_id, "status": "REJECTED", "ok": False,
+            "reason": "INVALID_APPROVAL_CONTEXT",
+            "detail": {
+                "expected": "ApprovalContext",
+                "received": type(approver).__name__,
+            },
+        }
     db = db or get_lakebase()
     approver_id = approver.approver_id
     approval_id = _id("approval")
@@ -324,8 +348,9 @@ def record_approval(order_id: str, approver: ApprovalContext, *,
                 }
 
             # Verify the approver is a real, permitted principal before writing
-            # the approval. This stops a fabricated identity; it does not stop a
-            # same-process caller (see module docstring).
+            # the approval. Auto-provisioned identities hold 'viewer' and are
+            # rejected here; only the out-of-band 'trader' role may approve.
+            # This does not stop a same-process caller (see module docstring).
             cur.execute(
                 "SELECT role FROM users WHERE user_id = %s",
                 (approver_id,),
@@ -351,6 +376,20 @@ def record_approval(order_id: str, approver: ApprovalContext, *,
                     "order_id": order_id, "status": status, "ok": False,
                     "reason": "APPROVER_NOT_PERMITTED",
                     "detail": {"approver_id": approver_id, "role": approver_role},
+                }
+
+            # Single-user paper-trading tool: "explicit human approval" means a
+            # user confirming their own order. A granted approver may not approve
+            # another user's order.
+            if approver_id != user_id:
+                _log_action(
+                    cur, user_id, "record_approval", "write",
+                    f"order_id={order_id}", "approver is not the order owner", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": "APPROVER_NOT_OWNER",
+                    "detail": {"approver_id": approver_id, "owner_id": user_id},
                 }
 
             cur.execute(

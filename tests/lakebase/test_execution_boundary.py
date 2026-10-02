@@ -1,11 +1,18 @@
 """Execution-boundary tests — offline (no live Lakebase, no network).
 
-These prove the boundary the LLM cannot bypass: for every risk check, the *real*
-public placement path (``agent.tools_write.approve_and_place_paper_order``) is
-driven with a mocked broker bridge and asserted that ``submit_order`` is never
-called. No trusted risk state is passed into the function — the DB acquisition,
-risk engine construction, market clock, and broker construction are patched at
-their construction sites, exactly as the public entry point acquires them.
+These prove that each public placement invocation fails closed for the covered
+stored-state and risk conditions: the *real* public placement path
+(``agent.tools_write.approve_and_place_paper_order``) is driven with a mocked
+broker bridge and asserted that ``submit_order`` is never called whenever a risk
+or stored-state check blocks the order. No trusted risk state is passed into the
+function — the DB acquisition, risk engine construction, market clock, and
+broker construction are patched at their construction sites, exactly as the
+public entry point acquires them.
+
+These tests do **not** prove a boundary the LLM — or any same-process caller —
+cannot bypass: the private test seams (``_approve_and_place_paper_order``,
+``_cancel_paper_order``) remain directly importable by any Python caller in this
+process.
 
 The DB is a small in-memory fake keyed on query substrings; it only needs to
 return the handful of rows the placement path reads.
@@ -297,7 +304,22 @@ def test_private_seam_excluded_from_star_import_only():
     assert hasattr(tw, "_cancel_paper_order")
 
 
-def test_record_approval_requires_context_object():
+def test_record_approval_signature_requires_context_object():
+    # Signature-only assertion: the parameter is named ``approver``, not
+    # ``approver_id``. This does not (and cannot) enforce the annotation at
+    # runtime — see the next test for the actual runtime type check.
     sig = inspect.signature(tw.record_approval)
     assert "approver_id" not in sig.parameters
     assert "approver" in sig.parameters
+
+
+def test_record_approval_rejects_non_context_object():
+    # record_approval used to duck-type ``approver.approver_id``, so any object
+    # carrying that attribute was accepted. It must reject anything that is not
+    # an actual ApprovalContext, before any database work.
+    class _NotApprovalContext:
+        approver_id = "alice"
+
+    res = tw.record_approval("ord_1", _NotApprovalContext())
+    assert res["ok"] is False
+    assert res["reason"] == "INVALID_APPROVAL_CONTEXT"
