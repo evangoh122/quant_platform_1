@@ -160,8 +160,8 @@ def read_delta(fn: Callable[[], List[dict]]) -> Tuple[List[dict], str, str]:
     """
     try:
         rows = fn() or []
-    except ImportError as exc:
-        return [], "unavailable", f"pyspark/Delta not available: {exc}"
+    except ImportError:
+        return [], "unavailable", "pyspark/Delta not available"
     except Exception as exc:  # noqa: BLE001 - degrade, never crash the API
         return [], "unavailable", f"delta read failed: {type(exc).__name__}"
     if not rows:
