@@ -40,7 +40,8 @@ USING (
     SELECT *,
       MAX(participant_ts) OVER (PARTITION BY underlying) AS max_ts
     FROM bootcamp_students.evangoh_capstone.bronze_options_quotes
-    WHERE expiry IS NOT NULL AND strike IS NOT NULL AND right IS NOT NULL
+    WHERE underlying IN (SELECT symbol FROM universe)
+      AND expiry IS NOT NULL AND strike IS NOT NULL AND right IS NOT NULL
       AND participant_ts IS NOT NULL
   )
 ) AS src

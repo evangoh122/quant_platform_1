@@ -32,7 +32,8 @@ USING (
     filing_url                  AS source_url,
     current_timestamp()         AS processed_ts
   FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
-  WHERE filing_section IS NOT NULL
+  WHERE ticker IN (SELECT symbol FROM universe)
+    AND filing_section IS NOT NULL
     AND filing_section <> 'metadata'
     AND filing_section NOT LIKE 'xbrl_fact_%'
     AND chunk_text IS NOT NULL

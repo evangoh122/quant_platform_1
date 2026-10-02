@@ -56,10 +56,11 @@ USING (
                             AS dedup_hash,
     current_timestamp()     AS processed_ts
   FROM bootcamp_students.evangoh_capstone.bronze_ohlcv
-  WHERE open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
-     OR high < GREATEST(open, close)
-     OR low  > LEAST(open, close)
-     OR volume < 0
+  WHERE symbol IN (SELECT symbol FROM universe)
+    AND (open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+      OR high < GREATEST(open, close)
+      OR low  > LEAST(open, close)
+      OR volume < 0)
 ) AS src
 ON tgt.dedup_hash = src.dedup_hash AND tgt.quarantine_reason = src.quarantine_reason
 WHEN MATCHED THEN UPDATE SET *

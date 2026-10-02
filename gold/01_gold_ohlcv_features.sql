@@ -27,6 +27,7 @@ USING (
       MIN(low)  OVER (PARTITION BY symbol, DATE(event_ts)) AS session_low
     FROM bootcamp_students.evangoh_capstone.silver_ohlcv
     WHERE timespan = 'minute'
+      AND symbol IN (SELECT symbol FROM universe)
       AND DATE(event_ts) >= '{date_start}' AND DATE(event_ts) < '{date_end}'
   ),
   returns AS (

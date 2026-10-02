@@ -35,6 +35,7 @@ USING (
     current_timestamp()                                          AS processed_ts
   FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
   WHERE filing_section LIKE 'xbrl_fact_%'
+    AND ticker IN (SELECT symbol FROM universe)
     AND chunk_text IS NOT NULL
     AND cik IS NOT NULL AND accession_number IS NOT NULL
     AND form_type IS NOT NULL AND accepted_ts IS NOT NULL
@@ -62,6 +63,7 @@ USING (
            ROW_NUMBER() OVER (PARTITION BY accession_number ORDER BY cik) AS rn
     FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
     WHERE company_name IS NOT NULL
+      AND ticker IN (SELECT symbol FROM universe)
   )
   WHERE rn = 1
 
@@ -85,6 +87,7 @@ USING (
     current_timestamp()                          AS processed_ts
   FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
   WHERE filing_section = 'item1a_risk_factors'
+    AND ticker IN (SELECT symbol FROM universe)
     AND chunk_text IS NOT NULL
     AND cik IS NOT NULL AND accession_number IS NOT NULL
     AND form_type IS NOT NULL AND accepted_ts IS NOT NULL
@@ -112,6 +115,7 @@ USING (
            ROW_NUMBER() OVER (PARTITION BY accession_number ORDER BY cik) AS rn
     FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
     WHERE form_type = '8-K'
+      AND ticker IN (SELECT symbol FROM universe)
   )
   WHERE rn = 1
 ) AS src

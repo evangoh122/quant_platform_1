@@ -1,0 +1,61 @@
+# MVP trading universe — configuration-driven symbol filter.
+#
+# Every silver and gold transform reads its symbol filter from this file
+# (never a hardcoded ticker list in transform code). `config/tickers.yaml` is
+# the ingestion-side whole-market list and is intentionally left untouched.
+#
+# This is the "approximately 20-50 highly liquid U.S. equities and ETFs" MVP
+# universe from the rubric. It is a superset of the minimum names required by
+# the build request (SPY, QQQ, NVDA, AAPL, MSFT, AMZN, META, AMD, GOOGL, TSLA)
+# and is chosen so that every gold feature source has coverage:
+#   - OHLCV / options underlyings: SPY, QQQ, META, AMD, TSLA, GOOGL, MSFT, NVDA,
+#     AAPL, AMZN, JPM, XOM (the 12 underlyings present in bronze_options_quotes)
+#   - SEC filings: the semiconductor/mega-cap tickers present in
+#     bronze_sec_filings_v2 (NVDA, AMD, AMAT, MU, LRCX, QCOM, TXN, KLAC, ADI,
+#     MCHP, INTC, SNPS, TER, ON, SWKS, MPWR, ...)
+#   - COT: applied at the asset-regime level (equity_index), not per symbol.
+
+symbols:
+  # Broad-market ETFs
+  - SPY
+  - QQQ
+  - IWM
+  - XLK
+  - XLF
+  - XLE
+  # Mega-cap technology
+  - NVDA
+  - AAPL
+  - MSFT
+  - AMZN
+  - META
+  - AMD
+  - GOOGL
+  - GOOG
+  - AVGO
+  - NFLX
+  - TSLA
+  # Semiconductors (SEC filings coverage)
+  - INTC
+  - QCOM
+  - TXN
+  - MU
+  - LRCX
+  - KLAC
+  - ADI
+  - MCHP
+  - AMAT
+  - SNPS
+  - TER
+  - ON
+  - SWKS
+  - MPWR
+  # Large-cap liquid names
+  - JPM
+  - XOM
+  - WMT
+  - JNJ
+  - V
+  - UBER
+  - CRM
+  - ORCL

@@ -24,7 +24,8 @@ USING (
       implied_volatility AS iv,
       delta
     FROM bootcamp_students.evangoh_capstone.bronze_options_quotes
-    WHERE underlying IS NOT NULL AND participant_ts IS NOT NULL
+    WHERE underlying IN (SELECT symbol FROM universe)
+      AND underlying IS NOT NULL AND participant_ts IS NOT NULL
   ),
   atm AS (
     SELECT symbol, d, iv AS iv_atm

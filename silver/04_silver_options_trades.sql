@@ -34,7 +34,8 @@ USING (
                    coalesce(cast(sequence_id AS STRING), '')), 256) AS dedup_hash,
     current_timestamp()                     AS processed_ts
   FROM bootcamp_students.evangoh_capstone.bronze_options_trades
-  WHERE expiry IS NOT NULL AND strike IS NOT NULL AND right IS NOT NULL
+  WHERE underlying IN (SELECT symbol FROM universe)
+    AND expiry IS NOT NULL AND strike IS NOT NULL AND right IS NOT NULL
     AND participant_ts IS NOT NULL
 ) AS src
 ON tgt.dedup_hash = src.dedup_hash
