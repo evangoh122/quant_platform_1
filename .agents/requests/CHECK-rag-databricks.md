@@ -34,3 +34,12 @@ Check, hardest first:
 5. **Embeddings pipeline.** Idempotent. No look-ahead in which chunks get embedded.
 
 Run `python3 -m pytest tests/rag -q`.
+
+## Re-check (rounds 6-7)
+Re-verify your three earlier blocking findings against HEAD (rounds 6-7). Also check
+the round-7 client-timezone fix:
+- `_load_corpus` and `build_sec_embeddings` now read `unix_timestamp(accepted_ts)`.
+- Claude's live smoke: `as_of=2025-01-01 +08:00` and naive `2025-01-01` both return
+  `retrieval_mode=hybrid` with only the 2024-11-20T21:31Z NVDA filing.
+
+Write `.agents/deepseek/VERDICT-rag-databricks-check2.md`.
