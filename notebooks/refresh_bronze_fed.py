@@ -91,11 +91,13 @@ def _us_federal_holidays(start: date, end: date) -> set[date]:
     return {h.date() for h in holidays}
 
 
-def _bond_market_holidays(start: date, end: date) -> set[date]:
-    """Return SIFMA-style bond market holidays in [start, end].
+def _h15_holidays(start: date, end: date) -> set[date]:
+    """Return H.15 publication holidays in [start, end].
 
-    Federal holidays + Good Friday, minus Columbus Day and Veterans Day.
-    Used for market_rate (Treasury H.15) availability only.
+    Federal holidays + Good Friday.  The Fed/Treasury is closed on these days,
+    so no constant-maturity Treasury yield (DGS2, DGS10, T10Y2Y, T10Y3M) is
+    published — even when the SIFMA bond market is open (e.g. Columbus Day,
+    Veterans Day).
     """
     fed = _us_federal_holidays(start, end)
     # Add Good Friday for each year in range
@@ -103,18 +105,6 @@ def _bond_market_holidays(start: date, end: date) -> set[date]:
         good_friday = _easter_sunday(year) - timedelta(days=2)
         if start <= good_friday <= end:
             fed.add(good_friday)
-    # Remove Columbus Day (2nd Monday in October) and Veterans Day (Nov 11)
-    for year in range(start.year, end.year + 1):
-        # Columbus Day: 2nd Monday in October
-        oct_1 = date(year, 10, 1)
-        first_monday = oct_1 + timedelta(days=(7 - oct_1.weekday()) % 7)
-        columbus_day = first_monday + timedelta(days=7)
-        if start <= columbus_day <= end:
-            fed.discard(columbus_day)
-        # Veterans Day: November 11
-        veterans_day = date(year, 11, 11)
-        if start <= veterans_day <= end:
-            fed.discard(veterans_day)
     return fed
 
 
@@ -122,8 +112,8 @@ def _is_ny_business_day(d: date, calendar: str = "federal") -> bool:
     """Monday-Friday, not a holiday per the specified calendar."""
     if d.weekday() >= 5:
         return False
-    if calendar == "bond_market":
-        holidays = _bond_market_holidays(d, d)
+    if calendar == "h15":
+        holidays = _h15_holidays(d, d)
     else:
         holidays = _us_federal_holidays(d, d)
     return d not in holidays
@@ -133,8 +123,8 @@ def _next_ny_business_day(d: date, calendar: str = "federal") -> date:
     """Return the next NY business day after d using the specified calendar."""
     nxt = d + timedelta(days=1)
     # Look ahead up to 10 days to cover holiday clusters
-    if calendar == "bond_market":
-        holidays = _bond_market_holidays(nxt, nxt + timedelta(days=10))
+    if calendar == "h15":
+        holidays = _h15_holidays(nxt, nxt + timedelta(days=10))
     else:
         holidays = _us_federal_holidays(nxt, nxt + timedelta(days=10))
     while nxt.weekday() >= 5 or nxt in holidays:
@@ -145,10 +135,10 @@ def _next_ny_business_day(d: date, calendar: str = "federal") -> date:
 def _ny_available_ts(obs_date: date, revision_class: str = "market_rate") -> datetime:
     """Next NY business day after observation_date at 16:30 America/New_York (DST-aware), converted to UTC.
 
-    For market_rate, uses the SIFMA bond-market calendar (federal + Good Friday,
-    minus Columbus Day and Veterans Day). For other classes, uses federal calendar.
+    For market_rate, uses the H.15 publication calendar (federal + Good Friday).
+    For other classes, uses federal calendar.
     """
-    cal = "bond_market" if revision_class == "market_rate" else "federal"
+    cal = "h15" if revision_class == "market_rate" else "federal"
     nxt = _next_ny_business_day(obs_date, calendar=cal)
     local_dt = datetime(nxt.year, nxt.month, nxt.day, 16, 30, 0, tzinfo=_NY_TZ)
     return local_dt.astimezone(timezone.utc)
