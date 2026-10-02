@@ -10,6 +10,8 @@ from datetime import date, datetime, timezone
 from notebooks.refresh_bronze_fed import (
     _parse_date,
     _parse_value,
+    _easter_sunday,
+    _bond_market_holidays,
     _is_ny_business_day,
     _next_ny_business_day,
     _ny_available_ts,
@@ -100,6 +102,75 @@ class TestCalendarHelpers:
 
 
 # ---------------------------------------------------------------------------
+# Bond market (SIFMA) calendar
+# ---------------------------------------------------------------------------
+
+class TestBondMarketCalendar:
+    def test_easter_sunday_2024(self):
+        assert _easter_sunday(2024) == date(2024, 3, 31)
+
+    def test_easter_sunday_2025(self):
+        assert _easter_sunday(2025) == date(2025, 4, 20)
+
+    def test_easter_sunday_2026(self):
+        assert _easter_sunday(2026) == date(2026, 4, 5)
+
+    def test_good_friday_is_holiday(self):
+        # Good Friday 2024-03-29 should be in bond market holidays
+        holidays = _bond_market_holidays(date(2024, 3, 25), date(2024, 4, 5))
+        assert date(2024, 3, 29) in holidays
+
+    def test_good_friday_is_not_federal_holiday(self):
+        # Good Friday is NOT a federal holiday
+        fed = _bond_market_holidays.__wrapped__ if hasattr(_bond_market_holidays, '__wrapped__') else None
+        from pandas.tseries.holiday import USFederalHolidayCalendar
+        cal = USFederalHolidayCalendar()
+        holidays = cal.holidays(start="2024-03-25", end="2024-04-05")
+        assert date(2024, 3, 29) not in {h.date() for h in holidays}
+
+    def test_columbus_day_not_in_bond_market(self):
+        # Columbus Day 2024-10-14 should NOT be a bond market holiday
+        holidays = _bond_market_holidays(date(2024, 10, 10), date(2024, 10, 18))
+        assert date(2024, 10, 14) not in holidays
+
+    def test_veterans_day_not_in_bond_market(self):
+        # Veterans Day 2024-11-11 should NOT be a bond market holiday
+        holidays = _bond_market_holidays(date(2024, 11, 8), date(2024, 11, 15))
+        assert date(2024, 11, 11) not in holidays
+
+    def test_columbus_day_is_federal_holiday(self):
+        # Columbus Day IS a federal holiday (so _is_ny_business_day with federal says False)
+        assert _is_ny_business_day(date(2024, 10, 14), calendar="federal") is False
+
+    def test_columbus_day_is_bond_market_business_day(self):
+        # Columbus Day is a bond market business day
+        assert _is_ny_business_day(date(2024, 10, 14), calendar="bond_market") is True
+
+    def test_veterans_day_is_federal_holiday(self):
+        assert _is_ny_business_day(date(2024, 11, 11), calendar="federal") is False
+
+    def test_veterans_day_is_bond_market_business_day(self):
+        assert _is_ny_business_day(date(2024, 11, 11), calendar="bond_market") is True
+
+    def test_thu_before_good_friday_2024_rolls_to_monday(self):
+        # 2024-03-28 (Thu) → Good Friday 03-29 closed → next is Monday 2024-04-01
+        assert _next_ny_business_day(date(2024, 3, 28), calendar="bond_market") == date(2024, 4, 1)
+
+    def test_thu_before_good_friday_2025_rolls_to_monday(self):
+        # 2025-04-17 (Thu) → Good Friday 04-18 closed → next is Monday 2025-04-21
+        assert _next_ny_business_day(date(2025, 4, 17), calendar="bond_market") == date(2025, 4, 21)
+
+    def test_fri_before_columbus_day_rolls_to_monday_bond(self):
+        # 2024-10-11 (Fri) → Columbus Day 10-14 is OPEN → next is Monday 2024-10-14
+        assert _next_ny_business_day(date(2024, 10, 11), calendar="bond_market") == date(2024, 10, 14)
+
+    def test_good_friday_fails_on_federal_calendar(self):
+        # Under the old federal calendar, 2024-03-28 (Thu) → 2024-03-29 (Good Friday)
+        # because Good Friday is not a federal holiday
+        assert _next_ny_business_day(date(2024, 3, 28), calendar="federal") == date(2024, 3, 29)
+
+
+# ---------------------------------------------------------------------------
 # _ny_available_ts: market rate availability
 # ---------------------------------------------------------------------------
 
@@ -124,6 +195,28 @@ class TestNyAvailableTs:
         # MLK Day 2026 = Jan 19, so next business day is Jan 20
         ts = _ny_available_ts(date(2026, 1, 16))
         assert ts == datetime(2026, 1, 20, 21, 30, 0, tzinfo=timezone.utc)
+
+    def test_thu_before_good_friday_2024_rolls_to_monday(self):
+        # 2024-03-28 (Thu) → Good Friday 03-29 closed → Monday 2024-04-01 16:30 EDT = 20:30 UTC
+        ts = _ny_available_ts(date(2024, 3, 28))
+        assert ts == datetime(2024, 4, 1, 20, 30, 0, tzinfo=timezone.utc)
+
+    def test_thu_before_good_friday_2025_rolls_to_monday(self):
+        # 2025-04-17 (Thu) → Good Friday 04-18 closed → Monday 2025-04-21 16:30 EDT = 20:30 UTC
+        ts = _ny_available_ts(date(2025, 4, 17))
+        assert ts == datetime(2025, 4, 21, 20, 30, 0, tzinfo=timezone.utc)
+
+    def test_columbus_day_bond_market_available_same_day(self):
+        # Columbus Day 2024-10-14: bond market OPEN
+        # 2024-10-11 (Fri) → 2024-10-14 (Mon) 16:30 EDT = 20:30 UTC
+        ts = _ny_available_ts(date(2024, 10, 11))
+        assert ts == datetime(2024, 10, 14, 20, 30, 0, tzinfo=timezone.utc)
+
+    def test_good_friday_wrong_on_federal_calendar(self):
+        # Under federal calendar, Thu before Good Friday → Good Friday (wrong)
+        from notebooks.refresh_bronze_fed import _next_ny_business_day
+        nxt = _next_ny_business_day(date(2024, 3, 28), calendar="federal")
+        assert nxt == date(2024, 3, 29)  # This is Good Friday — proves the bug
 
 
 # ---------------------------------------------------------------------------

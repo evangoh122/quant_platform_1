@@ -22,6 +22,25 @@ from zoneinfo import ZoneInfo
 import requests
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
+
+def _easter_sunday(year: int) -> date:
+    """Compute Easter Sunday for a given year using the Anonymous Gregorian algorithm."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
 CATALOG = "bootcamp_students"
 SCHEMA = "evangoh_capstone"
 TABLE = "bronze_fed_series"
@@ -72,27 +91,65 @@ def _us_federal_holidays(start: date, end: date) -> set[date]:
     return {h.date() for h in holidays}
 
 
-def _is_ny_business_day(d: date) -> bool:
-    """Monday-Friday, not US federal holiday."""
+def _bond_market_holidays(start: date, end: date) -> set[date]:
+    """Return SIFMA-style bond market holidays in [start, end].
+
+    Federal holidays + Good Friday, minus Columbus Day and Veterans Day.
+    Used for market_rate (Treasury H.15) availability only.
+    """
+    fed = _us_federal_holidays(start, end)
+    # Add Good Friday for each year in range
+    for year in range(start.year, end.year + 1):
+        good_friday = _easter_sunday(year) - timedelta(days=2)
+        if start <= good_friday <= end:
+            fed.add(good_friday)
+    # Remove Columbus Day (2nd Monday in October) and Veterans Day (Nov 11)
+    for year in range(start.year, end.year + 1):
+        # Columbus Day: 2nd Monday in October
+        oct_1 = date(year, 10, 1)
+        first_monday = oct_1 + timedelta(days=(7 - oct_1.weekday()) % 7)
+        columbus_day = first_monday + timedelta(days=7)
+        if start <= columbus_day <= end:
+            fed.discard(columbus_day)
+        # Veterans Day: November 11
+        veterans_day = date(year, 11, 11)
+        if start <= veterans_day <= end:
+            fed.discard(veterans_day)
+    return fed
+
+
+def _is_ny_business_day(d: date, calendar: str = "federal") -> bool:
+    """Monday-Friday, not a holiday per the specified calendar."""
     if d.weekday() >= 5:
         return False
-    holidays = _us_federal_holidays(d, d)
+    if calendar == "bond_market":
+        holidays = _bond_market_holidays(d, d)
+    else:
+        holidays = _us_federal_holidays(d, d)
     return d not in holidays
 
 
-def _next_ny_business_day(d: date) -> date:
-    """Return the next NY business day after d."""
+def _next_ny_business_day(d: date, calendar: str = "federal") -> date:
+    """Return the next NY business day after d using the specified calendar."""
     nxt = d + timedelta(days=1)
     # Look ahead up to 10 days to cover holiday clusters
-    holidays = _us_federal_holidays(nxt, nxt + timedelta(days=10))
+    if calendar == "bond_market":
+        holidays = _bond_market_holidays(nxt, nxt + timedelta(days=10))
+    else:
+        holidays = _us_federal_holidays(nxt, nxt + timedelta(days=10))
     while nxt.weekday() >= 5 or nxt in holidays:
         nxt += timedelta(days=1)
     return nxt
 
 
-def _ny_available_ts(obs_date: date) -> datetime:
-    """Next NY business day after observation_date at 16:30 America/New_York (DST-aware), converted to UTC."""
-    nxt = _next_ny_business_day(obs_date)
+def _ny_available_ts(obs_date: date, revision_class: str = "market_rate") -> datetime:
+    """Next NY business day after observation_date at 16:30 America/New_York (DST-aware), converted to UTC.
+
+    For market_rate, uses the SIFMA bond-market calendar (federal + Good Friday,
+    minus Columbus Day and Veterans Day). For other classes, uses federal calendar.
+    """
+    cal = "bond_market" if revision_class == "market_rate" else "federal"
+    nxt = _next_ny_business_day(obs_date, calendar=cal)
     local_dt = datetime(nxt.year, nxt.month, nxt.day, 16, 30, 0, tzinfo=_NY_TZ)
     return local_dt.astimezone(timezone.utc)
 
@@ -230,7 +287,7 @@ def parse_csv_rows(
             continue
 
         if revision_class == "market_rate":
-            info_ts = _ny_available_ts(obs_date)
+            info_ts = _ny_available_ts(obs_date, revision_class="market_rate")
         else:
             info_ts = ingest_ts
 
