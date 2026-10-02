@@ -82,8 +82,8 @@ def search_sec_filings(
     from api.services.hybrid_retriever import CorpusUnavailableError
 
     symbol = normalize_symbol(symbol)
-    if as_of is None:
-        as_of = datetime.now(timezone.utc)
+    from api.services.hybrid_retriever import _normalize_as_of
+    as_of = _normalize_as_of(as_of)
 
     try:
         from api.services.hybrid_retriever import HybridRetriever
@@ -136,10 +136,11 @@ def search_sec_filings(
             )
 
             # Point-in-time: exclude filings accepted after as_of
+            # Compare as epoch seconds to avoid Spark session timezone ambiguity.
             if as_of is not None:
-                as_of_str = as_of.strftime("%Y-%m-%d %H:%M:%S")
+                as_of_epoch = int(as_of.timestamp())
                 df = df.where(
-                    F.col("accepted_ts").cast("timestamp") <= F.lit(as_of_str).cast("timestamp")
+                    F.unix_timestamp(F.col("accepted_ts")) <= F.lit(as_of_epoch)
                 )
 
             # Push query filter into Spark so it runs before the limit

@@ -36,6 +36,22 @@ from rank_bm25 import BM25Okapi
 from api.services.embeddings import EMBEDDING_DIM, get_embeddings
 
 
+def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
+    """Normalise *as_of* to a tz-aware UTC datetime.
+
+    Rules:
+      * ``None`` → ``datetime.now(timezone.utc)``
+      * naive (no tzinfo) → treated as UTC and tagged accordingly
+      * aware → converted to UTC via ``.astimezone(timezone.utc)``
+    """
+    if as_of is None:
+        return datetime.now(timezone.utc)
+    if as_of.tzinfo is None:
+        # Naive datetime — treat as UTC per contract (documented in module docstring)
+        return as_of.replace(tzinfo=timezone.utc)
+    return as_of.astimezone(timezone.utc)
+
+
 class CorpusUnavailableError(Exception):
     """Raised when the retrieval corpus cannot be loaded from Delta tables.
 
@@ -274,7 +290,17 @@ def _load_corpus() -> bool:
                 text = row["chunk_text"] or ""
                 ticker = row["ticker"] or ""
                 accession = row["accession_number"] or ""
-                accepted_ts = str(row["accepted_ts"] or "")
+                accepted_ts_raw = row["accepted_ts"]
+                if accepted_ts_raw is not None:
+                    # Ensure we always store UTC ISO format regardless of Spark session tz
+                    if isinstance(accepted_ts_raw, datetime):
+                        if accepted_ts_raw.tzinfo is None:
+                            accepted_ts_raw = accepted_ts_raw.replace(tzinfo=timezone.utc)
+                        accepted_ts = accepted_ts_raw.astimezone(timezone.utc).isoformat()
+                    else:
+                        accepted_ts = str(accepted_ts_raw)
+                else:
+                    accepted_ts = ""
                 form_type = row["form_type"] or ""
                 section_id = row["filing_section"] or ""
                 chunk_index = row["chunk_index"] or 0
@@ -363,8 +389,7 @@ def _pit_filter(
 
     Applied BEFORE scoring so future filings never influence ranking.
     """
-    if as_of is None:
-        as_of = datetime.now(timezone.utc)
+    as_of = _normalize_as_of(as_of)
 
     filtered = []
     for doc in docs:
@@ -395,6 +420,7 @@ def bm25_search(
     Raises CorpusUnavailableError if the corpus cannot be loaded.
     """
     _load_corpus()
+    as_of = _normalize_as_of(as_of)
     if _bm25_index is None or _bm25_docs is None:
         return []
 
@@ -444,6 +470,7 @@ def vector_search(
     Raises CorpusUnavailableError if the corpus cannot be loaded.
     """
     _load_corpus()
+    as_of = _normalize_as_of(as_of)
     if not _embeddings_map:
         return []
 
@@ -463,10 +490,9 @@ def vector_search(
         text, ticker_val, accession, accepted_ts, form_type, section_id, chunk_index, source_url = entry
 
         # Apply PIT filter per-document
-        if as_of is not None:
-            accepted_dt = _parse_ts(accepted_ts)
-            if accepted_dt is not None and accepted_dt > as_of:
-                continue
+        accepted_dt = _parse_ts(accepted_ts)
+        if accepted_dt is not None and accepted_dt > as_of:
+            continue
 
         # Apply ticker filter
         if ticker and ticker_val != ticker:
@@ -533,6 +559,7 @@ class HybridRetriever:
         Returns:
             Fused and optionally reranked list of Documents.
         """
+        as_of = _normalize_as_of(as_of)
         effective_top_k = top_k or self.top_k
         effective_ticker = resolve_ticker_from_query(query, ticker)
 

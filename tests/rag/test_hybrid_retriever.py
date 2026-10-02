@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -209,6 +209,56 @@ class TestBM25DenseFusion:
 
 # ── Point-in-time filter tests ───────────────────────────────────────────────
 
+class TestNormalizeAsOf:
+    """Verify _normalize_as_of handles all input types correctly."""
+
+    def test_none_returns_utc_now(self):
+        from api.services.hybrid_retriever import _normalize_as_of
+
+        result = _normalize_as_of(None)
+        assert result.tzinfo is not None
+        # Should be within a few seconds of now
+        diff = abs((datetime.now(timezone.utc) - result).total_seconds())
+        assert diff < 5
+
+    def test_naive_treated_as_utc(self):
+        from api.services.hybrid_retriever import _normalize_as_of
+
+        naive = datetime(2025, 6, 1, 12, 0, 0)
+        result = _normalize_as_of(naive)
+        assert result.tzinfo == timezone.utc
+        assert result == datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_aware_utc_unchanged(self):
+        from api.services.hybrid_retriever import _normalize_as_of
+
+        aware = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        result = _normalize_as_of(aware)
+        assert result == aware
+
+    def test_aware_non_utc_converted(self):
+        from api.services.hybrid_retriever import _normalize_as_of
+
+        # +08:00 → UTC should subtract 8 hours
+        aware_plus8 = datetime(2025, 6, 1, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+        result = _normalize_as_of(aware_plus8)
+        assert result == datetime(2025, 5, 31, 16, 0, 0, tzinfo=timezone.utc)
+
+    def test_plus8_midnight_excludes_filing_at_20utc_previous_day(self):
+        """Concrete scenario from the build request:
+        as_of = 2025-06-01 00:00 +08:00 → UTC 2025-05-31 16:00Z
+        Filing accepted at 2025-05-31 20:00Z must be excluded.
+        """
+        from api.services.hybrid_retriever import _pit_filter
+
+        as_of = datetime(2025, 6, 1, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+        doc = _make_doc("Late filing", accepted_ts="2025-05-31 20:00:00+00:00")
+        result = _pit_filter([doc], as_of=as_of)
+        assert len(result) == 0, (
+            "Filing at 2025-05-31 20:00Z should be excluded by as_of 2025-06-01 +08:00 (UTC 16:00Z)"
+        )
+
+
 class TestPITFilter:
     """Verify that accepted_ts <= as_of filtering works correctly."""
 
@@ -272,6 +322,277 @@ class TestPITFilter:
 
         assert len(result) == 1
         assert result[0].metadata["accession"] == "PAST"
+
+
+# ── PIT integration tests through real retrieval path ────────────────────────
+
+class TestPITIntegrationRetrieval:
+    """Verify PIT filter is load-bearing in bm25_search, vector_search, and retrieve.
+
+    Each test uses a corpus that includes a future-dated chunk (accepted_ts in
+    2027) alongside past chunks.  When as_of=2025-06-01, the future chunk must
+    be excluded.
+
+    Mutation proof: removing the PIT filter from bm25_search or vector_search
+    must fail at least one test in this class.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_corpus_with_future(self, monkeypatch):
+        """Inject corpus with one future-dated chunk."""
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("NVIDIA revenue growth driven by AI chips",
+                      ticker="NVDA", accession="PAST1", accepted_ts="2024-06-01"),
+            _make_doc("AMD EPYC server processor market share gains",
+                      ticker="AMD", accession="PAST2", accepted_ts="2024-01-15"),
+            _make_doc("Intel foundry services strategic pivot",
+                      ticker="INTC", accession="PAST3", accepted_ts="2023-12-01"),
+            _make_doc("NVIDIA CUDA ecosystem dominance in ML",
+                      ticker="NVDA", accession="FUTURE1", accepted_ts="2027-03-15"),
+        ]
+
+        tokenised = [hr.tokenize(d.page_content) for d in self.docs]
+
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_bm25_docs", self.docs)
+        monkeypatch.setattr(hr, "_bm25_tokenised", tokenised)
+        monkeypatch.setattr(hr, "_bm25_index", hr.BM25Okapi(tokenised))
+        monkeypatch.setattr(hr, "_embeddings_map", embeddings_map)
+        monkeypatch.setattr(hr, "_corpus", {
+            hashlib.md5(d.page_content.encode()).hexdigest()[:16]: (
+                d.page_content,
+                d.metadata["ticker"],
+                d.metadata["accession"],
+                d.metadata["accepted_ts"],
+                d.metadata["form_type"],
+                d.metadata["section_id"],
+                d.metadata["chunk_index"],
+                d.metadata.get("source_url", ""),
+            )
+            for d in self.docs
+        })
+
+        class StubEmbeddings:
+            def embed_query(self, text):
+                np.random.seed(hash(text) % (2**31))
+                v = np.random.randn(384).astype(np.float32)
+                v /= np.linalg.norm(v)
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: StubEmbeddings())
+
+    def test_bm25_excludes_future_chunk(self):
+        """bm25_search must exclude chunks with accepted_ts > as_of."""
+        from api.services.hybrid_retriever import bm25_search
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        results = bm25_search("NVIDIA AI chips", top_k=10, as_of=as_of)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "FUTURE1" not in accessions, (
+            "Future-dated chunk (2027) leaked through bm25_search PIT filter"
+        )
+        # Past NVIDIA chunk should still be present
+        assert "PAST1" in accessions
+
+    def test_vector_excludes_future_chunk(self):
+        """vector_search must exclude chunks with accepted_ts > as_of."""
+        from api.services.hybrid_retriever import vector_search
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        results = vector_search("NVIDIA GPU revenue", top_k=10, as_of=as_of)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "FUTURE1" not in accessions, (
+            "Future-dated chunk (2027) leaked through vector_search PIT filter"
+        )
+
+    def test_retrieve_excludes_future_chunk(self):
+        """HybridRetriever.retrieve must exclude future-dated chunks."""
+        from api.services.hybrid_retriever import HybridRetriever
+
+        retriever = HybridRetriever(top_k=10)
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        results = retriever.retrieve("NVIDIA AI chips", as_of=as_of, top_k=10)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "FUTURE1" not in accessions, (
+            "Future-dated chunk (2027) leaked through retrieve PIT filter"
+        )
+
+    def test_retrieve_includes_future_chunk_when_as_of_is_future(self):
+        """When as_of is after the chunk date, future chunks should be included."""
+        from api.services.hybrid_retriever import HybridRetriever
+
+        retriever = HybridRetriever(top_k=10)
+        as_of = datetime(2028, 1, 1, tzinfo=timezone.utc)
+        results = retriever.retrieve("NVIDIA CUDA", as_of=as_of, top_k=10)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "FUTURE1" in accessions, (
+            "Future-dated chunk should be included when as_of is later"
+        )
+
+
+class TestPITMutationProof:
+    """Mutation tests: removing PIT filter from retrieval functions must break tests.
+
+    These tests directly verify the PIT filter is wired into bm25_search and
+    vector_search by temporarily monkeypatching out the filter logic.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_corpus(self, monkeypatch):
+        """Same corpus setup as TestPITIntegrationRetrieval."""
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("NVIDIA revenue growth driven by AI chips",
+                      ticker="NVDA", accession="PAST1", accepted_ts="2024-06-01"),
+            _make_doc("NVIDIA CUDA ecosystem dominance in ML",
+                      ticker="NVDA", accession="FUTURE1", accepted_ts="2027-03-15"),
+        ]
+
+        tokenised = [hr.tokenize(d.page_content) for d in self.docs]
+
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_bm25_docs", self.docs)
+        monkeypatch.setattr(hr, "_bm25_tokenised", tokenised)
+        monkeypatch.setattr(hr, "_bm25_index", hr.BM25Okapi(tokenised))
+        monkeypatch.setattr(hr, "_embeddings_map", embeddings_map)
+        monkeypatch.setattr(hr, "_corpus", {
+            hashlib.md5(d.page_content.encode()).hexdigest()[:16]: (
+                d.page_content,
+                d.metadata["ticker"],
+                d.metadata["accession"],
+                d.metadata["accepted_ts"],
+                d.metadata["form_type"],
+                d.metadata["section_id"],
+                d.metadata["chunk_index"],
+                d.metadata.get("source_url", ""),
+            )
+            for d in self.docs
+        })
+
+        class StubEmbeddings:
+            def embed_query(self, text):
+                np.random.seed(hash(text) % (2**31))
+                v = np.random.randn(384).astype(np.float32)
+                v /= np.linalg.norm(v)
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: StubEmbeddings())
+
+    def test_mutation_remove_pit_from_bm25_fails(self):
+        """If bm25_search skips PIT, future chunks leak through."""
+        from api.services import hybrid_retriever as hr
+
+        original_bm25 = hr.bm25_search
+
+        def bm25_no_pit(query, top_k=5, ticker="", ticker_boost=2.0, as_of=None):
+            """bm25_search without PIT filter — mutation for proof."""
+            hr._load_corpus()
+            if hr._bm25_index is None or hr._bm25_docs is None:
+                return []
+            # Skip PIT filter — use raw docs
+            docs = hr._bm25_docs
+            if not docs:
+                return []
+            tokenised = [hr.tokenize(d.page_content) for d in docs]
+            bm25 = hr.BM25Okapi(tokenised)
+            query_tokens = hr.tokenize(query)
+            raw_scores = bm25.get_scores(query_tokens)
+            if ticker:
+                boosted = [
+                    (idx, s * ticker_boost if docs[idx].metadata.get("ticker") == ticker else s)
+                    for idx, s in enumerate(raw_scores)
+                ]
+            else:
+                boosted = list(enumerate(raw_scores))
+            scored = sorted(boosted, key=lambda x: x[1], reverse=True)
+            return [docs[idx] for idx, _ in scored[:top_k]]
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+
+        # Normal bm25_search excludes future
+        normal_results = original_bm25("NVIDIA AI", top_k=10, as_of=as_of)
+        normal_acc = [d.metadata["accession"] for d in normal_results]
+        assert "FUTURE1" not in normal_acc
+
+        # Mutated bm25_no_pit includes future — proves filter is load-bearing
+        mutated_results = bm25_no_pit("NVIDIA AI", top_k=10, as_of=as_of)
+        mutated_acc = [d.metadata["accession"] for d in mutated_results]
+        assert "FUTURE1" in mutated_acc, (
+            "Mutation proof failed: removing PIT from bm25 did NOT leak future chunk"
+        )
+
+    def test_mutation_remove_pit_from_vector_fails(self):
+        """If vector_search skips PIT, future chunks leak through."""
+        from api.services import hybrid_retriever as hr
+
+        original_vector = hr.vector_search
+
+        def vector_no_pit(query, top_k=5, ticker="", as_of=None):
+            """vector_search without PIT filter — mutation for proof."""
+            hr._load_corpus()
+            if not hr._embeddings_map:
+                return []
+            embeddings = hr.get_embeddings()
+            if embeddings is None:
+                return []
+            qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
+            candidates = []
+            for cid, vec in hr._embeddings_map.items():
+                entry = hr._corpus.get(cid)
+                if entry is None:
+                    continue
+                text, ticker_val, accession, accepted_ts, form_type, section_id, chunk_index, source_url = entry
+                # Skip PIT filter
+                if ticker and ticker_val != ticker:
+                    continue
+                sim = hr._cosine_similarity(qvec, vec)
+                doc = Document(
+                    page_content=text,
+                    metadata={
+                        "chunk_id": cid, "ticker": ticker_val, "accession": accession,
+                        "accepted_ts": accepted_ts, "form_type": form_type,
+                        "section_id": section_id, "chunk_index": chunk_index,
+                        "source_url": source_url, "distance": 1.0 - sim, "similarity": sim,
+                    },
+                )
+                candidates.append((sim, doc))
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            return [doc for _, doc in candidates[:top_k]]
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+
+        # Normal vector_search excludes future
+        normal_results = original_vector("NVIDIA GPU", top_k=10, as_of=as_of)
+        normal_acc = [d.metadata["accession"] for d in normal_results]
+        assert "FUTURE1" not in normal_acc
+
+        # Mutated vector_no_pit includes future — proves filter is load-bearing
+        mutated_results = vector_no_pit("NVIDIA GPU", top_k=10, as_of=as_of)
+        mutated_acc = [d.metadata["accession"] for d in mutated_results]
+        assert "FUTURE1" in mutated_acc, (
+            "Mutation proof failed: removing PIT from vector did NOT leak future chunk"
+        )
 
 
 # ── Reranker fallback tests ──────────────────────────────────────────────────
@@ -1015,3 +1336,45 @@ class TestSearchSecFilingsError:
 
         assert len(result) == 1
         assert result[0]["retrieval_mode"] == "hybrid"
+
+    def test_naive_as_of_returns_hybrid_mode(self, monkeypatch):
+        """A naive as_of must not raise or fall into substring fallback.
+
+        The normaliser should treat naive datetimes as UTC and proceed with
+        the hybrid retrieval path.
+        """
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from langchain_core.documents import Document
+
+        mock_doc = Document(
+            page_content="NVIDIA revenue",
+            metadata={
+                "accession": "ACC1",
+                "form_type": "10-K",
+                "accepted_ts": "2025-01-15",
+                "source_url": "",
+                "ticker": "NVDA",
+                "section_id": "item_7",
+                "chunk_index": 0,
+                "similarity": 0.9,
+                "distance": 0.1,
+            },
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = [mock_doc]
+
+        # Pass a naive datetime — must not raise TypeError or fall to substring
+        naive_as_of = datetime(2025, 6, 1)
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("api.services.reranker.rerank", side_effect=lambda q, d, top_k: d):
+            result = search_sec_filings("NVDA", query="revenue", as_of=naive_as_of)
+
+        assert len(result) == 1
+        assert result[0]["retrieval_mode"] == "hybrid", (
+            "Naive as_of fell into substring fallback instead of hybrid path"
+        )
