@@ -20,8 +20,14 @@ Fix: set `prediction_ts` to the bar's availability, i.e.
 **This changes the MERGE key `(symbol, prediction_ts)`.** A plain re-run would insert
 new rows next to the old leaking rows. Rebuild `gold_model_features` cleanly (delete the
 affected rows or rebuild the table inside the same run), and paste before/after counts
-proving **no duplicates**: `COUNT(*) = COUNT(DISTINCT symbol, DATE(prediction_ts))`
-for daily rows.
+proving **no duplicates**. Do NOT use `COUNT(DISTINCT symbol, DATE(prediction_ts))`:
+4,143 symbol-days legitimately have two rows because a winter session's last bar falls
+after midnight UTC (e.g. 00:59). Instead prove: (a) `COUNT(*) = COUNT(DISTINCT symbol,
+prediction_ts)`; (b) total rows unchanged at **43,345**; (c) no row still carries the old
+bar-start `prediction_ts` for a session that now has a bar-close row.
+
+**Resuming:** a previous attempt was stopped mid-edit. Its partial edits are committed
+(`wip(silver-gold): round-7 edits in progress`). Review them, keep what is correct, and finish.
 
 ## 2. The build invariant must check the model matrix
 
