@@ -2,10 +2,10 @@
 
 You are the **checker**, not the builder. Do not modify production code or tests. Read and run.
 Branch `slice/bronze-cot`, worktree `/home/jianj/code/qp1-b-cot`.
-Round-2 request: `.agents/requests/BUILD-bronze-cot-round2.md`. Codex's round-1 findings:
-`.agents/codex/VERDICT-bronze-cot.md`. Diff for this round: `git diff 71a2533..HEAD`.
+Round-2 and round-3 requests: `.agents/requests/BUILD-bronze-cot-round2.md`. Codex's round-1 findings:
+`.agents/codex/VERDICT-bronze-cot.md`. Diff since your last check: `git diff 0e3c9f6..HEAD`. Your previous verdict: `.agents/deepseek/VERDICT-bronze-cot-check.md` (off-by-one test was tautological).
 
-Claude already verified: no `overwrite` write path remains; 36 tests pass; tests reference the
+Claude already verified (round 3): the date filter is now `filter_report_window()` (notebooks/refresh_bronze_cot.py:343) and restoring the round-1 bug (`parsed > start_ts`) in a scratch copy makes 6 tests fail while 41 pass on HEAD. Earlier: no `overwrite` write path remains; 36 tests pass; tests reference the
 production functions 28 times; no CRLF; a live `--dry-run` reports 0 new rows for both datasets
 (tables are current to CFTC's latest published report, 2026-09-22).
 
