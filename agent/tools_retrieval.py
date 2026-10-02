@@ -14,6 +14,7 @@ and never becomes a SQL fragment.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from agent.guardrails import normalize_symbol
@@ -62,20 +63,71 @@ def get_options_features(symbol: str, expiry: Optional[str] = None) -> list:
     return [r.asDict() for r in df.collect()]
 
 
-def search_sec_filings(symbol: str, query: Optional[str] = None) -> list:
-    symbol = normalize_symbol(symbol)
-    from pyspark.sql import functions as F
+def search_sec_filings(
+    symbol: str,
+    query: Optional[str] = None,
+    as_of: Optional[datetime] = None,
+    top_k: int = 5,
+) -> list:
+    """Search SEC filing sections using hybrid BM25 + dense retrieval with RRF.
 
-    df = _spark().table(_fqn("silver_sec_sections")).where(
-        F.col("ticker") == symbol
-    ).limit(50)
-    results = [r.asDict() for r in df.collect()]
-    if query:
-        results = [
-            r for r in results
-            if query.lower() in (r.get("chunk_text", "") or "").lower()
+    Returns chunk text, accession, form_type, accepted_ts, source_url, and
+    fused/rerank scores for auditability.  Point-in-time: only chunks with
+    ``accepted_ts <= as_of`` are eligible.
+
+    Falls back to substring filter if the hybrid retriever is unavailable.
+    """
+    symbol = normalize_symbol(symbol)
+    if as_of is None:
+        as_of = datetime.now(timezone.utc)
+
+    try:
+        from api.services.hybrid_retriever import HybridRetriever
+        from api.services.reranker import rerank
+
+        retriever = HybridRetriever(top_k=top_k)
+        docs = retriever.retrieve(
+            query=query or symbol,
+            ticker=symbol,
+            as_of=as_of,
+            top_k=top_k,
+        )
+
+        # Apply reranker if we have a query
+        if query and len(docs) > 1:
+            docs = rerank(query, docs, top_k=top_k)
+
+        return [
+            {
+                "chunk_text": d.page_content,
+                "accession_number": d.metadata.get("accession", ""),
+                "form_type": d.metadata.get("form_type", ""),
+                "accepted_ts": d.metadata.get("accepted_ts", ""),
+                "source_url": d.metadata.get("source_url", ""),
+                "ticker": d.metadata.get("ticker", ""),
+                "section": d.metadata.get("section_id", ""),
+                "chunk_index": d.metadata.get("chunk_index", 0),
+                "similarity": d.metadata.get("similarity"),
+                "distance": d.metadata.get("distance"),
+            }
+            for d in docs
         ]
-    return results
+    except Exception as e:
+        # Graceful fallback to substring filter
+        import logging
+        logging.warning("Hybrid retriever failed (%s), falling back to substring filter", e)
+        from pyspark.sql import functions as F
+
+        df = _spark().table(_fqn("silver_sec_sections")).where(
+            F.col("ticker") == symbol
+        ).limit(50)
+        results = [r.asDict() for r in df.collect()]
+        if query:
+            results = [
+                r for r in results
+                if query.lower() in (r.get("chunk_text", "") or "").lower()
+            ]
+        return results[:top_k]
 
 
 def get_cot_positioning(mapped_asset: str) -> dict:

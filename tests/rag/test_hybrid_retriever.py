@@ -1,0 +1,396 @@
+"""tests/rag/test_hybrid_retriever.py — Offline tests for the hybrid retrieval pipeline.
+
+Tests run without Databricks/Spark — corpus loading is stubbed with in-memory data.
+Live integration tests are marked @pytest.mark.databricks.
+"""
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pytest
+from langchain_core.documents import Document
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _make_doc(
+    text: str,
+    ticker: str = "NVDA",
+    accession: str = "0000723125-25-000042",
+    accepted_ts: str = "2025-01-15",
+    **meta,
+) -> Document:
+    """Create a Document with standard metadata."""
+    return Document(
+        page_content=text,
+        metadata={
+            "ticker": ticker,
+            "accession": accession,
+            "accepted_ts": accepted_ts,
+            "form_type": "10-K",
+            "section_id": "item_7",
+            "chunk_index": 0,
+            "source_url": "",
+            **meta,
+        },
+    )
+
+
+# ── RRF Fusion tests ─────────────────────────────────────────────────────────
+
+class TestRRFFuse:
+    """Verify rrf_fuse matches Rag_workbench's expected behavior."""
+
+    def test_basic_fusion_merges_rankings(self):
+        from api.services.hybrid_retriever import rrf_fuse
+
+        doc_a = _make_doc("Alpha content", accession="AAA")
+        doc_b = _make_doc("Beta content", accession="BBB")
+        doc_c = _make_doc("Gamma content", accession="CCC")
+
+        # Vector ranking: A > B > C
+        # BM25 ranking:   B > C > A
+        rankings = [[doc_a, doc_b, doc_c], [doc_b, doc_c, doc_a]]
+        result = rrf_fuse(rankings, k=60)
+
+        assert len(result) == 3
+        # B appears first in both (rank 1 vector, rank 0 BM25) → highest score
+        assert result[0].metadata["accession"] == "BBB"
+
+    def test_rrf_k_must_be_positive(self):
+        from api.services.hybrid_retriever import rrf_fuse
+
+        with pytest.raises(ValueError, match="rrf k must be >= 1"):
+            rrf_fuse([[Document(page_content="x", metadata={})]], k=0)
+
+    def test_ticker_boost_must_be_at_least_one(self):
+        from api.services.hybrid_retriever import rrf_fuse
+
+        with pytest.raises(ValueError, match="ticker_boost must be >= 1.0"):
+            rrf_fuse([[Document(page_content="x", metadata={})]], ticker_boost=0.5)
+
+    def test_ticker_boost_floats_matching_docs(self):
+        from api.services.hybrid_retriever import rrf_fuse
+
+        doc_nvda = _make_doc("NVDA content", ticker="NVDA", accession="NVDA1")
+        doc_amd = _make_doc("AMD content", ticker="AMD", accession="AMD1")
+
+        # Both lists: NVDA first, AMD second
+        rankings = [[doc_nvda, doc_amd], [doc_nvda, doc_amd]]
+        result = rrf_fuse(rankings, k=60, boost_ticker="NVDA", ticker_boost=2.0)
+
+        # NVDA should be first with boosted score
+        assert result[0].metadata["ticker"] == "NVDA"
+
+    def test_deduplication_by_content_key(self):
+        from api.services.hybrid_retriever import rrf_fuse
+
+        # Same chunk appearing in both lists should be deduplicated
+        doc = _make_doc("Same content", accession="DUP")
+        rankings = [[doc], [doc]]
+        result = rrf_fuse(rankings, k=60)
+
+        assert len(result) == 1
+        assert result[0].metadata["accession"] == "DUP"
+
+    def test_empty_rankings(self):
+        from api.services.hybrid_retriever import rrf_fuse
+
+        result = rrf_fuse([], k=60)
+        assert result == []
+
+    def test_single_ranking_list(self):
+        from api.services.hybrid_retriever import rrf_fuse
+
+        doc_a = _make_doc("A", accession="A")
+        doc_b = _make_doc("B", accession="B")
+        result = rrf_fuse([[doc_a, doc_b]], k=60)
+
+        assert len(result) == 2
+        assert result[0].metadata["accession"] == "A"
+
+
+# ── BM25 + Dense fusion on in-memory corpus ──────────────────────────────────
+
+class TestBM25DenseFusion:
+    """Test BM25 and dense search with a stubbed in-memory corpus."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_corpus(self, monkeypatch):
+        """Inject a tiny corpus into the module-level cache."""
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("NVIDIA revenue growth driven by AI chips", ticker="NVDA", accession="A1", accepted_ts="2025-01-01"),
+            _make_doc("AMD EPYC server processor market share gains", ticker="AMD", accession="A2", accepted_ts="2025-01-01"),
+            _make_doc("Intel foundry services strategic pivot", ticker="INTC", accession="A3", accepted_ts="2025-01-01"),
+            _make_doc("NVIDIA CUDA ecosystem dominance in ML", ticker="NVDA", accession="A4", accepted_ts="2025-01-01"),
+            _make_doc("Qualcomm 5G modem technology patents", ticker="QCOM", accession="A5", accepted_ts="2025-01-01"),
+        ]
+
+        # Pre-tokenised for BM25
+        tokenised = [hr.tokenize(d.page_content) for d in self.docs]
+
+        # Stub embeddings: simple random but deterministic vectors
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        # Inject into module cache
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_bm25_docs", self.docs)
+        monkeypatch.setattr(hr, "_bm25_tokenised", tokenised)
+        monkeypatch.setattr(hr, "_bm25_index", hr.BM25Okapi(tokenised))
+        monkeypatch.setattr(hr, "_embeddings_map", embeddings_map)
+        monkeypatch.setattr(hr, "_corpus", {
+            hashlib.md5(d.page_content.encode()).hexdigest()[:16]: (
+                d.page_content,
+                d.metadata["ticker"],
+                d.metadata["accession"],
+                d.metadata["accepted_ts"],
+                d.metadata["form_type"],
+                d.metadata["section_id"],
+                d.metadata["chunk_index"],
+                d.metadata.get("source_url", ""),
+            )
+            for d in self.docs
+        })
+
+        # Stub the embedding provider
+        class StubEmbeddings:
+            def embed_query(self, text):
+                np.random.seed(hash(text) % (2**31))
+                v = np.random.randn(384).astype(np.float32)
+                v /= np.linalg.norm(v)
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: StubEmbeddings())
+
+    def test_bm25_returns_relevant_docs(self):
+        from api.services.hybrid_retriever import bm25_search
+
+        results = bm25_search("NVIDIA AI chips", top_k=3)
+        assert len(results) > 0
+        # NVIDIA docs should rank highly
+        tickers = [d.metadata["ticker"] for d in results]
+        assert "NVDA" in tickers
+
+    def test_vector_search_returns_docs(self):
+        from api.services.hybrid_retriever import vector_search
+
+        results = vector_search("GPU revenue growth", top_k=3)
+        assert len(results) > 0
+        assert all(isinstance(d, Document) for d in results)
+
+    def test_hybrid_retriever_fuses_results(self):
+        from api.services.hybrid_retriever import HybridRetriever
+
+        retriever = HybridRetriever(top_k=3)
+        results = retriever.retrieve("NVIDIA AI chips revenue", top_k=3)
+        assert len(results) > 0
+        assert len(results) <= 3
+
+    def test_ticker_boost_ranks_matching_docs_higher(self):
+        from api.services.hybrid_retriever import bm25_search
+
+        results = bm25_search("AI chips", top_k=10, ticker="NVDA", ticker_boost=10.0)
+        assert len(results) > 0
+        # With high boost, NVDA docs should appear first
+        first_ticker = results[0].metadata["ticker"]
+        assert first_ticker == "NVDA", f"Expected NVDA first with boost, got {first_ticker}"
+
+
+# ── Point-in-time filter tests ───────────────────────────────────────────────
+
+class TestPITFilter:
+    """Verify that accepted_ts <= as_of filtering works correctly."""
+
+    def test_chunk_accepted_after_as_of_excluded(self):
+        from api.services.hybrid_retriever import _pit_filter
+
+        doc_past = _make_doc("Past filing", accepted_ts="2024-06-01")
+        doc_future = _make_doc("Future filing", accepted_ts="2026-01-01")
+        doc_present = _make_doc("Present filing", accepted_ts="2025-06-15")
+
+        as_of = datetime(2025, 12, 31, tzinfo=timezone.utc)
+        result = _pit_filter([doc_past, doc_future, doc_present], as_of=as_of)
+
+        texts = [d.page_content for d in result]
+        assert "Past filing" in texts
+        assert "Present filing" in texts
+        assert "Future filing" not in texts
+
+    def test_chunk_accepted_exactly_at_as_of_included(self):
+        from api.services.hybrid_retriever import _pit_filter
+
+        as_of = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        doc = _make_doc("Exact match", accepted_ts="2025-06-15 12:00:00")
+        result = _pit_filter([doc], as_of=as_of)
+
+        assert len(result) == 1
+        assert result[0].page_content == "Exact match"
+
+    def test_none_as_of_uses_now(self):
+        from api.services.hybrid_retriever import _pit_filter
+
+        doc = _make_doc("Recent", accepted_ts="2020-01-01")
+        result = _pit_filter([doc], as_of=None)
+        assert len(result) == 1  # Should include since 2020 < now
+
+    def test_missing_accepted_ts_included_defensively(self):
+        from api.services.hybrid_retriever import _pit_filter
+
+        doc = _make_doc("No timestamp", accepted_ts="")
+        result = _pit_filter([doc], as_of=datetime(2025, 1, 1, tzinfo=timezone.utc))
+        assert len(result) == 1
+
+    def test_pit_filter_applied_before_scoring(self):
+        """A future chunk that is the best lexical match must not appear."""
+        from api.services.hybrid_retriever import HybridRetriever, _pit_filter
+
+        # Directly test the filter — future doc excluded even if it's a perfect match
+        future_doc = _make_doc(
+            "NVIDIA export restrictions China semiconductor",
+            accepted_ts="2027-01-01",
+            accession="FUTURE",
+        )
+        past_doc = _make_doc(
+            "Qualcomm quarterly earnings report",
+            accepted_ts="2024-01-01",
+            accession="PAST",
+        )
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        result = _pit_filter([future_doc, past_doc], as_of=as_of)
+
+        assert len(result) == 1
+        assert result[0].metadata["accession"] == "PAST"
+
+
+# ── Reranker fallback tests ──────────────────────────────────────────────────
+
+class TestRerankerFallback:
+    """Verify graceful fallback when the reranker model cannot load."""
+
+    def test_returns_docs_unchanged_when_model_unavailable(self):
+        from api.services import reranker as rr
+
+        docs = [
+            _make_doc("Doc A", accession="A"),
+            _make_doc("Doc B", accession="B"),
+            _make_doc("Doc C", accession="C"),
+        ]
+
+        with patch.object(rr, "_model", None), \
+             patch.object(rr, "CrossEncoder", None):
+            result = rr.rerank("test query", docs, top_k=2)
+
+        assert len(result) == 2
+        # Should be unchanged order (fallback)
+        assert result[0].metadata["accession"] == "A"
+        assert result[1].metadata["accession"] == "B"
+
+    def test_returns_empty_for_empty_docs(self):
+        from api.services.reranker import rerank
+
+        result = rerank("query", [], top_k=5)
+        assert result == []
+
+    def test_truncates_to_top_k_on_fallback(self):
+        from api.services import reranker as rr
+
+        docs = [_make_doc(f"Doc {i}", accession=str(i)) for i in range(10)]
+
+        with patch.object(rr, "_model", None), \
+             patch.object(rr, "CrossEncoder", None):
+            result = rr.rerank("query", docs, top_k=3)
+
+        assert len(result) == 3
+
+
+# ── Ticker resolution tests ──────────────────────────────────────────────────
+
+class TestTickerResolution:
+    """Verify company name → ticker resolution from query text."""
+
+    def test_resolves_nvidia(self):
+        from api.services.hybrid_retriever import resolve_ticker_from_query
+
+        assert resolve_ticker_from_query("What is NVIDIA's revenue?") == "NVDA"
+
+    def test_resolves_micron_technology(self):
+        from api.services.hybrid_retriever import resolve_ticker_from_query
+
+        assert resolve_ticker_from_query("Micron Technology gross margin") == "MU"
+
+    def test_explicit_ticker_overrides_query(self):
+        from api.services.hybrid_retriever import resolve_ticker_from_query
+
+        assert resolve_ticker_from_query("NVIDIA revenue", ticker="AMD") == "AMD"
+
+    def test_no_match_returns_empty(self):
+        from api.services.hybrid_retriever import resolve_ticker_from_query
+
+        assert resolve_ticker_from_query("random question about nothing") == ""
+
+    def test_empty_query_returns_empty(self):
+        from api.services.hybrid_retriever import resolve_ticker_from_query
+
+        assert resolve_ticker_from_query("") == ""
+
+
+# ── Embedding build idempotency test ─────────────────────────────────────────
+
+class TestEmbeddingBuildIdempotency:
+    """Verify the embedding build pipeline is idempotent."""
+
+    def test_second_run_writes_zero_rows(self):
+        """Mock Spark session to verify MERGE idempotency logic."""
+        from pipelines.build_sec_embeddings import build
+
+        mock_spark = MagicMock()
+
+        # All chunk_ids already exist in the embeddings table
+        existing_chunks = ["chunk_1", "chunk_2", "chunk_3"]
+
+        # Mock the existing embeddings query
+        mock_existing_df = MagicMock()
+        mock_existing_df.collect.return_value = [
+            MagicMock(__getitem__=lambda self, k: cid) for cid in existing_chunks
+        ]
+
+        # Mock the chunks query
+        mock_chunks_df = MagicMock()
+        mock_chunks_df.filter.return_value = mock_chunks_df
+        mock_chunks_df.collect.return_value = [
+            MagicMock(__getitem__=lambda self, k: {
+                "chunk_id": cid,
+                "chunk_text": f"Text for {cid}",
+            }.get(k))
+            for cid in existing_chunks
+        ]
+
+        def table_side_effect(name):
+            if "embeddings" in name:
+                return mock_existing_df
+            return mock_chunks_df
+
+        mock_spark.table.side_effect = table_side_effect
+        mock_spark.sql.return_value = MagicMock()
+
+        # Stub embeddings
+        class StubEmbeddings:
+            def embed_documents(self, texts):
+                return [[0.1] * 384 for _ in texts]
+
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            result = build(mock_spark)
+
+        # Should write 0 rows since all chunks already have embeddings
+        assert result["rows_written"] == 0
+        assert result["embedding_dim"] == 384
