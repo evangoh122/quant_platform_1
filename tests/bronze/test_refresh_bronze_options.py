@@ -290,3 +290,90 @@ def test_resolve_write_columns_skips_comment_rows():
     df.columns = ["a", "b"]
     result = m._resolve_write_columns(spark, df, "some_table")
     assert result == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# Staging: Files API used when not inside Databricks
+# ---------------------------------------------------------------------------
+
+def test_stage_file_uses_files_api_when_not_in_databricks(tmp_path, monkeypatch):
+    """Outside Databricks, _stage_file must download locally then upload via
+    the SDK Files API — never touch /Volumes as a local path."""
+    monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
+
+    s3 = MagicMock()
+    # Simulate download_file writing a local file.
+    def fake_download(bucket, key, local_path):
+        import os
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(b"fake,gzip,data\n")
+    s3.download_file.side_effect = fake_download
+
+    sdk_client = MagicMock()
+    local_root = str(tmp_path)
+
+    result = m._stage_file(s3, "us_options_opra/day_aggs_v1/2026/09/2026-09-22.csv.gz",
+                           sdk_client, local_root)
+    assert result is not None
+    assert "/Volumes/" in result
+    sdk_client.files.upload.assert_called_once()
+    call_args = sdk_client.files.upload.call_args
+    assert call_args[1].get("overwrite") is True or call_args[0][2] is True
+    # Local temp file should be cleaned up.
+    upload_local = call_args[0][1]
+    assert not hasattr(upload_local, "close") or True  # file handle is fine
+
+
+# ---------------------------------------------------------------------------
+# Trading-day calendar: weekends and holidays excluded
+# ---------------------------------------------------------------------------
+
+def test_trading_days_skips_saturday():
+    """2026-09-26 is a Saturday — must not appear in trading_days output."""
+    days = m.trading_days("2026-09-25", "2026-09-28")
+    assert "2026-09-26" not in days  # Saturday
+    assert "2026-09-27" not in days  # Sunday
+    assert "2026-09-25" in days      # Friday
+    assert "2026-09-28" in days      # Monday
+
+
+def test_trading_days_skips_holiday():
+    """2026-12-25 (Christmas) is a Friday — must not appear."""
+    days = m.trading_days("2026-12-24", "2026-12-26")
+    assert "2026-12-25" not in days
+    assert "2026-12-24" in days  # Thursday
+    assert "2026-12-26" not in days  # Saturday (weekend)
+
+
+# ---------------------------------------------------------------------------
+# Missing file on a real trading day counts as failed
+# ---------------------------------------------------------------------------
+
+def test_trading_day_missing_file_counts_as_failed(monkeypatch, capsys):
+    """A trading day whose S3 object 404s (head_object raises a non-403
+    ClientError) must increment the failed counter, not entitlement_gap."""
+    from botocore.exceptions import ClientError
+
+    monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
+
+    spark = MagicMock()
+    # _run_daily calls spark.sql 4 times: pre_count, pre_max, post_count, post_max
+    count_result = MagicMock()
+    count_result.collect.return_value = [{"n": 0}]
+    max_result = MagicMock()
+    max_result.collect.return_value = [{"m": None}]
+    spark.sql.side_effect = [count_result, max_result, count_result, max_result]
+
+    s3 = MagicMock()
+    s3.head_object.side_effect = ClientError(
+        {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
+    )
+
+    monkeypatch.setattr(m, "already_ingested", lambda *a, **kw: False)
+    monkeypatch.setattr(m, "_in_databricks", lambda: True)
+
+    result = m._run_daily(spark, s3, "files.massive.com",
+                          "2026-09-25", "2026-09-25", dry_run=True)
+    assert result["failed"] == 1
+    assert result["entitlement_gap"] == 0

@@ -132,6 +132,48 @@ def date_window(start_date, end_date):
     return out
 
 
+# NYSE market holidays (fixed + observed) for 2025-2026.
+_NYSE_HOLIDAYS = frozenset([
+    # 2025
+    date(2025, 1, 1),   # New Year's Day
+    date(2025, 1, 20),  # MLK Jr Day
+    date(2025, 2, 17),  # Presidents Day
+    date(2025, 4, 18),  # Good Friday
+    date(2025, 5, 26),  # Memorial Day
+    date(2025, 6, 19),  # Juneteenth
+    date(2025, 7, 4),   # Independence Day
+    date(2025, 9, 1),   # Labor Day
+    date(2025, 11, 27), # Thanksgiving
+    date(2025, 12, 25), # Christmas
+    # 2026
+    date(2026, 1, 1),   # New Year's Day
+    date(2026, 1, 19),  # MLK Jr Day
+    date(2026, 2, 16),  # Presidents Day
+    date(2026, 4, 3),   # Good Friday
+    date(2026, 5, 25),  # Memorial Day
+    date(2026, 6, 19),  # Juneteenth
+    date(2026, 7, 3),   # Independence Day (observed)
+    date(2026, 9, 7),   # Labor Day
+    date(2026, 11, 26), # Thanksgiving
+    date(2026, 12, 25), # Christmas
+])
+
+
+def trading_days(start_date, end_date):
+    """NYSE trading days (weekdays minus US market holidays) as ISO strings."""
+    start = parse_date(start_date)
+    end = parse_date(end_date)
+    if end < start:
+        raise ValueError(f"END_DATE ({end_date}) is before START_DATE ({start_date})")
+    out = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5 and d not in _NYSE_HOLIDAYS:
+            out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
 def s3_key_for_date(date_str):
     """Massive object key for an options day aggregate file."""
     y, m, d = date_str.split("-")
@@ -352,7 +394,8 @@ def _detect_s3(access_key, secret_key, probe_prefix):
         try:
             client.list_objects_v2(Bucket=BUCKET, Prefix=probe_prefix, MaxKeys=1)
             return client, host
-        except Exception:
+        except Exception as exc:
+            print(f"  [detect] {host}: {type(exc).__name__}: {exc}")
             continue
     return None, None
 
@@ -451,17 +494,22 @@ def _shape_day(spark, vol_file, source_file, ingest_ts):
     )
 
 
-def _stage_file(s3, key, dbutils_present, sdk_client, local_root):
+def _in_databricks():
+    """True when running inside a Databricks runtime (FUSE-mounted /Volumes)."""
+    return bool(os.environ.get("DATABRICKS_RUNTIME_VERSION"))
+
+
+def _stage_file(s3, key, sdk_client, local_root):
     """Download one Massive gzip CSV into the UC Volume and return its Volume
     path. Returns ``None`` when the object is 403 (outside entitlement)."""
     vol_path = f"{VOLUME_PATH}/{key}"
     try:
-        if dbutils_present:
+        if _in_databricks():
             # Databricks driver can write directly into the mounted Volume.
             os.makedirs(os.path.dirname(vol_path), exist_ok=True)
             s3.download_file(BUCKET, key, vol_path)
             return vol_path
-        # Databricks Connect serverless: stage locally, then upload to the Volume.
+        # Outside Databricks: stage locally, then upload via SDK Files API.
         local = os.path.join(local_root, key)
         os.makedirs(os.path.dirname(local), exist_ok=True)
         s3.download_file(BUCKET, key, local)
@@ -469,7 +517,8 @@ def _stage_file(s3, key, dbutils_present, sdk_client, local_root):
             sdk_client.files.create_directory(os.path.dirname(vol_path))
         except Exception:
             pass  # directory already exists
-        sdk_client.files.upload_from(vol_path, local, overwrite=True)
+        with open(local, "rb") as fh:
+            sdk_client.files.upload(vol_path, fh, overwrite=True)
         os.remove(local)
         return vol_path
     except Exception as exc:
@@ -478,9 +527,9 @@ def _stage_file(s3, key, dbutils_present, sdk_client, local_root):
         raise
 
 
-def _clear_staged(s3_key, dbutils_present, sdk_client):
+def _clear_staged(s3_key, sdk_client):
     vol_path = f"{VOLUME_PATH}/{s3_key}"
-    if dbutils_present:
+    if _in_databricks():
         try:
             os.remove(vol_path)
         except OSError:
@@ -551,10 +600,10 @@ def _run_daily(spark, s3, s3_host, start_date, end_date, dry_run):
     print("=" * 78)
     print(f"window: {start_date} .. {end_date}  (endpoint {s3_host})")
 
-    dbutils_present = _get_dbutils() is not None
+    in_databricks = _in_databricks()
     sdk_client = None
     local_root = None
-    if not dbutils_present:
+    if not in_databricks:
         from databricks.sdk import WorkspaceClient
         sdk_client = WorkspaceClient(
             profile=os.environ.get("DATABRICKS_CONFIG_PROFILE")
@@ -568,7 +617,7 @@ def _run_daily(spark, s3, s3_host, start_date, end_date, dry_run):
         "SELECT MAX(event_date) AS m FROM " + DAY_TABLE
     ).collect()[0]["m"]
 
-    dates = date_window(start_date, end_date)
+    dates = trading_days(start_date, end_date)
 
     candidate_total = 0
     new_total = 0
@@ -603,7 +652,7 @@ def _run_daily(spark, s3, s3_host, start_date, end_date, dry_run):
             log_start(spark, key, DAY_DATASET)
         try:
             vol_file = _stage_file(
-                s3, key, dbutils_present, sdk_client, local_root,
+                s3, key, sdk_client, local_root,
             )
             if vol_file is None:
                 entitlement_gap += 1
@@ -636,7 +685,7 @@ def _run_daily(spark, s3, s3_host, start_date, end_date, dry_run):
             print(f"  [err] {date_str}: {type(exc).__name__}: {str(exc)[:200]}")
         finally:
             try:
-                _clear_staged(key, dbutils_present, sdk_client)
+                _clear_staged(key, sdk_client)
             except Exception:
                 pass
 
