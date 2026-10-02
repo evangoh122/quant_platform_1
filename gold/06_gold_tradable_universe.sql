@@ -125,3 +125,6 @@ USING (
 ON tgt.trade_date = src.trade_date AND tgt.symbol = src.symbol
 WHEN MATCHED THEN UPDATE SET *
 WHEN NOT MATCHED THEN INSERT *
+-- The universe is fully recomputed each run, so a (trade_date, symbol) no longer selected
+-- must be removed; otherwise members admitted by an earlier, flawed rule would persist.
+WHEN NOT MATCHED BY SOURCE THEN DELETE
