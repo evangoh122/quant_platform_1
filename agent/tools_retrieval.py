@@ -128,21 +128,53 @@ def search_sec_filings(
     except Exception as e:
         import logging
         logging.warning("Hybrid retriever failed (%s), falling back to substring filter", e)
-        from pyspark.sql import functions as F
+        try:
+            from pyspark.sql import functions as F
 
-        df = _spark().table(_fqn("silver_sec_sections")).where(
-            F.col("ticker") == symbol
-        ).limit(50)
-        results = [r.asDict() for r in df.collect()]
-        if query:
-            results = [
-                r for r in results
-                if query.lower() in (r.get("chunk_text", "") or "").lower()
-            ]
-        for r in results:
-            r["retrieval_mode"] = "substring_fallback"
-            r["_warning"] = "hybrid_retrieval_failed"
-        return results[:top_k]
+            df = _spark().table(_fqn("silver_sec_sections")).where(
+                F.col("ticker") == symbol
+            )
+
+            # Point-in-time: exclude filings accepted after as_of
+            if as_of is not None:
+                as_of_str = as_of.strftime("%Y-%m-%d %H:%M:%S")
+                df = df.where(
+                    F.col("accepted_ts").cast("timestamp") <= F.lit(as_of_str).cast("timestamp")
+                )
+
+            # Push query filter into Spark so it runs before the limit
+            if query:
+                df = df.where(
+                    F.lower(F.col("chunk_text")).contains(query.lower())
+                )
+
+            df = df.orderBy(F.col("accepted_ts").desc()).limit(50)
+
+            results = [r.asDict() for r in df.collect()]
+
+            # Map to the same output schema as the hybrid path
+            mapped = []
+            for r in results:
+                mapped.append({
+                    "accession_number": r.get("accession_number", ""),
+                    "form_type": r.get("form_type", ""),
+                    "accepted_ts": r.get("accepted_ts", ""),
+                    "source_url": r.get("source_url", ""),
+                    "ticker": r.get("ticker", ""),
+                    "section": r.get("filing_section", ""),
+                    "chunk_index": r.get("chunk_index", 0),
+                    "chunk_text": r.get("chunk_text", ""),
+                    "retrieval_mode": "substring_fallback",
+                    "_warning": "hybrid_retrieval_failed",
+                })
+            return mapped[:top_k]
+        except Exception as fallback_err:
+            logging.error("Substring fallback also failed: %s", fallback_err)
+            return [{
+                "error": "retrieval_unavailable",
+                "message": "SEC filing corpus could not be loaded. Check Delta table connectivity.",
+                "ticker": symbol,
+            }]
 
 
 def get_cot_positioning(mapped_asset: str) -> dict:
