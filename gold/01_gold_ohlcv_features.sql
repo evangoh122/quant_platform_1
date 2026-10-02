@@ -2,8 +2,10 @@
 --
 -- Computes minute-bar technical features. All lookback windows are partitioned
 -- by (symbol, trading day) so returns/momentum/ATR/RSI do not leak across
--- sessions. information_available_ts = event_ts (the bar close is when the bar
--- becomes observable) — this is the PIT key for market features.
+-- sessions. session_high/session_low are trailing (ROWS BETWEEN UNBOUNDED
+-- PRECEDING AND CURRENT ROW) so a bar never sees a later bar's high/low within
+-- the same day. information_available_ts = event_ts (the bar close is when the
+-- bar becomes observable) — this is the PIT key for market features.
 --
 -- Chunked by date partition by the orchestrator via {date_start}/{date_end}.
 -- Idempotent: MERGE on (symbol, feature_ts).
@@ -23,8 +25,8 @@ USING (
       close / NULLIF(LAG(close, 5)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r5,
       close / NULLIF(LAG(close, 15) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r15,
       close / NULLIF(LAG(close, 30) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r30,
-      MAX(high) OVER (PARTITION BY symbol, DATE(event_ts)) AS session_high,
-      MIN(low)  OVER (PARTITION BY symbol, DATE(event_ts)) AS session_low
+      MAX(high) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_high,
+      MIN(low)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_low
     FROM bootcamp_students.evangoh_capstone.silver_ohlcv
     WHERE timespan = 'minute'
       AND symbol IN (SELECT symbol FROM universe)

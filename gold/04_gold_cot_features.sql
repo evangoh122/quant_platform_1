@@ -9,10 +9,19 @@
 -- information_available_ts <= prediction_ts, which yields the latest release
 -- as-of the prediction timestamp (no backward-fill of future releases).
 --
--- Note on "52w" metrics: Spark ranking functions (RANK/COUNT) cannot take a
--- bounded ROWS frame, so the percentile/z-score are computed over the full
--- available history (the source spans ~5 years of weekly releases) using an
--- unbounded frame. This is reported honestly in the verdict.
+-- 52w metrics are true trailing windows over the 52 reports up to and including
+-- the current one:
+--   * lev_money_pctile_52w / asset_mgr_pctile_52w are the VALUE percentile
+--     (percent_rank semantics: # trailing values strictly below / (n - 1)) over
+--     the trailing 52 reports, NOT a rank by report_date. Spark ranking
+--     functions (RANK/PERCENT_RANK) cannot take a bounded ROWS frame, so the
+--     trailing window is materialised with a self-join on ROW_NUMBER.
+--   * lev_money_zscore_52w uses AVG/STDDEV over
+--     ROWS BETWEEN 51 PRECEDING AND CURRENT ROW (bounded), not the full
+--     expanding history.
+-- The first 51 reports of each mapped_asset have a partial window, so their
+-- percentile/z-score are NULL (insufficient history), exactly like the options
+-- volume_anomaly_zscore's first ~19 days.
 --
 -- Idempotent: MERGE on (mapped_asset, report_date).
 
@@ -29,27 +38,75 @@ USING (
     WHERE mapped_asset IS NOT NULL
     GROUP BY mapped_asset, report_date
   ),
-  feats AS (
+  ranked AS (
     SELECT
       mapped_asset,
       report_date,
       release_ts,
       lev_money_net,
       asset_mgr_net,
-      lev_money_net - LAG(lev_money_net) OVER w_all
-        AS lev_money_net_chg_1w,
-      1.0 * (RANK() OVER w_all - 1) / NULLIF(COUNT(*) OVER w_all - 1, 0)
-        AS lev_money_pctile_52w,
-      (lev_money_net - AVG(lev_money_net) OVER w_all)
-        / NULLIF(STDDEV(lev_money_net) OVER w_all, 0)
-        AS lev_money_zscore_52w,
-      1.0 * (RANK() OVER w_all - 1) / NULLIF(COUNT(*) OVER w_all - 1, 0)
-        AS asset_mgr_pctile_52w,
-      (asset_mgr_net - AVG(asset_mgr_net) OVER w_all)
-        / NULLIF(STDDEV(asset_mgr_net) OVER w_all, 0)
-        AS asset_mgr_zscore_52w
+      ROW_NUMBER() OVER (PARTITION BY mapped_asset ORDER BY report_date) AS rn
     FROM agg
-    WINDOW w_all AS (PARTITION BY mapped_asset ORDER BY report_date)
+  ),
+  win AS (
+    SELECT
+      mapped_asset,
+      report_date,
+      release_ts,
+      lev_money_net,
+      asset_mgr_net,
+      lev_money_net - LAG(lev_money_net) OVER (
+        PARTITION BY mapped_asset ORDER BY report_date
+      ) AS lev_money_net_chg_1w,
+      AVG(lev_money_net) OVER (
+        PARTITION BY mapped_asset ORDER BY report_date
+        ROWS BETWEEN 51 PRECEDING AND CURRENT ROW
+      ) AS lev_money_mean_52w,
+      STDDEV(lev_money_net) OVER (
+        PARTITION BY mapped_asset ORDER BY report_date
+        ROWS BETWEEN 51 PRECEDING AND CURRENT ROW
+      ) AS lev_money_std_52w,
+      AVG(asset_mgr_net) OVER (
+        PARTITION BY mapped_asset ORDER BY report_date
+        ROWS BETWEEN 51 PRECEDING AND CURRENT ROW
+      ) AS asset_mgr_mean_52w,
+      STDDEV(asset_mgr_net) OVER (
+        PARTITION BY mapped_asset ORDER BY report_date
+        ROWS BETWEEN 51 PRECEDING AND CURRENT ROW
+      ) AS asset_mgr_std_52w
+    FROM ranked
+  ),
+  pct AS (
+    SELECT
+      a.mapped_asset,
+      a.report_date,
+      1.0 * SUM(CASE WHEN b.lev_money_net < a.lev_money_net THEN 1 ELSE 0 END)
+            / NULLIF(COUNT(*) - 1, 0) AS lev_money_pctile_52w,
+      1.0 * SUM(CASE WHEN b.asset_mgr_net < a.asset_mgr_net THEN 1 ELSE 0 END)
+            / NULLIF(COUNT(*) - 1, 0) AS asset_mgr_pctile_52w
+    FROM ranked a
+    JOIN ranked b
+      ON b.mapped_asset = a.mapped_asset
+     AND b.rn BETWEEN a.rn - 51 AND a.rn
+    GROUP BY a.mapped_asset, a.report_date
+  ),
+  feats AS (
+    SELECT
+      w.mapped_asset,
+      w.report_date,
+      w.release_ts,
+      w.lev_money_net,
+      w.lev_money_net_chg_1w,
+      p.lev_money_pctile_52w,
+      (w.lev_money_net - w.lev_money_mean_52w) / NULLIF(w.lev_money_std_52w, 0)
+        AS lev_money_zscore_52w,
+      w.asset_mgr_net,
+      p.asset_mgr_pctile_52w,
+      (w.asset_mgr_net - w.asset_mgr_mean_52w) / NULLIF(w.asset_mgr_std_52w, 0)
+        AS asset_mgr_zscore_52w
+    FROM win w
+    JOIN pct p
+      ON p.mapped_asset = w.mapped_asset AND p.report_date = w.report_date
   )
   SELECT
     mapped_asset,
