@@ -10,7 +10,10 @@ Uses unique probe ids and deletes everything it creates.
 import sys
 import uuid
 
-sys.path.insert(0, "/home/jianj/code/quant_platform_1")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from agent.tools_write import (  # noqa: E402
     ApprovalContext, add_to_watchlist, create_order_intent, record_approval,
