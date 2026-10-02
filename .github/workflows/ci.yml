@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-app.txt
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements.txt > "${RUNNER_TEMP}/requirements-no-ibapi.txt"
+          python -m pip install --upgrade pip
+          python -m pip install -r "${RUNNER_TEMP}/requirements-no-ibapi.txt"
+          if [[ -f requirements-app.txt ]]; then
+            python -m pip install -r requirements-app.txt
+          fi
+          python -m pip install pytest pytest-asyncio httpx numpy pandas polars duckdb scikit-learn pyyaml
+
+      - name: Run offline test suite
+        run: pytest -q -m "not spark and not lakebase and not databricks"
+
+      - name: Run streaming bundle tests
+        if: ${{ hashFiles('bundles/streaming/tests/**') != '' }}
+        run: pytest -q bundles/streaming/tests
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect frontend
+        id: frontend
+        shell: bash
+        run: |
+          if [[ -f frontend/package.json ]]; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Set up Node.js
+        if: ${{ steps.frontend.outputs.exists == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        if: ${{ steps.frontend.outputs.exists == 'true' }}
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check frontend
+        if: ${{ steps.frontend.outputs.exists == 'true' }}
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        if: ${{ steps.frontend.outputs.exists == 'true' }}
+        working-directory: frontend
+        run: npm run build
+
+  bundle-validate:
+    name: Validate Databricks bundles
+    runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST || secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID || secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Explain skipped validation
+        if: ${{ env.DATABRICKS_HOST == '' }}
+        run: echo "DATABRICKS_HOST is not configured; skipping workspace-backed bundle validation."
+
+      - name: Set up Databricks CLI
+        if: ${{ env.DATABRICKS_HOST != '' }}
+        uses: databricks/setup-cli@v0.276.0
+
+      - name: Validate root bundle
+        if: ${{ env.DATABRICKS_HOST != '' }}
+        run: databricks bundle validate -t dev
+
+      - name: Validate streaming bundle
+        if: ${{ env.DATABRICKS_HOST != '' && hashFiles('bundles/streaming/databricks.yml') != '' }}
+        working-directory: bundles/streaming
+        run: databricks bundle validate -t dev
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

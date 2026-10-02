@@ -1,0 +1,6 @@
+resources:
+  apps:
+    quant_platform:
+      name: quant-platform-${bundle.target}
+      description: Quant Platform API and web application.
+      source_code_path: ..
