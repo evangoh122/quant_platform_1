@@ -160,6 +160,42 @@ def run_availability_invariant(spark):
     return violations
 
 
+def run_matrix_invariant(spark):
+    """Matrix-level availability invariant: every gold_model_features row's
+    joined OHLCV bar must be available at (or before) prediction_ts.
+
+    The model matrix does not retain the source OHLCV bar's own timestamps, so
+    this check joins back to gold_ohlcv_features. Round 7 changed the OHLCV join
+    to ``information_available_ts = prediction_ts``, so the contributing bar's
+    availability must equal prediction_ts. A matrix row with no such bar means a
+    bar was used whose availability is after prediction_ts (a look-ahead).
+    Options/SEC/COT are already structurally enforced by their AS-OF joins
+    (``information_available_ts <= prediction_ts``), so only OHLCV needs this
+    back-join. Raises RuntimeError on any violating row."""
+    print("\n=== matrix availability invariant ===")
+    checks = [
+        ("ohlcv bar available at prediction_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
+              LEFT JOIN {FQN}.gold_ohlcv_features f
+                ON f.symbol = mf.symbol
+               AND f.information_available_ts = mf.prediction_ts
+               AND f.return_1m IS NOT DISTINCT FROM mf.return_1m
+               AND f.rsi_14   IS NOT DISTINCT FROM mf.rsi_14
+              WHERE f.symbol IS NULL"""),
+    ]
+    violations = 0
+    for label, sql in checks:
+        v = spark.sql(sql).collect()[0][0]
+        print(f"  {label}: {v} violating rows")
+        violations += int(v)
+    if violations:
+        raise RuntimeError(
+            f"matrix availability invariant violated: {violations} row(s) "
+            f"use an OHLCV bar not yet available at prediction_ts"
+        )
+    return violations
+
+
 def run_checks(spark):
     print("\n=== PIT / DQ checks ===")
     checks = [
@@ -185,6 +221,7 @@ def run_checks(spark):
         print(f"  {label}: {v}")
 
     run_availability_invariant(spark)
+    run_matrix_invariant(spark)
 
 
 def main():
@@ -217,6 +254,7 @@ def main():
 
     if not args.counts and (args.only is None or args.only == "gold"):
         run_availability_invariant(spark)
+        run_matrix_invariant(spark)
 
     print("\n=== final row counts ===")
     for t in TARGET_TABLES:

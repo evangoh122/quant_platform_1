@@ -1,29 +1,40 @@
 -- gold_model_features: PIT-joined feature matrix
 --
--- One snapshot row per (symbol, prediction_ts). prediction_ts is the end-of-day
--- close (last minute bar) of the market-feature spine (gold_ohlcv_features),
--- which covers the full 39-symbol MVP universe. Every other source (options,
--- SEC, COT) is joined LEFT from that spine, so a symbol is NOT dropped merely
--- for lacking options or SEC coverage — missing optional features are NULL,
--- never imputed.
+-- One snapshot row per (symbol, prediction_ts). prediction_ts is the
+-- AVAILABILITY timestamp of the last minute bar of the market-feature spine
+-- (gold_ohlcv_features): a bar labelled [t, t+1min) is known only at t+1min,
+-- so prediction_ts = MAX(information_available_ts) = last bar's feature_ts + 1
+-- minute. (Round 7 fix — previously prediction_ts was the last bar's START,
+-- leaking the final bar 60s early.) The spine covers the full 39-symbol MVP
+-- universe. Every other source (options, SEC, COT) is joined LEFT from that
+-- spine, so a symbol is NOT dropped merely for lacking options or SEC coverage
+-- — missing optional features are NULL, never imputed.
 --
 -- PIT rule (no-look-ahead): every feature is joined AS-OF with
 --   feature.information_available_ts <= prediction_ts.
 --   ohlcv  : information_available_ts = feature_ts + bar interval (the close
 --            is known one minute after a minute bar's start); ohlcv is joined
---            directly on feature_ts == prediction_ts (not AS-OF on info_ts).
+--            directly on information_available_ts == prediction_ts (the last
+--            bar's availability), never on the bar's start.
 --   options: latest daily feature with info_ts <= prediction_ts
 --   sec    : latest filing with accepted_ts <= prediction_ts
 --   cot    : latest equity_index release with release_ts <= prediction_ts
 -- The gold/pit_guard.py validator re-checks this invariant and the PIT leakage
 -- test (tests/gold/test_pit_leakage.py) proves a leaking row fails the build.
+-- The orchestrator's run_matrix_invariant (pipelines/run_silver_gold.py) also
+-- asserts, per matrix row, that the joined OHLCV bar is available at
+-- prediction_ts.
 --
--- Idempotent: MERGE on (symbol, prediction_ts).
+-- Idempotent: MERGE on (symbol, prediction_ts). NOTE: round 7 moved
+-- prediction_ts from the last bar's START to its AVAILABILITY, which changed
+-- the MERGE key values; the table must be rebuilt cleanly (TRUNCATE + re-run)
+-- once on this change, and the build assertion proves no (symbol, prediction_ts)
+-- duplicates remain.
 
 MERGE INTO bootcamp_students.evangoh_capstone.gold_model_features AS tgt
 USING (
   WITH daily_base AS (
-    SELECT symbol, MAX(feature_ts) AS prediction_ts
+    SELECT symbol, MAX(information_available_ts) AS prediction_ts
     FROM bootcamp_students.evangoh_capstone.gold_ohlcv_features
     GROUP BY symbol, DATE(feature_ts)
   ),
@@ -34,7 +45,7 @@ USING (
            f.atr_14, f.rsi_14, f.vwap_deviation, f.relative_volume
     FROM daily_base db
     JOIN bootcamp_students.evangoh_capstone.gold_ohlcv_features f
-      ON f.symbol = db.symbol AND f.feature_ts = db.prediction_ts
+      ON f.symbol = db.symbol AND f.information_available_ts = db.prediction_ts
   ),
   opt_join AS (
     SELECT db.symbol, db.prediction_ts,

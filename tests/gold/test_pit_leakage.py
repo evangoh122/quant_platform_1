@@ -29,7 +29,7 @@ not exist on this branch):
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import duckdb
 import pytest
@@ -198,11 +198,13 @@ def test_options_sql_has_named_buffer_constant():
     assert "opt_pub_buffer_minutes" in text
 
 
-def test_silver_quotes_is_stale_uses_snapshot_time():
-    """Guard: is_stale compares against the single snapshot time, not the
-    per-underlying whole-day MAX (which flags earlier quotes as stale)."""
+def test_silver_quotes_is_stale_scoped_to_ingest_batch():
+    """Guard (round 7): is_stale compares against the quote's OWN ingest batch
+    (MAX(participant_ts) OVER (PARTITION BY ingest_ts)), not the whole-table MAX
+    (which a future appended snapshot would retroactively re-stale)."""
     text = open(QUOTES_SQL_PATH, encoding="utf-8").read()
-    assert "MAX(participant_ts) OVER ()" in text
+    assert "MAX(participant_ts) OVER (PARTITION BY ingest_ts)" in text
+    assert "MAX(participant_ts) OVER ()" not in text
     assert "MAX(participant_ts) OVER (PARTITION BY underlying)" not in text
 
 
@@ -329,3 +331,82 @@ def test_minute_availability_invariant_catches_start_of_bar_stamp():
     broken = [("AAA", "2026-07-07 15:59:00", "2026-07-07 15:59:00")]
     assert _run_minute_invariant(fixed) == 0, "fixed info_ts must satisfy invariant"
     assert _run_minute_invariant(broken) == 1, "start-of-bar stamp must violate invariant"
+
+
+# ---------------------------------------------------------------------------
+# Round 7: model-matrix last-bar leak, COT 52-report warm-up, is_stale scoping
+#
+# (1) gold_model_features used the day's last bar START as prediction_ts and
+#     joined the OHLCV bar on feature_ts, so every row used its final bar 60s
+#     before it was available. The fix sets prediction_ts to the bar's
+#     availability (MAX(information_available_ts)) and joins on
+#     information_available_ts.
+# (2) COT percentile/z-score must be NULL until a full 52-report window exists.
+# (3) is_stale is scoped to the ingest batch (PARTITION BY ingest_ts) so an
+#     appended snapshot cannot retroactively re-stale earlier rows.
+# ---------------------------------------------------------------------------
+
+MODEL_SQL_PATH = os.path.join(REPO, "gold", "05_gold_model_features.sql")
+COT_SQL_PATH = os.path.join(REPO, "gold", "04_gold_cot_features.sql")
+
+
+def test_model_matrix_prediction_ts_is_bar_availability():
+    """Guard: prediction_ts must be the last bar's availability, not its start,
+    and the OHLCV join must key on information_available_ts."""
+    text = open(MODEL_SQL_PATH, encoding="utf-8").read()
+    assert "MAX(information_available_ts) AS prediction_ts" in text
+    assert "MAX(feature_ts) AS prediction_ts" not in text
+    assert "f.information_available_ts = db.prediction_ts" in text
+    assert "f.feature_ts = db.prediction_ts" not in text
+
+
+def test_cot_warmup_gate_present():
+    """Guard: the COT build must gate percentile/z-score on a full 52-report
+    window (n_52w), and the derived regime must be NULL when z-score is NULL."""
+    text = open(COT_SQL_PATH, encoding="utf-8").read()
+    assert "AS n_52w" in text
+    assert "ROWS BETWEEN 51 PRECEDING AND CURRENT ROW" in text
+    assert "WHEN w.n_52w >= 52" in text
+    assert "WHEN lev_money_zscore_52w IS NULL THEN NULL" in text
+
+
+def _run_cot_warmup(lev_money: list[float]) -> list[tuple]:
+    """Portable reproduction of the COT 52w z-score with the round-7 full-52
+    gate: a window is used only when COUNT(*) OVER (ROWS 51 PRECEDING..CURRENT
+    ROW) = 52, else NULL. Returns (rn, zscore) per report."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE ranked(mapped_asset VARCHAR, report_date DATE, rn INT, lev DOUBLE)"
+    )
+    for i, v in enumerate(lev_money, start=1):
+        ds = (datetime(2026, 1, 1) + timedelta(days=i - 1)).strftime("%Y-%m-%d")
+        con.execute(
+            "INSERT INTO ranked VALUES (?,?,?,?)", ("X", ds, i, v)
+        )
+    rows = con.execute(
+        """
+        WITH win AS (
+          SELECT mapped_asset, report_date, rn, lev,
+                 COUNT(*) OVER (PARTITION BY mapped_asset ORDER BY report_date
+                                ROWS BETWEEN 51 PRECEDING AND CURRENT ROW) AS n_52w,
+                 AVG(lev) OVER (PARTITION BY mapped_asset ORDER BY report_date
+                                ROWS BETWEEN 51 PRECEDING AND CURRENT ROW) AS mean_52w,
+                 STDDEV(lev) OVER (PARTITION BY mapped_asset ORDER BY report_date
+                                  ROWS BETWEEN 51 PRECEDING AND CURRENT ROW) AS std_52w
+          FROM ranked
+        )
+        SELECT rn,
+               CASE WHEN n_52w >= 52 THEN (lev - mean_52w) / NULLIF(std_52w, 0) END
+        FROM win ORDER BY rn
+        """
+    ).fetchall()
+    con.close()
+    return rows
+
+
+def test_cot_zscore_null_until_full_52_reports():
+    """The first 51 reports must have NULL z-score; the 52nd must be non-NULL."""
+    vals = [float(i) for i in range(1, 60)]
+    rows = _run_cot_warmup(vals)
+    assert all(r[1] is None for r in rows if r[0] < 52), "warm-up z-scores must be NULL"
+    assert rows[51][1] is not None, "52nd report must have a z-score"

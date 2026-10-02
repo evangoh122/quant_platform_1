@@ -19,9 +19,12 @@
 --   * lev_money_zscore_52w uses AVG/STDDEV over
 --     ROWS BETWEEN 51 PRECEDING AND CURRENT ROW (bounded), not the full
 --     expanding history.
--- The first 51 reports of each mapped_asset have a partial window, so their
--- percentile/z-score are NULL (insufficient history), exactly like the options
--- volume_anomaly_zscore's first ~19 days.
+-- The first 51 reports of each mapped_asset have a partial window (fewer than
+-- 52 rows), so their percentile/z-score — and the derived crowding_score and
+-- regime_label — are NULL. The gate is explicit: a trailing window is used only
+-- when COUNT(*) OVER (ROWS BETWEEN 51 PRECEDING AND CURRENT ROW) = 52; any
+-- window short of a full 52 reports yields NULL, never a partial-window value.
+-- This mirrors the options volume_anomaly_zscore's first ~19 days.
 --
 -- Idempotent: MERGE on (mapped_asset, report_date).
 
@@ -58,6 +61,10 @@ USING (
       lev_money_net - LAG(lev_money_net) OVER (
         PARTITION BY mapped_asset ORDER BY report_date
       ) AS lev_money_net_chg_1w,
+      COUNT(*) OVER (
+        PARTITION BY mapped_asset ORDER BY report_date
+        ROWS BETWEEN 51 PRECEDING AND CURRENT ROW
+      ) AS n_52w,
       AVG(lev_money_net) OVER (
         PARTITION BY mapped_asset ORDER BY report_date
         ROWS BETWEEN 51 PRECEDING AND CURRENT ROW
@@ -97,13 +104,17 @@ USING (
       w.release_ts,
       w.lev_money_net,
       w.lev_money_net_chg_1w,
-      p.lev_money_pctile_52w,
-      (w.lev_money_net - w.lev_money_mean_52w) / NULLIF(w.lev_money_std_52w, 0)
-        AS lev_money_zscore_52w,
+      CASE WHEN w.n_52w >= 52 THEN p.lev_money_pctile_52w END
+        AS lev_money_pctile_52w,
+      CASE WHEN w.n_52w >= 52 THEN
+        (w.lev_money_net - w.lev_money_mean_52w) / NULLIF(w.lev_money_std_52w, 0)
+      END AS lev_money_zscore_52w,
       w.asset_mgr_net,
-      p.asset_mgr_pctile_52w,
-      (w.asset_mgr_net - w.asset_mgr_mean_52w) / NULLIF(w.asset_mgr_std_52w, 0)
-        AS asset_mgr_zscore_52w
+      CASE WHEN w.n_52w >= 52 THEN p.asset_mgr_pctile_52w END
+        AS asset_mgr_pctile_52w,
+      CASE WHEN w.n_52w >= 52 THEN
+        (w.asset_mgr_net - w.asset_mgr_mean_52w) / NULLIF(w.asset_mgr_std_52w, 0)
+      END AS asset_mgr_zscore_52w
     FROM win w
     JOIN pct p
       ON p.mapped_asset = w.mapped_asset AND p.report_date = w.report_date
@@ -120,6 +131,7 @@ USING (
     asset_mgr_pctile_52w,
     (lev_money_zscore_52w + asset_mgr_zscore_52w) / 2.0 AS crowding_score,
     CASE
+      WHEN lev_money_zscore_52w IS NULL THEN NULL
       WHEN lev_money_zscore_52w > 0.5  THEN 'risk_on'
       WHEN lev_money_zscore_52w < -0.5 THEN 'risk_off'
       ELSE 'neutral'
