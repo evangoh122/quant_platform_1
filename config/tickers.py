@@ -11,6 +11,24 @@ import yaml
 _DEFAULT_YAML = str(Path(__file__).parent / "tickers.yaml")
 
 
+def _validate_ticker(t, group_name: str) -> str:
+    """Reject non-string ticker entries rather than coercing them.
+
+    YAML parses unquoted scalars such as ``ON``, ``YES``, ``NO``, ``OFF``,
+    ``Y``, ``N``, ``TRUE``, ``FALSE``, ``NULL`` as booleans / null, not
+    strings. Coercing with ``str()`` would silently turn ``ON`` (ON
+    Semiconductor) into ``"True"`` and corrupt ingestion. Quote affected
+    tickers in ``tickers.yaml`` instead.
+    """
+    if not isinstance(t, str):
+        raise ValueError(
+            f"tickers.yaml: non-string ticker entry {t!r} in group "
+            f"{group_name!r} — quote every ticker as a YAML string "
+            f"(e.g. - \"ON\")."
+        )
+    return t.strip()
+
+
 def load_config() -> dict:
     path = os.getenv("TICKERS_YAML", _DEFAULT_YAML)
     if not Path(path).exists():
@@ -35,7 +53,7 @@ def get_all_tickers() -> List[dict]:
         currency = group.get("currency", "USD")
 
         for t in group.get("tickers", []):
-            t = str(t).strip()
+            t = _validate_ticker(t, group_name)
             if t and t not in seen:
                 seen.add(t)
                 tickers.append({
@@ -57,7 +75,7 @@ def get_tickers_by_groups(group_names: List[str]) -> List[dict]:
         exchange = group.get("exchange", "SMART")
         currency = group.get("currency", "USD")
         for t in group.get("tickers", []):
-            t = str(t).strip()
+            t = _validate_ticker(t, group_name)
             if t and t not in seen:
                 seen.add(t)
                 tickers.append({

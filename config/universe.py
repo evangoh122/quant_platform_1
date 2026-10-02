@@ -17,10 +17,17 @@ def load_universe(path: str | None = None) -> List[str]:
     p = path or os.getenv("UNIVERSE_YAML", _DEFAULT_YAML)
     with open(p, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    symbols = [str(s).strip().upper() for s in (cfg or {}).get("symbols", [])]
+    raw_symbols = (cfg or {}).get("symbols", [])
     seen = set()
     out = []
-    for s in symbols:
+    for s in raw_symbols:
+        if not isinstance(s, str):
+            raise ValueError(
+                f"{p}: non-string symbol entry {s!r} — YAML parses unquoted "
+                f"scalars like ON/YES/NO/OFF/Y/N/TRUE/FALSE/NULL as booleans or "
+                f"null. Quote every ticker as a string (e.g. - \"ON\")."
+            )
+        s = s.strip().upper()
         if s and s not in seen:
             seen.add(s)
             out.append(s)

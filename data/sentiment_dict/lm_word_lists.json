@@ -1,7 +1,7 @@
 {
-  "source": "Loughran-McDonald Financial Sentiment Dictionary (2020)",
-  "reference": "Loughran & McDonald (2011), When is a Liability not a Liability? Textual Analysis, Dictionaries, and 10-Ks, Journal of Finance, 66:1, 35-65.",
-  "note": "Word lists bundled for offline use. See https://sraf.nd.edu/loughranmcdonald-master-dictionary/ for canonical source.",
+  "source": "Custom financial sentiment word lists (partly derived from Loughran-McDonald)",
+  "reference": "Partly derived from Loughran & McDonald (2011), When is a Liability not a Liability? Textual Analysis, Dictionaries, and 10-Ks, Journal of Finance, 66:1, 35-65. The positive/negative/uncertainty/litigious/constraining categories are inspired by Loughran-McDonald; the strong_modal/weak_modal categories and the exact word sets are NOT the published LM lists.",
+  "note": "NOT the canonical Loughran-McDonald master dictionary. List sizes do not match the published lists (e.g. this uncertainty list has ~2,756 entries vs ~297 published; litigious ~103 vs ~903). Do not cite these as the official Loughran-McDonald dictionary. Canonical source: https://sraf.nd.edu/loughranmcdonald-master-dictionary/.",
   "positive": [
     "abundant", "accomplish", "accomplished", "accomplishing", "achievement",
     "acquisition", "admirable", "advancement", "advantage", "advantageous",

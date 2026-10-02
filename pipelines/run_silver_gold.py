@@ -93,7 +93,8 @@ def truncate_targets(spark):
             spark.sql(f"TRUNCATE TABLE {FQN}.{t}")
             print(f"  truncated {t}")
         except Exception as e:
-            print(f"  skip truncate {t}: {str(e)[:120]}")
+            print(f"  FAILED to truncate {t}: {str(e)[:200]}")
+            raise
 
 
 def count(spark, table: str) -> int:
@@ -133,7 +134,7 @@ def run_step(spark, name, path, kind, symbols):
         n = mod.build(spark, symbols)
     else:
         sql_text = open(os.path.join(HERE, path), encoding="utf-8").read()
-        sql = sql_text.format(date_start=DATE_START, date_end=DATE_END)
+        sql = sql_text.replace("{date_start}", DATE_START).replace("{date_end}", DATE_END)
         for stmt in split_statements(sql):
             spark.sql(stmt)
         n = count(spark, name)

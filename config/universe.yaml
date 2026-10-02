@@ -14,48 +14,54 @@
 #     bronze_sec_filings_v2 (NVDA, AMD, AMAT, MU, LRCX, QCOM, TXN, KLAC, ADI,
 #     MCHP, INTC, SNPS, TER, ON, SWKS, MPWR, ...)
 #   - COT: applied at the asset-regime level (equity_index), not per symbol.
+#
+# Every ticker is quoted as a YAML string. Unquoted scalars such as `ON`,
+# `YES`, `NO`, `OFF`, `Y`, `N`, `TRUE`, `FALSE`, `NULL` are parsed by YAML as
+# booleans / null, not strings; `ON` (ON Semiconductor) was ingested as the
+# boolean `TRUE` in an earlier round. The loader (config/universe.py) rejects
+# non-string entries so this cannot recur silently.
 
 symbols:
   # Broad-market ETFs
-  - SPY
-  - QQQ
-  - IWM
-  - XLK
-  - XLF
-  - XLE
+  - "SPY"
+  - "QQQ"
+  - "IWM"
+  - "XLK"
+  - "XLF"
+  - "XLE"
   # Mega-cap technology
-  - NVDA
-  - AAPL
-  - MSFT
-  - AMZN
-  - META
-  - AMD
-  - GOOGL
-  - GOOG
-  - AVGO
-  - NFLX
-  - TSLA
+  - "NVDA"
+  - "AAPL"
+  - "MSFT"
+  - "AMZN"
+  - "META"
+  - "AMD"
+  - "GOOGL"
+  - "GOOG"
+  - "AVGO"
+  - "NFLX"
+  - "TSLA"
   # Semiconductors (SEC filings coverage)
-  - INTC
-  - QCOM
-  - TXN
-  - MU
-  - LRCX
-  - KLAC
-  - ADI
-  - MCHP
-  - AMAT
-  - SNPS
-  - TER
-  - ON
-  - SWKS
-  - MPWR
+  - "INTC"
+  - "QCOM"
+  - "TXN"
+  - "MU"
+  - "LRCX"
+  - "KLAC"
+  - "ADI"
+  - "MCHP"
+  - "AMAT"
+  - "SNPS"
+  - "TER"
+  - "ON"
+  - "SWKS"
+  - "MPWR"
   # Large-cap liquid names
-  - JPM
-  - XOM
-  - WMT
-  - JNJ
-  - V
-  - UBER
-  - CRM
-  - ORCL
+  - "JPM"
+  - "XOM"
+  - "WMT"
+  - "JNJ"
+  - "V"
+  - "UBER"
+  - "CRM"
+  - "ORCL"

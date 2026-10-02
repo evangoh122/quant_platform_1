@@ -1,14 +1,15 @@
 """gold/gold_sec_features.py — silver_sec_sections -> gold_sec_features (PySpark).
 
 The round-2 build request requires gold_sec_features to be built in PySpark and
-to reuse ``api/services/sentiment.py`` (the Loughran-McDonald scorer), because
+to reuse ``api/services/sentiment.py`` (the financial sentiment scorer), because
 the scoring is Python and cannot be expressed in SQL. The transform:
 
   1. reads ``silver_sec_sections`` for the MVP universe,
   2. groups section text into a single filing document per
      (ticker, accession_number) ordered by chunk_index,
-  3. scores each filing with ``sentiment.count_sentiment`` (tokenize + LM
-     dictionary, exactly the API-lane implementation — no re-implementation),
+  3. scores each filing with ``sentiment.count_sentiment`` (tokenize + the
+     custom financial sentiment dictionary, exactly the API-lane
+     implementation — no re-implementation),
   4. computes filing_similarity and risk_factor_change against the prior filing
      of the same ticker (ordered by accepted_ts) using the same tokenizer,
   5. MERGEs into ``gold_sec_features`` on (ticker, accession_number), so it is
