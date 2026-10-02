@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from api.deps import AppUser, get_current_user, require_role
@@ -50,6 +51,7 @@ def add_watchlist(
         from agent.tools_write import add_to_watchlist
 
         result = add_to_watchlist(body.symbol, user.user_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"watchlist write unavailable: {type(exc).__name__}") from exc
+    except Exception:  # noqa: BLE001
+        logger.exception("watchlist write failed")
+        raise HTTPException(status_code=503, detail="watchlist write unavailable") from None
     return WatchlistItem(symbol=result.get("symbol", body.symbol))

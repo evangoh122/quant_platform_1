@@ -33,8 +33,8 @@ def market_features(
 
     try:
         symbol = normalize_symbol(symbol)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid symbol") from None
 
     def _read_ohlcv() -> list[dict]:
         from agent.tools_retrieval import get_market_features

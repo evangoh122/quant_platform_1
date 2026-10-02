@@ -11,9 +11,10 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel
 
-from api.deps import AppUser, get_current_user, require_role
+from api.deps import AppUser, require_role
 from api.schemas import OrderIntentRequest
 
 router = APIRouter()
@@ -52,10 +53,11 @@ def create_intent(
             idempotency_key=body.idempotency_key,
             user_id=user.user_id,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"order write unavailable: {type(exc).__name__}") from exc
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid order intent") from None
+    except Exception:  # noqa: BLE001
+        logger.exception("order intent write failed")
+        raise HTTPException(status_code=503, detail="order write unavailable") from None
     return OrderIntentResult(
         order_id=result.get("order_id", ""),
         status=result.get("status", "PENDING_APPROVAL"),
@@ -66,12 +68,16 @@ def create_intent(
 @router.post("/{order_id}/approve", response_model=OrderActionResult)
 def approve_order(
     order_id: str,
-    user: AppUser = Depends(require_role("trader")),
+    user: AppUser = Depends(require_role("approver")),
 ) -> OrderActionResult:
     try:
-        from agent.tools_write import approve_and_place_paper_order, record_approval
+        from agent.tools_write import (
+            ApprovalContext,
+            approve_and_place_paper_order,
+            record_approval,
+        )
 
-        recorded = record_approval(order_id, approver_id=user.user_id)
+        recorded = record_approval(order_id, ApprovalContext(approver_id=user.user_id))
         if not recorded.get("ok"):
             return OrderActionResult(
                 order_id=order_id,
@@ -80,8 +86,9 @@ def approve_order(
                 reason=recorded.get("reason"),
             )
         result = approve_and_place_paper_order(order_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"approval unavailable: {type(exc).__name__}") from exc
+    except Exception:  # noqa: BLE001
+        logger.exception("order approval failed for %r", order_id)
+        raise HTTPException(status_code=503, detail="approval unavailable") from None
     return OrderActionResult(
         order_id=result.get("order_id", order_id),
         status=result.get("status", ""),
@@ -101,8 +108,9 @@ def cancel_order(
         from agent.tools_write import cancel_paper_order
 
         result = cancel_paper_order(order_id, user.user_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"cancel unavailable: {type(exc).__name__}") from exc
+    except Exception:  # noqa: BLE001
+        logger.exception("order cancel failed for %r", order_id)
+        raise HTTPException(status_code=503, detail="cancel unavailable") from None
     return OrderActionResult(
         order_id=result.get("order_id", order_id),
         status=result.get("status", ""),

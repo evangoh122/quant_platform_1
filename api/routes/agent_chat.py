@@ -14,11 +14,16 @@ import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
+from loguru import logger
 
-from api.deps import AppUser, get_current_user
+from api.deps import AppUser, ensure_role, get_current_user
 from api.schemas import ChatRequest, ChatResponse, ToolCall
 
 router = APIRouter()
+
+_ERR_TOOL_FAILED = "tool_failed"
+_ERR_UNKNOWN_TOOL = "unknown_tool"
+_GENERIC_FAILURE_MESSAGE = "The tool could not complete this request."
 
 _SYMBOL_RE = re.compile(r"[A-Za-z][A-Za-z0-9.\-]{0,9}")
 
@@ -82,14 +87,25 @@ def _run_tool(name: str, arguments: dict) -> ToolCall:
         if name == "add_to_watchlist":
             from agent.tools_write import add_to_watchlist
 
-            return ToolCall(name=name, arguments=arguments, result=add_to_watchlist(arguments["symbol"], arguments.get("user_id", "default")), ok=True)
+            return ToolCall(name=name, arguments=arguments, result=add_to_watchlist(arguments["symbol"], arguments["user_id"]), ok=True)
         if name == "save_research_note":
             from agent.tools_write import save_research_note
 
-            return ToolCall(name=name, arguments=arguments, result=save_research_note(arguments["symbol"], arguments["note"], arguments.get("signal_id"), arguments.get("user_id", "default")), ok=True)
-    except Exception as exc:  # noqa: BLE001
-        return ToolCall(name=name, arguments=arguments, result={"error": type(exc).__name__, "message": str(exc)}, ok=False)
-    return ToolCall(name=name, arguments=arguments, result={"error": "unknown tool"}, ok=False)
+            return ToolCall(name=name, arguments=arguments, result=save_research_note(arguments["symbol"], arguments["note"], arguments.get("signal_id"), arguments["user_id"]), ok=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("tool %r failed", name)
+        return ToolCall(
+            name=name,
+            arguments=arguments,
+            result={"error": _ERR_TOOL_FAILED, "message": _GENERIC_FAILURE_MESSAGE},
+            ok=False,
+        )
+    return ToolCall(
+        name=name,
+        arguments=arguments,
+        result={"error": _ERR_UNKNOWN_TOOL, "message": "Unknown tool requested."},
+        ok=False,
+    )
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -99,21 +115,23 @@ def chat(body: ChatRequest, user: AppUser = Depends(get_current_user)) -> ChatRe
 
     if re.search(r"\bwatchlist\b|\bwatch\b", message, re.IGNORECASE):
         if symbol:
+            ensure_role(user, "trader")
             tool = _run_tool("add_to_watchlist", {"symbol": symbol, "user_id": user.user_id})
-            reply = f"Added {symbol} to your watchlist." if tool.ok else f"Could not add {symbol}: {tool.result}"
+            reply = f"Added {symbol} to your watchlist." if tool.ok else f"Could not add {symbol}."
             return ChatResponse(reply=reply, tool_calls=[tool], available=True, empty=not tool.ok)
 
     if re.search(r"\bnote\b", message, re.IGNORECASE):
         if symbol:
+            ensure_role(user, "trader")
             tool = _run_tool("save_research_note", {"symbol": symbol, "note": message, "user_id": user.user_id})
-            reply = f"Saved a research note for {symbol}." if tool.ok else f"Could not save note: {tool.result}"
+            reply = f"Saved a research note for {symbol}." if tool.ok else f"Could not save note."
             return ChatResponse(reply=reply, tool_calls=[tool], available=True, empty=not tool.ok)
 
     if re.search(r"\bsec\b|\bfiling\b|\bedgar\b", message, re.IGNORECASE):
         if symbol:
             tool = _run_tool("search_sec_filings", {"symbol": symbol, "query": None})
             rows = (tool.result or {}).get("rows", []) if isinstance(tool.result, dict) else []
-            reply = f"Found {len(rows)} filing section(s) for {symbol}." if tool.ok else f"SEC search unavailable: {tool.result}"
+            reply = f"Found {len(rows)} filing section(s) for {symbol}." if tool.ok else f"SEC search unavailable."
             return ChatResponse(reply=reply, tool_calls=[tool], available=True, empty=not rows)
 
     if re.search(r"\bsignal\b|\bpredict\b|\btrade\b", message, re.IGNORECASE):
@@ -130,7 +148,7 @@ def chat(body: ChatRequest, user: AppUser = Depends(get_current_user)) -> ChatRe
         if symbol:
             tool = _run_tool("get_market_features", {"symbol": symbol})
             rows = (tool.result or {}).get("rows", []) if isinstance(tool.result, dict) else []
-            reply = f"Found {len(rows)} market feature row(s) for {symbol}." if tool.ok else f"Market data unavailable: {tool.result}"
+            reply = f"Found {len(rows)} market feature row(s) for {symbol}." if tool.ok else f"Market data unavailable."
             return ChatResponse(reply=reply, tool_calls=[tool], available=True, empty=not rows)
 
     return ChatResponse(

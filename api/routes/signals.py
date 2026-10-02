@@ -27,8 +27,8 @@ def list_signals(
             from agent.guardrails import normalize_symbol
 
             symbol = normalize_symbol(symbol)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid symbol") from None
 
     def _read() -> list[dict]:
         from db.delta_adapter import latest_signals
