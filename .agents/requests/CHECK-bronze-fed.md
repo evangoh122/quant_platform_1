@@ -6,7 +6,7 @@ Branch `slice/bronze-fed`, worktree `/home/jianj/code/qp1-b-fed`. Specs:
 `revision_class`) and `BUILD-bronze-fed-round2.md`. Code: `notebooks/refresh_bronze_fed.py`,
 tests `tests/bronze/test_refresh_bronze_fed.py`.
 
-**Re-check after round 3** (your previous verdict: `.agents/deepseek/VERDICT-bronze-fed-check.md`, Good Friday look-ahead). Diff since: `git diff a856a15..HEAD`. After round 3 the coordinator rebuilt the table; LIVE: Good Friday Thursdays 2024-03-28, 2025-04-17, 2026-04-02 -> following Monday 16:30 NY; Columbus Day 2024-10-14 treated as a business day (2024-10-11 -> 2024-10-14 16:30); 96,992 rows; market_rate 0 at ingest, 0 early, 0 dups. Earlier live checks: `bronze_fed_series` 96,992 rows. `market_rate` 91,913 rows, 0 stamped at
+**Re-check after round 4** (your verdict `VERDICT-bronze-fed-check2.md` found the Columbus/Veterans look-ahead; diff since: `git diff 98af9a0..HEAD`). After round 4 the coordinator rebuilt the table; LIVE: data-driven check over 2022-2026 — for DGS2/DGS10/T10Y2Y/T10Y3M, 0 of 4,732 availability dates fall on a day FRED did not publish the series; 0 early, 0 dups. Earlier round: (your previous verdict: `.agents/deepseek/VERDICT-bronze-fed-check.md`, Good Friday look-ahead). Diff since: `git diff a856a15..HEAD`. After round 3 the coordinator rebuilt the table; LIVE: Good Friday Thursdays 2024-03-28, 2025-04-17, 2026-04-02 -> following Monday 16:30 NY; Columbus Day 2024-10-14 treated as a business day (2024-10-11 -> 2024-10-14 16:30); 96,992 rows; market_rate 0 at ingest, 0 early, 0 dups. Earlier live checks: `bronze_fed_series` 96,992 rows. `market_rate` 91,913 rows, 0 stamped at
 ingest, 0 available on/before observation date, 0 duplicate (series_id, observation_date,
 vintage_date) keys; DGS10 2025 availability always next NY business day 16:30 local (DST-aware);
 2025-07-03 -> 2025-07-07 (Jul 4 skipped). `revised_macro` 5,079 rows all = ingest_ts.
@@ -23,4 +23,4 @@ Check independently:
 
 Run `python3 -m pytest tests/bronze/test_refresh_bronze_fed.py -q`. Verdict APPROVED or
 CHANGES_REQUESTED with file:line evidence between `===VERDICT START===` and `===VERDICT END===`;
-write it to `.agents/deepseek/VERDICT-bronze-fed-check2.md` and commit only that file. Focus on whether the SIFMA calendar is complete for 2022-2026 (any other bond-market-only closure, e.g. early-close days, special closures).
+write it to `.agents/deepseek/VERDICT-bronze-fed-check3.md` and commit only that file. Focus on whether the SIFMA calendar is complete for 2022-2026 (any other bond-market-only closure, e.g. early-close days, special closures).
