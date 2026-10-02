@@ -123,6 +123,38 @@ def split_statements(sql: str) -> list[str]:
     return out
 
 
+def run_availability_invariant(spark):
+    """Availability invariant: a daily/period feature must not become available
+    before the end of the source window it aggregates.
+
+    For daily options, a feature for day d must be available at/after the session
+    close (16:00 America/New_York) of day d — not at the provider's start-of-day
+    stamp. For COT, the release must be at/after the report week end. Raises
+    RuntimeError (failing the build) on any violating row."""
+    print("\n=== availability invariant ===")
+    checks = [
+        ("options info_ts >= session close",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_options_features
+             WHERE information_available_ts < convert_timezone(
+                 'America/New_York', 'UTC',
+                 to_timestamp(concat(cast(DATE(feature_ts) AS STRING), ' 16:00:00')))"""),
+        ("cot info_ts >= report_date",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_cot_features
+             WHERE information_available_ts < CAST(report_date AS TIMESTAMP)"""),
+    ]
+    violations = 0
+    for label, sql in checks:
+        v = spark.sql(sql).collect()[0][0]
+        print(f"  {label}: {v} violating rows")
+        violations += int(v)
+    if violations:
+        raise RuntimeError(
+            f"availability invariant violated: {violations} row(s) "
+            f"are available before the end of their source window"
+        )
+    return violations
+
+
 def run_checks(spark):
     print("\n=== PIT / DQ checks ===")
     checks = [
@@ -146,6 +178,8 @@ def run_checks(spark):
     for label, sql in checks:
         v = spark.sql(sql).collect()[0][0]
         print(f"  {label}: {v}")
+
+    run_availability_invariant(spark)
 
 
 def main():
@@ -175,6 +209,9 @@ def main():
         if args.counts:
             continue
         run_step(spark, name, path, kind, symbols)
+
+    if not args.counts and (args.only is None or args.only == "gold"):
+        run_availability_invariant(spark)
 
     print("\n=== final row counts ===")
     for t in TARGET_TABLES:

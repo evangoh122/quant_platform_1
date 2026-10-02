@@ -154,3 +154,130 @@ def test_old_session_high_window_is_detected_as_leak():
     mismatches = _mismatches(full, trunc, CUT)
     assert mismatches, "old session-high window did NOT break future-invariance"
     assert any(m[1] == "dist_session_high" for m in mismatches)
+
+
+# ---------------------------------------------------------------------------
+# Round 5: daily options availability (start-of-day stamp leak)
+#
+# bronze_options_day is stamped at the START of the day (event_ts = 04:00/05:00
+# UTC = midnight New York) but its volume covers the WHOLE session. Round 4's
+# future-invariance test covered OHLCV only, so it could not see this. These
+# tests pin (1) that the build SQL no longer derives availability from the
+# start-of-day stamp, (2) that the availability invariant flags the old stamp,
+# and (3) that the gold_model_features AS-OF join excludes same-day options for
+# an intraday prediction.
+# ---------------------------------------------------------------------------
+
+OPTIONS_SQL_PATH = os.path.join(REPO, "gold", "02_gold_options_features.sql")
+QUOTES_SQL_PATH = os.path.join(REPO, "silver", "03_silver_options_quotes.sql")
+
+# Summer date (America/New_York is EDT, UTC-4): session close 16:00 ET = 20:00 UTC,
+# so the fixed availability (close + 30m buffer) is 20:30 UTC.
+SESSION_CLOSE_SUMMER = "2026-07-07 20:00:00"
+INFO_TS_SUMMER = "2026-07-07 20:30:00"
+# The old start-of-day stamp (midnight New York in EDT) for the same feature day.
+START_OF_DAY_SUMMER = "2026-07-07 04:00:00"
+
+
+def test_options_availability_not_derived_from_event_ts():
+    """Guard: the options build must not timestamp availability with the daily
+    bar's own (start-of-day) event_ts. The old `MAX(event_ts)` / `last_ts`
+    expression is the leak this round fixes."""
+    text = open(OPTIONS_SQL_PATH, encoding="utf-8").read()
+    assert "information_available_ts" in text
+    assert "last_ts AS information_available_ts" not in text
+    assert "MAX(event_ts)" not in text
+    assert "convert_timezone('America/New_York', 'UTC'" in text
+    assert "make_interval(0, 0, 0, 0, 0, opt_pub_buffer_minutes, 0)" in text
+
+
+def test_options_sql_has_named_buffer_constant():
+    """Guard: the publication buffer must be a named constant, not a magic 30."""
+    text = open(OPTIONS_SQL_PATH, encoding="utf-8").read()
+    assert "DECLARE OR REPLACE VARIABLE opt_pub_buffer_minutes INT DEFAULT 30" in text
+    assert "opt_pub_buffer_minutes" in text
+
+
+def test_silver_quotes_is_stale_uses_snapshot_time():
+    """Guard: is_stale compares against the single snapshot time, not the
+    per-underlying whole-day MAX (which flags earlier quotes as stale)."""
+    text = open(QUOTES_SQL_PATH, encoding="utf-8").read()
+    assert "MAX(participant_ts) OVER ()" in text
+    assert "MAX(participant_ts) OVER (PARTITION BY underlying)" not in text
+
+
+def _run_availability_invariant(info_ts_rows: list[tuple]) -> int:
+    """Portable reproduction of the build's availability invariant (options):
+    COUNT rows where information_available_ts < session close of the feature
+    date. Returns the number of violating rows."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE opt(symbol VARCHAR, feature_ts TIMESTAMP, "
+        "information_available_ts TIMESTAMP, session_close TIMESTAMP)"
+    )
+    con.executemany("INSERT INTO opt VALUES (?,?,?,?)", info_ts_rows)
+    n = con.execute(
+        "SELECT COUNT(*) FROM opt WHERE information_available_ts < session_close"
+    ).fetchone()[0]
+    con.close()
+    return n
+
+
+def test_options_availability_invariant_catches_start_of_day_stamp():
+    """The availability invariant must flag the old 04:00 start-of-day stamp and
+    pass the fixed session-close + buffer stamp."""
+    fixed = [("AAA", "2026-07-07 00:00:00", INFO_TS_SUMMER, SESSION_CLOSE_SUMMER)]
+    broken = [("AAA", "2026-07-07 00:00:00", START_OF_DAY_SUMMER, SESSION_CLOSE_SUMMER)]
+    assert _run_availability_invariant(fixed) == 0, "fixed info_ts must satisfy invariant"
+    assert _run_availability_invariant(broken) == 1, "start-of-day stamp must violate invariant"
+
+
+def _run_asof_join(options_rows: list[tuple], predictions: list[tuple]) -> dict:
+    """Portable reproduction of gold_model_features.opt_join: AS-OF join on
+    information_available_ts <= prediction_ts, keep the latest available."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE opt(symbol VARCHAR, feature_ts TIMESTAMP, "
+        "information_available_ts TIMESTAMP, put_call_ratio DOUBLE)"
+    )
+    con.executemany("INSERT INTO opt VALUES (?,?,?,?)", options_rows)
+    con.execute("CREATE TABLE spine(symbol VARCHAR, prediction_ts TIMESTAMP)")
+    con.executemany("INSERT INTO spine VALUES (?,?)", predictions)
+    rows = con.execute(
+        """
+        SELECT symbol, prediction_ts, put_call_ratio
+        FROM (
+          SELECT db.symbol, db.prediction_ts, opt.put_call_ratio,
+                 ROW_NUMBER() OVER (PARTITION BY db.symbol, db.prediction_ts
+                                    ORDER BY opt.information_available_ts DESC) AS rn
+          FROM spine db
+          JOIN opt ON opt.symbol = db.symbol
+                  AND opt.information_available_ts <= db.prediction_ts
+        ) WHERE rn = 1
+        """
+    ).fetchall()
+    con.close()
+    return {str(r[1]): r[2] for r in rows}
+
+
+def test_model_features_asof_join_excludes_same_day_options_intraday():
+    """Future-invariance for gold_model_features: an intraday prediction (15:00
+    UTC, before the 16:00 ET close) must see the PRIOR day's options, not the
+    same day's. The old start-of-day stamp would leak the same-day volume."""
+    options_fixed = [
+        ("AAA", "2026-07-06 00:00:00", "2026-07-06 20:30:00", 1.5),  # day d-1
+        ("AAA", "2026-07-07 00:00:00", INFO_TS_SUMMER, 2.0),          # day d (fixed)
+    ]
+    options_broken = [
+        ("AAA", "2026-07-06 00:00:00", "2026-07-06 20:30:00", 1.5),
+        ("AAA", "2026-07-07 00:00:00", START_OF_DAY_SUMMER, 2.0),     # day d (old bug)
+    ]
+    pred = [("AAA", "2026-07-07 15:00:00")]
+
+    fixed = _run_asof_join(options_fixed, pred)
+    assert fixed[pred[0][1]] == 1.5, f"intraday prediction leaked same-day options: {fixed}"
+
+    broken = _run_asof_join(options_broken, pred)
+    assert broken[pred[0][1]] == 2.0, (
+        "negative control failed: start-of-day stamp did not leak same-day options"
+    )

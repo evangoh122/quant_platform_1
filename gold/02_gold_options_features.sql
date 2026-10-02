@@ -25,10 +25,33 @@
 -- the first ~19 days of each symbol are NULL (insufficient history for a
 -- sample standard deviation).
 --
--- information_available_ts = MAX(event_ts) of the day (the source's daily-bar
--- timestamp). It is NOT NULL and PIT-safe (<= any end-of-day prediction_ts).
+-- information_available_ts (round 5 fix): the provider stamps a daily options
+-- bar at the START of the day (event_ts = 04:00/05:00 UTC = midnight New York),
+-- but the bar's volume covers the WHOLE session. A feature row for day d is
+-- therefore NOT observable until that session closes. Availability is set to
+-- 16:00 America/New_York on day d, converted to UTC (DST-aware), plus a
+-- publication buffer (named constant opt_pub_buffer_minutes, default 30):
+--
+--     convert_timezone('America/New_York', 'UTC',
+--         to_timestamp(concat(cast(event_date AS STRING), ' 16:00:00')))
+--       + make_interval(0, 0, 0, 0, 0, opt_pub_buffer_minutes, 0)
+--
+--   -> summer (EDT) 20:30 UTC, winter (EST) 21:30 UTC.
+--
+-- NOTE: the request suggested to_utc_timestamp(<d> 16:00, 'America/New_York'),
+-- but on this workspace to_utc_timestamp is deprecated and double-converts via
+-- the session timezone, returning 04:00/05:00 UTC (the SAME start-of-day bug)
+-- instead of 20:00/21:00 UTC. convert_timezone(source, target, ts) is the
+-- ANSI-standard DST-aware function and yields the correct values (verified).
+--
+-- information_available_ts is NOT NULL and PIT-safe (<= any end-of-day
+-- prediction_ts; a same-day intraday prediction at, e.g., 15:00 UTC no longer
+-- sees day d's options because 20:30 UTC > 15:00 UTC).
 -- Idempotent: MERGE on (symbol, feature_ts).
 --
+
+DECLARE OR REPLACE VARIABLE opt_pub_buffer_minutes INT DEFAULT 30;
+
 -- Note on the fixed 16-column schema (docs/DATA_SCHEMAS.md): round 3 also
 -- suggested an option-volume-to-equity-volume ratio, term/strike structure of
 -- volume, and trade_count flow intensity. Those have no column in the fixed
@@ -43,7 +66,10 @@ USING (
     SELECT
       underlying AS symbol,
       event_date AS d,
-      MAX(event_ts) AS last_ts,
+      convert_timezone('America/New_York', 'UTC',
+          to_timestamp(concat(cast(event_date AS STRING), ' 16:00:00')))
+        + make_interval(0, 0, 0, 0, 0, opt_pub_buffer_minutes, 0)
+        AS information_available_ts,
       SUM(CASE WHEN right = 'PUT'  THEN volume ELSE 0 END) AS put_volume,
       SUM(CASE WHEN right = 'CALL' THEN volume ELSE 0 END) AS call_volume,
       SUM(volume) AS total_volume
@@ -157,7 +183,7 @@ USING (
   SELECT
     day.symbol,
     CAST(day.d AS TIMESTAMP)                              AS feature_ts,
-    day.last_ts                                           AS information_available_ts,
+    day.information_available_ts                          AS information_available_ts,
     day.put_volume                                        AS put_volume,
     day.call_volume                                       AS call_volume,
     day.put_volume / NULLIF(day.call_volume, 0)           AS put_call_ratio,
