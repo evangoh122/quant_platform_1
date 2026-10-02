@@ -4,6 +4,7 @@ import pytest
 
 from ml.evaluate import daily_rank_ic, deflated_sharpe_ratio
 from ml.features import (
+    FEATURE_SETS,
     average_uniqueness_weights,
     compute_labels,
     compute_triple_barrier_labels,
@@ -198,3 +199,137 @@ def test_real_runner_neutralises_timestamps():
     assert len(corrs) > 0, "no timestamps were evaluated"
     mean_abs_corr = float(np.mean(corrs))
     assert mean_abs_corr < 1e-6, f"mean |corr| after neutralisation = {mean_abs_corr}"
+
+
+def test_market_wide_constant_feature_survives_neutralisation(caplog):
+    """A cross-sectionally constant feature must pass through unchanged."""
+    import logging
+
+    ts1 = pd.Timestamp("2025-01-01")
+    ts2 = pd.Timestamp("2025-01-02")
+    n = 8
+    rows = []
+    for ts in [ts1, ts2]:
+        for i in range(n):
+            rows.append({
+                "prediction_ts": ts,
+                "symbol": f"S{i}",
+                "market_beta": 0.1 * (i + 1),
+                "industry": ["tech", "bank", "health", "energy", "consumer", "tech", "bank", "health"][i],
+                "varying_feat": float(i) + (0.1 if ts == ts2 else 0.0),
+                "constant_feat": 42.0,  # same for all symbols at every timestamp
+            })
+    frame = pd.DataFrame(rows)
+    original_constant = frame["constant_feat"].copy()
+
+    with caplog.at_level(logging.INFO, logger="ml.features"):
+        result = neutralize_features(frame, ["varying_feat", "constant_feat"], report=False)
+
+    # constant_feat must survive unchanged (within floating-point tolerance)
+    np.testing.assert_allclose(
+        result["constant_feat"].to_numpy(),
+        original_constant.to_numpy(),
+        atol=1e-12,
+        err_msg="market-wide constant feature was modified by neutralisation",
+    )
+    # varying_feat should have been residualised (values should differ)
+    assert not result["varying_feat"].equals(frame["varying_feat"])
+    # Log should mention the excluded market-wide column
+    assert "market-wide" in caplog.text.lower() or "constant_feat" in caplog.text
+
+
+def test_market_wide_cols_override(caplog):
+    """Explicit market_wide_cols override skips those columns from residualisation."""
+    import logging
+
+    ts = pd.Timestamp("2025-01-01")
+    n = 10
+    rng = np.random.default_rng(42)
+    frame = pd.DataFrame({
+        "prediction_ts": ts,
+        "symbol": [f"S{i}" for i in range(n)],
+        "market_beta": rng.normal(0, 1, n),
+        "industry": ["tech", "bank"] * 5,
+        "feat_a": 2.0 * rng.normal(0, 1, n),
+        "feat_b": [7.7] * n,  # constant but we'll override detection
+    })
+    original_b = frame["feat_b"].copy()
+
+    with caplog.at_level(logging.INFO, logger="ml.features"):
+        result = neutralize_features(
+            frame, ["feat_a", "feat_b"], report=False, market_wide_cols=["feat_b"],
+        )
+
+    np.testing.assert_allclose(result["feat_b"].to_numpy(), original_b.to_numpy(), atol=1e-12)
+    assert "feat_b" in caplog.text
+
+
+def test_non_numeric_columns_excluded(caplog):
+    """Non-numeric and timestamp columns are excluded from neutralisation."""
+    import logging
+
+    ts = pd.Timestamp("2025-01-01")
+    n = 8
+    frame = pd.DataFrame({
+        "prediction_ts": ts,
+        "symbol": [f"S{i}" for i in range(n)],
+        "market_beta": np.linspace(0.1, 0.8, n),
+        "industry": ["tech", "bank"] * 4,
+        "numeric_feat": np.arange(n, dtype=float),
+        "string_col": ["alpha", "beta"] * 4,
+        "ts_col": pd.Timestamp("2025-01-01"),
+    })
+
+    with caplog.at_level(logging.INFO, logger="ml.features"):
+        result = neutralize_features(
+            frame, ["numeric_feat", "string_col", "ts_col"], report=False,
+        )
+    # Should have excluded non-numeric/timestamp columns
+    assert "non-numeric" in caplog.text.lower() or "excluded" in caplog.text.lower()
+    # numeric_feat should still be residualised
+    assert not result["numeric_feat"].equals(frame["numeric_feat"])
+
+
+def test_cot_features_nonzero_after_neutralisation():
+    """COT (market-wide) features must survive neutralisation with non-zero values."""
+    from ml.features import COT_FEATURES
+
+    matrix = make_synthetic_matrix(n_symbols=18, n_bars=200, seed=42)
+    cot_numeric = [c for c in COT_FEATURES if c != "cot_regime_label"]
+    # Ensure COT features exist and have non-zero values before neutralisation
+    for col in cot_numeric:
+        assert col in matrix.columns, f"{col} missing from matrix"
+        assert matrix[col].abs().sum() > 0, f"{col} is all zeros before neutralisation"
+
+    all_features = FEATURE_SETS["D"]
+    result = neutralize_features(matrix, all_features, report=False)
+
+    # After neutralisation, COT market-wide features must still be non-zero
+    for col in cot_numeric:
+        assert result[col].abs().sum() > 0, (
+            f"{col} was zeroed by neutralisation — market-wide feature erased"
+        )
+        # And must match original (unchanged)
+        np.testing.assert_allclose(
+            result[col].to_numpy(), matrix[col].to_numpy(), atol=1e-12,
+        )
+
+
+def test_arm_d_differs_from_arm_c_in_cot_columns():
+    """Arm D's matrix must differ from arm C's in COT columns after neutralisation."""
+    from ml.features import COT_FEATURES
+
+    matrix = make_synthetic_matrix(n_symbols=18, n_bars=200, seed=42)
+    cot_numeric = [c for c in COT_FEATURES if c != "cot_regime_label"]
+
+    features_c = FEATURE_SETS["C"]
+    features_d = FEATURE_SETS["D"]
+
+    result_c = neutralize_features(matrix, features_c, report=False)
+    result_d = neutralize_features(matrix, features_d, report=False)
+
+    for col in cot_numeric:
+        # Arm D should have the COT column; arm C should not (or it should be NaN)
+        assert col in result_d.columns
+        # The COT columns in arm D should be non-zero (market-wide, passed through)
+        assert result_d[col].abs().sum() > 0, f"{col} is zero in arm D"

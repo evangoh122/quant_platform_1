@@ -19,7 +19,7 @@ the columns that ``gold_model_features`` actually carries.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -414,6 +414,66 @@ def average_uniqueness_weights(
     return weights
 
 
+def _detect_market_wide_columns(
+    matrix: pd.DataFrame,
+    feature_cols: Sequence[str],
+    time_col: str = "prediction_ts",
+    symbol_col: str = "symbol",
+    threshold: float = 0.9,
+) -> List[str]:
+    """Detect features that are cross-sectionally constant within timestamps.
+
+    A column is market-wide if its values are (approximately) constant across
+    symbols in at least ``threshold`` fraction of timestamps.  These are regime
+    signals (e.g. COT) that would be erased by cross-sectional residualisation.
+
+    Returns the list of column names detected as market-wide.
+    """
+    market_wide: List[str] = []
+    n_ts = 0
+    for col in feature_cols:
+        n_constant = 0
+        n_ts = 0
+        for _, idx in matrix.groupby(time_col).groups.items():
+            frame = matrix.loc[idx]
+            n_ts += 1
+            vals = pd.to_numeric(frame[col], errors="coerce")
+            if vals.nunique(dropna=True) <= 1:
+                n_constant += 1
+        if n_ts > 0 and n_constant / n_ts >= threshold:
+            market_wide.append(col)
+    return market_wide
+
+
+def _filter_numeric_features(
+    matrix: pd.DataFrame,
+    feature_cols: Sequence[str],
+) -> Tuple[List[str], List[str]]:
+    """Separate numeric features from non-numeric/timestamp columns.
+
+    Returns (numeric_cols, excluded_cols).
+    """
+    numeric: List[str] = []
+    excluded: List[str] = []
+    for col in feature_cols:
+        if col not in matrix.columns:
+            excluded.append(col)
+            continue
+        if pd.api.types.is_datetime64_any_dtype(matrix[col]):
+            excluded.append(col)
+            continue
+        if pd.api.types.is_numeric_dtype(matrix[col]):
+            numeric.append(col)
+        else:
+            # Attempt numeric coercion — if all NaN, it's non-numeric
+            coerced = pd.to_numeric(matrix[col], errors="coerce")
+            if coerced.notna().any():
+                numeric.append(col)
+            else:
+                excluded.append(col)
+    return numeric, excluded
+
+
 def neutralize_features(
     matrix: pd.DataFrame,
     feature_cols: Sequence[str],
@@ -421,6 +481,7 @@ def neutralize_features(
     industry_col: str = "industry",
     time_col: str = "prediction_ts",
     report: bool = True,
+    market_wide_cols: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """Cross-sectionally residualise features against beta and industry.
 
@@ -429,6 +490,14 @@ def neutralize_features(
 
     The design matrix uses beta + industry dummies **without** an intercept to
     avoid the dummy-variable trap (intercept + K dummies are collinear).
+
+    Market-wide features (cross-sectionally constant within timestamps, such as
+    COT regime signals) are automatically detected and excluded from
+    residualisation — they are passed through unchanged.  Use
+    ``market_wide_cols`` to override the automatic detection.
+
+    Non-numeric and timestamp columns are also excluded from the neutralisation
+    feature set.
 
     Returns
     -------
@@ -453,8 +522,33 @@ def neutralize_features(
             f"cannot silently skip neutralisation"
         )
 
+    # Step 1: exclude non-numeric and timestamp columns
+    numeric_cols, non_numeric_excluded = _filter_numeric_features(out, feature_cols)
+    if non_numeric_excluded:
+        log.info(
+            "neutralisation: excluded non-numeric/timestamp columns: %s",
+            non_numeric_excluded,
+        )
+
+    # Step 2: detect or accept market-wide columns
+    if market_wide_cols is not None:
+        detected_market_wide = list(market_wide_cols)
+    else:
+        detected_market_wide = _detect_market_wide_columns(
+            out, numeric_cols, time_col=time_col,
+        )
+
+    # Columns to actually residualise = numeric, non-market-wide
+    residualise_cols = [c for c in numeric_cols if c not in detected_market_wide]
+
+    if detected_market_wide:
+        log.info(
+            "neutralisation: excluded market-wide columns (passed through unchanged): %s",
+            detected_market_wide,
+        )
+
     if report:
-        _report_beta_correlations(out, feature_cols, beta_col, time_col, stage="before")
+        _report_beta_correlations(out, residualise_cols, beta_col, time_col, stage="before")
 
     neutralised_timestamps: set = set()
     skipped_timestamps: set = set()
@@ -468,7 +562,7 @@ def neutralize_features(
         )
         design = controls.to_numpy(dtype=float)
         ts_neutralised = False
-        for col in feature_cols:
+        for col in residualise_cols:
             values = pd.to_numeric(frame[col], errors="coerce")
             valid = values.notna() & np.isfinite(design).all(axis=1)
             if valid.sum() <= design.shape[1]:
@@ -502,7 +596,7 @@ def neutralize_features(
 
     if report:
         _report_beta_correlations(
-            out, feature_cols, beta_col, time_col,
+            out, residualise_cols, beta_col, time_col,
             stage="after", only_timestamps=neutralised_timestamps,
         )
         log.info(
