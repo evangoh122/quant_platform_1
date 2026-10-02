@@ -34,6 +34,19 @@ Industry labels are the repo `config/tickers.yaml` taxonomy, **not** GICS.
 ## Ablation — unconditioned vs gated by `breadth_regime == NARROW`
 
 **Caveat:** The gated comparison below is an **in-sample / full-period exploratory ablation**.
+**Instability across universe definitions (coordinator note).** The gated net Sharpe has
+moved with small changes to how the universe is built, with the strategy logic unchanged:
+
+| Run | Universe | Gated net Sharpe |
+|---|---|---:|
+| r2 (first) | round-1 universe with look-ahead | +0.346 |
+| r2 (regenerated) | point-in-time universe, but **no effective min-history gate** (pre-listing grid rows were counted, so ~58 symbols entered with < 252 own sessions, some after 5) | +0.007 |
+| r3 | point-in-time universe **with** the 252-session gate | +0.330 |
+
+A result that swings between ≈0 and ≈0.33 on universe-construction details is not robust. Together
+with DSR = 0.000 and a negative result at 2× costs, this is further reason to treat it as exploratory.
+Note also that r2's stated "min history 252" was **not** enforced by the SQL that produced its numbers.
+
 It is not evidence of an edge. The gated net Sharpe at 2× costs is -0.203 and the deflated Sharpe ratio (DSR) is 0.000. This result should not be used to justify live deployment without out-of-sample validation on a held-out period.
 
 | metric | unconditioned | gated (NARROW only) |
