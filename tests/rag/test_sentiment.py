@@ -1,7 +1,7 @@
 """
 tests/test_sentiment.py
 
-Unit tests for Loughran-McDonald sentiment analysis.
+Unit tests for dictionary-based sentiment analysis (custom lists partly derived from Loughran-McDonald).
 Run with: python -m pytest tests/test_sentiment.py -v
 """
 import pytest

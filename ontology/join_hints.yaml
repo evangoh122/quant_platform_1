@@ -25,7 +25,7 @@ lineage:
 
   silver_ohlcv -> gold_ohlcv_features:
     key: [symbol, event_ts -> feature_ts]
-    pit_column: "information_available_ts = event_ts"
+    pit_column: "information_available_ts = event_ts + bar interval (timespan-derived; +1 minute for minute bars)"
 
   silver_options_* -> gold_options_features:
     key: [underlying -> symbol]

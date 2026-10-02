@@ -1444,7 +1444,7 @@ def qualitative_output_node(state: GraphState) -> Dict[str, Any]:
                 facts_text = "\n\nAvailable XBRL facts:\n" + "\n".join(facts_lines)
 
         ticker = state.get("ticker", "")
-        # Retrieve computed Loughran-McDonald sentiment for context if available
+        # Retrieve computed dictionary-based sentiment (custom lists, not canonical LM) for context if available
         sentiment_context_text = ""
         try:
             from api.services.sentiment import get_filing_sentiment
@@ -1452,7 +1452,7 @@ def qualitative_output_node(state: GraphState) -> Dict[str, Any]:
             if sentiment:
                 totals = sentiment.get("totals", {})
                 sentiment_context_text = (
-                    f"\n\nLoughran-McDonald Sentiment analysis for {ticker} (Period: {sentiment.get('period_of_report')}):\n"
+                    f"\n\nDictionary-based sentiment analysis (custom financial word lists) for {ticker} (Period: {sentiment.get('period_of_report')}):\n"
                     f"  - Positive words: {totals.get('positive', 0)}\n"
                     f"  - Negative words: {totals.get('negative', 0)}\n"
                     f"  - Uncertainty words: {totals.get('uncertainty', 0)}\n"
