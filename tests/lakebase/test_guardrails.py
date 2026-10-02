@@ -4,6 +4,8 @@ One test per check, asserting the machine-readable violation code.
 """
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from agent.guardrails import (
     CONCENTRATION_EXCEEDS_MAX,
     DUPLICATE_IDEMPOTENCY_KEY,
@@ -20,6 +22,7 @@ from agent.guardrails import (
     OrderContext,
     RiskEngine,
     is_market_session_open,
+    load_allow_list,
 )
 
 
@@ -100,6 +103,33 @@ def test_duplicate_open_order():
     assert DUPLICATE_OPEN_ORDER in _codes(result)
 
 
+def test_opposite_side_open_order_is_conflict():
+    # An opposite-side open order on the same symbol must also be rejected.
+    result = _engine().check(
+        _ctx(open_orders=[{"symbol": "AAPL", "side": "SELL", "order_id": "o1"}])
+    )
+    assert result.blocked
+    assert DUPLICATE_OPEN_ORDER in _codes(result)
+
+
+def test_sell_reduces_concentration():
+    # A risk-reducing SELL must not be rejected as concentration.
+    engine = _engine(max_position_notional=5000)
+    result = engine.check(
+        _ctx(side="SELL", notional=3000, current_position_notional=4000)
+    )
+    assert result.passed
+
+
+def test_sell_that_overshoots_concentration_is_rejected():
+    engine = _engine(max_position_notional=5000)
+    result = engine.check(
+        _ctx(side="SELL", notional=12000, current_position_notional=4000)
+    )
+    assert result.blocked
+    assert CONCENTRATION_EXCEEDS_MAX in _codes(result)
+
+
 def test_market_session_closed():
     result = _engine().check(_ctx(market_session_open=False))
     assert result.blocked
@@ -139,3 +169,13 @@ def test_market_session_deterministic():
     assert is_market_session_open(monday_open) is True
     monday_closed = datetime(2026, 10, 5, 20, 30, tzinfo=timezone.utc)  # Mon 16:30 ET
     assert is_market_session_open(monday_closed) is False
+
+
+def test_load_allow_list_fails_closed(monkeypatch):
+    # A broken allow-list config must raise, never degrade to "admit everything".
+    def _boom():
+        raise RuntimeError("tickers config unavailable")
+
+    monkeypatch.setattr("config.tickers.get_all_ticker_symbols", _boom)
+    with pytest.raises(RuntimeError):
+        load_allow_list()

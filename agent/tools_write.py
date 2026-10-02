@@ -3,24 +3,58 @@
 Every tool performs a real transactional write against the Lakebase Postgres.
 Queries are parameterized (``%s`` placeholders only) — never f-string SQL.
 
-Each tool also inserts an ``agent_actions`` audit row in the same transaction.
-``create_order_intent`` and ``approve_and_place_paper_order`` are idempotent by
-``idempotency_key`` and re-run the deterministic risk engine before any broker
-call. The execution bridge is invoked only from the approval path, and only
-after every risk check passes.
+The execution boundary is non-bypassable by construction. The agent-facing tool
+surface accepts only order identities and the acting user; it never accepts
+trusted risk state (``engine``, ``market_session_open``, ``human_approved``,
+``approved_by``, ``bridge``, buying power, or paper-mode flags). Those are
+acquired by the production entry point from the store / market clock / broker
+bridge. Test injection lives only behind private ``_``-prefixed seams that the
+tool surface does not expose.
 """
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
+from agent.guardrails import (
+    ACCOUNT_NOT_FOUND,
+    MISSING_APPROVAL,
+    SIGNAL_NOT_FOUND,
+    OrderContext,
+    RiskEngine,
+    RiskViolation,
+    is_market_session_open,
+)
 from db.lakebase import Lakebase, get_lakebase
 from execution.bridge import IBKRBridge
 
-_OPEN_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SUBMITTED", "PARTIALLY_FILLED")
+# Statuses from which a new placement is still allowed.
+_PLACEABLE_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED")
 
-_DEFAULT_BUYING_POWER = 100000.0
+# Statuses that count as "open" for conflicting-order detection. Includes
+# SUBMITTING / SUBMITTED / PARTIALLY_FILLED so a second order cannot be opened
+# while one is already in flight or already at the broker.
+_OPEN_ORDER_STATUSES = (
+    "PENDING_APPROVAL",
+    "APPROVED",
+    "SUBMITTING",
+    "SUBMITTED",
+    "PARTIALLY_FILLED",
+)
+
+# Broker responses that indicate a submission actually reached the broker.
+_BROKER_SUCCESS_STATUSES = ("SUBMITTED", "FILLED", "PARTIALLY_FILLED")
+
+# Broker cancellation responses that indicate the cancel was accepted.
+_BROKER_CANCEL_SUCCESS = ("CANCELLED", "CANCEL_REQUESTED")
+
+# Terminal order states (no further placement/cancellation possible).
+_TERMINAL_STATUSES = ("CANCELLED", "REJECTED", "FAILED", "FILLED")
+
+# Sentinel user for audit rows that have no attributable user (e.g. NOT_FOUND).
+_SYSTEM_USER = "system"
 
 
 def _id(prefix: str) -> str:
@@ -31,12 +65,6 @@ def _dec(value, scale: str = "0.00000001") -> Optional[Decimal]:
     if value is None:
         return None
     return Decimal(str(value)).quantize(Decimal(scale))
-
-
-def _get_bridge(bridge: Optional[IBKRBridge]) -> IBKRBridge:
-    if bridge is not None:
-        return bridge
-    return IBKRBridge()
 
 
 def _ensure_user(cur, user_id: str) -> None:
@@ -186,55 +214,210 @@ def create_order_intent(
     return {"order_id": row[0], "status": row[1], "idempotency_key": row[2]}
 
 
-# ── approval / placement ──────────────────────────────────────────────────────
-def approve_and_place_paper_order(
-    order_id: str, approved_by: str, *, human_approved: bool = False,
-    db: Optional[Lakebase] = None, bridge: Optional[IBKRBridge] = None,
-    engine=None, market_session_open: Optional[bool] = None,
-) -> dict:
-    """Re-run risk checks, require explicit human approval, then place via bridge.
+# ── human approval (trusted record) ───────────────────────────────────────────
+def record_approval(order_id: str, approver_id: str, *,
+                    db: Optional[Lakebase] = None) -> dict:
+    """Persist a durable human-approval record for a PENDING_APPROVAL order.
 
-    Returns a structured failure (and NO broker call) if any risk check fails or
-    approval is missing.
+    Placement reads this record back; it does not trust a caller-supplied
+    boolean. The ``approver_id`` must be the authenticated principal (threaded
+    from the request context by the orchestrator), never an agent assertion.
     """
-    from agent.guardrails import (
-        OrderContext,
-        RiskEngine,
-        RiskViolation,
-        is_market_session_open,
+    db = db or get_lakebase()
+    approval_id = _id("approval")
+
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, status FROM orders WHERE order_id = %s FOR UPDATE",
+                (order_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                _ensure_user(cur, _SYSTEM_USER)
+                _log_action(
+                    cur, _SYSTEM_USER, "record_approval", "write",
+                    f"order_id={order_id}", "NOT_FOUND", "not_found",
+                )
+                return {"order_id": order_id, "status": "NOT_FOUND", "ok": False}
+
+            user_id, status = row
+            if status not in _PLACEABLE_ORDER_STATUSES:
+                _log_action(
+                    cur, user_id, "record_approval", "write",
+                    f"order_id={order_id}",
+                    f"cannot approve order in state {status}", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": f"cannot approve order in state {status}",
+                }
+
+            _ensure_user(cur, approver_id)
+            cur.execute(
+                """
+                INSERT INTO approvals (approval_id, order_id, approver_id, created_at)
+                VALUES (%s, %s, %s, now())
+                ON CONFLICT (order_id)
+                DO UPDATE SET approver_id = EXCLUDED.approver_id, created_at = now()
+                RETURNING approval_id, approver_id
+                """,
+                (approval_id, order_id, approver_id),
+            )
+            arow = cur.fetchone()
+            cur.execute(
+                """
+                UPDATE orders SET status = 'APPROVED', approved_by = %s, approved_at = now()
+                WHERE order_id = %s
+                """,
+                (approver_id, order_id),
+            )
+            _log_action(
+                cur, user_id, "record_approval", "write",
+                f"order_id={order_id}", f"approver_id={approver_id}", "success",
+            )
+
+    return {
+        "order_id": order_id, "approval_id": arow[0],
+        "approver_id": arow[1], "status": "APPROVED", "ok": True,
+    }
+
+
+# ── approval / placement ──────────────────────────────────────────────────────
+def approve_and_place_paper_order(order_id: str, *, db: Optional[Lakebase] = None) -> dict:
+    """Re-run risk checks against trusted state, require a recorded approval,
+    then place via the broker bridge.
+
+    This public signature intentionally exposes only the order identity. The
+    risk engine, market session, account buying power, allow-list, approval
+    record, and broker bridge are all acquired by this entry point, so the agent
+    cannot override any of them.
+    """
+    db = db or get_lakebase()
+    engine = RiskEngine(load_allowlist=True)
+    bridge = IBKRBridge()
+    market_session_open = is_market_session_open()
+    return _approve_and_place_paper_order(
+        order_id,
+        db=db,
+        bridge=bridge,
+        engine=engine,
+        market_session_open=market_session_open,
     )
 
-    db = db or get_lakebase()
-    bridge = _get_bridge(bridge)
-    if engine is None:
-        engine = RiskEngine(load_allowlist=True)
 
+def _approve_and_place_paper_order(
+    order_id: str,
+    *,
+    db: Lakebase,
+    bridge: IBKRBridge,
+    engine: RiskEngine,
+    market_session_open: bool,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Private seam: full placement logic with injectable dependencies for tests.
+
+    The agent-facing tool surface never reaches this function directly.
+    """
+    # Phase 1 — validate against trusted state and commit submission intent.
     with db.transaction() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT order_id, user_id, signal_id, broker, side, quantity, notional,
-                       order_type, limit_price, status, idempotency_key, symbol
+                       order_type, limit_price, status, idempotency_key, symbol, broker_order_id
                 FROM orders WHERE order_id = %s FOR UPDATE
                 """,
                 (order_id,),
             )
             order = cur.fetchone()
             if order is None:
+                _ensure_user(cur, _SYSTEM_USER)
+                _log_action(
+                    cur, _SYSTEM_USER, "approve_and_place_paper_order", "write",
+                    f"order_id={order_id}", "NOT_FOUND", "not_found",
+                )
                 return {"order_id": order_id, "status": "NOT_FOUND", "ok": False}
 
             (
                 oid, user_id, signal_id, broker, side, quantity, notional,
-                order_type, limit_price, status, key, symbol,
+                order_type, limit_price, status, key, symbol, broker_order_id,
             ) = order
 
-            if status not in _OPEN_ORDER_STATUSES:
+            # Idempotent replay: an already-placed order is returned untouched
+            # and is never re-submitted to the broker.
+            if status in _BROKER_SUCCESS_STATUSES:
+                _log_action(
+                    cur, user_id, "approve_and_place_paper_order", "write",
+                    f"order_id={order_id}",
+                    f"idempotent replay status={status}", "success",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": True,
+                    "broker_order_id": broker_order_id, "replay": True,
+                }
+
+            if status not in _PLACEABLE_ORDER_STATUSES:
+                _log_action(
+                    cur, user_id, "approve_and_place_paper_order", "write",
+                    f"order_id={order_id}",
+                    f"cannot place order in state {status}", "rejected",
+                )
                 return {
                     "order_id": order_id, "status": status, "ok": False,
                     "reason": f"cannot place order in state {status}",
                 }
 
-            # current position notional for this user+symbol
+            # Trusted human-approval record — read back, never accepted inline.
+            cur.execute(
+                "SELECT approver_id FROM approvals WHERE order_id = %s",
+                (order_id,),
+            )
+            arow = cur.fetchone()
+            if arow is None:
+                _log_action(
+                    cur, user_id, "approve_and_place_paper_order", "write",
+                    f"order_id={order_id}", "missing approval record", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "risk": {
+                        "passed": False,
+                        "violations": [{
+                            "code": MISSING_APPROVAL,
+                            "message": "A recorded human approval is required",
+                            "detail": {},
+                        }],
+                    },
+                }
+            approved_by = arow[0]
+
+            # Trusted account source for buying power. Missing account fails
+            # closed rather than substituting a fabricated constant.
+            cur.execute(
+                "SELECT buying_power FROM accounts WHERE account_id = %s",
+                (user_id,),
+            )
+            arow = cur.fetchone()
+            if arow is None:
+                _log_action(
+                    cur, user_id, "approve_and_place_paper_order", "write",
+                    f"order_id={order_id}", "account not found", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "risk": {
+                        "passed": False,
+                        "violations": [{
+                            "code": ACCOUNT_NOT_FOUND,
+                            "message": "No trusted buying-power account for this user",
+                            "detail": {"account_id": user_id},
+                        }],
+                    },
+                }
+            buying_power = float(arow[0])
+
+            # Current position notional (signed cost basis) for this user+symbol.
             cur.execute(
                 """
                 SELECT COALESCE(SUM(quantity * avg_cost), 0)
@@ -244,7 +427,7 @@ def approve_and_place_paper_order(
             )
             position_notional = float(cur.fetchone()[0] or 0)
 
-            # open/conflicting orders
+            # Open/conflicting orders.
             cur.execute(
                 """
                 SELECT order_id, symbol, side, status FROM orders
@@ -257,18 +440,37 @@ def approve_and_place_paper_order(
                 for r in cur.fetchall()
             ]
 
-            # stale-signal check: load the backing signal's prediction time.
+            # Idempotency-key consumption: has this key already been seen on a
+            # *different* order that reached the broker?
+            cur.execute(
+                """
+                SELECT 1 FROM orders
+                WHERE idempotency_key = %s AND order_id <> %s
+                  AND status = ANY(%s)
+                LIMIT 1
+                """,
+                (key, order_id, list(_BROKER_SUCCESS_STATUSES)),
+            )
+            idempotency_key_seen = cur.fetchone() is not None
+
+            # Stale-signal source. A signal_id that cannot be resolved is a
+            # hard failure — never a silent skip.
             signal_prediction_ts = None
+            signal_unresolvable = False
             if signal_id:
                 cur.execute(
                     "SELECT prediction_ts FROM signals WHERE signal_id = %s",
                     (signal_id,),
                 )
                 srow = cur.fetchone()
-                if srow:
+                if srow is None:
+                    signal_unresolvable = True
+                else:
                     signal_prediction_ts = srow[0]
 
-            engine = engine
+            # is_paper is derived from the stored broker, not asserted.
+            is_paper = (broker or "").upper() == "PAPER"
+
             ctx = OrderContext(
                 symbol=symbol,
                 side=side,
@@ -278,32 +480,29 @@ def approve_and_place_paper_order(
                 limit_price=float(limit_price) if limit_price is not None else None,
                 signal_prediction_ts=signal_prediction_ts,
                 current_position_notional=position_notional,
-                buying_power=_DEFAULT_BUYING_POWER,
+                buying_power=buying_power,
                 open_orders=open_orders,
                 idempotency_key=key,
-                idempotency_key_seen=False,
-                is_paper=True,
-                market_session_open=(
-                    market_session_open
-                    if market_session_open is not None
-                    else is_market_session_open()
-                ),
+                idempotency_key_seen=idempotency_key_seen,
+                is_paper=is_paper,
+                market_session_open=market_session_open,
+                now=now,
             )
             result = engine.check(ctx)
 
-            if not human_approved or not approved_by:
+            if signal_unresolvable:
                 result.violations.append(
                     RiskViolation(
-                        "MISSING_APPROVAL",
-                        "Explicit human approval is required",
-                        {"human_approved": human_approved, "approved_by": approved_by},
+                        SIGNAL_NOT_FOUND,
+                        f"signal_id {signal_id} could not be resolved",
+                        {"signal_id": signal_id},
                     )
                 )
 
             if result.blocked:
                 cur.execute(
-                    "UPDATE orders SET status = %s WHERE order_id = %s",
-                    ("REJECTED", order_id),
+                    "UPDATE orders SET status = 'REJECTED' WHERE order_id = %s",
+                    (order_id,),
                 )
                 _log_action(
                     cur, user_id, "approve_and_place_paper_order", "write",
@@ -315,15 +514,29 @@ def approve_and_place_paper_order(
                     "risk": result.to_dict(),
                 }
 
-            # every check passed → place the paper order via the bridge.
-            submit = bridge.submit_order(
-                symbol=symbol, side=side, quantity=float(quantity),
-                order_type="MKT" if order_type == "MARKET" else "LMT",
-                limit_price=float(limit_price) if limit_price is not None else None,
+            # Commit intent before any broker I/O.
+            cur.execute(
+                "UPDATE orders SET status = 'SUBMITTING' WHERE order_id = %s",
+                (order_id,),
             )
-            broker_order_id = submit.get("broker_order_id")
-            ok = submit.get("status") in ("SUBMITTED", "FILLED", "PARTIALLY_FILLED")
-            new_status = "SUBMITTED" if ok else "FAILED"
+            _log_action(
+                cur, user_id, "approve_and_place_paper_order", "write",
+                f"order_id={order_id}", "submission intent committed", "in_progress",
+            )
+
+    # Phase 2 — broker call, outside any open transaction.
+    submit = bridge.submit_order(
+        symbol=symbol, side=side, quantity=float(quantity),
+        order_type="MKT" if order_type == "MARKET" else "LMT",
+        limit_price=float(limit_price) if limit_price is not None else None,
+    )
+    broker_order_id = submit.get("broker_order_id")
+    ok = submit.get("status") in _BROKER_SUCCESS_STATUSES
+    new_status = "SUBMITTED" if ok else "FAILED"
+
+    # Phase 3 — record the real outcome.
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE orders
@@ -336,22 +549,31 @@ def approve_and_place_paper_order(
             _log_action(
                 cur, user_id, "approve_and_place_paper_order", "write",
                 f"order_id={order_id}",
-                f"broker_order_id={broker_order_id}", "success",
+                f"broker_order_id={broker_order_id}", "success" if ok else "failed",
             )
-            return {
-                "order_id": order_id, "status": new_status, "ok": True,
-                "broker_order_id": broker_order_id,
-            }
+
+    return {
+        "order_id": order_id, "status": new_status, "ok": ok,
+        "broker_order_id": broker_order_id,
+    }
 
 
 # ── cancellation ──────────────────────────────────────────────────────────────
 def cancel_paper_order(order_id: str, user_id: str = "default", *,
-                       db: Optional[Lakebase] = None,
-                       bridge: Optional[IBKRBridge] = None) -> dict:
-    """Request cancellation via the bridge and update order state."""
-    db = db or get_lakebase()
-    bridge = _get_bridge(bridge)
+                       db: Optional[Lakebase] = None) -> dict:
+    """Request cancellation via the broker bridge and update order state.
 
+    Only the order identity and acting user are accepted; the bridge is acquired
+    internally.
+    """
+    db = db or get_lakebase()
+    bridge = IBKRBridge()
+    return _cancel_paper_order(order_id, user_id, db=db, bridge=bridge)
+
+
+def _cancel_paper_order(order_id: str, user_id: str, *, db: Lakebase,
+                        bridge: IBKRBridge) -> dict:
+    """Private seam for cancellation with injectable bridge."""
     with db.transaction() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -360,24 +582,63 @@ def cancel_paper_order(order_id: str, user_id: str = "default", *,
             )
             row = cur.fetchone()
             if row is None:
+                _ensure_user(cur, _SYSTEM_USER)
+                _log_action(
+                    cur, _SYSTEM_USER, "cancel_paper_order", "write",
+                    f"order_id={order_id}", "NOT_FOUND", "not_found",
+                )
                 return {"order_id": order_id, "status": "NOT_FOUND", "ok": False}
-            broker_order_id, current_status = row
-            if current_status in ("CANCELLED", "REJECTED", "FAILED", "FILLED"):
-                return {"order_id": order_id, "status": current_status, "ok": False,
-                        "reason": f"cannot cancel order in terminal state {current_status}"}
 
-            if broker_order_id:
-                bridge.cancel_order(broker_order_id)
+            broker_order_id, status = row
+            if status in _TERMINAL_STATUSES:
+                _ensure_user(cur, user_id)
+                _log_action(
+                    cur, user_id, "cancel_paper_order", "write",
+                    f"order_id={order_id}",
+                    f"cannot cancel order in terminal state {status}", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": f"cannot cancel order in terminal state {status}",
+                }
 
+            needs_broker = broker_order_id is not None
+            # Only never-submitted intents may be cancelled locally.
+            if not needs_broker and status not in ("PENDING_APPROVAL", "APPROVED"):
+                _ensure_user(cur, user_id)
+                _log_action(
+                    cur, user_id, "cancel_paper_order", "write",
+                    f"order_id={order_id}",
+                    f"cannot cancel {status} order without a broker order id", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": f"cannot cancel {status} order without a broker order id",
+                }
+
+    # Phase 2 — broker cancel, outside any open transaction.
+    cancel_ok = True
+    if needs_broker:
+        resp = bridge.cancel_order(broker_order_id)
+        cancel_ok = resp.get("status") in _BROKER_CANCEL_SUCCESS
+
+    new_status = "CANCELLED" if cancel_ok else "FAILED"
+
+    # Phase 3 — record the real outcome.
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
+            _ensure_user(cur, user_id)
             cur.execute(
                 "UPDATE orders SET status = %s WHERE order_id = %s",
-                ("CANCELLED", order_id),
+                (new_status, order_id),
             )
             _log_action(
                 cur, user_id, "cancel_paper_order", "write",
-                f"order_id={order_id}", "status=CANCELLED", "success",
+                f"order_id={order_id}", f"status={new_status}",
+                "success" if cancel_ok else "failed",
             )
-            return {"order_id": order_id, "status": "CANCELLED", "ok": True}
+
+    return {"order_id": order_id, "status": new_status, "ok": cancel_ok}
 
 
 # ── audit trail ───────────────────────────────────────────────────────────────

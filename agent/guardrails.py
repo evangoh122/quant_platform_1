@@ -32,6 +32,8 @@ STALE_SIGNAL = "STALE_SIGNAL"
 MISSING_IDEMPOTENCY_KEY = "MISSING_IDEMPOTENCY_KEY"
 DUPLICATE_IDEMPOTENCY_KEY = "DUPLICATE_IDEMPOTENCY_KEY"
 MISSING_APPROVAL = "MISSING_APPROVAL"
+ACCOUNT_NOT_FOUND = "ACCOUNT_NOT_FOUND"
+SIGNAL_NOT_FOUND = "SIGNAL_NOT_FOUND"
 
 # Market session (US equities), America/New_York, deterministic.
 _MARKET_TZ = ZoneInfo("America/New_York")
@@ -107,14 +109,17 @@ class OrderContext:
     now: Optional[datetime] = None
 
 
-def load_allow_list() -> Optional[set]:
-    """Load the ticker allow-list from config/tickers.yaml (lazy, no I/O on import)."""
-    try:
-        from config.tickers import get_all_ticker_symbols
+def load_allow_list() -> set:
+    """Load the ticker allow-list from config/tickers.yaml (lazy, no I/O on import).
 
-        return set(get_all_ticker_symbols())
-    except Exception:
-        return None
+    Fails closed: any load error (import failure, malformed YAML, I/O error)
+    raises instead of returning ``None``, so a broken config can never degrade
+    to "admit every syntactically valid symbol". An empty-but-loadable list is a
+    legitimate list that rejects everything.
+    """
+    from config.tickers import get_all_ticker_symbols
+
+    return set(get_all_ticker_symbols())
 
 
 class RiskEngine:
@@ -215,11 +220,15 @@ class RiskEngine:
         return None
 
     def _check_concentration(self, ctx: OrderContext) -> Optional[RiskViolation]:
-        projected = ctx.current_position_notional + ctx.notional
-        if projected > self.max_position_notional:
+        side = (ctx.side or "").upper()
+        # A SELL reduces exposure (risk-reducing), so it must not be treated as
+        # adding notional. Concentration is assessed on absolute exposure.
+        delta = ctx.notional if side != "SELL" else -ctx.notional
+        projected = ctx.current_position_notional + delta
+        if abs(projected) > self.max_position_notional:
             return RiskViolation(
                 CONCENTRATION_EXCEEDS_MAX,
-                f"Position would reach ${projected:,.2f}, exceeding "
+                f"Position exposure would reach ${abs(projected):,.2f}, exceeding "
                 f"${self.max_position_notional:,.2f} concentration cap",
                 {"projected": projected, "limit": self.max_position_notional},
             )
@@ -237,14 +246,10 @@ class RiskEngine:
 
     def _check_duplicate(self, ctx: OrderContext) -> Optional[RiskViolation]:
         for order in ctx.open_orders:
-            same = (
-                order.get("symbol") == ctx.symbol
-                and order.get("side") == ctx.side
-            )
-            if same:
+            if order.get("symbol") == ctx.symbol:
                 return RiskViolation(
                     DUPLICATE_OPEN_ORDER,
-                    f"Duplicate/conflicting open {ctx.side} order for {ctx.symbol}",
+                    f"Conflicting open {order.get('side', '')} order for {ctx.symbol}",
                     {"order_id": order.get("order_id")},
                 )
         return None
@@ -259,14 +264,13 @@ class RiskEngine:
         return None
 
     def _check_stale_signal(self, ctx: OrderContext) -> Optional[RiskViolation]:
-        if ctx.signal_prediction_ts is None:
+        ts = ctx.signal_prediction_ts
+        if ts is None:
             return None
         now = ctx.now or datetime.now(timezone.utc)
-        if ctx.signal_prediction_ts.tzinfo is None:
-            ctx.signal_prediction_ts = ctx.signal_prediction_ts.replace(
-                tzinfo=timezone.utc
-            )
-        age = now - ctx.signal_prediction_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = now - ts
         if age > timedelta(minutes=self.stale_signal_minutes):
             return RiskViolation(
                 STALE_SIGNAL,

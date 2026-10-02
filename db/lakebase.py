@@ -62,9 +62,11 @@ def mint_token_via_cli(instance_name: str = LAKEBASE_INSTANCE) -> dict:
         check=False,
     )
     if proc.returncode != 0:
+        # Never propagate raw CLI stderr/stdout: it may contain credential or
+        # session material. Report only the exit code and request id.
         raise RuntimeError(
-            "Lakebase credential mint failed: "
-            + (proc.stderr or proc.stdout or "").strip()
+            f"Lakebase credential mint failed (exit code {proc.returncode}, "
+            f"request_id={request_id}). Raw CLI output withheld."
         )
     return json.loads(proc.stdout)
 

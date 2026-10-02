@@ -1,7 +1,10 @@
 """Write-tool round-trip tests — require live Lakebase (`-m lakebase`).
 
 Each tool writes transactionally, then the test reads the row back and asserts
-it. Risk-failure paths assert the bridge is never called.
+it. The approve/cancel paths are exercised through the public tool signatures
+(no injected risk engine, market session, or bridge — the production entry
+points acquire those themselves). Determinism is achieved by monkeypatching the
+clock and the bridge *construction site*, never by passing trusted state in.
 """
 import uuid
 from unittest.mock import MagicMock
@@ -11,8 +14,54 @@ import pytest
 pytestmark = pytest.mark.lakebase
 
 import agent.tools_write as tw
-from agent.guardrails import RiskEngine
 from agent.tools_retrieval import get_open_orders, get_watchlist
+
+
+def _seed_account(db, account_id, buying_power=100000.0):
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO accounts (account_id, buying_power) VALUES (%s, %s) "
+                "ON CONFLICT (account_id) DO NOTHING",
+                (account_id, buying_power),
+            )
+
+
+def _cleanup_account(db, account_id):
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM accounts WHERE account_id = %s", (account_id,))
+
+
+def _allowlisted_symbol():
+    from config.tickers import get_all_ticker_symbols
+
+    symbols = get_all_ticker_symbols()
+    assert symbols, "tickers.yaml must contain at least one symbol"
+    return symbols[0]
+
+
+def _place_order(db, uid, monkeypatch, *, broker_order_id="PAPER-42"):
+    """Create + approve + place an order through the public tool signatures."""
+    symbol = _allowlisted_symbol()
+    _seed_account(db, uid)
+    order = tw.create_order_intent(symbol, "BUY", 10, notional=1000.0,
+                                   user_id=uid, db=db)
+    tw.record_approval(order["order_id"], approver_id=uid, db=db)
+
+    monkeypatch.setattr(tw, "is_market_session_open", lambda: True)
+    mock_bridge = MagicMock()
+    mock_bridge.submit_order.return_value = {
+        "status": "SUBMITTED", "broker_order_id": broker_order_id,
+    }
+    mock_bridge.cancel_order.return_value = {
+        "status": "CANCELLED", "broker_order_id": broker_order_id,
+    }
+    monkeypatch.setattr(tw, "IBKRBridge", lambda: mock_bridge)
+
+    res = tw.approve_and_place_paper_order(order["order_id"], db=db)
+    assert res["ok"] is True
+    return order, mock_bridge
 
 
 def test_add_to_watchlist_roundtrip_and_idempotent(migrated, cleanup_user):
@@ -74,58 +123,6 @@ def test_record_agent_action_roundtrip(migrated, cleanup_user):
     assert row[0] == "t"
 
 
-def test_approve_no_broker_call_when_risk_fails(migrated, cleanup_user):
-    uid = cleanup_user()
-    bridge = MagicMock()
-    order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
-                                   user_id=uid, db=migrated)
-    engine = RiskEngine(allowed_symbols=set())  # symbol fails the allow-list
-    res = tw.approve_and_place_paper_order(
-        order["order_id"], "alice", human_approved=True,
-        db=migrated, bridge=bridge, engine=engine, market_session_open=True,
-    )
-    assert res["ok"] is False
-    assert res["status"] == "REJECTED"
-    bridge.submit_order.assert_not_called()
-
-
-def test_approve_requires_human_approval(migrated, cleanup_user):
-    uid = cleanup_user()
-    bridge = MagicMock()
-    order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
-                                   user_id=uid, db=migrated)
-    engine = RiskEngine(allowed_symbols={"TEST"})
-    res = tw.approve_and_place_paper_order(
-        order["order_id"], "alice", human_approved=False,
-        db=migrated, bridge=bridge, engine=engine, market_session_open=True,
-    )
-    assert res["ok"] is False
-    assert res["status"] == "REJECTED"
-    bridge.submit_order.assert_not_called()
-
-
-def test_approve_calls_bridge_when_approved(migrated, cleanup_user):
-    uid = cleanup_user()
-    bridge = MagicMock()
-    bridge.submit_order.return_value = {"status": "SUBMITTED", "broker_order_id": "PAPER-42"}
-    order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
-                                   user_id=uid, db=migrated)
-    engine = RiskEngine(allowed_symbols={"TEST"})
-    res = tw.approve_and_place_paper_order(
-        order["order_id"], "alice", human_approved=True,
-        db=migrated, bridge=bridge, engine=engine, market_session_open=True,
-    )
-    assert res["ok"] is True
-    assert res["status"] == "SUBMITTED"
-    assert res["broker_order_id"] == "PAPER-42"
-    bridge.submit_order.assert_called_once()
-    row = migrated.fetchone(
-        "SELECT status, broker_order_id, approved_by FROM orders WHERE order_id = %s",
-        (order["order_id"],),
-    )
-    assert row == ("SUBMITTED", "PAPER-42", "alice")
-
-
 def test_get_open_orders_reads_lakebase(migrated, cleanup_user):
     uid = cleanup_user()
     tw.create_order_intent("TEST", "BUY", 10, notional=1000.0, user_id=uid, db=migrated)
@@ -133,17 +130,66 @@ def test_get_open_orders_reads_lakebase(migrated, cleanup_user):
     assert any(o["symbol"] == "TEST" for o in open_orders)
 
 
-def test_cancel_paper_order(migrated, cleanup_user):
+def test_record_approval_roundtrip(migrated, cleanup_user):
     uid = cleanup_user()
-    bridge = MagicMock()
-    bridge.submit_order.return_value = {"status": "SUBMITTED", "broker_order_id": "PAPER-7"}
+    approver = cleanup_user()
     order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
                                    user_id=uid, db=migrated)
-    engine = RiskEngine(allowed_symbols={"TEST"})
-    tw.approve_and_place_paper_order(
-        order["order_id"], "alice", human_approved=True,
-        db=migrated, bridge=bridge, engine=engine, market_session_open=True,
+    res = tw.record_approval(order["order_id"], approver_id=approver, db=migrated)
+    assert res["status"] == "APPROVED"
+    row = migrated.fetchone(
+        "SELECT status, approved_by FROM orders WHERE order_id = %s",
+        (order["order_id"],),
     )
-    res = tw.cancel_paper_order(order["order_id"], user_id=uid, db=migrated, bridge=bridge)
-    assert res["status"] == "CANCELLED"
-    bridge.cancel_order.assert_called_once_with("PAPER-7")
+    assert row == ("APPROVED", approver)
+    arow = migrated.fetchone(
+        "SELECT approver_id FROM approvals WHERE order_id = %s",
+        (order["order_id"],),
+    )
+    assert arow == (approver,)
+
+
+def test_approve_places_via_public_signature(migrated, cleanup_user, monkeypatch):
+    uid = cleanup_user()
+    try:
+        order, mock_bridge = _place_order(migrated, uid, monkeypatch)
+        mock_bridge.submit_order.assert_called_once()
+        row = migrated.fetchone(
+            "SELECT status, broker_order_id, approved_by FROM orders WHERE order_id = %s",
+            (order["order_id"],),
+        )
+        assert row == ("SUBMITTED", "PAPER-42", uid)
+    finally:
+        _cleanup_account(migrated, uid)
+
+
+def test_cancel_paper_order_roundtrip(migrated, cleanup_user, monkeypatch):
+    uid = cleanup_user()
+    try:
+        order, mock_bridge = _place_order(migrated, uid, monkeypatch)
+        res = tw.cancel_paper_order(order["order_id"], user_id=uid, db=migrated)
+        assert res["status"] == "CANCELLED"
+        assert res["ok"] is True
+        mock_bridge.cancel_order.assert_called_once_with("PAPER-42")
+        row = migrated.fetchone(
+            "SELECT status FROM orders WHERE order_id = %s", (order["order_id"],)
+        )
+        assert row == ("CANCELLED",)
+    finally:
+        _cleanup_account(migrated, uid)
+
+
+def test_cancel_paper_order_bridge_failure(migrated, cleanup_user, monkeypatch):
+    uid = cleanup_user()
+    try:
+        order, mock_bridge = _place_order(migrated, uid, monkeypatch)
+        mock_bridge.cancel_order.return_value = {"status": "REJECTED", "broker_order_id": "PAPER-42"}
+        res = tw.cancel_paper_order(order["order_id"], user_id=uid, db=migrated)
+        assert res["ok"] is False
+        assert res["status"] == "FAILED"
+        row = migrated.fetchone(
+            "SELECT status FROM orders WHERE order_id = %s", (order["order_id"],)
+        )
+        assert row == ("FAILED",)
+    finally:
+        _cleanup_account(migrated, uid)

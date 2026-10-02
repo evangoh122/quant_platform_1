@@ -33,6 +33,42 @@ def test_migration_is_rerunnable(migrated):
     assert applied == []
 
 
+def test_migrations_build_schema_from_scratch(lakebase):
+    """Apply migrations to an empty scratch schema and verify it builds the
+    full schema from nothing (not just idempotency against a shared schema)."""
+    import uuid
+
+    from db.migrate import apply_migrations
+
+    schema = f"scratch_{uuid.uuid4().hex[:12]}"
+    expected_tables = EXPECTED_TABLES | {"approvals", "accounts", "schema_migrations"}
+
+    with lakebase.connection() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA " + schema)
+            cur.execute("SELECT set_config('search_path', %s, false)", (schema,))
+        conn.autocommit = False
+        try:
+            applied = apply_migrations(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = %s",
+                    (schema,),
+                )
+                present = {r[0] for r in cur.fetchall()}
+            assert set(applied) >= {"001_operational_schema", "002_approvals_accounts"}
+            assert expected_tables <= present
+        finally:
+            conn.rollback()
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT set_config('search_path', 'public', false)")
+                cur.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
+            conn.autocommit = False
+
+
 def test_all_eight_tables_exist(migrated):
     rows = migrated.execute(
         """
