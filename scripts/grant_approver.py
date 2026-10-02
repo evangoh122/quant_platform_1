@@ -22,8 +22,14 @@ for every principal you have explicitly vetted. See ``docs/DEPLOYMENT.md``.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-from db.lakebase import get_lakebase
+# Allow the documented invocation `python scripts/grant_approver.py <user_id>`
+# from the repo root: running a file directly puts scripts/, not the repo root,
+# on sys.path, so `db` would not resolve.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from db.lakebase import get_lakebase  # noqa: E402
 
 
 def grant_approver(user_id: str) -> None:
