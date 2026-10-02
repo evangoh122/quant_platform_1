@@ -93,3 +93,23 @@ cd frontend && npm install && npm run build
 # 5. Deploy App
 #    Databricks Apps → Create → point to this directory
 ```
+
+## Development Setup
+
+```bash
+# Install runtime dependencies
+pip install --user --break-system-packages -r requirements.txt
+
+# Install test/dev dependencies
+pip install --user --break-system-packages -r requirements-dev.txt
+
+# Run fast tests (no Spark, no Lakebase, no Databricks required)
+python3 -m pytest -q -m "not spark and not lakebase and not databricks"
+
+# Collect tests without running
+python3 -m pytest -q --co
+```
+
+> **Note:** This environment uses PEP 668 (externally-managed). The
+> `--break-system-packages` flag is required for `pip install`. If you
+> prefer a venv, ensure `ensurepip` is available first.
