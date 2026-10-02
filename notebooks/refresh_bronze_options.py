@@ -492,6 +492,25 @@ def _clear_staged(s3_key, dbutils_present, sdk_client):
             pass
 
 
+def _resolve_write_columns(spark, df, table):
+    """Return the column names present in both *df* and the live *table*.
+
+    This prevents schema-mismatch failures when the live table has a different
+    column set than the DataFrame (e.g. missing Greeks, different ``right``
+    encoding column names, or extra lineage columns).
+    """
+    try:
+        table_cols = set(
+            r["col_name"]
+            for r in spark.sql(f"DESCRIBE TABLE {table}").collect()
+        )
+    except Exception:
+        table_cols = None
+    if table_cols is not None:
+        return [c for c in df.columns if c in table_cols]
+    return list(df.columns)
+
+
 def _anti_join_new(spark, incoming_df, key_columns, table, date_col, start_date, end_date):
     """Drop duplicates on the incoming key and left-anti-join against the
     target's projected keys, pruned by date range."""
@@ -583,7 +602,8 @@ def _run_daily(spark, s3, s3_host, start_date, end_date, dry_run):
             candidate_total += candidate
             new_total += new
             if not dry_run and new > 0:
-                new_rows.select(*DAY_TARGET_COLUMNS) \
+                write_cols = _resolve_write_columns(spark, new_rows, DAY_TABLE)
+                new_rows.select(*write_cols) \
                     .write.format("delta").mode("append").saveAsTable(DAY_TABLE)
                 appended_total += new
                 log_finish(spark, key, DAY_DATASET, new)
@@ -728,14 +748,20 @@ def _run_snapshot(spark, client, dry_run):
     from pyspark.sql import functions as F
     incoming = spark.createDataFrame(rows, schema=_quotes_schema())
     dedup = incoming.dropDuplicates(SNAPSHOT_KEY_COLUMNS)
-    target_keys = spark.table(QUOTES_TABLE).select(SNAPSHOT_KEY_COLUMNS).distinct()
+    target_keys = (
+        spark.table(QUOTES_TABLE)
+        .filter(F.col("participant_ts") >= F.lit("2026-09-03").cast("timestamp"))
+        .select(SNAPSHOT_KEY_COLUMNS)
+        .distinct()
+    )
     new_rows = dedup.join(target_keys, SNAPSHOT_KEY_COLUMNS, "left_anti")
 
     candidate = incoming.count()
     new_count = new_rows.count()
 
     if not dry_run and new_count > 0:
-        new_rows.select(*QUOTES_TARGET_COLUMNS) \
+        write_cols = _resolve_write_columns(spark, new_rows, QUOTES_TABLE)
+        new_rows.select(*write_cols) \
             .write.format("delta").mode("append").saveAsTable(QUOTES_TABLE)
 
     post_count = spark.sql(
