@@ -15,7 +15,19 @@ import pandas as pd
 import yfinance as yf
 from loguru import logger
 
-from etl.bulk_load_massive import TICKERS as SEMI_TICKERS
+# Default universe when no tickers are passed. Previously imported from
+# etl.bulk_load_massive, an IBKR_workbench module that was never carried into this
+# repo (so this module could not be imported). Inlined unchanged from that source.
+_DEFAULT_TICKERS = {
+    # Mag 7
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
+    # Semiconductors
+    "AMD", "INTC", "QCOM", "AVGO", "TXN", "MRVL", "MU", "SNDK",
+    "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ON", "MPWR",
+    "NXPI", "ADI", "MCHP", "SWKS", "QRVO", "ENTG", "CRUS",
+    "WOLF", "ONTO", "ACLS", "SLAB", "STM",
+}
+SEMI_TICKERS = _DEFAULT_TICKERS
 
 
 def _get_connection():
