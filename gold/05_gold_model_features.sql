@@ -1,8 +1,11 @@
 -- gold_model_features: PIT-joined feature matrix
 --
 -- One snapshot row per (symbol, prediction_ts). prediction_ts is the end-of-day
--- close (last minute bar) for symbols that have both gold_ohlcv_features and
--- gold_options_features (the cross-source universe).
+-- close (last minute bar) of the market-feature spine (gold_ohlcv_features),
+-- which covers the full 39-symbol MVP universe. Every other source (options,
+-- SEC, COT) is joined LEFT from that spine, so a symbol is NOT dropped merely
+-- for lacking options or SEC coverage — missing optional features are NULL,
+-- never imputed.
 --
 -- PIT rule (no-look-ahead): every feature is joined AS-OF with
 --   feature.information_available_ts <= prediction_ts.
@@ -20,7 +23,6 @@ USING (
   WITH daily_base AS (
     SELECT symbol, MAX(feature_ts) AS prediction_ts
     FROM bootcamp_students.evangoh_capstone.gold_ohlcv_features
-    WHERE symbol IN (SELECT DISTINCT symbol FROM bootcamp_students.evangoh_capstone.gold_options_features)
     GROUP BY symbol, DATE(feature_ts)
   ),
   ohlcv_day AS (
