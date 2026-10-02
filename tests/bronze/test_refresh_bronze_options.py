@@ -377,3 +377,222 @@ def test_trading_day_missing_file_counts_as_failed(monkeypatch, capsys):
                           "2026-09-25", "2026-09-25", dry_run=True)
     assert result["failed"] == 1
     assert result["entitlement_gap"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _anti_join_new: fake DataFrame engine (local SparkSession unavailable)
+# ---------------------------------------------------------------------------
+# PySpark on this machine is Databricks-Connect-only (no local SparkSession).
+# We build a lightweight in-memory DataFrame that mirrors the three chained
+# calls _anti_join_new makes: dropDuplicates, join(left_anti), filter/select/
+# distinct.  The fake engine operates on list[dict] rows so the tests exercise
+# the real function end-to-end without a live Spark cluster.
+
+
+class _Expr:
+    """AST node for a simple binary comparison (col op literal)."""
+    __slots__ = ("col_name", "op", "value")
+
+    def __init__(self, col_name, op, value):
+        self.col_name = col_name
+        self.op = op
+        self.value = value
+
+    def __and__(self, other):
+        return _AndExpr(self, other)
+
+    def eval(self, row):
+        left = row.get(self.col_name)
+        if left is None:
+            return False
+        if self.op == ">=":
+            return left >= self.value
+        if self.op == "<=":
+            return left <= self.value
+        return False
+
+
+class _AndExpr:
+    __slots__ = ("left", "right")
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+    def eval(self, row):
+        return self.left.eval(row) and self.right.eval(row)
+
+
+class _ColRef:
+    """Column reference that returns _Expr on comparison."""
+    __slots__ = ("name",)
+
+    def __init__(self, name):
+        self.name = name
+
+    def __ge__(self, other):
+        return _Expr(self.name, ">=", other.value if isinstance(other, _Lit) else other)
+
+    def __le__(self, other):
+        return _Expr(self.name, "<=", other.value if isinstance(other, _Lit) else other)
+
+
+class _Lit:
+    """Literal value wrapper with .cast() no-op."""
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
+
+    def cast(self, _type):
+        return self
+
+
+def _fake_col(name):
+    return _ColRef(name)
+
+
+def _fake_lit(value):
+    return _Lit(value)
+
+
+class _FakeDataFrame:
+    """Minimal DataFrame that mirrors PySpark's chaining API on row dicts."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def dropDuplicates(self, key_columns):
+        seen = set()
+        deduped = []
+        for row in self._rows:
+            key = tuple(row.get(k) for k in key_columns)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(row)
+        return _FakeDataFrame(deduped)
+
+    def join(self, other, key_columns, how):
+        if how != "left_anti":
+            raise ValueError(f"Only left_anti supported in fake, got {how}")
+        other_keys = {
+            tuple(row.get(k) for k in key_columns) for row in other._rows
+        }
+        filtered = [
+            row for row in self._rows
+            if tuple(row.get(k) for k in key_columns) not in other_keys
+        ]
+        return _FakeDataFrame(filtered)
+
+    def filter(self, expr):
+        return _FakeDataFrame(r for r in self._rows if expr.eval(r))
+
+    def select(self, columns):
+        return _FakeDataFrame(
+            {col: row.get(col) for col in columns} for row in self._rows
+        )
+
+    def distinct(self):
+        seen = set()
+        deduped = []
+        for row in self._rows:
+            key = tuple(sorted(row.items()))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(row)
+        return _FakeDataFrame(deduped)
+
+    def count(self):
+        return len(self._rows)
+
+    def collect(self):
+        return list(self._rows)
+
+
+class _FakeSparkSession:
+    """Spark session stub backed by an in-memory table registry."""
+
+    def __init__(self):
+        self._tables = {}
+
+    def _register(self, name, rows):
+        self._tables[name] = _FakeDataFrame(rows)
+
+    def table(self, name):
+        return self._tables[name]
+
+
+# ---- Test data fixtures ----
+
+_DAY_KEY = ["contract_symbol", "event_ts", "timespan"]
+_TABLE = "test.bronze_options_day"
+
+_INCOMING_ROWS = [
+    # duplicate key (sym_A + ts_1 + day) appears twice — must collapse
+    {"contract_symbol": "sym_A", "event_ts": "t1", "timespan": "day",
+     "event_date": "2026-09-25", "close": 1.0},
+    {"contract_symbol": "sym_A", "event_ts": "t1", "timespan": "day",
+     "event_date": "2026-09-25", "close": 1.0},
+    # genuinely new key
+    {"contract_symbol": "sym_B", "event_ts": "t2", "timespan": "day",
+     "event_date": "2026-09-25", "close": 2.0},
+    # already in target
+    {"contract_symbol": "sym_C", "event_ts": "t3", "timespan": "day",
+     "event_date": "2026-09-26", "close": 3.0},
+]
+
+_TARGET_ROWS = [
+    # sym_C + t3 + day already ingested
+    {"contract_symbol": "sym_C", "event_ts": "t3", "timespan": "day",
+     "event_date": "2026-09-26"},
+    # unrelated old row — outside date filter
+    {"contract_symbol": "sym_X", "event_ts": "t9", "timespan": "day",
+     "event_date": "2026-09-01"},
+]
+
+
+def _run_anti_join(incoming_rows, target_rows):
+    """Execute _anti_join_new through the fake engine and return result rows."""
+    import pyspark.sql.functions as F_mod
+
+    spark = _FakeSparkSession()
+    spark._register(_TABLE, target_rows)
+
+    incoming = _FakeDataFrame(incoming_rows)
+
+    orig_col = F_mod.col
+    orig_lit = F_mod.lit
+    F_mod.col = _fake_col
+    F_mod.lit = _fake_lit
+    try:
+        result = m._anti_join_new(
+            spark, incoming, _DAY_KEY, _TABLE, "event_date",
+            "2026-09-25", "2026-09-30",
+        )
+    finally:
+        F_mod.col = orig_col
+        F_mod.lit = orig_lit
+    return result.collect()
+
+
+def test_anti_join_new_deduplicates_incoming():
+    """Duplicate keys within the incoming batch collapse to one row."""
+    result = _run_anti_join(_INCOMING_ROWS, _TARGET_ROWS)
+    keys = [(r["contract_symbol"], r["event_ts"], r["timespan"]) for r in result]
+    # sym_A/t1/day appeared twice → must appear exactly once
+    assert keys.count(("sym_A", "t1", "day")) == 1
+
+
+def test_anti_join_new_excludes_existing_target_keys():
+    """Keys already present in the target are excluded."""
+    result = _run_anti_join(_INCOMING_ROWS, _TARGET_ROWS)
+    keys = [(r["contract_symbol"], r["event_ts"], r["timespan"]) for r in result]
+    assert ("sym_C", "t3", "day") not in keys
+
+
+def test_anti_join_new_passes_genuinely_new_keys():
+    """Genuinely new keys pass through."""
+    result = _run_anti_join(_INCOMING_ROWS, _TARGET_ROWS)
+    keys = [(r["contract_symbol"], r["event_ts"], r["timespan"]) for r in result]
+    assert ("sym_B", "t2", "day") in keys
+    assert len(result) == 2  # sym_A (deduped) + sym_B; sym_C excluded
