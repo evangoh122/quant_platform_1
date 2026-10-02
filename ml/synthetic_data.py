@@ -72,6 +72,7 @@ def make_synthetic_matrix(
 
     prediction_frame = labels[["symbol", "prediction_ts"]].copy()
     forward_return = labels.set_index(["symbol", "prediction_ts"])["forward_return"]
+    label_end = labels.set_index(["symbol", "prediction_ts"])["label_end_ts"]
 
     # A latent signal that the features will carry, drawn per (symbol, bar).
     # Forward returns are influenced by a subset of the features, so arms with
@@ -154,6 +155,9 @@ def make_synthetic_matrix(
     matrix["forward_return"] = matrix.set_index(
         ["symbol", "prediction_ts"]
     ).index.map(forward_return)
+    matrix["label_end_ts"] = matrix.set_index(
+        ["symbol", "prediction_ts"]
+    ).index.map(label_end)
     matrix["label"] = (matrix["forward_return"] > 0).astype(int)
 
     return matrix

@@ -17,7 +17,12 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from ml.features import FEATURE_SETS, assert_no_lookahead
+from ml.features import (
+    FEATURE_SETS,
+    assert_no_lookahead,
+    average_uniqueness_weights,
+    neutralize_features,
+)
 from ml import evaluate
 
 
@@ -55,6 +60,61 @@ def walk_forward_splits(
         start = val_end
         if len(splits) >= n_splits:
             break
+    return splits
+
+
+def purged_walk_forward_splits(
+    label_start: Sequence,
+    label_end: Sequence,
+    n_splits: int = 5,
+    min_train: int = 8,
+    test_size: Optional[int] = None,
+    embargo: int = 1,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Walk forward over timestamp groups, purging overlapping label windows.
+
+    ``min_train``, ``test_size`` and ``embargo`` are counts of unique timestamp
+    groups, not rows. Purging removes a candidate training event when its
+    inclusive ``[label_start, label_end]`` intersects the validation interval.
+    After each validation block, embargoed timestamps are never admitted to a
+    later training fold. The default one-bar embargo protects against immediate
+    post-validation dependence while retaining scarce daily observations.
+    """
+    starts = pd.Series(pd.to_datetime(label_start)).reset_index(drop=True)
+    ends = pd.Series(pd.to_datetime(label_end)).reset_index(drop=True)
+    if len(starts) != len(ends):
+        raise ValueError("label_start and label_end must have equal length")
+    if embargo < 0:
+        raise ValueError("embargo must be non-negative")
+    if len(starts) == 0:
+        return []
+    unique_times = pd.Index(starts.drop_duplicates().sort_values())
+    if test_size is None:
+        test_size = max(1, len(unique_times) // (n_splits + 1))
+    embargoed_times = set()
+    splits = []
+    # With an inferred fold size, reserve one full block for initial training;
+    # otherwise a legacy ``min_train=8`` would create a nearly empty first
+    # daily fold on a multi-year sample.
+    cursor = max(min_train, test_size)
+    while cursor < len(unique_times) and len(splits) < n_splits:
+        val_times = unique_times[cursor : min(cursor + test_size, len(unique_times))]
+        if len(val_times) == 0:
+            break
+        val_start, val_end = val_times[0], val_times[-1]
+        val_mask = starts.isin(val_times)
+        candidate = (starts < val_start) & ~starts.isin(embargoed_times)
+        overlap = (starts <= val_end) & (ends >= val_start)
+        train_idx = np.flatnonzero((candidate & ~overlap).to_numpy())
+        val_idx = np.flatnonzero(val_mask.to_numpy())
+        if len(train_idx) and len(val_idx):
+            splits.append((train_idx, val_idx))
+        embargo_times = unique_times[
+            min(cursor + test_size, len(unique_times)) :
+            min(cursor + test_size + embargo, len(unique_times))
+        ]
+        embargoed_times.update(embargo_times.tolist())
+        cursor += test_size + embargo
     return splits
 
 
@@ -134,8 +194,12 @@ def run_ablation(
     min_train: int = 8,
     seed: int = 42,
     prediction_col: str = "prediction_ts",
+    label_end_col: str = "label_end_ts",
+    embargo: int = 1,
+    use_uniqueness_weights: bool = True,
+    neutralize: bool = True,
 ) -> Dict:
-    """Run the A/B/C/D ablation study with walk-forward validation.
+    """Run the A/B/C/D study with purged, embargoed walk-forward validation.
 
     Returns a dict with:
       * ``comparison`` — DataFrame of per-(arm, model) metrics;
@@ -151,8 +215,22 @@ def run_ablation(
     if models is None:
         models = {"baseline": make_baseline}
 
-    matrix = matrix.sort_values([prediction_col]).reset_index(drop=True)
-    y = matrix[label_col].to_numpy()
+    matrix = matrix.sort_values([prediction_col, "symbol"]).reset_index(drop=True)
+    if label_end_col not in matrix:
+        raise ValueError(
+            f"matrix must include '{label_end_col}' for overlap-safe validation"
+        )
+    raw_y = matrix[label_col].to_numpy()
+    # Triple-barrier labels are {-1, 0, +1}; the current classifiers estimate
+    # the probability of an upper-barrier hit, so stop/time outcomes are 0.
+    y = (raw_y > 0).astype(int) if np.any(raw_y < 0) else raw_y
+    sample_weight = average_uniqueness_weights(
+        matrix, start_col=prediction_col, end_col=label_end_col
+    ).to_numpy()
+    splits = purged_walk_forward_splits(
+        matrix[prediction_col], matrix[label_end_col], n_splits=n_splits,
+        min_train=min_train, embargo=embargo,
+    )
     forward_return = (
         matrix["forward_return"].to_numpy()
         if "forward_return" in matrix.columns
@@ -167,16 +245,21 @@ def run_ablation(
         missing = [c for c in feature_cols if c not in matrix.columns]
         if missing:
             raise ValueError(f"arm '{arm_name}' missing columns: {missing}")
-        X = prepare_features(matrix, feature_cols)
+        arm_matrix = neutralize_features(matrix, feature_cols) if neutralize else matrix
+        X = prepare_features(arm_matrix, feature_cols)
         features_used[arm_name] = list(feature_cols)
 
         for model_name, factory in models.items():
             oof_prob = np.full(len(matrix), np.nan)
-            for train_idx, val_idx in walk_forward_splits(
-                len(matrix), n_splits=n_splits, min_train=min_train
-            ):
+            for train_idx, val_idx in splits:
                 model = factory(seed)
-                model.fit(X.iloc[train_idx], y[train_idx])
+                fit_kwargs = {}
+                if use_uniqueness_weights:
+                    fit_kwargs["sample_weight"] = sample_weight[train_idx]
+                try:
+                    model.fit(X.iloc[train_idx], y[train_idx], **fit_kwargs)
+                except TypeError:
+                    model.fit(X.iloc[train_idx], y[train_idx])
                 oof_prob[val_idx] = _predict_proba(model, X.iloc[val_idx])
 
             pred_df = matrix[[prediction_col, "symbol"]].copy()
@@ -197,4 +280,9 @@ def run_ablation(
         "comparison": comparison,
         "features_used": features_used,
         "predictions": predictions,
+        "splits": splits,
+        "mean_uniqueness": float(np.nanmean(sample_weight)),
+        "split_sample_counts": [
+            {"train": len(train), "validation": len(val)} for train, val in splits
+        ],
     }

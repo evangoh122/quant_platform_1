@@ -19,8 +19,9 @@ the columns that ``gold_model_features`` actually carries.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 
@@ -316,8 +317,133 @@ def compute_labels(
     df["forward_close"] = df.groupby(symbol_col)[close_col].shift(-horizon_bars)
     df["forward_return"] = df["forward_close"] / df[close_col] - 1.0
     df["label"] = (df["forward_return"] > 0).astype(int)
+    # Explicit interval endpoints let the CV splitter purge by information
+    # overlap instead of assuming that row distance equals elapsed market time.
+    df["label_end_ts"] = df.groupby(symbol_col)[ts_col].shift(-horizon_bars)
     return (
         df[df["forward_close"].notna()]
         .drop(columns="forward_close")
         .reset_index(drop=True)
     )
+
+
+def compute_triple_barrier_labels(
+    ohlcv: pd.DataFrame,
+    horizon_bars: int = 20,
+    volatility_window: int = 20,
+    profit_target: float = 1.0,
+    stop_loss: float = 1.0,
+    close_col: str = "close",
+    ts_col: str = "event_ts",
+    symbol_col: str = "symbol",
+) -> pd.DataFrame:
+    """Path-dependent, volatility-scaled triple-barrier labels.
+
+    Volatility is the trailing (therefore point-in-time) standard deviation of
+    close-to-close returns.  The label is 1 for the upper barrier, -1 for the
+    lower barrier, and 0 when neither is hit before the vertical time barrier.
+    The existing :func:`compute_labels` remains available for ablation.
+    """
+    if horizon_bars < 1 or volatility_window < 2:
+        raise ValueError("horizon_bars must be >= 1 and volatility_window >= 2")
+    df = ohlcv[[symbol_col, ts_col, close_col]].copy()
+    df = df.sort_values([symbol_col, ts_col]).reset_index(drop=True)
+    returns = df.groupby(symbol_col)[close_col].pct_change()
+    df["label_volatility"] = returns.groupby(df[symbol_col]).transform(
+        lambda x: x.rolling(volatility_window, min_periods=volatility_window).std()
+    )
+
+    pieces = []
+    for _, group in df.groupby(symbol_col, sort=False):
+        group = group.copy()
+        labels = np.full(len(group), np.nan)
+        realized = np.full(len(group), np.nan)
+        end_ts = pd.Series(pd.NaT, index=group.index, dtype=group[ts_col].dtype)
+        prices = group[close_col].to_numpy(dtype=float)
+        vols = group["label_volatility"].to_numpy(dtype=float)
+        times = group[ts_col].to_numpy()
+        for i in range(len(group) - horizon_bars):
+            if not np.isfinite(vols[i]) or vols[i] <= 0:
+                continue
+            path = prices[i + 1 : i + horizon_bars + 1] / prices[i] - 1.0
+            upper = np.flatnonzero(path >= profit_target * vols[i])
+            lower = np.flatnonzero(path <= -stop_loss * vols[i])
+            up_hit = int(upper[0]) if len(upper) else horizon_bars
+            down_hit = int(lower[0]) if len(lower) else horizon_bars
+            if up_hit < down_hit:
+                hit, label = up_hit, 1
+            elif down_hit < up_hit:
+                hit, label = down_hit, -1
+            else:
+                hit, label = horizon_bars - 1, 0
+            labels[i] = label
+            realized[i] = path[hit]
+            end_ts.loc[group.index[i]] = times[i + hit + 1]
+        group["label"] = labels
+        group["forward_return"] = realized
+        group["label_end_ts"] = end_ts.loc[group.index].to_numpy()
+        pieces.append(group)
+    return pd.concat(pieces).dropna(subset=["label", "label_end_ts"]).reset_index(drop=True)
+
+
+def average_uniqueness_weights(
+    events: pd.DataFrame,
+    start_col: str = "prediction_ts",
+    end_col: str = "label_end_ts",
+    group_col: Optional[str] = "symbol",
+) -> pd.Series:
+    """Return each event's mean inverse concurrency across its label window."""
+    required = {start_col, end_col}
+    if group_col is not None:
+        required.add(group_col)
+    missing = required - set(events.columns)
+    if missing:
+        raise ValueError(f"events missing columns: {sorted(missing)}")
+    weights = pd.Series(np.nan, index=events.index, dtype=float)
+    grouped = events.groupby(group_col, sort=False) if group_col else [(None, events)]
+    for _, group in grouped:
+        starts = pd.to_datetime(group[start_col])
+        ends = pd.to_datetime(group[end_col])
+        grid = pd.Index(starts.tolist() + ends.tolist()).drop_duplicates().sort_values()
+        concurrency = pd.Series(0.0, index=grid)
+        for start, end in zip(starts, ends):
+            concurrency.loc[(grid >= start) & (grid <= end)] += 1.0
+        for idx, start, end in zip(group.index, starts, ends):
+            active = concurrency.loc[(grid >= start) & (grid <= end)]
+            weights.loc[idx] = float((1.0 / active).mean())
+    return weights
+
+
+def neutralize_features(
+    matrix: pd.DataFrame,
+    feature_cols: Sequence[str],
+    beta_col: str = "market_beta",
+    industry_col: str = "industry",
+    time_col: str = "prediction_ts",
+) -> pd.DataFrame:
+    """Cross-sectionally residualise features against beta and industry.
+
+    ``industry`` is expected to come from the repository's
+    ``config/tickers.yaml`` grouping, not a vendor taxonomy.  If the exposure
+    columns are absent the input is returned unchanged so existing gold-table
+    schemas remain compatible.
+    """
+    out = matrix.copy()
+    if beta_col not in out or industry_col not in out:
+        return out
+    for _, idx in out.groupby(time_col).groups.items():
+        frame = out.loc[idx]
+        controls = pd.concat(
+            [frame[[beta_col]].astype(float), pd.get_dummies(frame[industry_col], dtype=float)],
+            axis=1,
+        )
+        controls.insert(0, "intercept", 1.0)
+        design = controls.to_numpy(dtype=float)
+        for col in feature_cols:
+            values = pd.to_numeric(frame[col], errors="coerce")
+            valid = values.notna() & np.isfinite(design).all(axis=1)
+            if valid.sum() <= design.shape[1]:
+                continue
+            coef, *_ = np.linalg.lstsq(design[valid], values[valid], rcond=None)
+            out.loc[frame.index[valid], col] = values[valid] - design[valid] @ coef
+    return out

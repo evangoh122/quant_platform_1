@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from sklearn import metrics as skm
+from scipy.stats import norm
 
 from strategies.cost_model import CostParams, cost_per_trade
 
@@ -63,6 +64,55 @@ def predictive_metrics(
     else:
         out["information_coefficient"] = float("nan")
     return out
+
+
+def daily_rank_ic(
+    predictions: pd.DataFrame,
+    time_col: str = "prediction_ts",
+    score_col: str = "y_prob",
+    return_col: str = "forward_return",
+) -> Dict[str, float]:
+    """Cross-sectional Spearman IC summary, computed separately each day."""
+    frame = predictions.copy()
+    frame["_day"] = pd.to_datetime(frame[time_col]).dt.date
+    values = []
+    for _, group in frame.groupby("_day"):
+        if len(group) < 2 or group[score_col].nunique() < 2 or group[return_col].nunique() < 2:
+            continue
+        values.append(group[score_col].rank().corr(group[return_col].rank()))
+    ic = pd.Series(values, dtype=float).dropna()
+    mean = float(ic.mean()) if len(ic) else float("nan")
+    std = float(ic.std(ddof=1)) if len(ic) > 1 else float("nan")
+    t_stat = mean / (std / np.sqrt(len(ic))) if len(ic) > 1 and std > 0 else float("nan")
+    return {
+        "daily_rank_ic_mean": mean,
+        "daily_rank_ic_std": std,
+        "daily_rank_ic_t_stat": float(t_stat),
+        "daily_rank_ic_n": float(len(ic)),
+    }
+
+
+def deflated_sharpe_ratio(
+    returns: np.ndarray,
+    n_trials: int = 4,
+    periods_per_year: int = 252,
+) -> float:
+    """Probability Sharpe exceeds the multiple-testing expected maximum.
+
+    This is the Bailey/Lopez de Prado normal approximation. ``n_trials=4``
+    corresponds to the A/B/C/D feature-set search and makes the penalty
+    explicit rather than presenting the best in-sample Sharpe unadjusted.
+    """
+    values = pd.Series(np.asarray(returns, dtype=float)).dropna().to_numpy()
+    if len(values) < 3 or np.std(values, ddof=1) == 0:
+        return float("nan")
+    sr = np.mean(values) / np.std(values, ddof=1) * np.sqrt(periods_per_year)
+    expected_max = norm.ppf(1.0 - 1.0 / max(n_trials, 2))
+    skew = pd.Series(values).skew()
+    kurt = pd.Series(values).kurt() + 3.0
+    denom = np.sqrt(max(1e-12, 1.0 - skew * sr + ((kurt - 1.0) / 4.0) * sr * sr))
+    statistic = (sr - expected_max) * np.sqrt(len(values) - 1.0) / denom
+    return float(norm.cdf(statistic))
 
 
 # ── Economic ─────────────────────────────────────────────────────────────────
@@ -177,5 +227,11 @@ def evaluate_predictions(
         else None,
     )
     metrics.update(build_backtest(pred_df, cost_params=cost_params))
+    if "forward_return" in pred_df:
+        metrics.update(daily_rank_ic(pred_df))
+        position = np.where(pred_df["y_prob"].to_numpy() >= 0.5, 1.0, -1.0)
+        metrics["deflated_sharpe_ratio"] = deflated_sharpe_ratio(
+            position * pred_df["forward_return"].to_numpy(), n_trials=4
+        )
     metrics.update(operational_metrics(latencies_ms or []))
     return metrics
