@@ -420,17 +420,31 @@ def neutralize_features(
     beta_col: str = "market_beta",
     industry_col: str = "industry",
     time_col: str = "prediction_ts",
+    report: bool = True,
 ) -> pd.DataFrame:
     """Cross-sectionally residualise features against beta and industry.
 
     ``industry`` is expected to come from the repository's
-    ``config/tickers.yaml`` grouping, not a vendor taxonomy.  If the exposure
-    columns are absent the input is returned unchanged so existing gold-table
-    schemas remain compatible.
+    ``config/tickers.yaml`` grouping, not a vendor taxonomy.
+
+    Raises
+    ------
+    ValueError
+        If ``beta_col`` or ``industry_col`` is absent from the matrix.  A
+        reported-but-skipped step is worse than a missing one — callers that
+        request neutralisation must supply the required columns.
     """
     out = matrix.copy()
-    if beta_col not in out or industry_col not in out:
-        return out
+    if beta_col not in out.columns or industry_col not in out.columns:
+        missing = [c for c in (beta_col, industry_col) if c not in out.columns]
+        raise ValueError(
+            f"neutralisation requires columns {missing} but they are absent; "
+            f"cannot silently skip neutralisation"
+        )
+
+    if report:
+        _report_beta_correlations(out, feature_cols, beta_col, time_col, stage="before")
+
     for _, idx in out.groupby(time_col).groups.items():
         frame = out.loc[idx]
         controls = pd.concat(
@@ -446,4 +460,42 @@ def neutralize_features(
                 continue
             coef, *_ = np.linalg.lstsq(design[valid], values[valid], rcond=None)
             out.loc[frame.index[valid], col] = values[valid] - design[valid] @ coef
+
+    if report:
+        _report_beta_correlations(out, feature_cols, beta_col, time_col, stage="after")
+
     return out
+
+
+def _report_beta_correlations(
+    matrix: pd.DataFrame,
+    feature_cols: Sequence[str],
+    beta_col: str,
+    time_col: str,
+    stage: str,
+) -> None:
+    """Log cross-sectional correlation of each feature with market beta."""
+    corrs: Dict[str, List[float]] = {col: [] for col in feature_cols}
+    for _, idx in matrix.groupby(time_col).groups.items():
+        frame = matrix.loc[idx]
+        beta_vals = pd.to_numeric(frame[beta_col], errors="coerce")
+        if beta_vals.nunique() < 2:
+            continue
+        for col in feature_cols:
+            feat_vals = pd.to_numeric(frame[col], errors="coerce")
+            c = feat_vals.corr(beta_vals)
+            if np.isfinite(c):
+                corrs[col].append(c)
+    import logging
+
+    log = logging.getLogger(__name__)
+    for col in feature_cols:
+        vals = corrs[col]
+        mean_corr = float(np.mean(vals)) if vals else float("nan")
+        log.info(
+            "neutralisation %s: %s vs beta cross-sectional corr = %.4f (n=%d)",
+            stage,
+            col,
+            mean_corr,
+            len(vals),
+        )

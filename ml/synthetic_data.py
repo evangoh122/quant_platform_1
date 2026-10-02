@@ -23,6 +23,7 @@ from ml.features import (
     SEC_FEATURES,
     assemble_features,
     compute_labels,
+    compute_triple_barrier_labels,
 )
 
 
@@ -35,11 +36,17 @@ def make_synthetic_matrix(
     n_bars: int = 400,
     seed: int = 42,
     bar_freq: str = "1min",
+    label_method: str = "fixed",
 ) -> pd.DataFrame:
     """Build a clean, PIT-correct assembled feature matrix + labels.
 
+    ``label_method`` selects the labelling scheme: ``"fixed"`` for fixed-horizon
+    (30-min forward returns) or ``"triple_barrier"`` for path-dependent,
+    volatility-scaled triple-barrier labels.
+
     Returns a DataFrame with columns: symbol, prediction_ts, every feature in
-    OHLCV/OPTIONS/SEC/COT, max_information_available_ts, forward_return, label.
+    OHLCV/OPTIONS/SEC/COT, max_information_available_ts, market_beta, industry,
+    forward_return, label.
     """
     rng = _rng(seed)
     start = pd.Timestamp("2026-01-05T09:30:00", tz="UTC")
@@ -47,8 +54,10 @@ def make_synthetic_matrix(
     times = pd.date_range(start, periods=n_bars, freq=freq)
 
     symbols = [f"TKR{i:02d}" for i in range(n_symbols)]
+    _INDUSTRIES = ["tech", "bank", "healthcare", "energy", "consumer"]
+    industry_map = {sym: _INDUSTRIES[i % len(_INDUSTRIES)] for i, sym in enumerate(symbols)}
 
-    # --- Labels: random-walk prices → 30-min forward returns ----------------
+    # --- Labels: random-walk prices → forward returns -------------------------
     bars = []
     for sym in symbols:
         log_ret = rng.normal(0.0, 0.0004, size=n_bars)
@@ -67,8 +76,19 @@ def make_synthetic_matrix(
             )
         )
     ohlcv_bars = pd.concat(bars, ignore_index=True)
-    labels = compute_labels(ohlcv_bars, horizon_minutes=30, bar_seconds=60)
-    labels = labels.rename(columns={"event_ts": "prediction_ts"})
+
+    if label_method == "triple_barrier":
+        labels = compute_triple_barrier_labels(
+            ohlcv_bars,
+            horizon_bars=20,
+            volatility_window=20,
+            profit_target=1.0,
+            stop_loss=1.0,
+        )
+        labels = labels.rename(columns={"event_ts": "prediction_ts"})
+    else:
+        labels = compute_labels(ohlcv_bars, horizon_minutes=30, bar_seconds=60)
+        labels = labels.rename(columns={"event_ts": "prediction_ts"})
 
     prediction_frame = labels[["symbol", "prediction_ts"]].copy()
     forward_return = labels.set_index(["symbol", "prediction_ts"])["forward_return"]
@@ -152,6 +172,35 @@ def make_synthetic_matrix(
     matrix = assemble_features(
         prediction_frame, ohlcv, options=options, sec=sec, cot=cot
     )
+
+    # --- Market beta (trailing rolling beta) and industry assignment -----------
+    ohlcv_bars["return"] = ohlcv_bars.groupby("symbol")["close"].pct_change()
+    market_ret = ohlcv_bars.groupby("event_ts")["return"].mean().rename("mkt_return")
+    ohlcv_bars = ohlcv_bars.merge(market_ret, on="event_ts", how="left")
+
+    beta_pieces = []
+    for sym, grp in ohlcv_bars.groupby("symbol", sort=False):
+        cov = (
+            grp["return"]
+            .rolling(20, min_periods=5)
+            .cov(grp["mkt_return"])
+        )
+        var = grp["mkt_return"].rolling(20, min_periods=5).var()
+        beta = (cov / var).rename("market_beta")
+        piece = pd.DataFrame(
+            {"symbol": sym, "event_ts": grp["event_ts"].values, "market_beta": beta.values}
+        )
+        beta_pieces.append(piece)
+    beta_df = pd.concat(beta_pieces, ignore_index=True)
+    beta_df["event_ts"] = pd.to_datetime(beta_df["event_ts"], utc=True)
+
+    matrix = matrix.merge(
+        beta_df.rename(columns={"event_ts": "prediction_ts"}),
+        on=["symbol", "prediction_ts"],
+        how="left",
+    )
+    matrix["industry"] = matrix["symbol"].map(industry_map)
+
     matrix["forward_return"] = matrix.set_index(
         ["symbol", "prediction_ts"]
     ).index.map(forward_return)

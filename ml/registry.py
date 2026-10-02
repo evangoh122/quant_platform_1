@@ -18,6 +18,7 @@ def build_run_tags(
     seed: int,
     model_type: str,
     data_window: str,
+    label_method: str = "fixed",
 ) -> Dict[str, str]:
     """The tags/params a run must carry to be reproducible.
 
@@ -29,6 +30,7 @@ def build_run_tags(
         "seed": str(seed),
         "model_type": model_type,
         "data_window": data_window,
+        "label_method": label_method,
     }
 
 

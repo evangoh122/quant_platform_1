@@ -198,6 +198,8 @@ def run_ablation(
     embargo: int = 1,
     use_uniqueness_weights: bool = True,
     neutralize: bool = True,
+    label_method: str = "fixed",
+    n_trials: Optional[int] = None,
 ) -> Dict:
     """Run the A/B/C/D study with purged, embargoed walk-forward validation.
 
@@ -214,6 +216,8 @@ def run_ablation(
         feature_sets = FEATURE_SETS
     if models is None:
         models = {"baseline": make_baseline}
+    if n_trials is None:
+        n_trials = len(feature_sets) * len(models)
 
     matrix = matrix.sort_values([prediction_col, "symbol"]).reset_index(drop=True)
     if label_end_col not in matrix:
@@ -269,7 +273,7 @@ def run_ablation(
                 pred_df["forward_return"] = forward_return
             pred_df = pred_df[pred_df["y_prob"].notna()]
 
-            metrics = evaluate.evaluate_predictions(pred_df)
+            metrics = evaluate.evaluate_predictions(pred_df, n_trials=n_trials)
             row = {"arm": arm_name, "model": model_name}
             row.update(metrics)
             comparison_rows.append(row)

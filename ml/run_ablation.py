@@ -52,6 +52,7 @@ def main() -> None:
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--min-train", type=int, default=60)
     parser.add_argument("--include-challenger", action="store_true")
+    parser.add_argument("--label-method", choices=["fixed", "triple_barrier"], default="fixed")
     parser.add_argument("--tracking-uri", default=None)
     args = parser.parse_args()
 
@@ -62,7 +63,8 @@ def main() -> None:
 
     data_window = "synthetic (live gold tables empty)"
     matrix = make_synthetic_matrix(
-        n_symbols=args.n_symbols, n_bars=args.n_bars, seed=args.seed
+        n_symbols=args.n_symbols, n_bars=args.n_bars, seed=args.seed,
+        label_method=args.label_method,
     )
 
     models = {"baseline": make_baseline}
@@ -76,6 +78,7 @@ def main() -> None:
         n_splits=args.n_splits,
         min_train=args.min_train,
         seed=args.seed,
+        label_method=args.label_method,
     )
 
     comparison = result["comparison"]
@@ -105,6 +108,7 @@ def main() -> None:
             seed=args.seed,
             model_type=row["model"],
             data_window=data_window,
+            label_method=args.label_method,
         )
         metrics = {
             k: row[k]
@@ -149,7 +153,7 @@ def main() -> None:
         "> at the warehouse read path once live data lands. Treat the numbers as",
         "> pipeline validation only, not as market findings.",
         "",
-        f"Seed: {args.seed} · n_symbols: {args.n_symbols} · n_bars: {args.n_bars} · splits: {args.n_splits} · min_train: {args.min_train}",
+        f"Seed: {args.seed} · n_symbols: {args.n_symbols} · n_bars: {args.n_bars} · splits: {args.n_splits} · min_train: {args.min_train} · label_method: {args.label_method}",
         "",
         "| Arm | Feature set | Model | ROC-AUC | Dir. acc | Brier | IC | Sharpe | MaxDD | Hit rate | Turnover | Avg hold | p95 lat (ms) |",
         "| :-- | :-- | :-- | --: | --: | --: | --: | --: | --: | --: | --: | --: | --: |",

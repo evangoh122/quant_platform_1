@@ -99,9 +99,10 @@ def deflated_sharpe_ratio(
 ) -> float:
     """Probability Sharpe exceeds the multiple-testing expected maximum.
 
-    This is the Bailey/Lopez de Prado normal approximation. ``n_trials=4``
-    corresponds to the A/B/C/D feature-set search and makes the penalty
-    explicit rather than presenting the best in-sample Sharpe unadjusted.
+    This is the Bailey/Lopez de Prado normal approximation.  ``n_trials``
+    should be the actual number of configurations evaluated in the run
+    (arms x models x label methods) so the penalty is honest rather than
+    hard-coded.
     """
     values = pd.Series(np.asarray(returns, dtype=float)).dropna().to_numpy()
     if len(values) < 3 or np.std(values, ddof=1) == 0:
@@ -214,10 +215,13 @@ def evaluate_predictions(
     pred_df: pd.DataFrame,
     cost_params: Optional[CostParams] = None,
     latencies_ms: Optional[List[float]] = None,
+    n_trials: int = 4,
 ) -> Dict[str, float]:
     """Combined predictive + economic + operational metric bundle for one arm.
 
     ``pred_df`` must contain ``y_true``, ``y_prob`` and ``forward_return``.
+    ``n_trials`` is the actual number of configurations evaluated in the run
+    (arms x models x label methods) and is passed to the deflated Sharpe ratio.
     """
     metrics = predictive_metrics(
         pred_df["y_true"].values,
@@ -230,8 +234,18 @@ def evaluate_predictions(
     if "forward_return" in pred_df:
         metrics.update(daily_rank_ic(pred_df))
         position = np.where(pred_df["y_prob"].to_numpy() >= 0.5, 1.0, -1.0)
+        strategy_ret = position * pred_df["forward_return"].to_numpy()
+        ts_col = "prediction_ts"
+        if ts_col in pred_df.columns:
+            sr = pd.Series(strategy_ret, index=pred_df[ts_col])
+            agg = sr.groupby(level=0).mean().sort_index()
+            agg_values = agg.to_numpy()
+            periods_per_year = 252
+        else:
+            agg_values = strategy_ret
+            periods_per_year = 252
         metrics["deflated_sharpe_ratio"] = deflated_sharpe_ratio(
-            position * pred_df["forward_return"].to_numpy(), n_trials=4
+            agg_values, n_trials=n_trials, periods_per_year=periods_per_year
         )
     metrics.update(operational_metrics(latencies_ms or []))
     return metrics
