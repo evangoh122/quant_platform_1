@@ -71,6 +71,7 @@ HTTP_TIMEOUT = 120
 
 # Release-timestamp policy: COT is as-of-Tuesday, published Friday ~15:30 ET.
 # RELEASE_SAFETY_DAYS=3 → assume availability the following Monday 15:30 ET.
+# release_date = report_date + 6 days (3 nominal + 3 safety).
 # This avoids holiday-week lookahead at the cost of a few days of freshness.
 RELEASE_SAFETY_DAYS = 3
 RELEASE_HOUR_ET = 15

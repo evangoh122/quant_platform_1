@@ -220,9 +220,12 @@ def _get_params():
     start = ""
     end = DEFAULT_END_DATE
     try:
-        mode = (dbutils.widgets.get("mode", "dry-run") or "").strip() or "dry-run"
-        start = (dbutils.widgets.get("start_date", "") or "").strip()
-        end = (dbutils.widgets.get("end_date", DEFAULT_END_DATE) or "").strip() or DEFAULT_END_DATE
+        dbutils.widgets.text("mode", "dry-run")
+        dbutils.widgets.text("start_date", "")
+        dbutils.widgets.text("end_date", DEFAULT_END_DATE)
+        mode = (dbutils.widgets.get("mode") or "").strip() or "dry-run"
+        start = (dbutils.widgets.get("start_date") or "").strip()
+        end = (dbutils.widgets.get("end_date") or "").strip() or DEFAULT_END_DATE
     except Exception:
         pass
     return mode, start, end

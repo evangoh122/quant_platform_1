@@ -372,7 +372,7 @@ Continue to expose `release_ts`; never use `report_date` as the information-avai
 The archived nominal rule is Friday at 15:30 America/New_York, derived as report date plus three days. Holiday weeks can publish later. For this refresh:
 
 - Prefer an official publication/release timestamp present in the PRE record.
-- Otherwise set the conservative fallback to the following Monday at 15:30 America/New_York by using `RELEASE_SAFETY_DAYS = 3`.
+- Otherwise set the conservative fallback to the following Monday at 15:30 America/New_York by using `RELEASE_SAFETY_DAYS = 3`. This means `release_date = report_date + 6 days` (Tuesday report_date + 3 days to Friday + 3 safety days = Monday).
 - Preserve the timestamp in UTC.
 
 This sacrifices some Friday-to-Monday availability but avoids holiday-week lookahead. A later Silver step may replace the fallback with an official release calendar; that work is out of scope here.
@@ -499,6 +499,7 @@ source                   STRING     NOT NULL
 source_url                STRING     NOT NULL
 ingest_ts                 TIMESTAMP  NOT NULL
 raw_value                 STRING
+revision_class            STRING     NOT NULL
 ```
 
 Semantics:
@@ -506,11 +507,12 @@ Semantics:
 - `observation_date`: period represented by the value.
 - `value`: parsed published value.
 - `vintage_date`: date this version was retrieved/published as a vintage.
-- `information_available_ts`: earliest instant this stored version may be used in a point-in-time join.
+- `information_available_ts`: earliest instant this stored version may be used in a point-in-time join. For `market_rate` series, this is the next NY business day after `observation_date` at 16:30 America/New_York (H.15 publication calendar). For `revised_macro` series, this equals `ingest_ts`.
 - `source = 'fred_csv'`.
 - `source_url`: exact series URL, without credentials or transient tokens.
 - `ingest_ts`: UTC retrieval timestamp.
 - `raw_value`: original CSV value.
+- `revision_class`: `'market_rate'` for effectively unrevised daily rates (DFF, DGS2, DGS10, etc.) or `'revised_macro'` for monthly macro series revised after first release (CPIAUCSL, UNRATE, PAYEMS, etc.).
 
 ## Incremental window
 
@@ -611,7 +613,7 @@ The duplicate query must return zero rows. Also verify:
 ```sql
 SELECT COUNT(*) AS unsafe_rows
 FROM bootcamp_students.evangoh_capstone.bronze_fed_series
-WHERE information_available_ts < ingest_ts
+WHERE (revision_class = 'revised_macro' AND information_available_ts < ingest_ts)
    OR observation_date > DATE '2026-10-03';
 ```
 

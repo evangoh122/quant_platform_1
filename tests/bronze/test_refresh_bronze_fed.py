@@ -401,7 +401,7 @@ class TestSelectNewRows:
             {"series_id": "DFF", "observation_date": date(2026, 9, 20),
              "vintage_date": date(2026, 10, 3), "value": 4.33},
         ]
-        existing = {("DFF", date(2026, 9, 20), date(2026, 10, 3), 4.33)}
+        existing = {("DFF", date(2026, 9, 20)): 4.33}
         new_rows, dup_count, overlap_count = select_new_rows(candidates, existing)
         assert len(new_rows) == 0
         assert overlap_count == 1
@@ -411,8 +411,8 @@ class TestSelectNewRows:
             {"series_id": "UNRATE", "observation_date": date(2026, 9, 1),
              "vintage_date": date(2026, 10, 3), "value": 3.8},
         ]
-        # Existing has a different value for same key prefix
-        existing = {("UNRATE", date(2026, 9, 1), date(2026, 10, 3), 3.7)}
+        # Existing has a different value for same (series_id, observation_date)
+        existing = {("UNRATE", date(2026, 9, 1)): 3.7}
         new_rows, dup_count, overlap_count = select_new_rows(candidates, existing)
         assert len(new_rows) == 1  # Different value = new vintage
         assert new_rows[0]["value"] == pytest.approx(3.8)
@@ -426,12 +426,46 @@ class TestSelectNewRows:
              "vintage_date": date(2026, 10, 3), "value": 3.85},
         ]
         existing = {
-            ("DFF", date(2026, 9, 20), date(2026, 10, 3), 4.33),
-            ("DGS10", date(2026, 9, 20), date(2026, 10, 3), 3.85),
+            ("DFF", date(2026, 9, 20)): 4.33,
+            ("DGS10", date(2026, 9, 20)): 3.85,
         }
         new_rows, dup_count, overlap_count = select_new_rows(candidates, existing)
         assert len(new_rows) == 0
         assert overlap_count == 2
+
+    def test_next_day_same_value_not_appended(self):
+        """Candidate from day D+1 with same value as day D → 0 new."""
+        candidates = [
+            {"series_id": "DFF", "observation_date": date(2026, 9, 20),
+             "vintage_date": date(2026, 10, 4), "value": 4.33},
+        ]
+        existing = {("DFF", date(2026, 9, 20)): 4.33}
+        new_rows, dup_count, overlap_count = select_new_rows(candidates, existing)
+        assert len(new_rows) == 0
+        assert overlap_count == 1
+
+    def test_next_day_changed_value_appended(self):
+        """Candidate from day D+1 with different value → 1 new."""
+        candidates = [
+            {"series_id": "DFF", "observation_date": date(2026, 9, 20),
+             "vintage_date": date(2026, 10, 4), "value": 4.50},
+        ]
+        existing = {("DFF", date(2026, 9, 20)): 4.33}
+        new_rows, dup_count, overlap_count = select_new_rows(candidates, existing)
+        assert len(new_rows) == 1
+        assert new_rows[0]["value"] == pytest.approx(4.50)
+
+    def test_value_revert_is_new_vintage(self):
+        """A→B→A: the revert (A) differs from latest stored (B), so it's new."""
+        candidates = [
+            {"series_id": "UNRATE", "observation_date": date(2026, 9, 1),
+             "vintage_date": date(2026, 10, 5), "value": 3.7},
+        ]
+        # Latest stored vintage has value 3.8 (the B in A→B→A)
+        existing = {("UNRATE", date(2026, 9, 1)): 3.8}
+        new_rows, dup_count, overlap_count = select_new_rows(candidates, existing)
+        assert len(new_rows) == 1
+        assert new_rows[0]["value"] == pytest.approx(3.7)
 
     def test_duplicates_within_batch(self):
         candidates = [
@@ -440,12 +474,12 @@ class TestSelectNewRows:
             {"series_id": "DFF", "observation_date": date(2026, 9, 20),
              "vintage_date": date(2026, 10, 3), "value": 4.33},
         ]
-        new_rows, dup_count, overlap_count = select_new_rows(candidates, set())
+        new_rows, dup_count, overlap_count = select_new_rows(candidates, {})
         assert len(new_rows) == 1
         assert dup_count == 1
 
     def test_empty_candidates(self):
-        new_rows, dup_count, overlap_count = select_new_rows([], set())
+        new_rows, dup_count, overlap_count = select_new_rows([], {})
         assert len(new_rows) == 0
         assert dup_count == 0
         assert overlap_count == 0

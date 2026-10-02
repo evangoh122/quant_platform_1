@@ -141,6 +141,7 @@ source                   STRING     NOT NULL
 source_url                STRING     NOT NULL
 ingest_ts                 TIMESTAMP  NOT NULL
 raw_value                 STRING
+revision_class            STRING     NOT NULL
 ```
 
 Semantics:
@@ -148,11 +149,12 @@ Semantics:
 - `observation_date`: period represented by the value.
 - `value`: parsed published value.
 - `vintage_date`: date this version was retrieved/published as a vintage.
-- `information_available_ts`: earliest instant this stored version may be used in a point-in-time join.
+- `information_available_ts`: earliest instant this stored version may be used in a point-in-time join. For `market_rate` series, this is the next NY business day after `observation_date` at 16:30 America/New_York (H.15 publication calendar). For `revised_macro` series, this equals `ingest_ts`.
 - `source = 'fred_csv'`.
 - `source_url`: exact series URL, without credentials or transient tokens.
 - `ingest_ts`: UTC retrieval timestamp.
 - `raw_value`: original CSV value.
+- `revision_class`: `'market_rate'` for effectively unrevised daily rates (DFF, DGS2, DGS10, etc.) or `'revised_macro'` for monthly macro series revised after first release (CPIAUCSL, UNRATE, PAYEMS, etc.).
 
 ## Incremental window
 
@@ -214,7 +216,8 @@ Tests must cover:
 - unchanged overlap;
 - changed values becoming new vintages;
 - same-day rerun idempotency;
-- `information_available_ts >= ingest_ts` for this implementation.
+- `market_rate` availability at NY time (not `ingest_ts`);
+- `revised_macro` availability equals `ingest_ts`.
 
 ## Dry-run and write sequence
 
@@ -253,7 +256,7 @@ The duplicate query must return zero rows. Also verify:
 ```sql
 SELECT COUNT(*) AS unsafe_rows
 FROM bootcamp_students.evangoh_capstone.bronze_fed_series
-WHERE information_available_ts < ingest_ts
+WHERE (revision_class = 'revised_macro' AND information_available_ts < ingest_ts)
    OR observation_date > DATE '2026-10-03';
 ```
 

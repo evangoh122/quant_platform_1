@@ -266,7 +266,14 @@ def shape_quote_row(snap, underlying, snapshot_ts, source="polygon"):
     if not opt_sym:
         return None
 
-    expiry = getattr(details, "expiration_date", None) if details else None
+    expiry_raw = getattr(details, "expiration_date", None) if details else None
+    if expiry_raw and isinstance(expiry_raw, str):
+        try:
+            expiry = datetime.strptime(expiry_raw, "%Y-%m-%d").date()
+        except ValueError:
+            expiry = None
+    else:
+        expiry = expiry_raw
     strike = getattr(details, "strike_price", None) if details else None
     right = _right_from_contract_type(
         getattr(details, "contract_type", None) if details else None
@@ -293,7 +300,7 @@ def shape_quote_row(snap, underlying, snapshot_ts, source="polygon"):
     return {
         "option_symbol": opt_sym,
         "underlying": underlying,
-        "expiry": str(expiry) if expiry else None,
+        "expiry": expiry,
         "strike": float(strike) if strike is not None else None,
         "right": right,
         "bid": float(bid) if bid is not None else None,
@@ -656,6 +663,8 @@ def _run_daily(spark, s3, s3_host, start_date, end_date, dry_run):
             )
             if vol_file is None:
                 entitlement_gap += 1
+                if not dry_run:
+                    log_finish(spark, key, DAY_DATASET, 0, error_message="403 / not entitled")
                 print(f"  [gap] {date_str} (403 / not entitled)")
                 continue
             incoming = _shape_day(spark, vol_file, key, ingest_ts)
@@ -945,6 +954,8 @@ def main(argv):
     if snapshot:
         print(f"  snapshot : appended={snapshot['appended']:,} "
               f"candidate={snapshot['candidate']:,} new={snapshot['new']:,}")
+    if daily is None or (daily and daily.get("failed", 0) > 0):
+        return 1
     return 0
 
 

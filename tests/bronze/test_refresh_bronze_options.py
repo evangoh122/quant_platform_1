@@ -7,7 +7,7 @@ These tests exercise only the pure, import-safe helpers in
 live ingestion. The notebook guards all live work under ``main()`` so importing
 it here does not start any ingestion.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -183,7 +183,7 @@ def test_shape_quote_row_full():
     assert row is not None
     assert row["option_symbol"] == "O:SPY261218C00600000"
     assert row["underlying"] == "SPY"
-    assert row["expiry"] == "2026-12-18"
+    assert row["expiry"] == date(2026, 12, 18)
     assert row["strike"] == 600.0
     assert row["right"] == "call"
     assert row["midpoint"] == 10.25  # (10.0 + 10.5) / 2

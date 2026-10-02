@@ -301,13 +301,15 @@ def parse_csv_rows(
 
 def select_new_rows(
     candidates: list[dict],
-    existing_keys: set[tuple],
+    existing_keys: dict[tuple, float],
 ) -> tuple[list[dict], int, int]:
     """
     Filter candidates against existing keys and deduplicate.
 
     Returns (new_rows, duplicate_count, overlap_count).
-    Natural key: (series_id, observation_date, vintage_date, value)
+    Natural key: (series_id, observation_date, value)
+    A candidate is new only if (series_id, observation_date) is absent,
+    or its value differs from the latest stored vintage for that key.
     """
     seen = set()
     new_rows = []
@@ -315,12 +317,14 @@ def select_new_rows(
     overlap_count = 0
 
     for row in candidates:
-        key = (row["series_id"], row["observation_date"], row["vintage_date"], row["value"])
+        key = (row["series_id"], row["observation_date"], row["value"])
         if key in seen:
             dup_count += 1
             continue
         seen.add(key)
-        if key in existing_keys:
+        pair = (row["series_id"], row["observation_date"])
+        latest_value = existing_keys.get(pair)
+        if latest_value is not None and row["value"] == latest_value:
             overlap_count += 1
             continue
         new_rows.append(row)
@@ -358,20 +362,28 @@ def _table_exists(spark, fqn: str) -> bool:
         return False
 
 
-def _get_existing_keys(spark, fqn: str, series_ids: list[str]) -> tuple[set[tuple], dict[str, date], int]:
+def _get_existing_keys(spark, fqn: str, series_ids: list[str]) -> tuple[dict[tuple, float], dict[str, date], int]:
     """
-    Fetch existing natural keys, per-series max observation dates, and row count.
+    Fetch latest stored values, per-series max observation dates, and row count.
 
-    Returns (keys_set, max_dates_by_series, total_row_count).
+    Returns (latest_values_by_pair, max_dates_by_series, total_row_count).
+    latest_values_by_pair maps (series_id, observation_date) -> latest value.
     """
     if not _table_exists(spark, fqn):
-        return set(), {}, 0
+        return {}, {}, 0
 
     keys_df = spark.sql(f"""
         SELECT series_id, observation_date, vintage_date, value
         FROM {fqn}
     """).collect()
-    keys = {(r["series_id"], r["observation_date"], r["vintage_date"], r["value"]) for r in keys_df}
+    latest: dict[tuple, float] = {}
+    for r in keys_df:
+        pair = (r["series_id"], r["observation_date"])
+        vid = r["vintage_date"]
+        val = r["value"]
+        if pair not in latest or vid >= latest[pair][0]:
+            latest[pair] = (vid, val)
+    latest_values = {pair: v[1] for pair, v in latest.items()}
 
     max_df = spark.sql(f"""
         SELECT series_id, MAX(observation_date) AS max_obs
@@ -383,7 +395,7 @@ def _get_existing_keys(spark, fqn: str, series_ids: list[str]) -> tuple[set[tupl
     count_df = spark.sql(f"SELECT COUNT(*) AS cnt FROM {fqn}").collect()
     total = count_df[0]["cnt"] if count_df else 0
 
-    return keys, max_dates, total
+    return latest_values, max_dates, total
 
 
 def _create_table_if_absent(spark, fqn: str):
@@ -478,7 +490,11 @@ def run_refresh(dry_run: bool, start_date: Optional[date] = None, end_date: Opti
         overlap_start = None
         if max_obs:
             overlap_start = _compute_overlap_dates(sid, max_obs)
+            if start_date and overlap_start < start_date:
+                overlap_start = start_date
             print(f"  Overlap start: {overlap_start} (max_obs={max_obs})")
+        elif start_date:
+            overlap_start = start_date
 
         csv_text = _download_csv(sid)
         if csv_text is None:
@@ -523,7 +539,12 @@ def run_refresh(dry_run: bool, start_date: Optional[date] = None, end_date: Opti
         appended = len(all_new_rows)
         print(f"  Appended: {appended}")
 
-    post_count = pre_count + appended
+    # Re-read post-write count to verify
+    if not dry_run and appended > 0:
+        count_df = spark.sql(f"SELECT COUNT(*) AS cnt FROM {FQN}").collect()
+        post_count = count_df[0]["cnt"] if count_df else 0
+    else:
+        post_count = pre_count + appended
 
     # ── Report ────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
@@ -548,6 +569,10 @@ def run_refresh(dry_run: bool, start_date: Optional[date] = None, end_date: Opti
         print(f"\n[WARN] {len(failures)} series failed.")
         for f in failures:
             print(f"  - {f['series_id']}: {f['error']}")
+        return 1
+
+    if not dry_run and (post_count - pre_count) != appended:
+        print(f"\n[ERROR] Count mismatch: post({post_count}) - pre({pre_count}) != appended({appended})")
         return 1
 
     print(f"\n[OK] FRED bronze refresh complete ({mode_label}).")
