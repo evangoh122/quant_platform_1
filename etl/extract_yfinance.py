@@ -17,7 +17,10 @@ from loguru import logger
 
 # Default universe when no tickers are passed. Previously imported from
 # etl.bulk_load_massive, an IBKR_workbench module that was never carried into this
-# repo (so this module could not be imported). Inlined unchanged from that source.
+# repo (so this module could not be imported). Inlined unchanged from
+# github.com/evangoh122/IBKR_workbench etl/bulk_load_massive.py @ b5b7b5a (35 tickers).
+# Not the 32-ticker stub in quant_platform_1 commit afc56c0: that was an unmerged,
+# reconstructed-from-memory draft (it lists IIVI, renamed to COHR in 2022).
 _DEFAULT_TICKERS = {
     # Mag 7
     "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
