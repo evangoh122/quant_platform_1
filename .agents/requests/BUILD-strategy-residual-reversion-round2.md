@@ -1,6 +1,6 @@
 # BUILD-REQUEST: strategy-residual-reversion — ROUND 2
 
-**Branch:** `slice/strategy-residual-reversion` · **Builder:** DeepSeek · **Validators:** Claude, then Codex
+**Branch:** `slice/strategy-residual-reversion` · **Builder:** MiMo · **Checkers:** Claude, then DeepSeek (owner rule: MiMo codes, DeepSeek checks)
 Read `.agents/codex/VERDICT-strategy-residual-reversion.md` (item A). Codex confirmed the
 regression window `[t-window, t-1]`, the execution lag, train-only parameter selection with
 purge/embargo, honest trial count, gross/net/2× reporting, and short-only borrow. Keep those.
@@ -37,4 +37,4 @@ Also: write files with **LF line endings** (not CRLF).
 
 Do not modify `ml/`, existing `gold/0[1-5]*` transforms, `agent/`, `db/`, `api/`, `frontend/`,
 `conftest.py`, `pytest.ini`, `.agents/dispatch.sh`. **Commit your work.**
-Write `.agents/deepseek/VERDICT-strategy-residual-reversion-round2.md`.
+Write `.agents/mimo/VERDICT-strategy-residual-reversion-round2.md`.
