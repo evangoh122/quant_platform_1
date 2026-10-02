@@ -1,0 +1,84 @@
+# ---- secrets / credentials ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+auth.json
+secrets.json
+.databrickscfg
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+
+# ---- test / coverage ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ---- data / artifacts (never commit market data) ----
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.csv
+!config/*.csv
+*.feather
+data/raw/
+data/interim/
+data/processed/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# ---- ml artifacts ----
+mlruns/
+mlflow.db
+*.pkl
+*.joblib
+*.onnx
+checkpoints/
+_checkpoints/
+
+# ---- node / frontend ----
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- editors / os ----
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# ---- databricks ----
+.databricks/
+
+# ---- agent coordination scratch (verdicts ARE tracked; logs are not) ----
+.agentlogs/
+*.agent.log

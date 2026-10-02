@@ -1,0 +1,46 @@
+lineage:
+  bronze_ohlcv -> silver_ohlcv:
+    key: [symbol, event_ts]
+    transform: "Schema validation, UTC normalize, session flags, dedup, missing-bar detection"
+
+  bronze_options_quotes -> silver_options_quotes:
+    key: [option_symbol, participant_ts]
+    transform: "Parse OCC symbology, compute midpoint/spread, flag stale/locked/crossed"
+
+  bronze_options_trades -> silver_options_trades:
+    key: [option_symbol, participant_ts]
+    transform: "Parse OCC symbology, compute notional, dedup"
+
+  bronze_sec_filings -> silver_sec_sections:
+    key: [accession_number, chunk_id]
+    transform: "HTML/XML strip, section detection, text cleaning"
+
+  bronze_sec_filings -> silver_sec_entities:
+    key: [accession_number]
+    transform: "XBRL fact extraction, event detection, entity recognition"
+
+  bronze_cot -> silver_cot_positions:
+    key: [report_date, market_code]
+    transform: "Compute net positions, normalize to %OI, map asset regimes"
+
+  silver_ohlcv -> gold_ohlcv_features:
+    key: [symbol, event_ts -> feature_ts]
+    pit_column: "information_available_ts = event_ts"
+
+  silver_options_* -> gold_options_features:
+    key: [underlying -> symbol]
+    pit_column: "information_available_ts = MAX(participant_ts) in window"
+
+  silver_sec_* -> gold_sec_features:
+    key: [ticker, accession_number]
+    pit_column: "information_available_ts = accepted_ts (NOT filing_date)"
+
+  silver_cot_positions -> gold_cot_features:
+    key: [mapped_asset, report_date]
+    pit_column: "information_available_ts = release_ts (NOT report_date)"
+
+  gold_model_features:
+    assembly: "PIT AS-OF join: for each (symbol, prediction_ts), latest feature where info_ts <= prediction_ts"
+
+  lakebase_cdf -> analytics:
+    tables: [analytics_agent_activity, analytics_trading_activity, analytics_model_performance, analytics_user_activity]

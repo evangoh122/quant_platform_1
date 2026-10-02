@@ -1,0 +1,61 @@
+metrics:
+  return_Nm:
+    formula: "(close[t] - close[t-N]) / close[t-N]"
+    variants: [return_1m, return_5m, return_15m, return_30m]
+    source: silver_ohlcv
+
+  rolling_realized_volatility:
+    formula: "STDDEV(return_1m) OVER (ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW)"
+    variants: [rvol_5m, rvol_15m, rvol_30m]
+
+  atr_14:
+    formula: "EMA_14( MAX(high-low, ABS(high-prev_close), ABS(low-prev_close)) )"
+
+  rsi_14:
+    formula: "100 - (100 / (1 + AVG(up_moves_14) / AVG(down_moves_14)))"
+    range: "[0, 100]; >70 overbought, <30 oversold"
+
+  vwap_deviation:
+    formula: "(close - vwap) / vwap"
+
+  relative_volume:
+    formula: "volume / AVG(volume) OVER (ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)"
+
+  put_call_ratio:
+    formula: "SUM(put_volume) / NULLIF(SUM(call_volume), 0)"
+    note: ">1 bearish; <0.7 bullish"
+
+  iv_atm:
+    formula: "IV of nearest-to-ATM option"
+
+  iv_skew:
+    formula: "iv_25d_put - iv_25d_call"
+    note: "Positive = downside protection demand"
+
+  iv_term_slope:
+    formula: "IV(near_expiry_ATM) - IV(far_expiry_ATM)"
+
+  volume_anomaly_zscore:
+    formula: "(volume_today - AVG(volume_20d)) / STDDEV(volume_20d)"
+    note: ">2.0 is unusual"
+
+  sentiment_score:
+    formula: "(positive_words - negative_words) / total_words"
+    dictionary: "Loughran-McDonald"
+    range: "[-1, +1]"
+
+  risk_factor_change:
+    formula: "1 - cosine_similarity(current_item1a, prior_item1a)"
+    note: ">0.3 is material"
+
+  lev_money_pctile_52w:
+    formula: "PERCENT_RANK() OVER 52-week window"
+    note: ">0.9 extreme long; <0.1 extreme short"
+
+  crowding_score:
+    formula: "weighted_avg(lev_money_pctile, asset_mgr_pctile, dealer_pctile)"
+
+  end_to_end_latency:
+    formula: "signal_visible_ts - provider_event_ts"
+    slo: "<60 seconds (<=50 sec typical)"
+    budget: {provider_to_ingestion: "0-10s", spark_micro_batch: "<=15s", feature_update: "<=10s", model_inference: "<=5s", persist_refresh: "<=10s"}

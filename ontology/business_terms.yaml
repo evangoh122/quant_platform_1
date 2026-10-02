@@ -1,0 +1,45 @@
+terms:
+  mid_frequency_trading:
+    definition: "Trading strategy with decision horizons of ~15 minutes to several hours. Not high-frequency (microseconds). Databricks Spark micro-batch (10-15 sec) is appropriate."
+    aliases: [mid-freq, intraday, short-horizon]
+
+  point_in_time_join:
+    definition: "AS-OF join where every feature's information_available_ts <= prediction_ts. Prevents look-ahead bias."
+    aliases: [PIT join, as-of join, no-look-ahead]
+    critical_rule: "NEVER join on filing_date; ALWAYS use accepted_ts or release_ts."
+
+  information_available_ts:
+    definition: "Timestamp when information was actually observable. SEC=EDGAR acceptance_ts, COT=CFTC release_ts, OHLCV=bar close time."
+    critical_rule: "Every gold feature must carry this column."
+
+  signal:
+    definition: "ML model prediction: direction (UP/DOWN), probability [0,1], model_version, feature_snapshot_id."
+    table: gold_trading_signals
+    status_values: [ACTIVE, EXPIRED, CONSUMED]
+
+  order_intent:
+    definition: "Paper-trading order request. Must pass risk checks and human approval before IBKR submission."
+    lifecycle: "PENDING_APPROVAL -> APPROVED -> SUBMITTED -> FILLED/REJECTED/CANCELLED"
+    table: "orders (Lakebase)"
+
+  execution_bridge:
+    definition: "Isolated service owning authenticated IBKR paper session. Browser/LLM never get broker credentials."
+
+  feature_snapshot_id:
+    definition: "Unique ID linking signal -> gold_model_features -> source data. Full lineage."
+
+  stale_signal:
+    definition: "Signal older than 5 minutes (configurable). Risk service blocks order intents."
+
+  trading_session:
+    definition: "US regular: 09:30-16:00 ET. Pre-market: 04:00-09:30. After-hours: 16:00-20:00."
+
+  universe:
+    definition: "20-50 highly liquid US equities/ETFs (SPY, QQQ, NVDA, AAPL, etc.). config/tickers.yaml."
+
+  tff_categories:
+    definition: "CFTC Traders in Financial Futures: Dealer, Asset Manager, Leveraged Money, Other Reportables, Non-Reportables."
+
+  almgren_chriss:
+    definition: "Square-root market-impact model. Three costs: bid-ask spread, IBKR tiered commission, market impact."
+    module: etl/slippage.py

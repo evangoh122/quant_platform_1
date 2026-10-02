@@ -1,0 +1,31 @@
+tables:
+  bronze_ohlcv:
+    grain: "One row per (symbol, event_ts, timespan)"
+    partition: symbol
+    dedup: "(symbol, event_ts, timespan)"
+
+  bronze_options_quotes:
+    grain: "One row per (option_symbol, participant_ts)"
+    partition: underlying
+    volume_note: "Primary Big Data Volume source (>=5M rows)"
+    option_symbol_format: "OCC e.g. O:SPY251219C00600000"
+
+  bronze_sec_filings:
+    grain: "One row per (accession_number, chunk_id)"
+    partition: form_type
+    variety_note: "Big Data Variety source (HTML/XML/XBRL/TXT)"
+    pit_warning: "Use accepted_ts for PIT joins, NEVER filing_date"
+
+  bronze_cot:
+    grain: "One row per (report_date, market_code)"
+    pit_warning: "Use release_ts for PIT joins, NEVER report_date"
+
+  gold_trading_signals:
+    grain: "One row per signal_id"
+    partition: symbol
+    status_enum: [ACTIVE, EXPIRED, CONSUMED]
+
+  gold_model_features:
+    grain: "One row per (symbol, prediction_ts)"
+    partition: symbol
+    critical_rule: "All features available at or before prediction_ts"

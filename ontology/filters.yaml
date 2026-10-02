@@ -1,0 +1,39 @@
+filters:
+  regular_session_only:
+    sql: "is_regular_session = true"
+    tables: [silver_ohlcv]
+
+  stale_signal:
+    sql: "prediction_ts >= current_timestamp() - INTERVAL 5 MINUTES"
+    tables: [gold_trading_signals]
+
+  stale_market_data:
+    sql: "ingest_ts >= current_timestamp() - INTERVAL 2 MINUTES"
+    tables: [bronze_ohlcv, bronze_options_quotes]
+
+  exclude_bad_quotes:
+    sql: "is_stale = false AND is_locked = false AND is_crossed = false"
+    tables: [silver_options_quotes]
+
+  pit_no_lookahead:
+    sql: "information_available_ts <= prediction_ts"
+    tables: [gold_ohlcv_features, gold_options_features, gold_sec_features, gold_cot_features]
+    critical: true
+
+  cot_forward_fill:
+    rule: "Forward-fill only until next release_ts; never backward-fill"
+
+  min_volume:
+    sql: "volume > 0"
+    tables: [silver_ohlcv, silver_options_trades]
+
+  order_risk_checks:
+    checks:
+      - "Symbol in allow-list"
+      - "Paper-account only"
+      - "quantity > 0, notional <= $25,000"
+      - "Position notional <= $50,000"
+      - "Buying power sufficient"
+      - "No duplicate open order"
+      - "Signal not stale (<5 min)"
+      - "Market session open or limit order"

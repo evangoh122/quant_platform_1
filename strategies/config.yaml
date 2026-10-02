@@ -1,0 +1,222 @@
+# ============================================================
+# MFT Strategy Configuration — All parameters in one place
+# Nothing hardcoded in strategy code; everything reads from here.
+# ============================================================
+
+global:
+  catalog: bootcamp_students
+  schema: evangoh_capstone
+  timezone: America/New_York
+  regular_session_start: "09:30"
+  regular_session_end: "16:00"
+  liquidity_min_dollar_volume: 5_000_000   # min daily $ volume to trade
+  per_position_cap: 0.05                   # max 5% of gross per name
+  daily_loss_limit_pct: 0.02               # 2% portfolio stop
+  execution_lag_bars: 1                    # signals on bar t trade at t+1
+
+cost_model:
+  commission_bps: 0.5
+  spread_bps: 3.0
+  slippage_bps: 2.0
+  adv_participation_cap: 0.02              # max 2% of ADV per order
+
+# ── Strategy 1: Intraday Cointegration Pairs ─────────────────
+strategy_1_pairs:
+  bar_freq: 15min                          # also supports 5min
+  # Pair formation
+  corr_window: 1260                        # bars (~60 trading days at 15min)
+  corr_threshold: 0.8
+  formation_window: 1260                   # bars for Engle-Granger regression
+  formation_period: 5                      # re-form pairs every N trading days
+  adf_pvalue: 0.05                         # max ADF p-value to keep pair
+  # Kalman filter
+  use_kalman: true                         # false = static beta
+  kalman_delta: 1.0e-5                     # state noise (random walk variance)
+  kalman_ve: 1.0e-3                        # observation noise
+  # Z-score
+  zwin: 78                                 # rolling window for z-score (~1 trading day at 15min)
+  entry_z: 2.0
+  exit_z: 0.5
+  stop_z: 3.5
+  # Risk / holding
+  max_hold_bars: 78                        # ~1 trading day
+  allow_overnight: false
+  flatten_before_close_min: 15
+  recheck_period_bars: 260                 # re-check cointegration periodically
+  recheck_p: 0.10                          # force-close if ADF p > this
+  target_leverage: 2.0
+
+# ── Strategy 2: Cross-Sectional Alpha Basket ─────────────────
+strategy_2_alpha:
+  universe_size: 500                       # top N by dollar volume
+  bar_freq: 1d                             # daily
+  # Alpha signals
+  alpha_list:
+    - alpha_reversal                       # -rank(1-day return)
+    - alpha_intraday                       # (close-open)/(high-low)
+    - alpha_volprice                       # -corr(open, volume, 10)
+    - alpha_vwap_gap                       # rank(sqrt(high*low) - vwap)
+    - alpha_volshock                       # sign(delta(vol,1)) * -delta(close,1)
+  alpha_weights: [0.2, 0.2, 0.2, 0.2, 0.2]  # equal weight start
+  # Portfolio construction
+  rebalance_freq: 1d
+  decay: 0.5                               # turnover smoothing
+  sector_neutral: true
+  target_leverage: 2.0
+  turnover_cap_pct: 0.30                   # max 30% gross turnover/day
+
+# ── Strategy 3: ML-Enhanced Spread Model ─────────────────────
+strategy_3_ml:
+  h: 6                                     # predict next h bars (spread change)
+  model_type: lightgbm                     # lightgbm | xgboost
+  p_enter: 0.6                             # min predicted reversion probability
+  train_window: 5040                       # bars (~1 quarter at 15min)
+  retrain_freq: 1260                       # retrain every ~60 trading days
+  feature_set:
+    - z_t
+    - spread_level
+    - spread_velocity                      # delta(spread, 1)
+    - spread_vol                           # rolling std of spread
+    - kalman_drift                         # delta(beta_t)
+    - volume_z_leg_a
+    - volume_z_leg_b
+    - time_of_day_bucket
+    - minutes_to_close
+  # Inherits all Strategy 1 params for pair formation + stops
+  use_strategy_1_stops: true
+
+# ── Backtest engine ──────────────────────────────────────────
+backtest:
+  start_date: "2024-08-30"                 # 2 years of data available
+  end_date: "2026-08-30"
+  initial_capital: 1_000_000
+  warmup_bars: 1260                        # skip first N bars for indicator warmup
+  report_metrics:
+    - sharpe_ratio
+    - max_drawdown
+    - hit_rate
+    - avg_holding_time
+    - turnover
+    - gross_pnl
+    - net_pnl
+    - cost_drag
+    - per_signal_attribution
+
+# ══════════════════════════════════════════════════════════════
+# SECTION A — Metric Library Configuration
+# ══════════════════════════════════════════════════════════════
+metrics:
+  ann_daily: 252                           # annualization factor for daily
+  bars_per_day_15min: 26                   # 390min / 15min = 26 bars
+  bars_per_day_5min: 78                    # 390min / 5min  = 78 bars
+  pnl_normalization: half_book             # half_book | full_book (WQ uses half)
+  turnover_two_way: false                  # false = one-way (WQ default); true = divide by 2
+  corr_target: pnl                         # pnl | signal (what to correlate for self/prod corr)
+  risk_free_rate: 0.0                      # assumed 0 for market-neutral
+
+# ── Metric Gates (pass/fail thresholds) ──────────────────────
+metric_gates:
+  sharpe_min: 1.25
+  fitness_min: 1.0
+  turnover_min: 0.01
+  turnover_max: 0.70
+  turnover_floor_for_fitness: 0.125        # max(Turnover, this) in Fitness formula
+  max_drawdown_max: 0.15                   # flag if MaxDD > 15% of capital
+  return_to_dd_min: 1.0
+  self_corr_max: 0.70                      # max correlation with own alpha pool
+  prod_corr_max: 0.70                      # max correlation with production pool
+  margin_min_bps: 5.0                      # min edge per dollar traded
+
+# ══════════════════════════════════════════════════════════════
+# SECTION B — Validation Test Configuration
+# ══════════════════════════════════════════════════════════════
+validation:
+  # B1: Weight / concentration test
+  max_weight_cap: 0.10                     # per-name max |weight|
+  min_effective_positions: 20              # min 1/HHI
+  drop_top_k: 3                            # drop-top-k robustness check
+  drop_tolerance: 0.50                     # max relative Sharpe decline when top-k removed
+
+  # B2: Subuniverse test
+  subuniverses: [TOP200, TOP500]           # subsets to test
+  subuniverse_ratio: 0.50                  # min Sharpe_sub / Sharpe_full
+
+  # B3: Out-of-sample / stability
+  oos_ratio: 0.50                          # min OOS_Sharpe / IS_Sharpe
+  sub_period_folds: 5                      # K folds for sub-period consistency
+  min_positive_folds: 3                    # require ≥ this many profitable folds
+  cost_multipliers: [1.0, 2.0, 3.0]       # stress-test cost assumptions
+  param_perturb_pct: 0.20                  # ±20% parameter neighborhood test
+  param_sharpe_band: 0.30                  # max relative Sharpe decline under perturbation
+
+  # Required tests per strategy (list of test names)
+  required_tests_strategy_1:
+    - weight_test
+    - subuniverse_test
+    - oos_split
+    - sub_period_consistency
+    - turnover_sensitivity
+  required_tests_strategy_2:
+    - weight_test
+    - subuniverse_test
+    - oos_split
+    - sub_period_consistency
+    - turnover_sensitivity
+    - sector_drop_test
+    - param_neighborhood
+  required_tests_strategy_3:
+    - weight_test
+    - oos_split
+    - sub_period_consistency
+    - turnover_sensitivity
+
+# ══════════════════════════════════════════════════════════════
+# SECTION C — Risk Management Controls
+# ══════════════════════════════════════════════════════════════
+risk:
+  # C1: Position-level
+  pos_cap: 0.05                            # max |w| per name (also in global)
+  adv_cap: 0.05                            # max 5% of ADV per name per day
+  min_price: 5.0                           # exclude penny stocks
+  restricted_list: []                      # symbols to hard-exclude
+
+  # C2: Portfolio-level neutrality
+  dollar_neutral_tol: 0.01                 # |Σw| ≤ 1% of gross
+  sector_cap: 0.10                         # max |net sector exposure| as fraction of gross
+  beta_neutral: false                      # toggle beta hedging
+  beta_cap: 0.05                           # max |beta| if beta_neutral=true
+  beta_proxy: SPY                          # market proxy for beta regression
+  gross_leverage_max: 4.0                  # hard cap on Σ|w|
+
+  # C3: Volatility targeting & drawdown
+  target_vol: 0.10                         # annualized vol target (10%)
+  vol_lookback_days: 20                    # window for realized vol estimate
+  vol_scale_min: 0.25                      # min scaling factor
+  vol_scale_max: 2.0                       # max scaling factor
+  dd_soft: 0.05                            # 5% drawdown → cut exposure
+  dd_hard: 0.10                            # 10% drawdown → flatten book
+  derisk_factor: 0.50                      # multiply gross by this at dd_soft
+  dd_reset_rule: recover_half              # recover_half | new_high | manual
+
+  # C4: Turnover & cost control
+  no_trade_band: 0.005                     # only trade if |Δw| > this
+  tvr_cap: 0.70                            # max daily turnover; partial-fill if exceeded
+  cost_aware_sizing: true                  # penalize weights by expected cost
+
+  # C5: Overnight & event risk
+  overnight_gross_cap: 1.0                 # tighter leverage for overnight holds
+  blackout_days_earnings: 1                # no new positions within N days of earnings
+  force_flat_before_earnings: true
+
+  # C6: Regime & live monitoring
+  corr_monitor_window: 60                  # rolling days to track diversification decay
+  corr_alert_threshold: 0.70
+  ic_retire_threshold: 0.01                # rolling IC below this → retire signal
+  ic_retire_consecutive: 10                # must be below for N consecutive periods
+  var_confidence: 0.95
+  cvar_confidence: 0.99
+  stress_scenarios:
+    - "2008-09"                            # Lehman
+    - "2020-03"                            # COVID crash
+    - "2018-Q4"                            # vol spike
+    - "2010-05-06"                         # flash crash
