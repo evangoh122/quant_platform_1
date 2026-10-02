@@ -17,8 +17,10 @@ import sys
 import time
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 CATALOG = "bootcamp_students"
 SCHEMA = "evangoh_capstone"
@@ -60,24 +62,39 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_NY_TZ = ZoneInfo("America/New_York")
+
+
+def _us_federal_holidays(start: date, end: date) -> set[date]:
+    """Return set of US federal holiday dates in [start, end]."""
+    cal = USFederalHolidayCalendar()
+    holidays = cal.holidays(start=str(start), end=str(end))
+    return {h.date() for h in holidays}
+
+
 def _is_ny_business_day(d: date) -> bool:
-    """Monday-Friday, not US federal holiday (simplified: weekday only)."""
-    return d.weekday() < 5
+    """Monday-Friday, not US federal holiday."""
+    if d.weekday() >= 5:
+        return False
+    holidays = _us_federal_holidays(d, d)
+    return d not in holidays
 
 
 def _next_ny_business_day(d: date) -> date:
     """Return the next NY business day after d."""
     nxt = d + timedelta(days=1)
-    while not _is_ny_business_day(nxt):
+    # Look ahead up to 10 days to cover holiday clusters
+    holidays = _us_federal_holidays(nxt, nxt + timedelta(days=10))
+    while nxt.weekday() >= 5 or nxt in holidays:
         nxt += timedelta(days=1)
     return nxt
 
 
 def _ny_available_ts(obs_date: date) -> datetime:
-    """Next NY business day after observation_date at 16:30 ET (DST-aware simplified to EST = UTC-5)."""
+    """Next NY business day after observation_date at 16:30 America/New_York (DST-aware), converted to UTC."""
     nxt = _next_ny_business_day(obs_date)
-    # 16:30 ET = 21:30 UTC (EST) or 20:30 UTC (EDT). Use EST (UTC-5) for conservatism.
-    return datetime(nxt.year, nxt.month, nxt.day, 21, 30, 0, tzinfo=timezone.utc)
+    local_dt = datetime(nxt.year, nxt.month, nxt.day, 16, 30, 0, tzinfo=_NY_TZ)
+    return local_dt.astimezone(timezone.utc)
 
 
 def _overlap_start(max_obs: date, freq: str) -> date:
@@ -213,9 +230,7 @@ def parse_csv_rows(
             continue
 
         if revision_class == "market_rate":
-            ny_ts = _ny_available_ts(obs_date)
-            # Ensure information_available_ts >= ingest_ts (conservative for bootstrap)
-            info_ts = max(ny_ts, ingest_ts)
+            info_ts = _ny_available_ts(obs_date)
         else:
             info_ts = ingest_ts
 

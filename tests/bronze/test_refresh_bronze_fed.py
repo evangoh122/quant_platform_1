@@ -104,15 +104,26 @@ class TestCalendarHelpers:
 # ---------------------------------------------------------------------------
 
 class TestNyAvailableTs:
-    def test_weekday_obs_returns_next_day_2130utc(self):
-        # 2026-10-01 (Thursday) → next business day is 2026-10-02 at 21:30 UTC
+    def test_weekday_obs_returns_next_day_2030utc_summer(self):
+        # 2026-10-01 (Thursday, EDT) → next business day is 2026-10-02 at 16:30 EDT = 20:30 UTC
         ts = _ny_available_ts(date(2026, 10, 1))
-        assert ts == datetime(2026, 10, 2, 21, 30, 0, tzinfo=timezone.utc)
+        assert ts == datetime(2026, 10, 2, 20, 30, 0, tzinfo=timezone.utc)
 
-    def test_friday_obs_returns_monday_2130utc(self):
-        # 2026-10-02 (Friday) → next business day is 2026-10-05 (Monday) at 21:30 UTC
+    def test_friday_obs_returns_monday_2030utc_summer(self):
+        # 2026-10-02 (Friday, EDT) → next business day is 2026-10-05 (Monday) at 16:30 EDT = 20:30 UTC
         ts = _ny_available_ts(date(2026, 10, 2))
-        assert ts == datetime(2026, 10, 5, 21, 30, 0, tzinfo=timezone.utc)
+        assert ts == datetime(2026, 10, 5, 20, 30, 0, tzinfo=timezone.utc)
+
+    def test_winter_obs_returns_next_day_2130utc(self):
+        # 2026-01-05 (Monday, EST) → next business day is 2026-01-06 at 16:30 EST = 21:30 UTC
+        ts = _ny_available_ts(date(2026, 1, 5))
+        assert ts == datetime(2026, 1, 6, 21, 30, 0, tzinfo=timezone.utc)
+
+    def test_holiday_rolls_forward(self):
+        # 2026-01-16 (Friday) → next is Monday 2026-01-19 (MLK Day is Jan 19 in 2026)
+        # MLK Day 2026 = Jan 19, so next business day is Jan 20
+        ts = _ny_available_ts(date(2026, 1, 16))
+        assert ts == datetime(2026, 1, 20, 21, 30, 0, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -212,19 +223,20 @@ class TestParseCsvRows:
             [["2026-10-01", "4.33"]],
         )
         rows = parse_csv_rows(csv_text, "DFF", date(2026, 10, 3), None, INGEST_TS)
-        # 2026-10-01 is Thursday → next business day is 2026-10-02 at 21:30 UTC
-        # But INGEST_TS (2026-10-03 12:00 UTC) is later, so max wins
-        assert rows[0]["information_available_ts"] == INGEST_TS
+        # 2026-10-01 Thursday → next business day is 2026-10-02 at 16:30 EDT = 20:30 UTC
+        # info_ts is NOT max(ny_ts, ingest_ts) anymore — it's purely the NY available time
+        assert rows[0]["information_available_ts"] == datetime(2026, 10, 2, 20, 30, 0, tzinfo=timezone.utc)
 
-    def test_market_rate_historical_info_ts_equals_ingest(self):
-        """Historical market rate rows must have info_ts >= ingest_ts."""
+    def test_market_rate_historical_info_ts_not_ingest(self):
+        """Historical market rate rows use NY available time, not ingest_ts."""
         csv_text = self._make_csv(
             ["DATE", "DFF"],
             [["2020-01-02", "1.55"]],
         )
         rows = parse_csv_rows(csv_text, "DFF", date(2026, 10, 3), None, INGEST_TS)
-        # NY available would be 2020-01-03 21:30 UTC, but ingest_ts is 2026-10-03
-        assert rows[0]["information_available_ts"] == INGEST_TS
+        # 2020-01-02 Thursday → next business day is 2020-01-03 at 16:30 EST = 21:30 UTC
+        assert rows[0]["information_available_ts"] == datetime(2020, 1, 3, 21, 30, 0, tzinfo=timezone.utc)
+        assert rows[0]["information_available_ts"] != INGEST_TS
 
     def test_revised_macro_info_ts_equals_ingest_ts(self):
         csv_text = self._make_csv(
@@ -347,16 +359,27 @@ class TestAvailabilityInvariant:
             lines.append(",".join(str(v) for v in row))
         return "\n".join(lines)
 
-    def test_market_rate_available_after_ingest(self):
-        """For market_rate, information_available_ts >= ingest_ts."""
+    def test_market_rate_available_at_ny_time(self):
+        """For market_rate, information_available_ts = next NY business day 16:30 ET."""
         csv_text = self._make_csv(
             ["DATE", "DFF"],
             [["2026-10-02", "4.33"]],
         )
-        # ingest_ts = 2026-10-03 12:00 UTC
+        # 2026-10-02 Friday → next business day is 2026-10-05 Monday at 16:30 EDT = 20:30 UTC
         rows = parse_csv_rows(csv_text, "DFF", date(2026, 10, 3), None, INGEST_TS)
         assert len(rows) == 1
-        assert rows[0]["information_available_ts"] >= INGEST_TS
+        assert rows[0]["information_available_ts"] == datetime(2026, 10, 5, 20, 30, 0, tzinfo=timezone.utc)
+
+    def test_market_rate_summer_vs_winter_utc(self):
+        """Summer (EDT) → 20:30 UTC; winter (EST) → 21:30 UTC."""
+        summer_csv = self._make_csv(["DATE", "DFF"], [["2026-07-01", "4.0"]])
+        winter_csv = self._make_csv(["DATE", "DFF"], [["2026-01-05", "4.0"]])
+        summer_rows = parse_csv_rows(summer_csv, "DFF", date(2026, 10, 3), None, INGEST_TS)
+        winter_rows = parse_csv_rows(winter_csv, "DFF", date(2026, 10, 3), None, INGEST_TS)
+        # 2026-07-01 Wed → Thu 2026-07-02 16:30 EDT = 20:30 UTC
+        assert summer_rows[0]["information_available_ts"] == datetime(2026, 7, 2, 20, 30, 0, tzinfo=timezone.utc)
+        # 2026-01-05 Mon → Tue 2026-01-06 16:30 EST = 21:30 UTC
+        assert winter_rows[0]["information_available_ts"] == datetime(2026, 1, 6, 21, 30, 0, tzinfo=timezone.utc)
 
     def test_revised_macro_available_equals_ingest(self):
         csv_text = self._make_csv(
