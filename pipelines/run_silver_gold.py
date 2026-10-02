@@ -65,6 +65,16 @@ TARGET_TABLES = [
 DATE_START = "1900-01-01"
 DATE_END = "2100-01-01"
 
+# Round 8 additive schema change: gold_model_features retains each joined source
+# row's information_available_ts in one *_available_ts column per source, so the
+# matrix availability invariant can be checked exactly (no source back-join).
+GOLD_MODEL_AVAILABILITY_COLUMNS = {
+    "ohlcv_available_ts": "TIMESTAMP",
+    "options_available_ts": "TIMESTAMP",
+    "sec_available_ts": "TIMESTAMP",
+    "cot_available_ts": "TIMESTAMP",
+}
+
 
 def get_spark() -> DatabricksSession:
     return DatabricksSession.builder.serverless(True).getOrCreate()
@@ -88,6 +98,27 @@ def truncate_targets(spark):
 
 def count(spark, table: str) -> int:
     return spark.sql(f"SELECT COUNT(*) FROM {FQN}.{table}").collect()[0][0]
+
+
+def ensure_model_availability_columns(spark):
+    """Additive round-8 schema change on gold_model_features.
+
+    Adds each missing *_available_ts column with ALTER TABLE ... ADD COLUMNS so
+    the table retains the exact source row joined. Idempotent and re-runnable:
+    only columns not already present are added. Requires the table to exist
+    (it does — the build MERGEs into a pre-deployed table)."""
+    try:
+        existing = set(spark.table(f"{FQN}.gold_model_features").columns)
+    except Exception as e:
+        print(f"  ensure columns: gold_model_features not readable "
+              f"({str(e)[:80]}); skipping")
+        return
+    missing = [c for c in GOLD_MODEL_AVAILABILITY_COLUMNS if c not in existing]
+    if not missing:
+        return
+    cols = ", ".join(f"{c} {GOLD_MODEL_AVAILABILITY_COLUMNS[c]}" for c in missing)
+    spark.sql(f"ALTER TABLE {FQN}.gold_model_features ADD COLUMNS ({cols})")
+    print(f"  added gold_model_features columns: {', '.join(missing)}")
 
 
 def run_step(spark, name, path, kind, symbols):
@@ -161,64 +192,53 @@ def run_availability_invariant(spark):
 
 
 def run_matrix_invariant(spark):
-    """Matrix-level availability invariant: every gold_model_features row's
-    contributing source rows must be available at (or before) prediction_ts.
+    """Matrix-level availability invariant (round 8): exact and cheap.
 
-    The matrix retains only feature VALUES, not the source rows' own
-    information_available_ts, so this check joins back to each source table:
+    gold_model_features now retains the information_available_ts of the exact
+    source row joined, in ohlcv_available_ts / options_available_ts /
+    sec_available_ts / cot_available_ts. Two properties must hold for every
+    matrix row:
 
-      * ohlcv    — round 7 keys the OHLCV join on
-        ``information_available_ts = prediction_ts``, so the contributing bar's
-        availability must EQUAL prediction_ts. A matrix row with no such bar
-        means a bar was used whose availability is after prediction_ts (the
-        round-6/7 last-bar leak: prediction_ts was the bar START, 60s before the
-        bar was known).
-      * options/sec/cot — these AS-OF joins are written with an explicit
-        ``information_available_ts <= prediction_ts`` predicate, so the check is
-        a back-stop: any non-NULL feature value must be traceable to a source
-        row available at or before prediction_ts. A value that can only be found
-        on a later source row indicates a look-ahead join regression.
+      1. GREATEST(all non-null *_available_ts) <= prediction_ts — no joined
+         source feature became available after the prediction timestamp.
+      2. A source's features are non-NULL only if its *_available_ts is
+         non-NULL — the availability stamp is retained exactly when the source
+         contributed.
 
-    Rows whose source feature is NULL (no observation as-of prediction_ts) have
-    nothing to check and are correctly skipped by the IS NOT NULL guard. Raises
+    Property (1) alone is insufficient: GREATEST silently ignores NULL
+    availability columns, so a row that lost its stamp would pass. Property (2)
+    closes that gap by tying populated features to a retained stamp. Raises
     RuntimeError on any violating row."""
     print("\n=== matrix availability invariant ===")
+    epoch = "to_timestamp('1900-01-01 00:00:00')"
     checks = [
-        ("ohlcv bar available at prediction_ts",
-         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
-              LEFT JOIN {FQN}.gold_ohlcv_features f
-                ON f.symbol = mf.symbol
-               AND f.information_available_ts = mf.prediction_ts
-               AND f.return_1m IS NOT DISTINCT FROM mf.return_1m
-               AND f.rsi_14   IS NOT DISTINCT FROM mf.rsi_14
-              WHERE f.symbol IS NULL"""),
-        ("options feature available <= prediction_ts",
-         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
-              WHERE mf.put_call_ratio IS NOT NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM {FQN}.gold_options_features o
-                  WHERE o.symbol = mf.symbol
-                    AND o.information_available_ts <= mf.prediction_ts
-                    AND o.put_call_ratio IS NOT DISTINCT FROM mf.put_call_ratio
-                )"""),
-        ("sec feature available <= prediction_ts",
-         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
-              WHERE mf.sec_sentiment_score IS NOT NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM {FQN}.gold_sec_features s
-                  WHERE s.ticker = mf.symbol
-                    AND s.information_available_ts <= mf.prediction_ts
-                    AND s.sentiment_score IS NOT DISTINCT FROM mf.sec_sentiment_score
-                )"""),
-        ("cot feature available <= prediction_ts",
-         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
-              WHERE mf.cot_lev_money_zscore IS NOT NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM {FQN}.gold_cot_features c
-                  WHERE c.mapped_asset = 'equity_index'
-                    AND c.information_available_ts <= mf.prediction_ts
-                    AND c.lev_money_zscore_52w IS NOT DISTINCT FROM mf.cot_lev_money_zscore
-                )"""),
+        ("all source availability <= prediction_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
+             WHERE GREATEST(
+                     ohlcv_available_ts,
+                     COALESCE(options_available_ts, {epoch}),
+                     COALESCE(sec_available_ts, {epoch}),
+                     COALESCE(cot_available_ts, {epoch})
+                   ) > prediction_ts"""),
+        ("options features imply options_available_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
+             WHERE options_available_ts IS NULL
+               AND (put_call_ratio IS NOT NULL
+                    OR iv_atm IS NOT NULL
+                    OR iv_skew IS NOT NULL
+                    OR iv_term_slope IS NOT NULL
+                    OR volume_anomaly_zscore IS NOT NULL)"""),
+        ("sec features imply sec_available_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
+             WHERE sec_available_ts IS NULL
+               AND (sec_sentiment_score IS NOT NULL
+                    OR sec_risk_factor_change IS NOT NULL)"""),
+        ("cot features imply cot_available_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features
+             WHERE cot_available_ts IS NULL
+               AND (cot_lev_money_zscore IS NOT NULL
+                    OR cot_crowding_score IS NOT NULL
+                    OR cot_regime_label IS NOT NULL)"""),
     ]
     violations = 0
     for label, sql in checks:
@@ -228,7 +248,8 @@ def run_matrix_invariant(spark):
     if violations:
         raise RuntimeError(
             f"matrix availability invariant violated: {violations} row(s) "
-            f"use a source feature not yet available at prediction_ts"
+            f"have a source feature whose availability is not retained or "
+            f"is after prediction_ts"
         )
     return violations
 
@@ -280,6 +301,9 @@ def main():
     if args.check:
         run_checks(spark)
         return
+
+    if not args.counts and (args.only is None or args.only == "gold"):
+        ensure_model_availability_columns(spark)
 
     for name, path, kind in STEPS:
         layer = "gold" if name.startswith("gold") else "silver"

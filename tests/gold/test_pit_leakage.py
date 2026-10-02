@@ -452,3 +452,138 @@ def test_matrix_invariant_catches_last_bar_start_leak():
     fixed = [("AAA", "2026-07-07 09:02:00", 0.02, 56.0)]   # round-7: availability
     assert _run_matrix_ohlcv_check(ohlcv, leaked) == 1, "leaked row must be flagged"
     assert _run_matrix_ohlcv_check(ohlcv, fixed) == 0, "fixed row must pass"
+
+
+# ---------------------------------------------------------------------------
+# Round 8: retain source availability in the matrix; self-reconciling build
+#
+# (1) gold_model_features now retains each source row's information_available_ts
+#     in ohlcv_available_ts / options_available_ts / sec_available_ts /
+#     cot_available_ts, so the matrix invariant is exact and cheap:
+#     GREATEST(non-null *_available_ts) <= prediction_ts, and a source's
+#     features non-NULL only if its *_available_ts is non-NULL.
+# (2) The build reconciles itself every run: stale rows for a rebuilt
+#     (symbol, trading session) whose prediction_ts differs from the session's
+#     new prediction_ts are DELETEd before the MERGE. The trading session is the
+#     America/New_York session date (DST-aware), not the UTC date.
+# ---------------------------------------------------------------------------
+
+
+def test_model_matrix_retains_source_availability_columns():
+    """Guard: the matrix build must retain each joined source row's
+    information_available_ts in a per-source *_available_ts column."""
+    text = open(MODEL_SQL_PATH, encoding="utf-8").read()
+    assert "f.information_available_ts AS ohlcv_available_ts" in text
+    assert "opt.information_available_ts AS options_available_ts" in text
+    assert "sec.information_available_ts AS sec_available_ts" in text
+    assert "cot.information_available_ts AS cot_available_ts" in text
+    assert "src.ohlcv_available_ts" in text
+    assert "src.options_available_ts" in text
+    assert "src.sec_available_ts" in text
+    assert "src.cot_available_ts" in text
+
+
+def test_model_matrix_session_is_ny_date_not_utc_date():
+    """Guard: the trading-session grouping must use the America/New_York session
+    date (DST-aware), not the raw UTC DATE(feature_ts), so a session that ends
+    after midnight UTC is not split across two UTC dates."""
+    text = open(MODEL_SQL_PATH, encoding="utf-8").read()
+    assert "convert_timezone('UTC', 'America/New_York', feature_ts)" in text
+    assert "GROUP BY symbol, DATE(feature_ts)" not in text
+
+
+def test_model_matrix_self_reconciles_stale_prediction_ts():
+    """Guard: the build must DELETE stale (symbol, session) rows whose
+    prediction_ts differs from the session's new prediction_ts, before the MERGE."""
+    text = open(MODEL_SQL_PATH, encoding="utf-8").read()
+    assert "DELETE FROM bootcamp_students.evangoh_capstone.gold_model_features" in text
+    assert "db.prediction_ts <> tgt.prediction_ts" in text
+    assert "db.session_date = DATE(convert_timezone('UTC', 'America/New_York', tgt.prediction_ts))" in text
+
+
+def _run_availability_columns_invariant(rows: list[tuple]) -> int:
+    """Portable reproduction of the round-8 matrix invariant: COUNT rows where
+    GREATEST(non-null *_available_ts) > prediction_ts."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE mf(symbol VARCHAR, prediction_ts TIMESTAMP, "
+        "ohlcv_available_ts TIMESTAMP, options_available_ts TIMESTAMP, "
+        "sec_available_ts TIMESTAMP, cot_available_ts TIMESTAMP)"
+    )
+    con.executemany("INSERT INTO mf VALUES (?,?,?,?,?,?)", rows)
+    n = con.execute(
+        """
+        SELECT COUNT(*) FROM mf
+        WHERE GREATEST(
+                ohlcv_available_ts,
+                COALESCE(options_available_ts, TIMESTAMP '1900-01-01 00:00:00'),
+                COALESCE(sec_available_ts, TIMESTAMP '1900-01-01 00:00:00'),
+                COALESCE(cot_available_ts, TIMESTAMP '1900-01-01 00:00:00')
+              ) > prediction_ts
+        """
+    ).fetchone()[0]
+    con.close()
+    return n
+
+
+def test_availability_columns_invariant_catches_future_source():
+    """The retained-availability invariant must pass a clean row and flag a row
+    whose options_available_ts is pushed past prediction_ts."""
+    clean = [("AAA", "2026-01-05 21:00:00", "2026-01-05 21:00:00",
+              "2026-01-05 20:30:00", "2026-01-05 19:00:00", "2026-01-05 18:00:00")]
+    corrupted = [("AAA", "2026-01-05 21:00:00", "2026-01-05 21:00:00",
+                  "2026-01-05 22:00:00", "2026-01-05 19:00:00", "2026-01-05 18:00:00")]
+    assert _run_availability_columns_invariant(clean) == 0, "clean row must pass"
+    assert _run_availability_columns_invariant(corrupted) == 1, "corrupted row must be flagged"
+
+
+def _run_reconcile_delete(tgt_rows: list[tuple], src_rows: list[tuple]) -> list[tuple]:
+    """Portable reproduction of the round-8 reconciliation DELETE: remove target
+    rows for a rebuilt (symbol, session) whose prediction_ts differs from the
+    session's new prediction_ts. session_date is modelled as a column (in the
+    production SQL it is derived via convert_timezone from prediction_ts)."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE tgt(symbol VARCHAR, prediction_ts TIMESTAMP, session_date DATE)")
+    con.executemany("INSERT INTO tgt VALUES (?,?,?)", tgt_rows)
+    con.execute("CREATE TABLE src(symbol VARCHAR, prediction_ts TIMESTAMP, session_date DATE)")
+    con.executemany("INSERT INTO src VALUES (?,?,?)", src_rows)
+    con.execute(
+        """
+        DELETE FROM tgt WHERE EXISTS (
+          SELECT 1 FROM src db
+          WHERE db.symbol = tgt.symbol AND db.session_date = tgt.session_date
+            AND db.prediction_ts <> tgt.prediction_ts
+        )
+        """
+    )
+    rows = con.execute(
+        "SELECT symbol, prediction_ts, session_date FROM tgt ORDER BY symbol"
+    ).fetchall()
+    con.close()
+    return [
+        (r[0], r[1].strftime("%Y-%m-%d %H:%M:%S"), r[2].strftime("%Y-%m-%d"))
+        for r in rows
+    ]
+
+
+def test_reconcile_deletes_stale_session_prediction_ts():
+    """A session rebuilt with a changed prediction_ts must lose its stale row;
+    a session whose prediction_ts is unchanged is left intact (MERGE then updates
+    it), leaving exactly one row per session after re-insert."""
+    old = "2026-01-05 21:00:00"
+    new = "2026-01-05 21:01:00"
+    tgt = [
+        ("AAA", old, "2026-01-05"),   # stale: session's prediction_ts moved
+        ("BBB", new, "2026-01-05"),   # current: unchanged, must survive
+        ("CCC", old, "2026-01-04"),   # different session: untouched
+    ]
+    src = [
+        ("AAA", new, "2026-01-05"),
+        ("BBB", new, "2026-01-05"),
+    ]
+    rows = _run_reconcile_delete(tgt, src)
+    assert ("AAA", old, "2026-01-05") not in rows, "stale row must be deleted"
+    assert ("BBB", new, "2026-01-05") in rows, "current row must be kept"
+    assert ("CCC", old, "2026-01-04") in rows, "unrebuilt session must be untouched"
+    aaa = [r for r in rows if r[0] == "AAA"]
+    assert aaa == [], "no stale AAA row may remain (MERGE then inserts the new one)"

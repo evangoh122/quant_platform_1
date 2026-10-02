@@ -429,7 +429,7 @@
   regime_label                       string
   processed_ts                       timestamp NOT NULL
 
-### gold_model_features  (27 cols)
+### gold_model_features  (31 cols)
   symbol                             string NOT NULL
   prediction_ts                      timestamp NOT NULL
   feature_snapshot_id                string NOT NULL
@@ -457,6 +457,10 @@
   cot_regime_label                   string
   model_version                      string
   processed_ts                       timestamp NOT NULL
+  ohlcv_available_ts                 timestamp
+  options_available_ts               timestamp
+  sec_available_ts                   timestamp
+  cot_available_ts                   timestamp
 
 ### gold_trading_signals  (10 cols)
   signal_id                          string NOT NULL
