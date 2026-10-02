@@ -72,7 +72,7 @@ USING (
         PARTITION BY symbol ORDER BY event_date
         ROWS BETWEEN 60 PRECEDING AND 1 PRECEDING
       ) AS med_adv_60d,
-      COUNT(*) OVER (
+      COUNT(dollar_volume) OVER (
         PARTITION BY symbol ORDER BY event_date
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
       ) AS history,

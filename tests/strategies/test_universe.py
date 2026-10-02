@@ -72,3 +72,36 @@ def test_min_history_gate():
     )
     out = screen_universe(pd.concat([short, late]), n=20, min_history=252, recency_sessions=5)
     assert "S00" not in set(out["symbol"])
+
+
+def test_history_gate_counts_own_sessions_not_grid_rows():
+    """History must count the symbol's own trading sessions (non-NULL
+    dollar_volume), not the total calendar rows in the dense grid.
+
+    A symbol that lists late has many NULL rows in the dense grid before its
+    first trade.  A ``COUNT(*)``-style gate would count those NULL rows and
+    admit the symbol far too early; ``COUNT(dollar_volume)`` correctly requires
+    252 actual trading sessions.
+    """
+    # 400 calendar days, 10 mature symbols.
+    dates = pd.date_range("2023-01-03", periods=400, freq="B")
+    rng = np.random.RandomState(42)
+    rows = []
+    for i in range(10):
+        sym = f"M{i:02d}"
+        for d, date in enumerate(dates):
+            rows.append((sym, date, 1e6 + rng.normal(0, 1e4)))
+
+    # Late-lister: starts on day 350, trades every day after (50 sessions).
+    for d in range(350, 400):
+        rows.append(("LATE", dates[d], 5e8))
+
+    panel = pd.DataFrame(rows, columns=["symbol", "event_date", "dollar_volume"])
+    out = screen_universe(panel, n=20, min_history=252, recency_sessions=5)
+
+    # LATE has only 50 own sessions before its last date — must be excluded.
+    late_in = out[out["symbol"] == "LATE"]
+    assert late_in.empty, (
+        "LATE (50 own sessions) entered the universe with min_history=252; "
+        "the history gate is counting grid rows instead of own trading sessions"
+    )

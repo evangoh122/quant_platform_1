@@ -202,7 +202,7 @@ def run_one(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--output", default="strategies/results/residual_reversion_r2.md")
+    ap.add_argument("--output", default="strategies/results/residual_reversion_r3.md")
     ap.add_argument("--book-capital", type=float, default=10_000_000.0)
     args = ap.parse_args()
 
@@ -279,7 +279,7 @@ def main() -> None:
     # ── Render the results file ──────────────────────────────────────────────
     lines = _render(
         base_res, gated_res, oos_net, n_trials, capacity, args.book_capital,
-        WINDOW, LOOKBACK, ENTRY, EXIT, len(dates), len(splits),
+        WINDOW, LOOKBACK, ENTRY, EXIT, dates[0], dates[-1], len(dates), len(splits),
     )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
@@ -288,24 +288,22 @@ def main() -> None:
 
 
 def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
-            window, lookback, entry, exit_thresh, n_dates, n_folds) -> List[str]:
+            window, lookback, entry, exit_thresh, date_start, date_end, n_dates, n_folds) -> List[str]:
     bm = base_res["metrics"]
     gm = gated_res["metrics"]
     L = []
-    L.append("# Residual mean-reversion — round 2 (real data)")
+    L.append("# Residual mean-reversion — round 3 (real data)")
     L.append("")
     L.append("Market/industry residual mean-reversion on the point-in-time top-300")
-    L.append("tradable universe (`gold_tradable_universe`), 2023-01-04 → 2026-09-04.")
+    L.append(f"tradable universe (`gold_tradable_universe`), {date_start:%Y-%m-%d} → {date_end:%Y-%m-%d}.")
     L.append("Industry labels are the repo `config/tickers.yaml` taxonomy, **not** GICS.")
     L.append("")
-    L.append("## What changed vs r1")
+    L.append("## What changed vs r2")
     L.append("")
     L.append("| # | Fix | Files | Rationale |")
     L.append("|---|-----|-------|-----------|")
-    L.append("| 1 | Universe look-ahead eliminated | `gold/06_gold_tradable_universe.sql` | Dense calendar×symbols grid; recency counts last 5 *market sessions*, not the symbol's own bars |")
-    L.append("| 2 | Industry factors date-specific | `strategies/residual_reversion.py`, `strategies/run_residual_reversion.py` | NaN returns stay NaN; industry factor uses per-date eligible member count; universe mask prevents pre-IPO returns |")
-    L.append("| 3 | ADV cap constrains execution | `strategies/backtest.py` | Weight changes capped at 1% of ADV; capped positions carried forward; zero-ADV names cannot be traded |")
-    L.append("| 4 | Breadth-gated caveat | this file | Gated result is an in-sample exploratory ablation (see below) |")
+    L.append("| 1 | Min-history gate now counts own trading sessions | `gold/06_gold_tradable_universe.sql`, `strategies/universe.py` | `COUNT(dollar_volume)` instead of `COUNT(*)` — pre-listing NULL rows no longer inflate history |")
+    L.append("| 2 | Date range derived from data | `strategies/run_residual_reversion.py` | No more hardcoded dates in results header |")
     L.append("")
     L.append("## Configuration")
     L.append("")

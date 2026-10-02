@@ -40,7 +40,7 @@ def screen_universe(
         lambda s: s.rolling(adv_window, min_periods=adv_window).median().shift(1)
     )
     history = g.transform(
-        lambda s: s.rolling(1, min_periods=1).count().cumsum().shift(1)
+        lambda s: s.notna().cumsum().shift(1)
     )
     # Number of bars in the `recency_sessions` rows immediately before this one.
     recency = g.transform(
