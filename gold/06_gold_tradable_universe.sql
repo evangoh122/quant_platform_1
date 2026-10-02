@@ -49,7 +49,7 @@ USING (
   -- This prevents look-ahead: recency counts market sessions, not the
   -- symbol's own observation count.
   grid AS (
-    SELECT symbol, event_date AS market_date
+    SELECT symbol, market_date
     FROM (SELECT DISTINCT symbol FROM bars)
     CROSS JOIN (SELECT DISTINCT event_date AS market_date FROM bars)
     UNION
