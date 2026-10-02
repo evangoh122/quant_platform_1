@@ -162,16 +162,26 @@ def run_availability_invariant(spark):
 
 def run_matrix_invariant(spark):
     """Matrix-level availability invariant: every gold_model_features row's
-    joined OHLCV bar must be available at (or before) prediction_ts.
+    contributing source rows must be available at (or before) prediction_ts.
 
-    The model matrix does not retain the source OHLCV bar's own timestamps, so
-    this check joins back to gold_ohlcv_features. Round 7 changed the OHLCV join
-    to ``information_available_ts = prediction_ts``, so the contributing bar's
-    availability must equal prediction_ts. A matrix row with no such bar means a
-    bar was used whose availability is after prediction_ts (a look-ahead).
-    Options/SEC/COT are already structurally enforced by their AS-OF joins
-    (``information_available_ts <= prediction_ts``), so only OHLCV needs this
-    back-join. Raises RuntimeError on any violating row."""
+    The matrix retains only feature VALUES, not the source rows' own
+    information_available_ts, so this check joins back to each source table:
+
+      * ohlcv    — round 7 keys the OHLCV join on
+        ``information_available_ts = prediction_ts``, so the contributing bar's
+        availability must EQUAL prediction_ts. A matrix row with no such bar
+        means a bar was used whose availability is after prediction_ts (the
+        round-6/7 last-bar leak: prediction_ts was the bar START, 60s before the
+        bar was known).
+      * options/sec/cot — these AS-OF joins are written with an explicit
+        ``information_available_ts <= prediction_ts`` predicate, so the check is
+        a back-stop: any non-NULL feature value must be traceable to a source
+        row available at or before prediction_ts. A value that can only be found
+        on a later source row indicates a look-ahead join regression.
+
+    Rows whose source feature is NULL (no observation as-of prediction_ts) have
+    nothing to check and are correctly skipped by the IS NOT NULL guard. Raises
+    RuntimeError on any violating row."""
     print("\n=== matrix availability invariant ===")
     checks = [
         ("ohlcv bar available at prediction_ts",
@@ -182,6 +192,33 @@ def run_matrix_invariant(spark):
                AND f.return_1m IS NOT DISTINCT FROM mf.return_1m
                AND f.rsi_14   IS NOT DISTINCT FROM mf.rsi_14
               WHERE f.symbol IS NULL"""),
+        ("options feature available <= prediction_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
+              WHERE mf.put_call_ratio IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM {FQN}.gold_options_features o
+                  WHERE o.symbol = mf.symbol
+                    AND o.information_available_ts <= mf.prediction_ts
+                    AND o.put_call_ratio IS NOT DISTINCT FROM mf.put_call_ratio
+                )"""),
+        ("sec feature available <= prediction_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
+              WHERE mf.sec_sentiment_score IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM {FQN}.gold_sec_features s
+                  WHERE s.ticker = mf.symbol
+                    AND s.information_available_ts <= mf.prediction_ts
+                    AND s.sentiment_score IS NOT DISTINCT FROM mf.sec_sentiment_score
+                )"""),
+        ("cot feature available <= prediction_ts",
+         f"""SELECT COUNT(*) FROM {FQN}.gold_model_features mf
+              WHERE mf.cot_lev_money_zscore IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM {FQN}.gold_cot_features c
+                  WHERE c.mapped_asset = 'equity_index'
+                    AND c.information_available_ts <= mf.prediction_ts
+                    AND c.lev_money_zscore_52w IS NOT DISTINCT FROM mf.cot_lev_money_zscore
+                )"""),
     ]
     violations = 0
     for label, sql in checks:
@@ -191,7 +228,7 @@ def run_matrix_invariant(spark):
     if violations:
         raise RuntimeError(
             f"matrix availability invariant violated: {violations} row(s) "
-            f"use an OHLCV bar not yet available at prediction_ts"
+            f"use a source feature not yet available at prediction_ts"
         )
     return violations
 

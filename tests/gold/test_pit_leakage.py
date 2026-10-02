@@ -410,3 +410,45 @@ def test_cot_zscore_null_until_full_52_reports():
     rows = _run_cot_warmup(vals)
     assert all(r[1] is None for r in rows if r[0] < 52), "warm-up z-scores must be NULL"
     assert rows[51][1] is not None, "52nd report must have a z-score"
+
+
+def _run_matrix_ohlcv_check(ohlcv_rows: list[tuple], matrix_rows: list[tuple]) -> int:
+    """Portable reproduction of run_matrix_invariant's OHLCV back-join: a matrix
+    row must be traceable to an OHLCV bar whose information_available_ts equals
+    prediction_ts and whose return_1m/rsi_14 match. Returns # violating rows."""
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE f(symbol VARCHAR, feature_ts TIMESTAMP, "
+        "information_available_ts TIMESTAMP, return_1m DOUBLE, rsi_14 DOUBLE)"
+    )
+    con.executemany("INSERT INTO f VALUES (?,?,?,?,?)", ohlcv_rows)
+    con.execute(
+        "CREATE TABLE mf(symbol VARCHAR, prediction_ts TIMESTAMP, "
+        "return_1m DOUBLE, rsi_14 DOUBLE)"
+    )
+    con.executemany("INSERT INTO mf VALUES (?,?,?,?)", matrix_rows)
+    n = con.execute(
+        """
+        SELECT COUNT(*) FROM mf
+        LEFT JOIN f ON f.symbol = mf.symbol
+          AND f.information_available_ts = mf.prediction_ts
+          AND f.return_1m IS NOT DISTINCT FROM mf.return_1m
+          AND f.rsi_14   IS NOT DISTINCT FROM mf.rsi_14
+        WHERE f.symbol IS NULL
+        """
+    ).fetchone()[0]
+    con.close()
+    return n
+
+
+def test_matrix_invariant_catches_last_bar_start_leak():
+    """The OHLCV matrix back-join must flag a row whose prediction_ts is the last
+    bar's START (60s before the bar is known) and pass the availability-keyed row."""
+    ohlcv = [
+        ("AAA", "2026-07-07 09:00:00", "2026-07-07 09:01:00", 0.01, 55.0),
+        ("AAA", "2026-07-07 09:01:00", "2026-07-07 09:02:00", 0.02, 56.0),
+    ]
+    leaked = [("AAA", "2026-07-07 09:01:00", 0.02, 56.0)]  # old: bar START
+    fixed = [("AAA", "2026-07-07 09:02:00", 0.02, 56.0)]   # round-7: availability
+    assert _run_matrix_ohlcv_check(ohlcv, leaked) == 1, "leaked row must be flagged"
+    assert _run_matrix_ohlcv_check(ohlcv, fixed) == 0, "fixed row must pass"
