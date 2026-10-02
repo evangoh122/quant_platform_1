@@ -6,14 +6,28 @@ Queries are parameterized (``%s`` placeholders only) — never f-string SQL.
 The execution boundary is non-bypassable by construction. The agent-facing tool
 surface accepts only order identities and the acting user; it never accepts
 trusted risk state (``engine``, ``market_session_open``, ``human_approved``,
-``approved_by``, ``bridge``, buying power, or paper-mode flags). Those are
+``approved_by``, ``bridge``, buying power, ``db``, or paper-mode flags). Those are
 acquired by the production entry point from the store / market clock / broker
 bridge. Test injection lives only behind private ``_``-prefixed seams that the
-tool surface does not expose.
+tool surface does not expose (see ``__all__``).
+
+One boundary concern is intentionally NOT enforced here yet and is tracked
+separately: *tool-surface isolation* — proving the agent-facing tool registry
+cannot reach the private ``_``-prefixed seams — must be enforced and tested when
+the agent runtime / tool-registration layer lands. This repo has no such layer
+yet, so there is nothing real to assert against.
+
+Idempotency: ``orders.idempotency_key`` is ``UNIQUE``. That constraint is the
+real duplicate guard; a repeated key is an idempotent replay handled by
+``create_order_intent`` (``ON CONFLICT ... DO NOTHING`` + read-back), which
+returns the existing order with ``reason == "DUPLICATE_IDEMPOTENCY_KEY"``. The
+placement path therefore performs no redundant "seen" pre-check — such a check
+is structurally unreachable under the unique constraint.
 """
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
@@ -29,6 +43,19 @@ from agent.guardrails import (
 )
 from db.lakebase import Lakebase, get_lakebase
 from execution.bridge import IBKRBridge
+
+# Public tool surface. Private ``_``-prefixed seams are deliberately excluded so
+# ``from agent.tools_write import *`` can never surface the injectable internals.
+__all__ = [
+    "ApprovalContext",
+    "add_to_watchlist",
+    "save_research_note",
+    "create_order_intent",
+    "record_approval",
+    "approve_and_place_paper_order",
+    "cancel_paper_order",
+    "record_agent_action",
+]
 
 # Statuses from which a new placement is still allowed.
 _PLACEABLE_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED")
@@ -55,6 +82,23 @@ _TERMINAL_STATUSES = ("CANCELLED", "REJECTED", "FAILED", "FILLED")
 
 # Sentinel user for audit rows that have no attributable user (e.g. NOT_FOUND).
 _SYSTEM_USER = "system"
+
+
+@dataclass(frozen=True)
+class ApprovalContext:
+    """Authenticated approval context for ``record_approval``.
+
+    ``approver_id`` is the authenticated principal, threaded from the request /
+    orchestration layer. Approval tools accept this object rather than a bare
+    string so a caller cannot pass an arbitrary ``"someone"`` and have it
+    recorded as proof of human approval.
+
+    No auth runtime exists in this slice yet, so constructing this object is the
+    caller's explicit assertion that the identity was authenticated upstream.
+    ``record_approval`` never fabricates one itself.
+    """
+
+    approver_id: str
 
 
 def _id(prefix: str) -> str:
@@ -189,8 +233,11 @@ def create_order_intent(
                 ),
             )
             row = cur.fetchone()
-            if row is None:
-                # idempotent replay: return the existing order untouched.
+            duplicate = row is None
+            if duplicate:
+                # Idempotent replay: the UNIQUE constraint on idempotency_key is
+                # the real duplicate guard. Return the existing order untouched,
+                # with a structured DUPLICATE_IDEMPOTENCY_KEY reason.
                 cur.execute(
                     """
                     SELECT order_id, status, idempotency_key FROM orders
@@ -211,19 +258,25 @@ def create_order_intent(
                     f"order_id={row[0]}", "success",
                 )
 
-    return {"order_id": row[0], "status": row[1], "idempotency_key": row[2]}
+    result = {"order_id": row[0], "status": row[1], "idempotency_key": row[2]}
+    if duplicate:
+        result["reason"] = "DUPLICATE_IDEMPOTENCY_KEY"
+        result["replay"] = True
+    return result
 
 
 # ── human approval (trusted record) ───────────────────────────────────────────
-def record_approval(order_id: str, approver_id: str, *,
+def record_approval(order_id: str, approver: ApprovalContext, *,
                     db: Optional[Lakebase] = None) -> dict:
     """Persist a durable human-approval record for a PENDING_APPROVAL order.
 
     Placement reads this record back; it does not trust a caller-supplied
-    boolean. The ``approver_id`` must be the authenticated principal (threaded
-    from the request context by the orchestrator), never an agent assertion.
+    boolean. The ``approver`` is an explicit :class:`ApprovalContext` whose
+    ``approver_id`` is the authenticated principal — never a bare agent-supplied
+    string.
     """
     db = db or get_lakebase()
+    approver_id = approver.approver_id
     approval_id = _id("approval")
 
     with db.transaction() as conn:
@@ -284,16 +337,16 @@ def record_approval(order_id: str, approver_id: str, *,
 
 
 # ── approval / placement ──────────────────────────────────────────────────────
-def approve_and_place_paper_order(order_id: str, *, db: Optional[Lakebase] = None) -> dict:
+def approve_and_place_paper_order(order_id: str) -> dict:
     """Re-run risk checks against trusted state, require a recorded approval,
     then place via the broker bridge.
 
     This public signature intentionally exposes only the order identity. The
-    risk engine, market session, account buying power, allow-list, approval
-    record, and broker bridge are all acquired by this entry point, so the agent
-    cannot override any of them.
+    database connection, risk engine, market session, account buying power,
+    allow-list, approval record, and broker bridge are all acquired by this
+    entry point, so the agent cannot override or fabricate any of them.
     """
-    db = db or get_lakebase()
+    db = get_lakebase()
     engine = RiskEngine(load_allowlist=True)
     bridge = IBKRBridge()
     market_session_open = is_market_session_open()
@@ -315,9 +368,12 @@ def _approve_and_place_paper_order(
     market_session_open: bool,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Private seam: full placement logic with injectable dependencies for tests.
+    """TEST-ONLY seam: full placement logic with injectable dependencies.
 
-    The agent-facing tool surface never reaches this function directly.
+    Not exported (absent from ``__all__``). Production code reaches this only
+    through :func:`approve_and_place_paper_order`, which acquires every
+    dependency itself. Tests inject fake stores / bridges / engines here; the
+    agent-facing tool surface must never call it directly.
     """
     # Phase 1 — validate against trusted state and commit submission intent.
     with db.transaction() as conn:
@@ -440,18 +496,12 @@ def _approve_and_place_paper_order(
                 for r in cur.fetchall()
             ]
 
-            # Idempotency-key consumption: has this key already been seen on a
-            # *different* order that reached the broker?
-            cur.execute(
-                """
-                SELECT 1 FROM orders
-                WHERE idempotency_key = %s AND order_id <> %s
-                  AND status = ANY(%s)
-                LIMIT 1
-                """,
-                (key, order_id, list(_BROKER_SUCCESS_STATUSES)),
-            )
-            idempotency_key_seen = cur.fetchone() is not None
+            # Idempotency: orders.idempotency_key is UNIQUE — that constraint is
+            # the real duplicate guard. A repeated key is an idempotent replay
+            # handled by create_order_intent (which returns the existing order
+            # with reason DUPLICATE_IDEMPOTENCY_KEY). No redundant "seen"
+            # pre-check is performed here: under the unique constraint such a
+            # check can never return true.
 
             # Stale-signal source. A signal_id that cannot be resolved is a
             # hard failure — never a silent skip.
@@ -483,7 +533,6 @@ def _approve_and_place_paper_order(
                 buying_power=buying_power,
                 open_orders=open_orders,
                 idempotency_key=key,
-                idempotency_key_seen=idempotency_key_seen,
                 is_paper=is_paper,
                 market_session_open=market_session_open,
                 now=now,

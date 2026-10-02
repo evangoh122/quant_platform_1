@@ -47,9 +47,10 @@ def _place_order(db, uid, monkeypatch, *, broker_order_id="PAPER-42"):
     _seed_account(db, uid)
     order = tw.create_order_intent(symbol, "BUY", 10, notional=1000.0,
                                    user_id=uid, db=db)
-    tw.record_approval(order["order_id"], approver_id=uid, db=db)
+    tw.record_approval(order["order_id"], tw.ApprovalContext(approver_id=uid), db=db)
 
     monkeypatch.setattr(tw, "is_market_session_open", lambda: True)
+    monkeypatch.setattr(tw, "get_lakebase", lambda: db)
     mock_bridge = MagicMock()
     mock_bridge.submit_order.return_value = {
         "status": "SUBMITTED", "broker_order_id": broker_order_id,
@@ -59,7 +60,7 @@ def _place_order(db, uid, monkeypatch, *, broker_order_id="PAPER-42"):
     }
     monkeypatch.setattr(tw, "IBKRBridge", lambda: mock_bridge)
 
-    res = tw.approve_and_place_paper_order(order["order_id"], db=db)
+    res = tw.approve_and_place_paper_order(order["order_id"])
     assert res["ok"] is True
     return order, mock_bridge
 
@@ -114,6 +115,45 @@ def test_create_order_intent_idempotent(migrated, cleanup_user):
     assert cnt[0] == 1
 
 
+def test_duplicate_idempotency_key_replay_no_broker_call(migrated, cleanup_user, monkeypatch):
+    uid = cleanup_user()
+    try:
+        symbol = _allowlisted_symbol()
+        _seed_account(migrated, uid)
+        key = f"dup-{uuid.uuid4()}"
+        r1 = tw.create_order_intent(symbol, "BUY", 10, notional=1000.0,
+                                    idempotency_key=key, user_id=uid, db=migrated)
+        assert r1["status"] == "PENDING_APPROVAL"
+
+        # Replay the same key: structured duplicate reason, same order, no new row.
+        r2 = tw.create_order_intent(symbol, "BUY", 10, notional=1000.0,
+                                    idempotency_key=key, user_id=uid, db=migrated)
+        assert r2["order_id"] == r1["order_id"]
+        assert r2["reason"] == "DUPLICATE_IDEMPOTENCY_KEY"
+        assert r2["replay"] is True
+
+        # Place through the public path (patching broker construction, not state).
+        tw.record_approval(r1["order_id"], tw.ApprovalContext(approver_id=uid), db=migrated)
+        monkeypatch.setattr(tw, "is_market_session_open", lambda: True)
+        monkeypatch.setattr(tw, "get_lakebase", lambda: migrated)
+        mock_bridge = MagicMock()
+        mock_bridge.submit_order.return_value = {
+            "status": "SUBMITTED", "broker_order_id": "PAPER-42",
+        }
+        monkeypatch.setattr(tw, "IBKRBridge", lambda: mock_bridge)
+
+        res = tw.approve_and_place_paper_order(r1["order_id"])
+        assert res["ok"] is True
+        mock_bridge.submit_order.assert_called_once()
+
+        # Re-placing the same (deduplicated) order id is a replay: no second call.
+        res2 = tw.approve_and_place_paper_order(r2["order_id"])
+        assert res2.get("replay") is True
+        mock_bridge.submit_order.assert_called_once()
+    finally:
+        _cleanup_account(migrated, uid)
+
+
 def test_record_agent_action_roundtrip(migrated, cleanup_user):
     uid = cleanup_user()
     res = tw.record_agent_action("t", "write", "i", "o", user_id=uid, db=migrated)
@@ -135,7 +175,7 @@ def test_record_approval_roundtrip(migrated, cleanup_user):
     approver = cleanup_user()
     order = tw.create_order_intent("TEST", "BUY", 10, notional=1000.0,
                                    user_id=uid, db=migrated)
-    res = tw.record_approval(order["order_id"], approver_id=approver, db=migrated)
+    res = tw.record_approval(order["order_id"], tw.ApprovalContext(approver_id=approver), db=migrated)
     assert res["status"] == "APPROVED"
     row = migrated.fetchone(
         "SELECT status, approved_by FROM orders WHERE order_id = %s",
