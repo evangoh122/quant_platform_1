@@ -259,7 +259,8 @@ def compute_exposures(
     """Daily and summarized exposure metrics.
 
     Returns max absolute and mean absolute dollar exposure (sum(w) / gross),
-    beta exposure (sum(w*beta) / gross), and each industry exposure.
+    beta exposure (sum(w*beta) / gross), and per-sector max |net exposure|.
+    The overall max |sector net exposure| is also reported.
     """
     gross = weights.abs().sum(axis=1)
     gross = gross.replace(0.0, np.nan)
@@ -279,9 +280,11 @@ def compute_exposures(
         max_abs_beta = float("nan")
         mean_abs_beta = float("nan")
 
-    # Industry exposure.
+    # Industry exposure: max |sector net exposure| per sector.
     industry_exp = {}
+    max_abs_sector = float("nan")
     if industry is not None:
+        sector_nets: dict[str, list[float]] = {}
         for date in weights.index:
             w = weights.loc[date]
             active = w[w != 0.0]
@@ -291,10 +294,12 @@ def compute_exposures(
             for ind_name in ind.unique():
                 mask = ind == ind_name
                 exp = float(active[mask].sum())
-                if ind_name not in industry_exp:
-                    industry_exp[ind_name] = []
-                industry_exp[ind_name].append(exp)
-        industry_exp = {k: float(np.mean(v)) for k, v in industry_exp.items()}
+                if ind_name not in sector_nets:
+                    sector_nets[ind_name] = []
+                sector_nets[ind_name].append(exp)
+        industry_exp = {k: float(np.max(np.abs(v))) for k, v in sector_nets.items()}
+        if industry_exp:
+            max_abs_sector = float(np.max(list(industry_exp.values())))
 
     return {
         "max_abs_dollar_exposure": max_abs_dollar,
@@ -302,6 +307,7 @@ def compute_exposures(
         "max_abs_beta_exposure": max_abs_beta,
         "mean_abs_beta_exposure": mean_abs_beta,
         "industry_exposure": industry_exp,
+        "max_abs_sector_exposure": max_abs_sector,
     }
 
 
@@ -364,6 +370,32 @@ def compute_margin_bps(
 
 # ── Rank IC ───────────────────────────────────────────────────────────────────
 
+def _newey_west_se(x: np.ndarray, max_lag: int) -> float:
+    """Newey-West (HAC) standard error of the mean.
+
+    Uses Bartlett kernel: w_j = 1 - j/(max_lag+1) for j = 0..max_lag.
+    Returns the HAC standard error of the sample mean.
+    """
+    n = len(x)
+    if n < 2:
+        return float("nan")
+    mu = x.mean()
+    demeaned = x - mu
+    # Gamma_0 (variance).
+    gamma_0 = float(np.dot(demeaned, demeaned) / n)
+    # Gamma_j for j = 1..max_lag with Bartlett weights.
+    hac_var = gamma_0
+    for j in range(1, max_lag + 1):
+        if j >= n:
+            break
+        gamma_j = float(np.dot(demeaned[j:], demeaned[:-j]) / n)
+        weight = 1.0 - j / (max_lag + 1)
+        hac_var += 2.0 * weight * gamma_j
+    if hac_var <= 0:
+        return float("nan")
+    return np.sqrt(hac_var / n)
+
+
 def compute_rank_ic(
     s_score: pd.DataFrame,
     residual_returns: pd.DataFrame,
@@ -375,6 +407,10 @@ def compute_rank_ic(
     Under mean reversion, raw s-score should predict **negative** future
     residual return.  The target is shifted so no future value enters the
     signal.
+
+    The t-stat uses a Newey-West (HAC) standard error with lag = H-1 to
+    account for the overlap in the H-day forward windows.  Also reports
+    the effective sample size n/H (non-overlapping count).
     """
     # Future cumulative residual return over horizon_days.
     future_ret = residual_returns.rolling(horizon_days, min_periods=horizon_days).sum().shift(-horizon_days)
@@ -395,21 +431,28 @@ def compute_rank_ic(
 
     if not ic_values:
         return {"mean_ic": float("nan"), "std_ic": float("nan"),
-                "t_stat": float("nan"), "n": 0, "sign": "N/A"}
+                "t_stat": float("nan"), "n": 0, "effective_n": 0,
+                "sign": "N/A"}
 
     ic_series = pd.Series([v["ic"] for v in ic_values])
     mean = float(ic_series.mean())
     std = float(ic_series.std(ddof=1)) if len(ic_series) > 1 else float("nan")
-    t_stat = mean / (std / np.sqrt(len(ic_series))) if len(ic_series) > 1 and std > 0 else float("nan")
+    n = len(ic_values)
+    # Effective n: non-overlapping count (every H-th observation).
+    effective_n = max(n // horizon_days, 1)
+    # Newey-West HAC t-stat with lag = H - 1.
+    hac_se = _newey_west_se(ic_series.to_numpy(), max_lag=horizon_days - 1)
+    t_stat = mean / hac_se if np.isfinite(hac_se) and hac_se > 0 else float("nan")
     sign = "negative (expected under mean reversion)" if mean < 0 else "positive"
 
-    hit_rate = float((ic_series < 0).sum() / len(ic_series)) if len(ic_series) > 0 else float("nan")
+    hit_rate = float((ic_series < 0).sum() / n) if n > 0 else float("nan")
 
     return {
         "mean_ic": mean,
         "std_ic": std,
         "t_stat": t_stat,
-        "n": len(ic_values),
+        "n": n,
+        "effective_n": effective_n,
         "sign": sign,
         "hit_rate": hit_rate,
     }
@@ -726,7 +769,7 @@ def render_robustness_report(
     L.append("")
 
     # ── Exposures table ───────────────────────────────────────────────────
-    L.append("## Exposures (baseline)")
+    L.append("## Exposures / industry (baseline)")
     L.append("")
     if baseline_vr is not None:
         weights = baseline_vr.get("weights", pd.DataFrame())
@@ -741,7 +784,9 @@ def render_robustness_report(
         L.append(f"| mean |beta exposure| | {exp.get('mean_abs_beta_exposure', float('nan')):.4f} |")
         if exp.get("industry_exposure"):
             for ind_name, ind_exp in sorted(exp["industry_exposure"].items()):
-                L.append(f"| industry: {ind_name} | {ind_exp:.4f} |")
+                L.append(f"| max |sector net| ({ind_name}) | {ind_exp:.4f} |")
+        if np.isfinite(exp.get("max_abs_sector_exposure", float("nan"))):
+            L.append(f"| max |sector net| (overall) | {exp['max_abs_sector_exposure']:.4f} |")
     else:
         L.append("_No valid baseline results for exposure computation._")
     L.append("")

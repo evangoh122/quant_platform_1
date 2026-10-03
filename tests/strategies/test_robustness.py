@@ -194,13 +194,15 @@ class TestExposures:
         assert result["max_abs_beta_exposure"] == pytest.approx(0.2)
 
     def test_industry_exposure(self):
-        """Industry exposure sums weights per industry."""
+        """Industry exposure reports max |sector net| per sector."""
         dates = pd.date_range("2024-01-01", periods=5, freq="B")
         weights = pd.DataFrame({"A": [0.5] * 5, "B": [-0.3] * 5}, index=dates)
         industry = pd.Series({"A": "tech", "B": "fin"})
         result = compute_exposures(weights, industry=industry)
+        # max |sector net|: tech = |0.5| = 0.5, fin = |-0.3| = 0.3
         assert result["industry_exposure"]["tech"] == pytest.approx(0.5)
-        assert result["industry_exposure"]["fin"] == pytest.approx(-0.3)
+        assert result["industry_exposure"]["fin"] == pytest.approx(0.3)
+        assert result["max_abs_sector_exposure"] == pytest.approx(0.5)
 
 
 class TestCapacity:

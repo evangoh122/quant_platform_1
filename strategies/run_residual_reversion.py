@@ -249,6 +249,7 @@ def build_signals(
                                  max_hold=max_hold)
     result = {
         "returns": tradeable_returns,
+        "residual": res["residual"],
         "market": market,
         "industry": industry,
         "s_score": res["s_score"],
@@ -523,6 +524,14 @@ def main() -> None:
         registry = build_variant_registry(cfg)
         exec_count = len(registry)
 
+        # Baseline universe for drop-top-3 (same as _run_variant uses).
+        from strategies.universe import screen_universe
+        baseline_universe_size = rr.get("universe_size", 300)
+        univ_sub = screen_universe(
+            panel[["symbol", "event_date", "dollar_volume"]], n=baseline_universe_size,
+        ) if panel is not None else universe
+        closes_sub = closes[closes["symbol"].isin(set(univ_sub["symbol"]))].copy()
+
         variant_results = []
         for vs in registry:
             try:
@@ -548,7 +557,10 @@ def main() -> None:
                     s_score, residual_returns, horizon_days=rank_ic_horizon,
                 )
 
-        # ── Per-fold drop-top-3 (training-window P&L only) ───────────────
+        # ── Per-fold drop-top-3 (like-for-like NET comparison) ────────────
+        # Top-3 are chosen from training-window P&L.  The OOS comparison
+        # runs the actual backtest (with costs, neutralisation, ADV cap) on
+        # the trimmed universe so both sides are NET.
         drop_top3_results = {}
         for h in hold_candidates:
             hold_vr = None
@@ -558,30 +570,53 @@ def main() -> None:
                     break
             if hold_vr is None:
                 continue
-            w = hold_vr["weights"]
-            ret = hold_vr["residual_returns"]
-            net = hold_vr["net"]
-            if ret is None or w.empty:
+            w_full = hold_vr["weights"]
+            ret_full = hold_vr["residual_returns"]
+            net_full = hold_vr["net"]
+            if ret_full is None or w_full.empty:
                 continue
             fold_results = []
             all_dropped = []
             for fold_i, (train_idx, val_idx) in enumerate(splits):
                 train_dates = dates[train_idx]
                 val_dates = dates[val_idx]
-                train_net = net.reindex(train_dates).dropna()
+                train_net = net_full.reindex(train_dates).dropna()
                 if train_net.empty:
                     continue
-                pnl_sym = (w.shift(1).fillna(0.0).reindex(train_net.index) *
-                           ret.reindex(train_net.index)).sum()
+                # Identify top-3 from training-window per-symbol P&L.
+                pnl_sym = (w_full.shift(1).fillna(0.0).reindex(train_net.index) *
+                           ret_full.reindex(train_net.index)).sum()
                 top3 = pnl_sym.nlargest(3).index.tolist()
                 all_dropped.extend(top3)
-                common_val = val_dates.intersection(net.index)
-                oos_full = net.reindex(common_val).dropna()
-                oos_drop3 = oos_full.copy()
-                if top3:
-                    per_sym_val = (w.shift(1).fillna(0.0).reindex(common_val) *
-                                   ret.reindex(common_val))
-                    oos_drop3 = (per_sym_val.drop(columns=top3, errors="ignore").sum(axis=1))
+
+                # OOS full NET (from the original backtest).
+                common_val = val_dates.intersection(net_full.index)
+                oos_full = net_full.reindex(common_val).dropna()
+
+                # OOS drop-3 NET: run actual backtest on trimmed universe.
+                oos_drop3 = oos_full.copy()  # fallback
+                if top3 and panel is not None:
+                    keep = [s for s in univ_sub["symbol"] if s not in set(top3)]
+                    univ_trim = univ_sub[univ_sub["symbol"].isin(keep)].copy()
+                    closes_trim = closes_sub[closes_sub["symbol"].isin(keep)].copy()
+                    try:
+                        sig_trim = build_signals(
+                            closes_trim, univ_trim, WINDOW, LOOKBACK, ENTRY, EXIT, h,
+                            factor_model=factor_model, pca_components=pca_components,
+                            min_obs_fraction=min_obs_fraction,
+                        )
+                        beta_trim = sig_trim.get("beta_mkt")
+                        res_trim = run_one(
+                            sig_trim["positions"], sig_trim["returns"],
+                            univ_trim, adv_wide, beta_trim, industry,
+                            book_capital, n_trials,
+                            cost_params=cost_params, target_gross=target_gross,
+                            execution_lag_bars=execution_lag_bars,
+                        )
+                        oos_drop3 = res_trim["net"].reindex(common_val).dropna()
+                    except Exception:
+                        pass  # fall back to full OOS
+
                 fold_results.append({
                     "fold": fold_i,
                     "dropped": top3,
@@ -722,7 +757,7 @@ def _run_variant(variant_spec, closes, universe, adv_wide, industry,
         "oos_sharpe": oos_sharpe,
         "dropped_symbols": list(dropped_syms) if drop_top > 0 else [],
         "s_score": sig.get("s_score"),
-        "residual_returns": sig.get("returns"),
+        "residual_returns": sig.get("residual"),
         "beta_mkt": beta_mkt,
         "industry": industry,
         "adv_wide": adv_wide,
