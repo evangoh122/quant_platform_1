@@ -50,6 +50,7 @@ STEPS = [
     ("gold_ohlcv_features", "gold/01_gold_ohlcv_features.sql", "sql"),
     ("gold_options_features", "gold/02_gold_options_features.sql", "sql"),
     ("gold_sec_features", "gold/gold_sec_features.py", "py"),
+    ("gold_sec_coverage", "gold/07_gold_sec_coverage.sql", "sql"),
     ("gold_cot_features", "gold/04_gold_cot_features.sql", "sql"),
     ("gold_model_features", "gold/05_gold_model_features.sql", "sql"),
 ]
@@ -59,7 +60,7 @@ TARGET_TABLES = [
     "silver_options_trades", "silver_sec_sections", "silver_sec_entities",
     "silver_cot_positions",
     "gold_ohlcv_features", "gold_options_features", "gold_sec_features",
-    "gold_cot_features", "gold_model_features",
+    "gold_sec_coverage", "gold_cot_features", "gold_model_features",
 ]
 
 DATE_START = "1900-01-01"
@@ -81,9 +82,20 @@ def get_spark() -> DatabricksSession:
 
 
 def register_universe(spark) -> list[str]:
-    symbols = load_universe()
-    df = spark.createDataFrame([(s,) for s in symbols], schema="symbol string")
-    df.createOrReplaceTempView("universe")
+    """Register universe from gold_tradable_universe as a temp view.
+
+    Derives the latest trade_date symbols for the temp view ``universe``
+    so silver/gold transforms filter from the governed universe table.
+    """
+    fqn = f"{CATALOG}.{SCHEMA}"
+    spark.sql(f"""
+        CREATE OR REPLACE TEMP VIEW universe AS
+        SELECT DISTINCT upper(trim(symbol)) AS symbol
+        FROM {fqn}.gold_tradable_universe
+        WHERE trade_date = (SELECT max(trade_date) FROM {fqn}.gold_tradable_universe)
+    """)
+    rows = spark.sql("SELECT symbol FROM universe ORDER BY symbol").collect()
+    symbols = [r["symbol"] for r in rows]
     return symbols
 
 

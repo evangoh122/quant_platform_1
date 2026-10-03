@@ -14,11 +14,12 @@ and never becomes a SQL fragment.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import datetime
+from typing import Optional
 
 from agent.guardrails import normalize_symbol
 from api.services.exceptions import EmbeddingConfigError
+from api.services.hybrid_retriever import NoCoverageError, TickerRequiredError
 from db.lakebase import get_lakebase
 
 _OPEN_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SUBMITTED", "PARTIALLY_FILLED")
@@ -119,6 +120,14 @@ def search_sec_filings(
             }
             for d in docs
         ]
+    except NoCoverageError:
+        import logging
+        logging.warning("No SEC coverage for ticker: %s", symbol)
+        return [{"error": "no_coverage", "ticker": symbol}]
+    except TickerRequiredError:
+        import logging
+        logging.warning("Ticker required for SEC filing search")
+        return [{"error": "ticker_required"}]
     except EmbeddingConfigError as e:
         import logging
         logging.error("Embedding config error: %s", e)

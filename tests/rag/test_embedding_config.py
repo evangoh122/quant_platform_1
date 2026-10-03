@@ -7,7 +7,6 @@ than hardcoding its own.
 from __future__ import annotations
 
 import importlib
-import os
 
 
 def test_config_hf_model_default():
@@ -54,7 +53,6 @@ def test_st_model_matches_config():
 def test_hybrid_retriever_uses_config_dim():
     """hybrid_retriever.EMBEDDING_DIM equals config.EMBEDDING_DIM."""
     import api.config as cfg_mod
-    import api.services.hybrid_retriever as hr_mod
     importlib.reload(cfg_mod)
     # hybrid_retriever imports EMBEDDING_DIM from embeddings, which imports from config
     from api.services.embeddings import EMBEDDING_DIM

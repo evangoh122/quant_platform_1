@@ -3,7 +3,7 @@ resources:
     silver_gold_refresh:
       name: quant-platform-silver-gold-refresh-${bundle.target}
       schedule:
-        quartz_cron_expression: "0 0 2 * * ?"
+        quartz_cron_expression: "0 0 2 * * ?"  # 2 AM UTC daily
         timezone_id: UTC
         pause_status: PAUSED
       tasks:
@@ -12,11 +12,6 @@ resources:
             python_file: ../pipelines/run_silver_gold.py
             parameters: ["--schema", "${var.schema}"]
           environment_key: serverless
-      environments:
-        - environment_key: serverless
-          spec:
-            client: "1"
-
     ml_ablation:
       name: quant-platform-ml-ablation-${bundle.target}
       tasks:
@@ -24,7 +19,27 @@ resources:
           spark_python_task:
             python_file: ../ml/run_ablation.py
           environment_key: serverless
-      environments:
-        - environment_key: serverless
-          spec:
-            client: "1"
+    sec_rag_ingest:
+      name: quant-platform-sec-rag-ingest-${bundle.target}
+      tasks:
+        - task_key: run_sec_ingest
+          spark_python_task:
+            python_file: ../pipelines/sec_rag_ingest.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+          environment_key: serverless
+    sec_embeddings:
+      name: quant-platform-sec-embeddings-${bundle.target}
+      tasks:
+        - task_key: run_sec_embeddings
+          spark_python_task:
+            python_file: ../pipelines/build_sec_embeddings.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+          environment_key: serverless

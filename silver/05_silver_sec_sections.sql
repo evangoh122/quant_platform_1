@@ -11,36 +11,42 @@
 -- chunk_index = 0-based order within (accession_number, filing_section).
 --
 -- Idempotent: MERGE on (accession_number, filing_section, chunk_id).
+-- Source anti-join: only processes accessions absent from silver.
 
 MERGE INTO bootcamp_students.evangoh_capstone.silver_sec_sections AS tgt
 USING (
   SELECT
-    cik,
-    ticker,
-    accession_number,
-    form_type,
-    CAST(filing_date AS DATE)   AS filing_date,
-    accepted_ts,
-    filing_section,
-    record_key                  AS chunk_id,
+    src.cik,
+    src.ticker,
+    src.accession_number,
+    src.form_type,
+    CAST(src.filing_date AS DATE)   AS filing_date,
+    src.accepted_ts,
+    src.filing_section,
+    src.record_key                  AS chunk_id,
     CAST(ROW_NUMBER() OVER (
-      PARTITION BY accession_number, filing_section
-      ORDER BY chunk_id
-    ) AS INT) - 1               AS chunk_index,
-    chunk_text,
-    CAST(COALESCE(chunk_char_count, length(coalesce(chunk_text, ''))) AS INT) AS chunk_char_count,
-    filing_url                  AS source_url,
-    current_timestamp()         AS processed_ts
-  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
-  WHERE ticker IN (SELECT symbol FROM universe)
-    AND filing_section IS NOT NULL
-    AND filing_section <> 'metadata'
-    AND filing_section NOT LIKE 'xbrl_fact_%'
-    AND chunk_text IS NOT NULL
-    AND cik IS NOT NULL
-    AND accession_number IS NOT NULL
-    AND form_type IS NOT NULL
-    AND accepted_ts IS NOT NULL
+      PARTITION BY src.accession_number, src.filing_section
+      ORDER BY src.record_key
+    ) AS INT) - 1                   AS chunk_index,
+    src.chunk_text,
+    CAST(COALESCE(src.chunk_char_count, length(coalesce(src.chunk_text, ''))) AS INT) AS chunk_char_count,
+    src.filing_url                  AS source_url,
+    current_timestamp()             AS processed_ts
+  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2 src
+  LEFT JOIN (
+    SELECT DISTINCT accession_number
+    FROM bootcamp_students.evangoh_capstone.silver_sec_sections
+  ) existing ON src.accession_number = existing.accession_number
+  WHERE existing.accession_number IS NULL
+    AND src.ticker IN (SELECT symbol FROM universe)
+    AND src.filing_section IS NOT NULL
+    AND src.filing_section <> 'metadata'
+    AND src.filing_section NOT LIKE 'xbrl_fact_%'
+    AND src.chunk_text IS NOT NULL
+    AND src.cik IS NOT NULL
+    AND src.accession_number IS NOT NULL
+    AND src.form_type IS NOT NULL
+    AND src.accepted_ts IS NOT NULL
 ) AS src
 ON tgt.accession_number = src.accession_number
    AND tgt.filing_section = src.filing_section

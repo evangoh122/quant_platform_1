@@ -5,26 +5,30 @@ Combines semantic (vector cosine similarity) and lexical (BM25) search on the
 same corpus, then fuses rankings via Reciprocal Rank Fusion (RRF) before
 handing off to the cross-encoder reranker.
 
-Pipeline:  Chunk → [BM25 + Vector] → RRF → Rerank → LLM
+Pipeline:  Chunk -> [BM25 + Vector] -> RRF -> Rerank -> LLM
 
 Corpus source: Delta tables via databricks-connect (serverless).
   - Chunk text:  bootcamp_students.evangoh_capstone.silver_sec_sections
   - Embeddings:  bootcamp_students.evangoh_capstone.gold_sec_chunk_embeddings
 
-The corpus (~10 720 chunks, ~16 MB at 384-d float32) is loaded once and
-cached in-process.  BM25 index is built lazily on first query.
+Per-ticker lazy loading with bounded LRU cache. Each ticker's corpus is loaded
+independently and cached. A process-wide OrderedDict acts as an LRU with
+configurable max size (RAG_TICKER_CACHE_MAX, default 32).
 
 Point-in-time: every retrieval takes ``as_of`` (default now) and may only
 return chunks with ``accepted_ts <= as_of``.  The filter is applied BEFORE
-scoring, not after reranking.
+scoring, not after reranking.  Missing/null accepted_ts chunks are EXCLUDED.
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import os
 import re
 import threading
 import time
+from concurrent.futures import Future
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -37,29 +41,299 @@ from api.services.embeddings import get_embeddings
 from api.services.exceptions import CorpusUnavailableError, EmbeddingConfigError
 
 
-def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
-    """Normalise *as_of* to a tz-aware UTC datetime.
+# ── Custom exceptions ─────────────────────────────────────────────────────────
 
-    Rules:
-      * ``None`` → ``datetime.now(timezone.utc)``
-      * naive (no tzinfo) → treated as UTC and tagged accordingly
-      * aware → converted to UTC via ``.astimezone(timezone.utc)``
-    """
-    if as_of is None:
-        return datetime.now(timezone.utc)
-    if as_of.tzinfo is None:
-        # Naive datetime — treat as UTC per contract (documented in module docstring)
-        return as_of.replace(tzinfo=timezone.utc)
-    return as_of.astimezone(timezone.utc)
+class TickerRequiredError(Exception):
+    """Raised when no ticker could be resolved for a query."""
 
 
-# ── Catalog / schema ─────────────────────────────────────────────────────────
+class NoCoverageError(Exception):
+    """Raised when a ticker has no SEC coverage (zero chunks)."""
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
 SCHEMA = os.getenv("SCHEMA", "evangoh_capstone")
 
 CHUNKS_TABLE = f"{CATALOG}.{SCHEMA}.silver_sec_sections"
 EMBEDDINGS_TABLE = f"{CATALOG}.{SCHEMA}.gold_sec_chunk_embeddings"
+COVERAGE_TABLE = f"{CATALOG}.{SCHEMA}.gold_sec_coverage"
+
+# LRU cache size for per-ticker corpora
+_RAG_TICKER_CACHE_MAX_RAW = os.getenv("RAG_TICKER_CACHE_MAX", "32")
+try:
+    _RAG_TICKER_CACHE_MAX = int(_RAG_TICKER_CACHE_MAX_RAW)
+    if _RAG_TICKER_CACHE_MAX <= 0:
+        raise ValueError
+except ValueError:
+    raise ValueError(
+        f"RAG_TICKER_CACHE_MAX must be a positive integer, got '{_RAG_TICKER_CACHE_MAX_RAW}'"
+    )
+
+# Soft per-ticker memory budget in bytes (~12 MB)
+_TICHER_CORPUS_SOFT_BUDGET = 12 * 1024 * 1024
+
+
+# ── TickerCorpus dataclass ────────────────────────────────────────────────────
+
+@dataclass
+class TickerCorpus:
+    """Immutable per-ticker corpus holding docs, BM25 index, and embeddings."""
+    ticker: str
+    docs: List[Document]
+    tokenised: List[List[str]]
+    bm25_index: Optional[BM25Okapi]
+    embeddings_map: Dict[str, np.ndarray]
+    stored_model: Optional[str]
+    stored_dim: Optional[int]
+    load_ts: float
+    approx_bytes: int
+
+
+# ── Per-ticker LRU cache ──────────────────────────────────────────────────────
+
+# OrderedDict for LRU: move_to_end on access, popitem(last=False) for LRU eviction
+_ticker_cache: collections.OrderedDict[str, TickerCorpus] = collections.OrderedDict()
+_ticker_cache_lock = threading.RLock()
+
+# In-flight load futures for coalescing concurrent requests
+_inflight: Dict[str, Future] = {}
+_inflight_lock = threading.Lock()
+
+
+def _approx_corpus_bytes(
+    docs: List[Document],
+    embeddings_map: Dict[str, np.ndarray],
+) -> int:
+    """Estimate memory footprint of a ticker corpus."""
+    text_bytes = sum(len(d.page_content.encode("utf-8")) for d in docs)
+    vec_bytes = sum(v.nbytes for v in embeddings_map.values())
+    # Rough overhead for Python objects, dicts, BM25 arrays
+    overhead = len(docs) * 200 + len(embeddings_map) * 100
+    return text_bytes + vec_bytes + overhead
+
+
+def _get_spark():
+    """Get a Spark session."""
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        from pyspark.sql import SparkSession
+        return SparkSession.builder.getOrCreate()
+    else:
+        from databricks.connect import DatabricksSession
+        return DatabricksSession.builder.serverless(True).getOrCreate()
+
+
+def _load_ticker_corpus(ticker: str) -> TickerCorpus:
+    """Load corpus for a single ticker from Delta tables.
+
+    Pushes ticker predicate into both Spark reads before collect().
+    """
+    t0 = time.monotonic()
+    spark = _get_spark()
+
+    from pyspark.sql import functions as F
+
+    # Load chunks for this ticker only
+    chunks_df = (
+        spark.table(CHUNKS_TABLE)
+        .filter(F.col("ticker") == ticker)
+        .select(
+            "chunk_id", "ticker", "chunk_text", "accession_number",
+            F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+            "form_type", "filing_section", "chunk_index",
+            "source_url",
+        )
+    )
+    chunks_rows = chunks_df.collect()
+
+    # Load embeddings for this ticker and configured model
+    embed_df = (
+        spark.table(EMBEDDINGS_TABLE)
+        .filter(
+            (F.col("ticker") == ticker)
+            & (F.col("embedding_model") == _get_embedding_model())
+        )
+        .select("chunk_id", "embedding", "embedding_model")
+    )
+    embed_rows = embed_df.collect()
+
+    # Build embedding map
+    embeddings_map: Dict[str, np.ndarray] = {}
+    seen_dims: set = set()
+    seen_models: set = set()
+
+    for row in embed_rows:
+        cid = row["chunk_id"]
+        vec = row["embedding"]
+        if vec is not None:
+            arr = np.array(vec, dtype=np.float32)
+            embeddings_map[cid] = arr
+            seen_dims.add(len(arr))
+        model_name = row["embedding_model"]
+        if model_name:
+            seen_models.add(model_name)
+
+    # Validate stored dimensions are uniform
+    stored_dim: Optional[int] = None
+    if seen_dims and len(seen_dims) > 1:
+        raise CorpusUnavailableError(
+            f"Embedding dimension mismatch for {ticker}: found {sorted(seen_dims)}. "
+            f"The index is corrupted — rebuild embeddings."
+        )
+    stored_dim = next(iter(seen_dims), None) if seen_dims else None
+
+    stored_model: Optional[str] = None
+    if len(seen_models) > 1:
+        raise CorpusUnavailableError(
+            f"Multiple embedding models for {ticker}: {sorted(seen_models)}. "
+            f"Rebuild embeddings with a single model."
+        )
+    stored_model = next(iter(seen_models), None) if seen_models else None
+
+    # Build docs and BM25 index
+    docs: List[Document] = []
+    tokenised: List[List[str]] = []
+
+    for row in chunks_rows:
+        cid = row["chunk_id"]
+        text = row["chunk_text"] or ""
+        ticker_val = row["ticker"] or ""
+        accession = row["accession_number"] or ""
+        accepted_epoch = row["accepted_epoch"]
+        if accepted_epoch is not None:
+            accepted_ts = datetime.fromtimestamp(
+                int(accepted_epoch), tz=timezone.utc
+            ).isoformat()
+        else:
+            accepted_ts = ""
+        form_type = row["form_type"] or ""
+        section_id = row["filing_section"] or ""
+        chunk_index = row["chunk_index"] or 0
+        source_url = row["source_url"] or _accession_to_sec_url(accession)
+
+        doc = Document(
+            page_content=text,
+            metadata={
+                "chunk_id": cid,
+                "ticker": ticker_val,
+                "accession": accession,
+                "accepted_ts": accepted_ts,
+                "form_type": form_type,
+                "section_id": section_id,
+                "chunk_index": chunk_index,
+                "source_url": source_url,
+            },
+        )
+        docs.append(doc)
+        tokenised.append(tokenize(text))
+
+    bm25_index = BM25Okapi(tokenised) if tokenised else None
+
+    approx_bytes = _approx_corpus_bytes(docs, embeddings_map)
+    load_ts = time.monotonic()
+    elapsed = load_ts - t0
+
+    logger.info(
+        "Ticker corpus loaded: {} chunks, {} embeddings, {:.1f} MB, {:.1f}s",
+        len(chunks_rows), len(embeddings_map),
+        approx_bytes / (1024 * 1024), elapsed,
+    )
+
+    return TickerCorpus(
+        ticker=ticker,
+        docs=docs,
+        tokenised=tokenised,
+        bm25_index=bm25_index,
+        embeddings_map=embeddings_map,
+        stored_model=stored_model,
+        stored_dim=stored_dim,
+        load_ts=load_ts,
+        approx_bytes=approx_bytes,
+    )
+
+
+def _get_embedding_model() -> str:
+    """Get the configured embedding model name."""
+    return os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+
+
+def _accession_to_sec_url(accession: str) -> str:
+    """Convert accession number to SEC EDGAR URL."""
+    clean = accession.replace("-", "")
+    return f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&accession={clean}"
+
+
+def get_ticker_corpus(ticker: str) -> TickerCorpus:
+    """Get or load the corpus for a ticker, with LRU caching and coalesced loads.
+
+    Thread-safe. Concurrent requests for the same ticker coalesce to one load.
+    """
+    ticker = ticker.upper().strip()
+
+    # Fast path: check cache
+    with _ticker_cache_lock:
+        if ticker in _ticker_cache:
+            _ticker_cache.move_to_end(ticker)
+            return _ticker_cache[ticker]
+
+    # Check if a load is already in-flight
+    with _inflight_lock:
+        if ticker in _inflight:
+            future = _inflight[ticker]
+        else:
+            future = Future()
+            _inflight[ticker] = future
+
+            # We are the loader
+            try:
+                corpus = _load_ticker_corpus(ticker)
+                _insert_ticker_corpus(ticker, corpus)
+                future.set_result(corpus)
+            except Exception as e:
+                future.set_exception(e)
+                # Remove in-flight marker so later requests can retry
+                with _inflight_lock:
+                    _inflight.pop(ticker, None)
+                raise
+
+    return future.result()
+
+
+def _insert_ticker_corpus(ticker: str, corpus: TickerCorpus) -> None:
+    """Insert corpus into LRU cache, evicting LRU entries if needed."""
+    with _ticker_cache_lock:
+        _ticker_cache[ticker] = corpus
+        _ticker_cache.move_to_end(ticker)
+
+        # Evict LRU entries until we're within bounds
+        while len(_ticker_cache) > _RAG_TICKER_CACHE_MAX:
+            evicted_ticker, _ = _ticker_cache.popitem(last=False)
+            logger.debug("Evicted ticker corpus: {}", evicted_ticker)
+
+    # Clean up in-flight marker
+    with _inflight_lock:
+        _inflight.pop(ticker, None)
+
+
+def reload_corpus(ticker: Optional[str] = None) -> None:
+    """Invalidate one ticker or all tickers under lock without eager reload."""
+    with _ticker_cache_lock:
+        if ticker:
+            _ticker_cache.pop(ticker.upper().strip(), None)
+        else:
+            _ticker_cache.clear()
+
+
+# ── Normalize as_of ──────────────────────────────────────────────────────────
+
+def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
+    """Normalise *as_of* to a tz-aware UTC datetime."""
+    if as_of is None:
+        return datetime.now(timezone.utc)
+    if as_of.tzinfo is None:
+        return as_of.replace(tzinfo=timezone.utc)
+    return as_of.astimezone(timezone.utc)
 
 
 # ── Tokenizer ────────────────────────────────────────────────────────────────
@@ -69,340 +343,137 @@ def tokenize(text: str) -> list[str]:
     return text.lower().split()
 
 
-def _accession_to_sec_url(accession: str) -> str:
-    """Convert an accession number to the direct SEC EDGAR filing index URL."""
-    if not accession:
-        return ""
-    clean = accession.replace("-", "")
-    if len(clean) < 18:
-        return ""
-    cik = clean[:10].lstrip("0")
-    dashed = f"{clean[:10]}-{clean[10:12]}-{clean[12:]}"
-    return f"https://www.sec.gov/Archives/edgar/data/{cik}/{clean}/{dashed}-index.htm"
-
-
-# ── RRF Fusion ───────────────────────────────────────────────────────────────
+# ── RRF fusion ───────────────────────────────────────────────────────────────
 
 def rrf_fuse(
-    rankings: list[list[Document]],
+    ranked_lists: list[list[Document]],
     k: int = 60,
     boost_ticker: str = "",
     ticker_boost: float = 2.0,
 ) -> list[Document]:
     """Reciprocal Rank Fusion over multiple ranked lists.
 
-    RRF_score(d) = Σ 1 / (k + rank_i(d))
-
-    If boost_ticker is set, docs whose ticker matches get their contribution
-    multiplied by ticker_boost at fusion time.
-
-    Uses (ticker, accession, content_hash) as a stable content key so the same
-    chunk appearing in both BM25 and vector results is correctly deduplicated.
+    Optionally boosts documents matching ``boost_ticker`` by ``ticker_boost``.
+    De-duplicates by (ticker, accession, md5[:16]) of content.
     """
-    if k < 1:
-        raise ValueError(f"rrf k must be >= 1, got {k}")
-    if ticker_boost < 1.0:
-        raise ValueError(f"ticker_boost must be >= 1.0, got {ticker_boost}")
-
     scores: dict[tuple, float] = {}
-    doc_map: dict[tuple, Document] = {}
+    docs_by_key: dict[tuple, Document] = {}
 
-    for ranked_list in rankings:
-        for rank, doc in enumerate(ranked_list):
+    for ranked in ranked_lists:
+        for rank, doc in enumerate(ranked):
             key = (
                 doc.metadata.get("ticker", ""),
                 doc.metadata.get("accession", ""),
-                hashlib.md5(doc.page_content.encode()).hexdigest()[:16],
+                hashlib.md5(doc.page_content[:500].encode()).hexdigest()[:16],
             )
-            doc_map[key] = doc
-            base = 1.0 / (k + rank + 1)
+            score = 1.0 / (k + rank + 1)
             if boost_ticker and doc.metadata.get("ticker") == boost_ticker:
-                base *= ticker_boost
-            scores[key] = scores.get(key, 0.0) + base
+                score *= ticker_boost
+            scores[key] = scores.get(key, 0.0) + score
+            if key not in docs_by_key:
+                docs_by_key[key] = doc
 
-    sorted_keys = sorted(scores, key=lambda k_: scores[k_], reverse=True)
-    return [doc_map[k_] for k_ in sorted_keys]
+    sorted_keys = sorted(scores, key=lambda k: scores[k], reverse=True)
+    results = []
+    for key in sorted_keys:
+        doc = docs_by_key[key]
+        doc.metadata["rrf_score"] = scores[key]
+        results.append(doc)
+    return results
 
 
-# ── Company name → ticker resolver ───────────────────────────────────────────
+# ── Company aliases ──────────────────────────────────────────────────────────
 
 _COMPANY_ALIASES: dict[str, str] = {
     "analog devices": "ADI",
     "advanced micro devices": "AMD",
-    "taiwan semiconductor": "TSM",
-    "nxp semiconductors": "NXPI",
-    "microchip technology": "MCHP",
-    "monolithic power": "MPWR",
-    "on semiconductor": "ON",
+    "apple": "AAPL",
     "applied materials": "AMAT",
-    "lam research": "LRCX",
-    "kla corporation": "KLAC",
-    "onto innovation": "ONTO",
-    "kulicke & soffa": "KLIC",
-    "ichor holdings": "ICHR",
-    "aehr test systems": "AEHR",
-    "texas instruments": "TXN",
-    "micron technology": "MU",
-    "space exploration technologies": "SPCX",
-    "space exploration": "SPCX",
-    "space x": "SPCX",
-    "rocket lab": "RKLB",
-    "rocket labs": "RKLB",
-    "rocketlab": "RKLB",
-    "spacex": "SPCX",
+    "arm holdings": "ARM",
+    "asml holding": "ASML",
+    "asml": "ASML",
     "broadcom": "AVGO",
+    "cadence design": "CDNS",
     "intel": "INTC",
-    "micron": "MU",
-    "nvidia": "NVDA",
-    "qualcomm": "QCOM",
-    "tsmc": "TSM",
+    "kla": "KLAC",
+    "lam research": "LRCX",
     "marvell": "MRVL",
     "microchip": "MCHP",
+    "micron": "MU",
+    "mpwr": "MPWR",
+    "monolithic power": "MPWR",
+    "nvidia": "NVDA",
+    "nxp": "NXPI",
+    "nxp semiconductors": "NXPI",
+    "on semiconductor": "ON",
+    "qualcomm": "QCOM",
     "skyworks": "SWKS",
-    "qorvo": "QRVO",
-    "onsemi": "ON",
+    "stmicroelectronics": "STM",
+    "synopsys": "SNPS",
+    "taiwan semiconductor": "TSM",
     "teradyne": "TER",
-    "entegris": "ENTG",
-    "formfactor": "FORM",
-    "photronics": "PLAB",
-    "kulicke": "KLIC",
-    "ichor": "ICHR",
-    "veeco": "VECO",
-    "axcelis": "ACLS",
-    "amkor": "AMKR",
-    "cohu": "COHU",
-    "aehr": "AEHR",
-    "rklb": "RKLB",
-    "mu": "MU",
+    "texas instruments": "TXN",
+    "tsmc": "TSM",
 }
 
-_ALIAS_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"\b" + re.escape(alias) + r"\b", re.IGNORECASE), ticker)
-    for alias, ticker in sorted(_COMPANY_ALIASES.items(), key=lambda x: len(x[0]), reverse=True)
-]
+_ALIAS_PATTERNS = sorted(
+    [(re.compile(r"\b" + re.escape(k) + r"\b", re.IGNORECASE), v)
+     for k, v in _COMPANY_ALIASES.items()],
+    key=lambda x: len(x[0].pattern),
+    reverse=True,
+)
 
 
-def resolve_ticker_from_query(query: str, ticker: str = "") -> str:
-    """Return the ticker to use for retrieval.
+def resolve_ticker_from_query(
+    query: str,
+    ticker: Optional[str] = None,
+) -> str:
+    """Resolve a ticker from explicit parameter or query text.
 
-    If ticker is already set, return it unchanged.  Otherwise scan the query
-    for a known company name (whole-word match, longest alias wins).
+    Returns the ticker string, or empty string if not resolved.
     """
     if ticker:
-        return ticker
-    if not query:
-        return ""
-    for pattern, resolved in _ALIAS_PATTERNS:
+        return ticker.upper().strip()
+
+    for pattern, t in _ALIAS_PATTERNS:
         if pattern.search(query):
-            logger.info("Auto-resolved ticker {!r} from query text", resolved)
-            return resolved
+            return t
     return ""
 
 
-# ── Corpus cache ─────────────────────────────────────────────────────────────
+# ── Coverage lookup ──────────────────────────────────────────────────────────
 
-_corpus_lock = threading.Lock()
-_corpus_loaded = False
+def check_ticker_coverage(ticker: str) -> Tuple[int, Optional[str]]:
+    """Check coverage for a ticker. Returns (n_chunks, cik).
 
-# chunk_id -> (text, ticker, accession, accepted_ts, form_type, section_id, chunk_index, source_url)
-_corpus: Dict[str, Tuple[str, str, str, str, str, str, int, str]] = {}
-
-# For BM25: parallel lists indexed by ordinal
-_bm25_docs: Optional[List[Document]] = None
-_bm25_tokenised: Optional[List[List[str]]] = None
-_bm25_index: Optional[BM25Okapi] = None
-
-# For dense: chunk_id -> embedding vector (numpy float32)
-_embeddings_map: Dict[str, np.ndarray] = {}
-
-# Stored index metadata (recorded at corpus load time)
-_stored_index_dim: Optional[int] = None
-_stored_embedding_model: Optional[str] = None
-
-
-def _get_spark():
-    """Get a Spark session, using DatabricksSession outside a Databricks runtime.
-
-    Inside a Databricks runtime (DATABRICKS_RUNTIME_VERSION set), the ambient
-    session is used.  Outside, DatabricksSession (databricks-connect) is required.
+    Raises NoCoverageError if the ticker has zero chunks.
     """
-    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
-        from pyspark.sql import SparkSession
-        return SparkSession.builder.getOrCreate()
-    else:
-        from databricks.connect import DatabricksSession
-        return DatabricksSession.builder.serverless(True).getOrCreate()
+    ticker = ticker.upper().strip()
+    try:
+        spark = _get_spark()
+        from pyspark.sql import functions as F
 
+        row = (
+            spark.table(COVERAGE_TABLE)
+            .filter(F.col("ticker") == ticker)
+            .select("n_chunks", "cik")
+            .collect()
+        )
+        if not row:
+            raise NoCoverageError(ticker)
 
-def _load_corpus() -> bool:
-    """Load chunk text + embeddings from Delta tables into process memory.
+        n_chunks = row[0]["n_chunks"] or 0
+        cik = row[0]["cik"]
+        if n_chunks == 0:
+            raise NoCoverageError(ticker)
 
-    Returns True if the corpus was loaded successfully.
-    Raises CorpusUnavailableError on any load failure so callers can surface
-    a structured error instead of silently returning empty results.
-    """
-    global _corpus_loaded, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
-    global _stored_index_dim, _stored_embedding_model
-
-    if _corpus_loaded:
-        if not _corpus:
-            raise CorpusUnavailableError("Corpus cache is empty after previous load failure")
-        return True
-
-    with _corpus_lock:
-        if _corpus_loaded:
-            if not _corpus:
-                raise CorpusUnavailableError("Corpus cache is empty after previous load failure")
-            return True
-
-        t0 = time.monotonic()
-        try:
-            spark = _get_spark()
-
-            # Load chunk text — use unix_timestamp to avoid client-tz drift.
-            # Spark returns naive datetimes in the *client* machine's local
-            # timezone, not UTC, so we pull epoch seconds and convert in Python.
-            from pyspark.sql import functions as F
-
-            chunks_df = spark.table(CHUNKS_TABLE).select(
-                "chunk_id", "ticker", "chunk_text", "accession_number",
-                F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
-                "form_type", "filing_section", "chunk_index",
-                "source_url",
-            )
-            chunks_rows = chunks_df.collect()
-
-            # Load embeddings
-            embed_df = spark.table(EMBEDDINGS_TABLE).select(
-                "chunk_id", "embedding", "embedding_model",
-            )
-            embed_rows = embed_df.collect()
-
-            # Build embedding map + record stored index metadata
-            seen_dims: set[int] = set()
-            seen_models: set[str] = set()
-            for row in embed_rows:
-                cid = row["chunk_id"]
-                vec = row["embedding"]
-                if vec is not None:
-                    arr = np.array(vec, dtype=np.float32)
-                    _embeddings_map[cid] = arr
-                    seen_dims.add(len(arr))
-                model_name = row["embedding_model"]
-                if model_name:
-                    seen_models.add(model_name)
-
-            # Validate stored dimensions are uniform
-            if seen_dims and len(seen_dims) > 1:
-                raise CorpusUnavailableError(
-                    f"Embedding dimension mismatch in stored index: found {sorted(seen_dims)}. "
-                    f"The index is corrupted — rebuild embeddings."
-                )
-            _stored_index_dim = next(iter(seen_dims), None)
-
-            # Store the model name (prefer the single model; error if mixed)
-            if len(seen_models) > 1:
-                raise CorpusUnavailableError(
-                    f"Multiple embedding models in stored index: {sorted(seen_models)}. "
-                    f"Rebuild embeddings with a single model."
-                )
-            _stored_embedding_model = next(iter(seen_models), None)
-
-            # Build corpus map + BM25 lists
-            docs: List[Document] = []
-            tokenised: List[List[str]] = []
-
-            for row in chunks_rows:
-                cid = row["chunk_id"]
-                text = row["chunk_text"] or ""
-                ticker = row["ticker"] or ""
-                accession = row["accession_number"] or ""
-                accepted_epoch = row["accepted_epoch"]
-                if accepted_epoch is not None:
-                    accepted_ts = datetime.fromtimestamp(
-                        int(accepted_epoch), tz=timezone.utc
-                    ).isoformat()
-                else:
-                    accepted_ts = ""
-                form_type = row["form_type"] or ""
-                section_id = row["filing_section"] or ""
-                chunk_index = row["chunk_index"] or 0
-                source_url = row["source_url"] or _accession_to_sec_url(accession)
-
-                _corpus[cid] = (text, ticker, accession, accepted_ts, form_type, section_id, chunk_index, source_url)
-
-                # Only include chunks that have embeddings for dense search
-                doc = Document(
-                    page_content=text,
-                    metadata={
-                        "chunk_id": cid,
-                        "ticker": ticker,
-                        "accession": accession,
-                        "accepted_ts": accepted_ts,
-                        "form_type": form_type,
-                        "section_id": section_id,
-                        "chunk_index": chunk_index,
-                        "source_url": source_url,
-                    },
-                )
-                docs.append(doc)
-                tokenised.append(tokenize(text))
-
-            if tokenised:
-                _bm25_index = BM25Okapi(tokenised)
-            _bm25_docs = docs
-            _bm25_tokenised = tokenised
-
-            elapsed = time.monotonic() - t0
-            logger.info(
-                "Corpus loaded: {} chunks, {} embeddings, {:.1f}s",
-                len(chunks_rows), len(_embeddings_map), elapsed,
-            )
-            _corpus_loaded = True
-            return bool(_corpus)
-
-        except CorpusUnavailableError:
-            # Clear partial state so the next call retries from scratch
-            _corpus_loaded = False
-            _corpus.clear()
-            _embeddings_map.clear()
-            _bm25_docs = None
-            _bm25_tokenised = None
-            _bm25_index = None
-            _stored_index_dim = None
-            _stored_embedding_model = None
-            raise
-        except Exception as e:
-            logger.error("Failed to load corpus: {}", e)
-            # Clear partial state so the next call retries from scratch
-            _corpus_loaded = False
-            _corpus.clear()
-            _embeddings_map.clear()
-            _bm25_docs = None
-            _bm25_tokenised = None
-            _bm25_index = None
-            _stored_index_dim = None
-            _stored_embedding_model = None
-            raise CorpusUnavailableError(f"Failed to load corpus: {e}") from e
-
-
-def reload_corpus() -> bool:
-    """Force a reload of the corpus (e.g. after new embeddings are built).
-
-    Raises CorpusUnavailableError if the reload fails.
-    """
-    global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
-    global _stored_index_dim, _stored_embedding_model
-    with _corpus_lock:
-        _corpus_loaded = False
-        _corpus = {}
-        _bm25_docs = None
-        _bm25_tokenised = None
-        _bm25_index = None
-        _embeddings_map = {}
-        _stored_index_dim = None
-        _stored_embedding_model = None
-    return _load_corpus()
+        return n_chunks, cik
+    except NoCoverageError:
+        raise
+    except Exception as e:
+        logger.warning("Coverage lookup failed for {}: {}", ticker, e)
+        # Don't mask NoCoverageError - let the caller handle lookup failures
+        raise
 
 
 # ── Point-in-time filter ─────────────────────────────────────────────────────
@@ -412,10 +483,9 @@ def _parse_ts(ts_str: str) -> Optional[datetime]:
     if not ts_str or ts_str == "None":
         return None
     try:
-        # Handle both '2024-09-11' and '2024-09-11 00:00:00' and ISO formats
         ts_str = ts_str.replace("T", " ").replace("Z", "+00:00")
         if "+" not in ts_str and ts_str.endswith(":00"):
-            pass  # already has offset
+            pass
         dt = datetime.fromisoformat(ts_str)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -431,6 +501,7 @@ def _pit_filter(
     """Filter documents to only include those with accepted_ts <= as_of.
 
     Applied BEFORE scoring so future filings never influence ranking.
+    Missing/null accepted_ts chunks are EXCLUDED (not defensively included).
     """
     as_of = _normalize_as_of(as_of)
 
@@ -440,9 +511,8 @@ def _pit_filter(
         accepted_dt = _parse_ts(accepted_ts_str)
         if accepted_dt is not None and accepted_dt <= as_of:
             filtered.append(doc)
-        elif accepted_dt is None:
-            # If no timestamp, include it (defensive)
-            filtered.append(doc)
+        # Missing/null accepted_ts: EXCLUDED (all newly published chunks require
+        # authoritative acceptance time)
     return filtered
 
 
@@ -455,49 +525,47 @@ def bm25_search(
     ticker_boost: float = 2.0,
     as_of: Optional[datetime] = None,
 ) -> list[Document]:
-    """Run BM25 keyword search over the corpus.
+    """Run BM25 keyword search over the per-ticker corpus.
 
     When ticker is provided, raw BM25 scores for matching docs are multiplied
     by ticker_boost before ranking.
 
     Raises CorpusUnavailableError if the corpus cannot be loaded.
+    Raises TickerRequiredError if no ticker is resolved.
     """
-    _load_corpus()
+    if not ticker:
+        raise TickerRequiredError("A ticker is required for retrieval")
+
     as_of = _normalize_as_of(as_of)
-    if _bm25_index is None or _bm25_docs is None:
+
+    try:
+        corpus = get_ticker_corpus(ticker)
+    except Exception as e:
+        raise CorpusUnavailableError(f"Failed to load corpus for {ticker}: {e}") from e
+
+    if corpus.bm25_index is None or not corpus.docs:
         return []
 
-    # Apply PIT filter to the doc list before scoring
-    docs = _pit_filter(_bm25_docs, as_of)
+    # Apply PIT filter before scoring
+    docs = _pit_filter(corpus.docs, as_of)
     if not docs:
         return []
 
-    # When ticker is set, filter candidates to that ticker before ranking.
-    # This prevents other companies' chunks from leaking through RRF fusion.
-    # The boost path (ticker_boost) is only for ticker resolved from query.
-    if ticker:
-        docs = [d for d in docs if d.metadata.get("ticker") == ticker]
-        if not docs:
-            return []
-
-    # Rebuild a temporary BM25 index over the filtered docs for correctness
-    # (PIT filter changes which documents are eligible)
+    # Build temporary BM25 index for the PIT subset
     tokenised = [tokenize(d.page_content) for d in docs]
     bm25 = BM25Okapi(tokenised)
 
     query_tokens = tokenize(query)
     raw_scores = bm25.get_scores(query_tokens)
 
-    boosted = list(enumerate(raw_scores))
-
-    scored = sorted(boosted, key=lambda x: x[1], reverse=True)
+    scored = sorted(enumerate(raw_scores), key=lambda x: x[1], reverse=True)
     return [docs[idx] for idx, _ in scored[:top_k]]
 
 
 # ── Dense vector search ─────────────────────────────────────────────────────
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity between two vectors.  Both must be normalised."""
+    """Cosine similarity between two vectors. Both must be normalised."""
     return float(np.dot(a, b))
 
 
@@ -507,79 +575,77 @@ def vector_search(
     ticker: str = "",
     as_of: Optional[datetime] = None,
 ) -> list[Document]:
-    """Run brute-force cosine similarity search over the embeddings corpus.
-
-    Loads the query embedding via the configured provider, then scores against
-    all cached embeddings.  Returns top_k documents sorted by similarity.
+    """Run brute-force cosine similarity search over the per-ticker embeddings.
 
     Raises CorpusUnavailableError if the corpus cannot be loaded.
+    Raises TickerRequiredError if no ticker is resolved.
     """
-    _load_corpus()
+    if not ticker:
+        raise TickerRequiredError("A ticker is required for retrieval")
+
     as_of = _normalize_as_of(as_of)
-    if not _embeddings_map:
+
+    try:
+        corpus = get_ticker_corpus(ticker)
+    except Exception as e:
+        raise CorpusUnavailableError(f"Failed to load corpus for {ticker}: {e}") from e
+
+    if not corpus.embeddings_map:
         return []
 
     embeddings = get_embeddings()
-
     qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
 
-    # Verify query vector dimension matches the STORED index dimension
-    if _stored_index_dim is not None and len(qvec) != _stored_index_dim:
+    # Verify query vector dimension matches stored index dimension
+    if corpus.stored_dim is not None and len(qvec) != corpus.stored_dim:
         raise EmbeddingConfigError(
-            f"query embedding dim {len(qvec)} != stored index dim {_stored_index_dim}; "
+            f"query embedding dim {len(qvec)} != stored index dim {corpus.stored_dim}; "
             f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
             user_safe=True,
         )
 
-    # Verify the active embedding model matches the stored model
-    if _stored_embedding_model is not None:
+    # Verify active embedding model matches stored model
+    if corpus.stored_model is not None:
         from api.config import config as _cfg
         provider = _cfg.EMBEDDING_PROVIDER
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             active_model = _cfg.ST_EMBEDDING_MODEL
         else:
             active_model = _cfg.HF_EMBEDDING_MODEL
-        if active_model and active_model != _stored_embedding_model:
+        if active_model and active_model != corpus.stored_model:
             raise EmbeddingConfigError(
-                f"embedding model mismatch: active '{active_model}' != stored '{_stored_embedding_model}'; "
+                f"embedding model mismatch: active '{active_model}' != stored '{corpus.stored_model}'; "
                 f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
                 user_safe=True,
             )
 
-    # Build candidate docs from corpus entries that have embeddings
+    # Build candidates with PIT and ticker filter applied before scoring
     candidates: List[Tuple[float, Document]] = []
-    for cid, vec in _embeddings_map.items():
-        entry = _corpus.get(cid)
-        if entry is None:
+    for cid, vec in corpus.embeddings_map.items():
+        # Find the doc for this chunk
+        doc = None
+        for d in corpus.docs:
+            if d.metadata.get("chunk_id") == cid:
+                doc = d
+                break
+        if doc is None:
             continue
-        text, ticker_val, accession, accepted_ts, form_type, section_id, chunk_index, source_url = entry
 
-        # Apply PIT filter per-document
-        accepted_dt = _parse_ts(accepted_ts)
+        # Apply PIT filter
+        accepted_dt = _parse_ts(doc.metadata.get("accepted_ts", ""))
         if accepted_dt is not None and accepted_dt > as_of:
             continue
 
-        # Apply ticker filter
-        if ticker and ticker_val != ticker:
-            continue
-
         sim = _cosine_similarity(qvec, vec)
-        doc = Document(
-            page_content=text,
+        result_doc = Document(
+            page_content=doc.page_content,
             metadata={
-                "chunk_id": cid,
-                "ticker": ticker_val,
-                "accession": accession,
-                "accepted_ts": accepted_ts,
-                "form_type": form_type,
-                "section_id": section_id,
-                "chunk_index": chunk_index,
-                "source_url": source_url,
+                **doc.metadata,
                 "distance": 1.0 - sim,
                 "similarity": sim,
             },
         )
-        candidates.append((sim, doc))
+        candidates.append((sim, result_doc))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     return [doc for _, doc in candidates[:top_k]]
@@ -590,10 +656,7 @@ def vector_search(
 class HybridRetriever:
     """BM25 + Vector hybrid retriever with RRF fusion.
 
-    Runs both retrieval methods, fuses via Reciprocal Rank Fusion, and returns
-    the merged list.  Falls back gracefully to whichever method is available.
-
-    Supports point-in-time filtering via ``as_of``.
+    Requires a ticker. Uses per-ticker lazy loading with bounded LRU cache.
     """
 
     def __init__(
@@ -617,18 +680,26 @@ class HybridRetriever:
 
         Args:
             query: The search query.
-            ticker: Optional ticker filter.
+            ticker: Required ticker filter.
             as_of: Point-in-time cutoff (default: now).
             top_k: Override for number of results.
 
         Returns:
             Fused and optionally reranked list of Documents.
-            If the dense embedder fails at runtime, falls back to BM25-only
-            with _warning="dense_unavailable" metadata on each result.
+
+        Raises:
+            TickerRequiredError: If no ticker could be resolved.
+            NoCoverageError: If the ticker has no SEC coverage.
+            CorpusUnavailableError: If the corpus cannot be loaded.
         """
         as_of = _normalize_as_of(as_of)
         effective_top_k = top_k or self.top_k
         effective_ticker = resolve_ticker_from_query(query, ticker)
+
+        if not effective_ticker:
+            raise TickerRequiredError(
+                "No ticker could be resolved from query or explicit parameter"
+            )
 
         bm25_docs = bm25_search(
             query,
@@ -646,11 +717,10 @@ class HybridRetriever:
                 as_of=as_of,
             )
         except CorpusUnavailableError:
-            # Dimension/model mismatch — configuration error, propagate
             raise
         except Exception as e:
-            # Transient embedder failure (network, auth, runtime) — degrade to BM25-only
-            logger.warning("Dense embedding failed ({}: {}), falling back to BM25-only", type(e).__name__, e)
+            logger.warning("Dense embedding failed ({}: {}), falling back to BM25-only",
+                           type(e).__name__, e)
             vec_docs = []
 
         bm25_only = not vec_docs
