@@ -2,7 +2,7 @@
 
 Branch `slice/rag-eval-harness`. Spec: `.agents/requests/BUILD-rag-eval-harness.md` plus rounds 2–4.
 On the real corpus with golden v1: 320/320 evaluated, 0 errors, PIT 0 PASS, recall@5 0.075.
-Read-only. Write `.agents/deepseek/VERDICT-rag-eval-harness.md` (===VERDICT START/END===, Status).
+Read-only. Write `.agents/deepseek/VERDICT-rag-eval-harness-check2.md` (===VERDICT START/END===, Status).
 
 Check, with proofs:
 1. **The PIT gate is real, not vacuous.**
@@ -26,3 +26,16 @@ Check, with proofs:
 
 Run `python3 -m pytest -q -p no:cacheprovider tests/rag`, and the full suite with
 `--ignore=tests/lakebase`.
+
+## Re-check after round 5 (this run)
+Round 5 keeps the real leakage counts and computes the gate before writing the report. Claude's
+mutation run (`_pit_filter` = identity, fixture, all modes, both filters): exit 1, JSON
+`pit_leakage_total` 30, status FAIL, Markdown FAIL with no PASS.
+
+Verify:
+- your finding is fixed;
+- no code path can render PASS with leakage or errors;
+- INCOMPLETE vs FAIL precedence;
+- re-run your other check items.
+
+Write `.agents/deepseek/VERDICT-rag-eval-harness-check2.md`.
