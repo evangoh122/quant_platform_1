@@ -328,3 +328,146 @@ def test_existing_same_side_increase_capped():
     assert a[2] == pytest.approx(0.06)
     # Day 3: prev=+0.06, target=+0.5 → same-side increase, open +0.44, capped to +0.02 → +0.08
     assert a[3] == pytest.approx(0.08)
+
+
+# ── Same-side partial reduction test ─────────────────────────────────────────
+
+def test_same_side_partial_reduction_not_capped():
+    """Same-side reduction from +0.4 to +0.2 must land in one day (free close leg).
+
+    With cap 0.02/day (well below 0.2), the reduction is a close leg (toward 0)
+    and is never ADV-capped.  This is the regression DeepSeek check4 found:
+    round-6 code treated the reduction as an open leg, throttling it at 0.02/day.
+    """
+    n_days = 28
+    symbols = ["A", "B"]
+    target = [0.4] * 20 + [0.2] * 8
+    book_capital = 1e6
+    cap_frac = 0.01
+    adv_val = 0.02 * book_capital / cap_frac  # cap weight = 0.02
+
+    dates, weights, adv, params = _make_cap_inputs(
+        n_days, symbols, target, adv_val, book_capital, cap_frac,
+    )
+    result = cap_weight_changes_by_adv(weights, adv, book_capital, params)
+    a = result["A"].to_numpy()
+
+    # Days 0-18: building up from 0 to +0.4 at +0.02/day
+    # Day 19: target still 0.4, prev=0.38 → +0.04 (same-side increase capped to 0.02) → 0.40
+    assert a[19] == pytest.approx(0.4), f"day 19: expected 0.4, got {a[19]}"
+
+    # Day 20: target drops to 0.2, prev=0.4 → close leg = -0.2 (free), lands at 0.2
+    assert a[20] == pytest.approx(0.2), (
+        f"day 20 (first reduction): expected 0.2, got {a[20]}"
+    )
+
+    # Days 21-27: target stays 0.2, no change needed
+    for d in range(21, 28):
+        assert a[d] == pytest.approx(0.2), f"day {d}: expected 0.2, got {a[d]}"
+
+
+# ── Property test: ADV cap invariants ────────────────────────────────────────
+
+def test_adv_cap_property_invariants():
+    """Property test over 500 random target sequences (seeded).
+
+    For every name and day, with ``out`` the realised weight:
+    (a) Never overshoot: out[t] lies between out[t-1] and target[t], inclusive.
+    (b) Free moves toward zero: if target[t] is between 0 and out[t-1], inclusive,
+        then out[t] == target[t].
+    (c) Flips close fully: if the sign flips, out[t] has the new sign or is 0,
+        and |out[t]| <= cap.
+    (d) Increases are capped: |out[t]| - |out[t-1]| <= cap + 1e-12 whenever
+        sign(out[t]) == sign(out[t-1]), or out[t-1] == 0.
+    """
+    rng = np.random.default_rng(42)
+    n_names = 3
+    n_days = 30
+    n_trials = 500
+    book_capital = 1e6
+    cap_frac = 0.01
+    adv_val = 0.02 * book_capital / cap_frac  # cap weight = 0.02
+    cap = cap_frac * adv_val / book_capital  # 0.02
+    symbols = [f"S{i}" for i in range(n_names)]
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+    adv = pd.DataFrame(adv_val, index=dates, columns=symbols)
+    params = CostParams(adv_participation_cap=cap_frac)
+
+    violations = []
+
+    for trial in range(n_trials):
+        # Generate random target: mix of signs, magnitudes, zeros
+        targets = rng.uniform(-1.0, 1.0, size=(n_days, n_names))
+        # Sprinkle some zeros (20%)
+        zero_mask = rng.random((n_days, n_names)) < 0.2
+        targets[zero_mask] = 0.0
+
+        # Randomly inject NaN ADV then forward-fill (simulate gaps)
+        adv_with_nan = np.full((n_days, n_names), adv_val)
+        nan_mask = rng.random((n_days, n_names)) < 0.05
+        adv_with_nan[nan_mask] = np.nan
+        adv_df = pd.DataFrame(adv_with_nan, index=dates, columns=symbols).ffill().fillna(0.0)
+
+        weights_df = pd.DataFrame(targets, index=dates, columns=symbols)
+        result = cap_weight_changes_by_adv(weights_df, adv_df, book_capital, params)
+
+        for name_idx in range(n_names):
+            col = symbols[name_idx]
+            out = result[col].to_numpy()
+            tgt = targets[:, name_idx]
+
+            for t in range(n_days):
+                prev_w = out[t - 1] if t > 0 else 0.0
+                cur_w = out[t]
+                cur_tgt = tgt[t]
+
+                # (a) Never overshoot: out[t] between out[t-1] and target[t]
+                lo = min(prev_w, cur_tgt)
+                hi = max(prev_w, cur_tgt)
+                if not (lo - 1e-12 <= cur_w <= hi + 1e-12):
+                    violations.append(
+                        f"trial={trial} {col} day={t}: overshoot "
+                        f"prev={prev_w:.6f} tgt={cur_tgt:.6f} out={cur_w:.6f}"
+                    )
+
+                # (b) Free moves toward zero: target between 0 and prev → out == target
+                if (min(0.0, prev_w) - 1e-12 <= cur_tgt <= max(0.0, prev_w) + 1e-12):
+                    if abs(cur_w - cur_tgt) > 1e-9:
+                        violations.append(
+                            f"trial={trial} {col} day={t}: reduction not free "
+                            f"prev={prev_w:.6f} tgt={cur_tgt:.6f} out={cur_w:.6f}"
+                        )
+
+                # (c) Flips close fully: sign flip → out has new sign or 0, |out| <= cap
+                if t > 0 and prev_w != 0.0 and cur_tgt != 0.0:
+                    if np.sign(prev_w) != np.sign(cur_tgt):
+                        # Sign flip: out should have new sign or be 0
+                        if cur_w != 0.0 and np.sign(cur_w) != np.sign(cur_tgt):
+                            violations.append(
+                                f"trial={trial} {col} day={t}: flip not closed "
+                                f"prev={prev_w:.6f} tgt={cur_tgt:.6f} out={cur_w:.6f}"
+                            )
+                        if abs(cur_w) > cap + 1e-12:
+                            violations.append(
+                                f"trial={trial} {col} day={t}: flip exceeds cap "
+                                f"|out|={abs(cur_w):.6f} cap={cap:.6f}"
+                            )
+
+                # (d) Increases are capped: same-side increase
+                if t > 0 and prev_w != 0.0 and cur_w != 0.0:
+                    if np.sign(cur_w) == np.sign(prev_w):
+                        increase = abs(cur_w) - abs(prev_w)
+                        if increase > cap + 1e-12:
+                            violations.append(
+                                f"trial={trial} {col} day={t}: increase exceeds cap "
+                                f"increase={increase:.6f} cap={cap:.6f}"
+                            )
+                # From zero: increase is capped
+                if t > 0 and prev_w == 0.0 and cur_w != 0.0:
+                    if abs(cur_w) > cap + 1e-12:
+                        violations.append(
+                            f"trial={trial} {col} day={t}: from-zero exceeds cap "
+                            f"|out|={abs(cur_w):.6f} cap={cap:.6f}"
+                        )
+
+    assert not violations, "Property test violations:\n" + "\n".join(violations[:20])
