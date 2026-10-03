@@ -60,8 +60,6 @@ def build(spark) -> dict:
     from api.services.embeddings import get_embeddings
 
     embeddings = get_embeddings()
-    if embeddings is None:
-        raise RuntimeError("Embedding model not available")
 
     t0 = time.monotonic()
 

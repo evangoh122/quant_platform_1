@@ -18,6 +18,7 @@ import numpy as np
 from loguru import logger
 
 from api.config import config
+from api.services.exceptions import EmbeddingConfigError
 
 # ── Config (single source of truth: api.config) ──────────────────────────────
 
@@ -170,28 +171,28 @@ def get_embeddings():
                 _embeddings = LocalSTEmbeddings(ST_EMBEDDING_MODEL)
                 return _embeddings
             except Exception as e:
-                logger.error("Failed to init local ST embeddings '{}': {}", ST_EMBEDDING_MODEL, e)
-                return None
+                raise EmbeddingConfigError(
+                    f"Failed to load embedding model '{ST_EMBEDDING_MODEL}': {e}"
+                ) from e
 
         if EMBEDDING_PROVIDER == "huggingface":
             model_name = config.HF_EMBEDDING_MODEL
             hf_token = os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
             if not hf_token:
-                logger.error(
+                raise EmbeddingConfigError(
                     "EMBEDDING_PROVIDER is 'huggingface' but neither HF_TOKEN nor "
                     "HUGGINGFACEHUB_API_TOKEN is set. Switch to 'sentence-transformers' "
                     "or provide a HuggingFace API token."
                 )
-                return None
             try:
                 _embeddings = HFInferenceEmbeddings(model_name)
                 return _embeddings
             except Exception as e:
-                logger.error("Failed to init HF embeddings '{}': {}", model_name, e)
-                return None
+                raise EmbeddingConfigError(
+                    f"Failed to init HuggingFace embeddings model '{model_name}': {e}"
+                ) from e
 
-        logger.error(
-            "Unsupported EMBEDDING_PROVIDER '{}'. Use 'sentence-transformers' or 'huggingface'.",
-            EMBEDDING_PROVIDER,
+        raise EmbeddingConfigError(
+            f"Unsupported EMBEDDING_PROVIDER '{EMBEDDING_PROVIDER}'. "
+            f"Use 'sentence-transformers' or 'huggingface'."
         )
-        return None

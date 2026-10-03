@@ -34,6 +34,7 @@ from loguru import logger
 from rank_bm25 import BM25Okapi
 
 from api.services.embeddings import get_embeddings
+from api.services.exceptions import CorpusUnavailableError, EmbeddingConfigError
 
 
 def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
@@ -51,13 +52,6 @@ def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
         return as_of.replace(tzinfo=timezone.utc)
     return as_of.astimezone(timezone.utc)
 
-
-class CorpusUnavailableError(Exception):
-    """Raised when the retrieval corpus cannot be loaded from Delta tables.
-
-    Callers must surface this as a structured "retrieval unavailable" result
-    so the agent can report the failure — never silently return an empty list.
-    """
 
 # ── Catalog / schema ─────────────────────────────────────────────────────────
 
@@ -526,9 +520,6 @@ def vector_search(
         return []
 
     embeddings = get_embeddings()
-    if embeddings is None:
-        logger.warning("Embeddings not available — vector search skipped")
-        return []
 
     qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
 
