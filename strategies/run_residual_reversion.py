@@ -7,7 +7,7 @@ need a Spark cluster; the SQL warehouse returns the data and the driver runs the
 regression.
 
 Usage:
-    python strategies/run_residual_reversion.py [--output strategies/results/residual_reversion_r1.md]
+    python strategies/run_residual_reversion.py [--config strategies/config.yaml] [--output strategies/results/residual_reversion_r1.md]
 
 Credentials come from ``~/.databrickscfg`` (``DATABRICKS_PROFILE``, default
 ``evangohsg``). No secrets are stored in the repo.
@@ -15,12 +15,16 @@ Credentials come from ``~/.databrickscfg`` (``DATABRICKS_PROFILE``, default
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import time
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from databricks.sdk import WorkspaceClient
 
@@ -33,6 +37,49 @@ from strategies.residual_reversion import (
     generate_signals,
     load_industry_map,
 )
+
+# ── Config helpers ────────────────────────────────────────────────────────────
+
+_RESIDUAL_VALID_KEYS = frozenset({
+    "status", "bar_freq", "factor_model", "factor_window", "pca_components",
+    "residual_lookback", "entry_threshold", "exit_threshold",
+    "max_hold_candidates", "min_obs_fraction", "universe_size", "target_gross",
+    "book_capital", "execution_lag_bars",
+})
+
+
+def load_strategy_config(path: str | Path) -> dict:
+    """Load and return the strategy YAML config from *path*."""
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def build_cost_params(config: Mapping) -> CostParams:
+    """Build a :class:`CostParams` from the ``cost_model`` section of config."""
+    cm = config.get("cost_model", {})
+    borrow_daily = cm.get("borrow_bps_daily", {"liquid": 0.25, "medium": 0.75, "illiquid": 2.00})
+    borrow_thresholds = cm.get("borrow_bucket_thresholds", [5.0e7, 2.0e7])
+    return CostParams(
+        commission_bps=cm.get("commission_bps", 0.5),
+        spread_bps=cm.get("spread_bps", 3.0),
+        slippage_bps=cm.get("slippage_bps", 2.0),
+        adv_participation_cap=cm.get("adv_participation_cap", 0.01),
+        borrow_bps_daily=borrow_daily if isinstance(borrow_daily, dict) else dict(borrow_daily),
+        borrow_bucket_thresholds=tuple(borrow_thresholds),
+    )
+
+
+def validate_residual_config(config: Mapping) -> None:
+    """Reject unknown or missing keys in the ``residual_reversion`` block."""
+    rr = config.get("residual_reversion")
+    if rr is None:
+        raise ValueError("config missing 'residual_reversion' block")
+    unknown = set(rr.keys()) - _RESIDUAL_VALID_KEYS
+    if unknown:
+        raise ValueError(f"unknown residual_reversion keys: {sorted(unknown)}")
+    missing = _RESIDUAL_VALID_KEYS - set(rr.keys())
+    if missing:
+        raise ValueError(f"missing residual_reversion keys: {sorted(missing)}")
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
 SCHEMA = os.getenv("SCHEMA", "evangoh_capstone")
@@ -137,8 +184,14 @@ def build_signals(
     entry: float,
     exit_thresh: float,
     max_hold: int,
+    factor_model: str = "ols_mkt_ind",
+    pca_components: int = 10,
 ) -> Dict[str, pd.DataFrame]:
-    """Compute residual s-scores and desired positions for the tradable set."""
+    """Compute residual s-scores and desired positions for the tradable set.
+
+    Dispatches between OLS market/industry (``ols_mkt_ind``) and PCA
+    statistical-factor (``pca``) models based on *factor_model*.
+    """
     industry_map = load_industry_map()
     prices = build_wide(closes)
     tradeable = [c for c in prices.columns if c not in FACTOR_INSTRUMENTS]
@@ -161,20 +214,35 @@ def build_signals(
     industry = pd.Series(
         {s: industry_map.get(s, "__unknown__") for s in tradeable}, dtype=object,
     )
-    ind_factor = compute_industry_factor(tradeable_returns, industry)
 
-    res = compute_residuals(tradeable_returns, market, ind_factor,
-                            window=window, lookback=lookback)
+    if factor_model == "ols_mkt_ind":
+        ind_factor = compute_industry_factor(tradeable_returns, industry)
+        res = compute_residuals(tradeable_returns, market, ind_factor,
+                                window=window, lookback=lookback)
+    elif factor_model == "pca":
+        from strategies.residual_reversion import compute_pca_residuals
+        res = compute_pca_residuals(
+            tradeable_returns, window=window, lookback=lookback,
+            n_components=pca_components,
+        )
+    else:
+        raise ValueError(f"unknown factor_model: {factor_model!r}")
+
     positions = generate_signals(res["s_score"], entry=entry, exit_thresh=exit_thresh,
                                  max_hold=max_hold)
-    return {
+    result = {
         "returns": tradeable_returns,
         "market": market,
         "industry": industry,
-        "beta_mkt": res["beta_mkt"],
         "s_score": res["s_score"],
         "positions": positions,
     }
+    # Include model-specific keys for downstream use.
+    if factor_model == "ols_mkt_ind":
+        result["beta_mkt"] = res["beta_mkt"]
+    elif factor_model == "pca":
+        result["loadings"] = res.get("loadings")
+    return result
 
 
 def run_one(
@@ -264,13 +332,37 @@ def parse_round_from_output(path: str) -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="strategies/config.yaml")
     ap.add_argument("--output", default="strategies/results/residual_reversion_r4.md")
     ap.add_argument("--round", type=int, default=None)
-    ap.add_argument("--book-capital", type=float, default=10_000_000.0)
+    ap.add_argument("--book-capital", type=float, default=None)
+    ap.add_argument("--factor-model", choices=["ols_mkt_ind", "pca"], default=None)
+    ap.add_argument("--pca-components", type=int, default=None)
+    ap.add_argument("--robustness", action="store_true",
+                    help="Run full robustness suite and write report")
+    ap.add_argument("--robustness-output",
+                    default="strategies/results/robustness_r1.md")
     args = ap.parse_args()
 
     if args.round is None:
         args.round = parse_round_from_output(args.output)
+
+    cfg = load_strategy_config(args.config)
+    validate_residual_config(cfg)
+    rr = cfg["residual_reversion"]
+
+    # CLI overrides are applied to a fresh config copy, never mutate module/global state.
+    factor_model = args.factor_model if args.factor_model is not None else rr["factor_model"]
+    pca_components = args.pca_components if args.pca_components is not None else rr["pca_components"]
+    book_capital = args.book_capital if args.book_capital is not None else rr["book_capital"]
+
+    WINDOW = rr["factor_window"]
+    LOOKBACK = rr["residual_lookback"]
+    ENTRY = rr["entry_threshold"]
+    EXIT = rr["exit_threshold"]
+    hold_candidates = list(rr["max_hold_candidates"])
+
+    cost_params = build_cost_params(cfg)
 
     w = WorkspaceClient(profile=os.getenv("DATABRICKS_PROFILE", "evangohsg"))
     data = fetch_data(w)
@@ -283,16 +375,17 @@ def main() -> None:
     adv_wide = universe.pivot(index="trade_date", columns="symbol",
                               values="med_adv_60d").sort_index()
 
-    WINDOW, LOOKBACK, ENTRY, EXIT = 60, 5, 2.5, 0.5
-    hold_candidates = [3, 5, 10]
-
     # Signals per max-hold candidate (shared s-scores).
     signals = {}
     for h in hold_candidates:
-        signals[h] = build_signals(closes, universe, WINDOW, LOOKBACK, ENTRY, EXIT, h)
+        signals[h] = build_signals(closes, universe, WINDOW, LOOKBACK, ENTRY, EXIT, h,
+                                   factor_model=factor_model,
+                                   pca_components=pca_components)
 
     industry = signals[hold_candidates[0]]["industry"]
-    beta_mkt = signals[hold_candidates[0]]["beta_mkt"]
+
+    # For OLS model, use beta_mkt for neutralisation; for PCA, no market beta.
+    beta_mkt = signals[hold_candidates[0]].get("beta_mkt")
 
     # ── Walk-forward: choose max-hold on training folds only ──────────────────
     from ml.train import purged_walk_forward_splits
@@ -314,14 +407,14 @@ def main() -> None:
         best_h, best_sr = None, -np.inf
         for h in hold_candidates:
             r = run_one(signals[h]["positions"], signals[h]["returns"], universe,
-                        adv_wide, beta_mkt, industry, args.book_capital, n_trials)
+                        adv_wide, beta_mkt, industry, book_capital, n_trials)
             tr = r["net"].loc[train_dates].dropna()
             sr = _sharpe(tr)
             if sr > best_sr:
                 best_h, best_sr = h, sr
         # Evaluate the chosen config out-of-sample on the validation fold.
         r = run_one(signals[best_h]["positions"], signals[best_h]["returns"], universe,
-                    adv_wide, beta_mkt, industry, args.book_capital, n_trials)
+                    adv_wide, beta_mkt, industry, book_capital, n_trials)
         oos_frames.append(r["net"].loc[val_dates])
         print(f"fold {fold_i}: train chose max_hold={best_h} (train sharpe {best_sr:.3f}), "
               f"val days={len(val_dates)}", flush=True)
@@ -336,15 +429,59 @@ def main() -> None:
     gated_positions = base_pos.mul(gate, axis=0)
 
     base_res = run_one(base_pos, signals[h_default]["returns"], universe, adv_wide,
-                       beta_mkt, industry, args.book_capital, n_trials)
+                       beta_mkt, industry, book_capital, n_trials)
     gated_res = run_one(gated_positions, signals[h_default]["returns"], universe, adv_wide,
-                        beta_mkt, industry, args.book_capital, n_trials)
+                        beta_mkt, industry, book_capital, n_trials)
 
     capacity = _capacity(adv_wide)
 
+    # ── Robustness suite ─────────────────────────────────────────────────────
+    if args.robustness:
+        from strategies.robustness import (
+            build_variant_registry,
+            render_robustness_report,
+            run_cost_stress,
+            run_universe_stress,
+            run_parameter_stress,
+            remove_top_pnl_contributors,
+            compute_fold_metrics,
+            compute_exposures,
+            compute_capacity,
+            compute_margin_bps,
+            compute_rank_ic,
+            evaluate_gates,
+        )
+        robustness_cfg = cfg.get("robustness", {})
+        gates_cfg = cfg.get("metric_gates", {})
+
+        registry = build_variant_registry(cfg)
+        exec_count = len(registry)
+
+        variant_results = []
+        for vs in registry:
+            try:
+                vr = _run_variant(vs, closes, universe, adv_wide, industry,
+                                  book_capital, cost_params, cfg)
+                variant_results.append(vr)
+            except Exception as e:
+                variant_results.append({"variant_id": vs.variant_id, "error": str(e)})
+
+        report = render_robustness_report(
+            registry=registry,
+            variant_results=variant_results,
+            gates=gates_cfg,
+            config=cfg,
+            n_trials=len(registry),
+            executed_trials=exec_count,
+        )
+        os.makedirs(os.path.dirname(args.robustness_output), exist_ok=True)
+        with open(args.robustness_output, "w", encoding="utf-8") as f:
+            f.write(report)
+        print(f"wrote {args.robustness_output}", flush=True)
+
     # ── Render the results file ──────────────────────────────────────────────
     lines = _render(
-        base_res, gated_res, oos_net, n_trials, capacity, args.book_capital,
+        base_res, gated_res, oos_net, n_trials, capacity, book_capital,
         WINDOW, LOOKBACK, ENTRY, EXIT, dates[0], dates[-1], len(dates), len(splits),
         round_num=args.round,
     )
@@ -352,6 +489,64 @@ def main() -> None:
     with open(args.output, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print(f"wrote {args.output}", flush=True)
+
+
+def _run_variant(variant_spec, closes, universe, adv_wide, industry,
+                 book_capital, cost_params, cfg):
+    """Run a single variant for the robustness suite."""
+    from strategies.robustness import VariantSpec
+    vs = variant_spec
+    vc = copy.deepcopy(cfg["residual_reversion"])
+    vc.update(vs.params)
+    # Apply parameter overrides
+    window = vc.get("factor_window", 60)
+    lookback = vc.get("residual_lookback", 5)
+    entry = vc.get("entry_threshold", 2.5)
+    exit_thresh = vc.get("exit_threshold", 0.5)
+    max_hold = vc.get("max_hold", 5)
+    factor_model = vc.get("factor_model", "ols_mkt_ind")
+    pca_components = vc.get("pca_components", 10)
+    universe_size = vc.get("universe_size", 300)
+    cost_mult = vs.params.get("cost_multiplier", 1.0)
+
+    # Filter universe to the requested size.
+    univ_sub = universe[universe["adv_rank"] <= universe_size].copy()
+
+    sig = build_signals(closes, univ_sub, window, lookback, entry, exit_thresh,
+                        max_hold, factor_model=factor_model,
+                        pca_components=pca_components)
+    beta_mkt = sig.get("beta_mkt")
+    n_trials = len(build_variant_registry(cfg))
+
+    res = run_one(sig["positions"], sig["returns"], univ_sub, adv_wide,
+                  beta_mkt, industry, book_capital, n_trials)
+
+    # If cost multiplier != 1, rerun with scaled costs.
+    if cost_mult != 1.0:
+        from strategies.backtest import compute_costs, enforce_execution_lag, filter_to_universe, neutralize_daily, cap_weight_changes_by_adv
+        from strategies.cost_model import CostParams
+        # Re-extract weights from the backtest result
+        weights = res["weights"]
+        returns = sig["returns"].reindex(weights.index)
+        adv_aligned = adv_wide.reindex(index=returns.index, columns=returns.columns).fillna(0.0)
+        costs_stress = compute_costs(weights, adv_aligned, book_capital, cost_params,
+                                     cost_multiplier=cost_mult)
+        # Rerun with the stressed costs but same gross
+        gross = res["gross"]
+        net_stress = gross - costs_stress["total"]
+        res["net"] = net_stress
+        res["metrics"]["net_sharpe"] = _sharpe(net_stress)
+        res["metrics"]["net_ann_return"] = float(net_stress.mean() * 252)
+
+    return {
+        "variant_id": vs.variant_id,
+        "fingerprint": vs.fingerprint,
+        "net": res["net"],
+        "gross": res["gross"],
+        "metrics": res["metrics"],
+        "weights": res["weights"],
+        "turnover": res["turnover"],
+    }
 
 
 def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,

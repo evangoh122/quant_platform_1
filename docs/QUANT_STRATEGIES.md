@@ -1,6 +1,9 @@
 # Mid-Frequency Quant Strategies, Indicators & ML Techniques
 
-**Status:** research + feasibility spec. Not yet implemented.
+**Status:** residual mean-reversion is the primary built strategy. OLS
+market/industry is the baseline factor model; PCA (Ledoit-Wolf shrinkage) is
+the statistical-factor variant. Intraday pairs and daily alpha basket are
+later/experimental. The industry-taxonomy caveat applies throughout (§1).
 **Data checked:** 2026-10-02 against `bootcamp_students.evangoh_capstone` via
 databricks-connect serverless. **Every feasibility verdict below is measured,
 not assumed** — the queries are in §6.
@@ -20,16 +23,18 @@ not assumed** — the queries are in §6.
 | 7 | **TWAP/VWAP execution modelling** | ✅ | `bronze_ohlcv` carries `vwap` + minute bars. |
 | 8 | **Short borrow / HTB costs** | ❌ No data | Must be an explicit modelled assumption, never silently zero. |
 
-**Recommended build order:** §1 residual momentum → §2 indicators → §3 PEAD
-(reformulated) → §4 ML discipline throughout → index arb last, after ingestion.
+**Recommended build order:** §1 residual mean-reversion (✅ built, primary) →
+§2 indicators → §3 PEAD (reformulated) → §4 ML discipline throughout → index
+arb last, after ingestion.
 
-Rationale: residual momentum is the only strategy whose full data requirement is
-already satisfied at scale, and it is the one the rubric's research question
-("do options/SEC/COT features beat OHLCV alone?") can actually be tested on.
+Rationale: residual mean-reversion is the only strategy whose full data
+requirement is already satisfied at scale, and it is the one the rubric's
+research question ("do options/SEC/COT features beat OHLCV alone?") can
+actually be tested on.
 
 ---
 
-## 1. Cross-Sectional Statistical Arbitrage (Residual Momentum) — BUILD FIRST
+## 1. Cross-Sectional Statistical Arbitrage (Residual Mean-Reversion) — BUILT, PRIMARY
 
 ### Alpha
 Regress each stock's return on systematic factors, isolate the idiosyncratic

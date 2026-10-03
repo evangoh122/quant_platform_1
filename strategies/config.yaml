@@ -18,72 +18,78 @@ cost_model:
   commission_bps: 0.5
   spread_bps: 3.0
   slippage_bps: 2.0
-  adv_participation_cap: 0.02              # max 2% of ADV per order
+  adv_participation_cap: 0.01              # max 1% of ADV per order
+  borrow_bps_daily:
+    liquid: 0.25
+    medium: 0.75
+    illiquid: 2.00
+  borrow_bucket_thresholds: [5.0e7, 2.0e7]
 
-# ── Strategy 1: Intraday Cointegration Pairs ─────────────────
-strategy_1_pairs:
-  bar_freq: 15min                          # also supports 5min
-  # Pair formation
-  corr_window: 1260                        # bars (~60 trading days at 15min)
-  corr_threshold: 0.8
-  formation_window: 1260                   # bars for Engle-Granger regression
-  formation_period: 5                      # re-form pairs every N trading days
-  adf_pvalue: 0.05                         # max ADF p-value to keep pair
-  # Kalman filter
-  use_kalman: true                         # false = static beta
-  kalman_delta: 1.0e-5                     # state noise (random walk variance)
-  kalman_ve: 1.0e-3                        # observation noise
-  # Z-score
-  zwin: 78                                 # rolling window for z-score (~1 trading day at 15min)
-  entry_z: 2.0
-  exit_z: 0.5
-  stop_z: 3.5
-  # Risk / holding
-  max_hold_bars: 78                        # ~1 trading day
-  allow_overnight: false
-  flatten_before_close_min: 15
-  recheck_period_bars: 260                 # re-check cointegration periodically
-  recheck_p: 0.10                          # force-close if ADF p > this
-  target_leverage: 2.0
+# ── Primary strategy: Residual mean-reversion ────────────────
+residual_reversion:
+  status: primary
+  bar_freq: 1d
+  factor_model: ols_mkt_ind                # ols_mkt_ind | pca
+  factor_window: 60
+  pca_components: 10
+  residual_lookback: 5
+  entry_threshold: 2.5
+  exit_threshold: 0.5
+  max_hold_candidates: [3, 5, 10]
+  min_obs_fraction: 0.8
+  universe_size: 300
+  target_gross: 1.0
+  book_capital: 10000000
+  execution_lag_bars: 1
 
-# ── Strategy 2: Cross-Sectional Alpha Basket ─────────────────
-strategy_2_alpha:
-  universe_size: 500                       # top N by dollar volume
-  bar_freq: 1d                             # daily
-  # Alpha signals
-  alpha_list:
-    - alpha_reversal                       # -rank(1-day return)
-    - alpha_intraday                       # (close-open)/(high-low)
-    - alpha_volprice                       # -corr(open, volume, 10)
-    - alpha_vwap_gap                       # rank(sqrt(high*low) - vwap)
-    - alpha_volshock                       # sign(delta(vol,1)) * -delta(close,1)
-  alpha_weights: [0.2, 0.2, 0.2, 0.2, 0.2]  # equal weight start
-  # Portfolio construction
-  rebalance_freq: 1d
-  decay: 0.5                               # turnover smoothing
-  sector_neutral: true
-  target_leverage: 2.0
-  turnover_cap_pct: 0.30                   # max 30% gross turnover/day
+robustness:
+  cost_multipliers: [1.0, 2.0, 3.0]
+  universe_sizes: [200, 300, 500]
+  parameter_perturbation: 0.20
+  drop_top_pnl_contributors: 3
+  walk_forward_folds: 5
+  min_profitable_folds: 3
+  rank_ic_horizon_days: 5
 
-# ── Strategy 3: ML-Enhanced Spread Model ─────────────────────
-strategy_3_ml:
-  h: 6                                     # predict next h bars (spread change)
-  model_type: lightgbm                     # lightgbm | xgboost
-  p_enter: 0.6                             # min predicted reversion probability
-  train_window: 5040                       # bars (~1 quarter at 15min)
-  retrain_freq: 1260                       # retrain every ~60 trading days
-  feature_set:
-    - z_t
-    - spread_level
-    - spread_velocity                      # delta(spread, 1)
-    - spread_vol                           # rolling std of spread
-    - kalman_drift                         # delta(beta_t)
-    - volume_z_leg_a
-    - volume_z_leg_b
-    - time_of_day_bucket
-    - minutes_to_close
-  # Inherits all Strategy 1 params for pair formation + stops
-  use_strategy_1_stops: true
+# ── Experimental strategies (not run by the residual runner) ──
+experimental_strategies:
+  strategy_1_pairs:
+    status: later
+    bar_freq: 15min
+    corr_window: 1260
+    corr_threshold: 0.8
+    formation_window: 1260
+    formation_period: 5
+    adf_pvalue: 0.05
+    use_kalman: true
+    kalman_delta: 1.0e-5
+    kalman_ve: 1.0e-3
+    zwin: 78
+    entry_z: 2.0
+    exit_z: 0.5
+    stop_z: 3.5
+    max_hold_bars: 78
+    allow_overnight: false
+    flatten_before_close_min: 15
+    recheck_period_bars: 260
+    recheck_p: 0.10
+    target_leverage: 2.0
+  strategy_2_alpha:
+    status: experimental
+    universe_size: 500
+    bar_freq: 1d
+    alpha_list:
+      - alpha_reversal
+      - alpha_intraday
+      - alpha_volprice
+      - alpha_vwap_gap
+      - alpha_volshock
+    alpha_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+    rebalance_freq: 1d
+    decay: 0.5
+    sector_neutral: true
+    target_leverage: 2.0
+    turnover_cap_pct: 0.30
 
 # ── Backtest engine ──────────────────────────────────────────
 backtest:
@@ -117,15 +123,10 @@ metrics:
 # ── Metric Gates (pass/fail thresholds) ──────────────────────
 metric_gates:
   sharpe_min: 1.25
-  fitness_min: 1.0
-  turnover_min: 0.01
-  turnover_max: 0.70
-  turnover_floor_for_fitness: 0.125        # max(Turnover, this) in Fitness formula
-  max_drawdown_max: 0.15                   # flag if MaxDD > 15% of capital
+  max_drawdown_max: 0.15
   return_to_dd_min: 1.0
-  self_corr_max: 0.70                      # max correlation with own alpha pool
-  prod_corr_max: 0.70                      # max correlation with production pool
-  margin_min_bps: 5.0                      # min edge per dollar traded
+  margin_min_bps: 5.0
+  oos_ratio_min: 0.50
 
 # ══════════════════════════════════════════════════════════════
 # SECTION B — Validation Test Configuration

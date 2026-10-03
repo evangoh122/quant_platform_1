@@ -266,6 +266,132 @@ def compute_residuals(
     }
 
 
+# ── PCA (statistical) factor model ───────────────────────────────────────────
+
+def compute_pca_residuals(
+    returns: pd.DataFrame,
+    window: int = 60,
+    lookback: int = 5,
+    n_components: int = 10,
+    min_obs: int | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Causal PCA residual factor model.
+
+    For each date *t*, fit Ledoit-Wolf shrinkage and eigendecomposition on
+    rows ``[t-window, t-1]`` only.  Estimate each stock's intercept/loadings
+    on the lagged factor scores; apply those frozen quantities to day *t* to
+    produce its residual.  No fitting or imputation uses day *t* values.
+
+    Returns a dict of wide frames: ``residual``, ``sigma``, ``s_score``, plus
+    inspectable lagged ``loadings`` (long frame: date, symbol, component,
+    loading) and factor diagnostics.
+    """
+    from sklearn.covariance import LedoitWolf
+
+    if min_obs is None:
+        min_obs = int(np.ceil(0.8 * window))
+
+    dates = returns.index
+    symbols = list(returns.columns)
+    n_dates = len(dates)
+    n_sym = len(symbols)
+
+    residual = pd.DataFrame(np.nan, index=dates, columns=symbols)
+    # Long-frame loadings: list of (date, symbol, component, loading) rows.
+    loading_rows: list[tuple] = []
+
+    for t in range(window, n_dates):
+        # Training slice: [t-window, t-1], only symbols eligible/finite.
+        train_slice = returns.iloc[t - window:t]
+        # Day t values (for applying frozen loadings).
+        day_t = returns.iloc[t]
+
+        # Identify symbols with finite returns in the training slice.
+        valid_mask = train_slice.notna().all(axis=0) & day_t.notna()
+        valid_syms = [s for s in symbols if valid_mask[s]]
+        n_valid = len(valid_syms)
+
+        if n_valid < 3:
+            continue  # too few symbols for PCA
+
+        train_data = train_slice[valid_syms].to_numpy(dtype=float)
+        # Standardize using means/scales from the lagged slice.
+        means = np.nanmean(train_data, axis=0)
+        scales = np.nanstd(train_data, axis=0, ddof=1)
+        scales = np.where(scales > 0, scales, 1.0)
+        train_std = (train_data - means) / scales
+
+        # Ledoit-Wolf shrinkage covariance.
+        lw = LedoitWolf().fit(train_std)
+        cov = lw.covariance_
+
+        # Eigendecomposition.
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        # Sort by descending eigenvalue.
+        order = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[order]
+        eigenvectors = eigenvectors[:, order]
+
+        # Retain min(n_components, rank, n_valid) components.
+        K = min(n_components, n_valid, int(np.sum(eigenvalues > 1e-10)))
+
+        # Orient eigenvectors deterministically: largest-absolute loading positive.
+        for k in range(K):
+            col = eigenvectors[:, k]
+            idx = np.argmax(np.abs(col))
+            if col[idx] < 0:
+                eigenvectors[:, k] = -col
+
+        V = eigenvectors[:, :K]  # (n_valid, K)
+
+        # Lagged factor scores for training slice.
+        F_train = train_std @ V  # (window, K)
+
+        # Estimate each stock's intercept/loadings on lagged factor scores.
+        # Using OLS: stock = intercept + F @ loadings + eps
+        X_design = np.column_stack([np.ones(window), F_train])  # (window, K+1)
+        day_t_sym = returns.iloc[t][valid_syms].to_numpy(dtype=float)
+        day_t_std = (day_t_sym - means) / scales
+
+        # For each stock, fit on lagged data and apply to day t.
+        # Project day-t standardized returns onto eigenvectors to get factor scores.
+        day_t_factors = day_t_std @ V  # (K,)
+        for j, sym in enumerate(valid_syms):
+            y_train = train_std[:, j]  # (window,)
+            try:
+                coef, _, _, _ = np.linalg.lstsq(X_design, y_train, rcond=None)
+            except np.linalg.LinAlgError:
+                continue
+            intercept = coef[0]
+            loadings_j = coef[1:]  # (K,)
+            # Predicted return on day t (using frozen loadings and frozen factor projection).
+            predicted = intercept + day_t_factors @ loadings_j if K > 0 else intercept
+            residual.iloc[t, j] = day_t_sym[j] - (predicted * scales[j] + means[j])
+
+            # Store loadings for inspection.
+            for k in range(K):
+                loading_rows.append((dates[t], sym, k, float(loadings_j[k])))
+
+    # Trailing residual volatility and s-score (same as OLS path).
+    min_obs_sigma = min_obs if min_obs is not None else int(np.ceil(0.8 * window))
+    sigma = residual.apply(
+        lambda c: _trailing_std(c.to_numpy(), window, min_periods=min_obs_sigma)
+    )
+    sigma.index = dates
+    s_cum = residual.rolling(lookback, min_periods=lookback).sum()
+    s_score = s_cum / sigma
+
+    loadings_df = pd.DataFrame(loading_rows,
+                               columns=["date", "symbol", "component", "loading"])
+
+    return {
+        "residual": residual,
+        "sigma": sigma,
+        "s_score": s_score,
+        "loadings": loadings_df,
+    }
+
+
 # ── Signal state machine ──────────────────────────────────────────────────────
 
 def generate_signals(
