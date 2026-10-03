@@ -136,6 +136,19 @@ class ChatResponse(BaseModel):
     sources: List[Dict[str, Any]] = Field(default_factory=list)
     available: bool = True
     empty: bool = True
+    proposal_nonce: Optional[str] = None
+    requires_confirmation: bool = False
+
+
+class ConfirmRequest(BaseModel):
+    nonce: str = Field(min_length=1, max_length=200)
+    csrf_token: Optional[str] = Field(default=None, max_length=200)
+
+
+class ConfirmResponse(BaseModel):
+    success: bool
+    reason: str = ""
+    result: Optional[Dict[str, Any]] = None
 
 
 # ── order intents ─────────────────────────────────────────────────────────────
