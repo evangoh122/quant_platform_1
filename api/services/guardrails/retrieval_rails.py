@@ -1,17 +1,18 @@
 """
-retrieval_rails.py — Phase 14: Retrieval Rail (Relevance Filtering).
+retrieval_rails.py — Retrieval Rail (Relevance Filtering + Injection Detection).
 
 Evaluates retrieved chunks against the query and drops irrelevant context
-before generation. Uses keyword overlap + semantic similarity heuristics.
+before generation. Flags injection indicators for audit but never relabels
+retained chunks as trusted. Uses keyword overlap + semantic similarity heuristics.
 
 Usage:
     from api.services.guardrails.retrieval_rails import filter_retrieval
-    relevant_chunks = filter_retrieval(query, chunks)
+    verdict = filter_retrieval(query, chunks)
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -21,6 +22,7 @@ class RetrievalVerdict:
     filtered_count: int
     dropped_count: int
     filtered_chunks: list[dict[str, Any]]
+    injection_flags: list[str] = field(default_factory=list)
 
 
 # Minimum keyword overlap ratio to keep a chunk
@@ -28,6 +30,16 @@ _MIN_KEYWORD_OVERLAP = 0.15
 
 # Minimum chunk length (chars) to consider
 _MIN_CHUNK_LENGTH = 50
+
+# Injection indicators in retrieved chunks (flag for audit, don't block)
+_INJECTION_INDICATORS = [
+    re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts)", re.I),
+    re.compile(r"you\s+are\s+now\s+", re.I),
+    re.compile(r"system\s*:\s*", re.I),
+    re.compile(r"<\s*system\s*>", re.I),
+    re.compile(r"(reveal|show|print)\s+(your|the)\s+(system|prompt)", re.I),
+    re.compile(r"(execute|run|eval)\s+(this|the following)", re.I),
+]
 
 
 def _extract_keywords(text: str) -> set[str]:
@@ -101,9 +113,21 @@ def filter_retrieval(
         scored.sort(key=lambda x: x[0], reverse=True)
         filtered = [scored[0][1]]
 
+    # Check for injection indicators (flag for audit, never relabel as trusted)
+    injection_flags: list[str] = []
+    for chunk in filtered:
+        text = chunk.get("chunk_text", "")
+        for pattern in _INJECTION_INDICATORS:
+            if pattern.search(text):
+                injection_flags.append(
+                    f"Chunk contains injection indicator: {pattern.pattern[:50]}"
+                )
+                break
+
     return RetrievalVerdict(
         original_count=len(chunks),
         filtered_count=len(filtered),
         dropped_count=len(chunks) - len(filtered),
         filtered_chunks=filtered,
+        injection_flags=injection_flags,
     )
