@@ -1,7 +1,7 @@
 # CHECK: ontology update (DeepSeek)
 
 At the owner's request, Codex updated `ontology/` directly (commit "feat(ontology): align with live
-tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update.md` (===VERDICT START/END===,
+tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update-check2.md` (===VERDICT START/END===,
 Status). Your job is FACTUAL CORRECTNESS against the code: the ontology will drive the NL-analytics
 semantic registry and the knowledge graph, so an error here propagates.
 
@@ -29,3 +29,11 @@ Check:
    correct (e.g. GOOG vs GOOGL).
 6. `tests/test_ontology.py` actually catches a reference to a non-existent table, and a duplicate
    term (prove it by mutation in /tmp).
+
+## Re-check after Codex round 2 (this run)
+Codex fixed your 7 findings and extended `tests/test_ontology.py` to parse SQL schemas. Re-verify
+each finding against the code. The test has 19 skips, because `gold/06`/`gold/07` live on the #16
+branch, not main. Are those skips legitimate, and does the external-contract test cover them?
+
+Mutation-check the new test: a phantom key, a filter column or a join column must each fail it.
+Hunt for any remaining factual error. Write `.agents/deepseek/VERDICT-ontology-update-check2.md`.
