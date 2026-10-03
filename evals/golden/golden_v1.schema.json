@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "golden-v1.schema.json",
+  "title": "SEC RAG Golden Set v1",
+  "description": "Schema for corpus-grounded SEC RAG golden evaluation items.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "ticker",
+    "as_of",
+    "question",
+    "question_type",
+    "gold_answer",
+    "gold_chunk_ids",
+    "gold_accession",
+    "gold_section",
+    "answerable",
+    "difficulty",
+    "notes",
+    "provenance"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^rag-v1-[0-9]{3}$",
+      "description": "Unique item identifier."
+    },
+    "ticker": {
+      "type": "string",
+      "enum": ["ADI", "AMAT", "AMD", "AVGO", "INTC", "KLAC", "LRCX", "MCHP", "MPWR", "MU", "NVDA", "QCOM", "SNPS", "SWKS", "TER", "TXN"],
+      "description": "SEC ticker symbol for the company."
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "description": "RFC 3339/ISO UTC timestamp ending in Z. The point-in-time cutoff."
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Natural-language evaluation question."
+    },
+    "question_type": {
+      "type": "string",
+      "enum": [
+        "factual_lookup",
+        "risk_factor",
+        "business_description",
+        "quantitative_market_risk",
+        "cross_filing_comparison",
+        "point_in_time_trap",
+        "unanswerable"
+      ],
+      "description": "Category of the question."
+    },
+    "gold_answer": {
+      "type": "string",
+      "description": "Short gold answer. Use literal ABSTAIN for abstention items."
+    },
+    "gold_chunk_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "description": "Corpus chunk IDs supporting the answer. Empty array only for true unanswerable items."
+    },
+    "gold_accession": {
+      "type": "string",
+      "description": "SEC accession number for the primary answer locus. Empty string only for true unanswerable items."
+    },
+    "gold_section": {
+      "type": "string",
+      "enum": ["item7_mda", "item1_business", "item7a_quant_risk", "item8_financial_statements", "item1a_risk_factors", "full_document", ""],
+      "description": "Filing section of the primary answer. Empty string only for true unanswerable items."
+    },
+    "answerable": {
+      "type": "boolean",
+      "description": "Whether the question is answerable at as_of from the corpus."
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["easy", "medium", "hard"],
+      "description": "Difficulty rating."
+    },
+    "notes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_span", "rationale", "trap"],
+      "properties": {
+        "evidence_span": {
+          "type": "string",
+          "description": "Verbatim contiguous corpus substring supporting the answer. Empty only for true unanswerable."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Explanation of answer derivation."
+        },
+        "trap": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["future_chunk_ids", "future_accession", "future_answer", "expected_behavior"],
+              "properties": {
+                "future_chunk_ids": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1,
+                  "description": "Chunk IDs from the future filing that contain the disallowed answer."
+                },
+                "future_accession": {
+                  "type": "string",
+                  "description": "Accession number of the future filing."
+                },
+                "future_answer": {
+                  "type": "string",
+                  "description": "The answer that the future filing would provide."
+                },
+                "expected_behavior": {
+                  "type": "string",
+                  "enum": ["older_filing_answer", "abstain"],
+                  "description": "Expected RAG behavior for this trap."
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["drafted_by", "drafted_at", "verified_by", "verified_at", "corpus_sha256"],
+      "properties": {
+        "drafted_by": {
+          "type": "string",
+          "description": "Agent or person who drafted the item."
+        },
+        "drafted_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO UTC timestamp of drafting."
+        },
+        "verified_by": {
+          "type": ["string", "null"],
+          "description": "Agent or person who verified the item. Null during initial authoring."
+        },
+        "verified_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO UTC timestamp of verification. Null during initial authoring."
+        },
+        "corpus_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 hex digest of the corpus JSONL file."
+        }
+      }
+    }
+  }
+}
