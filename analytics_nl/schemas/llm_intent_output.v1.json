@@ -1,0 +1,179 @@
+{
+  "$defs": {
+    "DateExpression": {
+      "additionalProperties": false,
+      "description": "Date expression from LLM — either explicit range or relative text.",
+      "properties": {
+        "explicit_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DateRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relative": {
+          "anyOf": [
+            {
+              "maxLength": 50,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative"
+        }
+      },
+      "title": "DateExpression",
+      "type": "object"
+    },
+    "DateRange": {
+      "additionalProperties": false,
+      "description": "Inclusive date range with start <= end.",
+      "properties": {
+        "end": {
+          "format": "date",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "DateRange",
+      "type": "object"
+    },
+    "Grouping": {
+      "description": "Allowed grouping values (daily-or-coarser).",
+      "enum": [
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year",
+        "ticker",
+        "sector"
+      ],
+      "title": "Grouping",
+      "type": "string"
+    },
+    "LLMEntityMention": {
+      "additionalProperties": false,
+      "description": "Short plain-text entity mention from LLM output.",
+      "properties": {
+        "text": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "LLMEntityMention",
+      "type": "object"
+    },
+    "Metric": {
+      "description": "Supported analytics metrics.  Market capitalization is intentionally\nexcluded because there is no governed shares-outstanding source.",
+      "enum": [
+        "price",
+        "return",
+        "volume",
+        "realized_volatility",
+        "drawdown",
+        "momentum",
+        "relative_performance",
+        "implied_volatility"
+      ],
+      "title": "Metric",
+      "type": "string"
+    },
+    "Operation": {
+      "description": "Supported analytics operations.",
+      "enum": [
+        "trend",
+        "compare",
+        "rank",
+        "aggregate"
+      ],
+      "title": "Operation",
+      "type": "string"
+    }
+  },
+  "$id": "https://analytics-nl/schemas/nl1-llm-intent-output-schema",
+  "additionalProperties": false,
+  "description": "LLM extraction output with unresolved entity mentions. Intentionally excludes SQL, code, table, view, column, predicate, order_by, expression, prompt, url, html, javascript fields.",
+  "properties": {
+    "date_expression": {
+      "$ref": "#/$defs/DateExpression"
+    },
+    "entity_mentions": {
+      "items": {
+        "$ref": "#/$defs/LLMEntityMention"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "title": "Entity Mentions",
+      "type": "array"
+    },
+    "grouping": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Grouping"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "limit": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 10000,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit"
+    },
+    "metric": {
+      "$ref": "#/$defs/Metric"
+    },
+    "operation": {
+      "$ref": "#/$defs/Operation"
+    },
+    "semantic_model_version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Semantic Model Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "semantic_model_version",
+    "operation",
+    "metric",
+    "entity_mentions",
+    "date_expression"
+  ],
+  "title": "NL1 LLM Intent Output Schema",
+  "type": "object"
+}

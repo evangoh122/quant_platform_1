@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "CostClass": {
+      "description": "Policy cost classification.",
+      "enum": [
+        "CHEAP",
+        "NORMAL",
+        "EXPENSIVE",
+        "REJECT"
+      ],
+      "title": "CostClass",
+      "type": "string"
+    },
+    "PolicyReasonCode": {
+      "description": "Deterministic reason codes for policy decisions.",
+      "enum": [
+        "ACCEPTED_CHEAP",
+        "ACCEPTED_NORMAL",
+        "ACCEPTED_EXPENSIVE",
+        "INTRADAY_UNSUPPORTED",
+        "DATE_RANGE_EXCEEDED",
+        "TICKER_LIMIT_EXCEEDED",
+        "ROW_LIMIT_EXCEEDED",
+        "MISSING_REQUIRED_SLOT",
+        "GROUPING_NOT_ALLOWED",
+        "ORDERING_NOT_ALLOWED",
+        "PAIR_NOT_REGISTERED",
+        "ENTITY_NOT_ALLOWED",
+        "FUTURE_DATE",
+        "END_BEFORE_START"
+      ],
+      "title": "PolicyReasonCode",
+      "type": "string"
+    }
+  },
+  "$id": "https://analytics-nl/schemas/nl1-policy-outcome-schema",
+  "additionalProperties": false,
+  "description": "Policy classification result. Gates NL2 compilation.",
+  "properties": {
+    "allows_compilation": {
+      "title": "Allows Compilation",
+      "type": "boolean"
+    },
+    "cost_class": {
+      "$ref": "#/$defs/CostClass"
+    },
+    "detail": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Detail",
+      "type": "string"
+    },
+    "policy_version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "reason_codes": {
+      "items": {
+        "$ref": "#/$defs/PolicyReasonCode"
+      },
+      "minItems": 1,
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "semantic_model_version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Semantic Model Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "semantic_model_version",
+    "policy_version",
+    "cost_class",
+    "reason_codes",
+    "detail",
+    "allows_compilation"
+  ],
+  "title": "NL1 Policy Outcome Schema",
+  "type": "object"
+}

@@ -1,0 +1,202 @@
+{
+  "$defs": {
+    "DateRange": {
+      "additionalProperties": false,
+      "description": "Inclusive date range with start <= end.",
+      "properties": {
+        "end": {
+          "format": "date",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "DateRange",
+      "type": "object"
+    },
+    "Grouping": {
+      "description": "Allowed grouping values (daily-or-coarser).",
+      "enum": [
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year",
+        "ticker",
+        "sector"
+      ],
+      "title": "Grouping",
+      "type": "string"
+    },
+    "IndexEntity": {
+      "additionalProperties": false,
+      "description": "Canonical index reference.",
+      "properties": {
+        "canonical_id": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Canonical Id",
+          "type": "string"
+        },
+        "entity_type": {
+          "const": "index",
+          "default": "index",
+          "title": "Entity Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_id"
+      ],
+      "title": "IndexEntity",
+      "type": "object"
+    },
+    "Metric": {
+      "description": "Supported analytics metrics.  Market capitalization is intentionally\nexcluded because there is no governed shares-outstanding source.",
+      "enum": [
+        "price",
+        "return",
+        "volume",
+        "realized_volatility",
+        "drawdown",
+        "momentum",
+        "relative_performance",
+        "implied_volatility"
+      ],
+      "title": "Metric",
+      "type": "string"
+    },
+    "Operation": {
+      "description": "Supported analytics operations.",
+      "enum": [
+        "trend",
+        "compare",
+        "rank",
+        "aggregate"
+      ],
+      "title": "Operation",
+      "type": "string"
+    },
+    "SectorEntity": {
+      "additionalProperties": false,
+      "description": "Canonical sector reference.",
+      "properties": {
+        "canonical_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Canonical Id",
+          "type": "string"
+        },
+        "entity_type": {
+          "const": "sector",
+          "default": "sector",
+          "title": "Entity Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_id"
+      ],
+      "title": "SectorEntity",
+      "type": "object"
+    },
+    "TickerEntity": {
+      "additionalProperties": false,
+      "description": "Canonical ticker reference.",
+      "properties": {
+        "canonical_id": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Canonical Id",
+          "type": "string"
+        },
+        "entity_type": {
+          "const": "ticker",
+          "default": "ticker",
+          "title": "Entity Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_id"
+      ],
+      "title": "TickerEntity",
+      "type": "object"
+    }
+  },
+  "$id": "https://analytics-nl/schemas/nl1-canonical-intent-schema",
+  "additionalProperties": false,
+  "description": "Resolved canonical intent with all entities as canonical IDs.",
+  "properties": {
+    "date_range": {
+      "$ref": "#/$defs/DateRange"
+    },
+    "entities": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "index": "#/$defs/IndexEntity",
+            "sector": "#/$defs/SectorEntity",
+            "ticker": "#/$defs/TickerEntity"
+          },
+          "propertyName": "entity_type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/TickerEntity"
+          },
+          {
+            "$ref": "#/$defs/SectorEntity"
+          },
+          {
+            "$ref": "#/$defs/IndexEntity"
+          }
+        ]
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Entities",
+      "type": "array"
+    },
+    "grouping": {
+      "$ref": "#/$defs/Grouping"
+    },
+    "limit": {
+      "exclusiveMinimum": 0,
+      "maximum": 10000,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "metric": {
+      "$ref": "#/$defs/Metric"
+    },
+    "operation": {
+      "$ref": "#/$defs/Operation"
+    },
+    "semantic_model_version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Semantic Model Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "semantic_model_version",
+    "operation",
+    "metric",
+    "entities",
+    "date_range",
+    "grouping",
+    "limit"
+  ],
+  "title": "NL1 Canonical Intent Schema",
+  "type": "object"
+}
