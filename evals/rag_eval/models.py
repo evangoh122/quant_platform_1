@@ -113,6 +113,7 @@ class ItemResult:
     # Computed metrics (filled by scoring)
     metrics: dict[str, Any] = field(default_factory=dict)
     leakage_count: int = 0
+    leaked_chunk_ids: list[str] = field(default_factory=list)
     # Abstention/trap outcomes
     allowed_top_hit: Optional[bool] = None
     abstention_label: Optional[str] = None
@@ -152,6 +153,8 @@ class RunReport:
     abstention_results: dict[str, Any] = field(default_factory=dict)
     pit_leakage_total: int = 0
     pit_leakage_by_config: dict[str, int] = field(default_factory=dict)
+    leaked_chunk_ids_by_config: dict[str, list[str]] = field(default_factory=dict)
+    status: str = ""  # PASS | FAIL | INCOMPLETE
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:

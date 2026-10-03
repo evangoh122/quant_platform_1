@@ -226,12 +226,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Check for PIT leakage — hard gate
     pit_leakage_total = 0
     pit_leakage_by_config: dict[str, int] = {}
+    leaked_chunk_ids_by_config: dict[str, list[str]] = {}
     for ir in item_results:
         cfg_label = ir.config.label()
         if ir.leakage_count > 0:
             pit_leakage_total += ir.leakage_count
             pit_leakage_by_config[cfg_label] = (
                 pit_leakage_by_config.get(cfg_label, 0) + ir.leakage_count
+            )
+            leaked_chunk_ids_by_config.setdefault(cfg_label, []).extend(
+                ir.leaked_chunk_ids
             )
             print(f"  PIT LEAKAGE: {ir.item.id} @ {cfg_label}: {ir.leakage_count} chunk(s)")
 
@@ -240,6 +244,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     corpus_map = {rec.chunk_id: rec for rec in adapter.records()}
     agg = aggregate_results(item_results, corpus_map)
+
+    # Collect errors and compute gate BEFORE building the report
+    error_count = sum(1 for ir in item_results if ir.error)
+    errors_list = [ir.error for ir in item_results if ir.error]
+
+    pit_status = "PASS"
+    if pit_leakage_total > 0:
+        pit_status = "FAIL"
+    elif error_count:
+        pit_status = "INCOMPLETE"
 
     # Build report
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -268,6 +282,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         abstention_results=agg["abstention"],
         pit_leakage_total=pit_leakage_total,
         pit_leakage_by_config=pit_leakage_by_config,
+        leaked_chunk_ids_by_config=leaked_chunk_ids_by_config,
+        status=pit_status,
+        errors=errors_list,
     )
 
     # Write report
@@ -281,15 +298,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Markdown: {md_path}")
 
     # Print summary
-    error_count = sum(1 for ir in item_results if ir.error)
     total_items = len(item_results)
     n_evaluated = total_items - error_count
-
-    pit_status = "PASS"
-    if error_count:
-        pit_status = "INCOMPLETE"
-    elif pit_leakage_total > 0:
-        pit_status = "FAIL"
 
     print(f"\n{'='*60}")
     print(f"  Items: {total_items} total, {n_evaluated} evaluated, {error_count} errors")

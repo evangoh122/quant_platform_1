@@ -31,6 +31,7 @@ def build_report(run_report: RunReport) -> dict[str, Any]:
             "ticker_filter": ir.config.ticker_filter,
             "n_hits": len(ir.hits),
             "leakage_count": ir.leakage_count,
+            "leaked_chunk_ids": ir.leaked_chunk_ids,
             "error": ir.error,
             "allowed_top_hit": ir.allowed_top_hit,
             "abstention_label": ir.abstention_label,
@@ -69,13 +70,21 @@ def render_markdown(report: dict[str, Any]) -> str:
     # PIT Leakage Gate
     lines.append("## PIT Leakage Gate\n")
     pit_total = report.get("pit_leakage_total", 0)
-    lines.append(f"**Total leakage: {pit_total}** {'PASS' if pit_total == 0 else 'FAIL'}\n")
+    status = report.get("status", "")
+    status_label = status if status else ("PASS" if pit_total == 0 else "FAIL")
+    lines.append(f"**Total leakage: {pit_total}** {status_label}\n")
     leakage_by_config = report.get("pit_leakage_by_config", {})
+    leaked_ids_by_config = report.get("leaked_chunk_ids_by_config", {})
     if leakage_by_config:
-        lines.append("| Config | Leakage |")
-        lines.append("|--------|---------|")
+        lines.append("| Config | Leakage | Leaked Chunk IDs |")
+        lines.append("|--------|---------|------------------|")
         for cfg, count in sorted(leakage_by_config.items()):
-            lines.append(f"| {cfg} | {count} |")
+            ids = leaked_ids_by_config.get(cfg, [])
+            truncated = ids[:20]
+            ids_str = ", ".join(truncated)
+            if len(ids) > 20:
+                ids_str += f" (+{len(ids) - 20} more)"
+            lines.append(f"| {cfg} | {count} | {ids_str} |")
         lines.append("")
 
     # Overall metrics

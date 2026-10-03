@@ -98,19 +98,21 @@ def _retrieve_via_production(
     return hits
 
 
-def assert_no_pit_leakage(
+def count_pit_leakage(
     hits: Sequence[RetrievalHit],
     as_of: datetime,
-) -> int:
-    """Check that no returned chunk has accepted_ts > as_of.
+) -> tuple[int, list[str]]:
+    """Count chunks with accepted_ts > as_of.
 
-    Returns the count of leaked chunks.  Raises ValueError if any leak found.
+    Returns (count, leaked_chunk_ids).  Does NOT raise.
     Missing or unparseable timestamps are treated as violations (fail-closed).
     """
     leak_count = 0
+    leaked_ids: list[str] = []
     for h in hits:
         if not h.accepted_ts:
             leak_count += 1
+            leaked_ids.append(h.chunk_id)
             continue
         try:
             ts_str = h.accepted_ts.replace("T", " ").replace("Z", "+00:00")
@@ -119,14 +121,32 @@ def assert_no_pit_leakage(
                 accepted_dt = accepted_dt.replace(tzinfo=timezone.utc)
             if accepted_dt > as_of:
                 leak_count += 1
+                leaked_ids.append(h.chunk_id)
         except (ValueError, TypeError):
-            # Unparseable timestamp is a PIT violation (fail-closed)
             leak_count += 1
+            leaked_ids.append(h.chunk_id)
+    return leak_count, leaked_ids
+
+
+def assert_no_pit_leakage(
+    hits: Sequence[RetrievalHit],
+    as_of: datetime,
+) -> int:
+    """Check that no returned chunk has accepted_ts > as_of.
+
+    Returns the count of leaked chunks.  Raises ValueError if any leak found.
+    Missing or unparseable timestamps are treated as violations (fail-closed).
+    The ValueError carries ``leak_count`` and ``leaked_chunk_ids`` attributes.
+    """
+    leak_count, leaked_ids = count_pit_leakage(hits, as_of)
 
     if leak_count > 0:
-        raise ValueError(
+        err = ValueError(
             f"PIT leakage: {leak_count} chunk(s) have accepted_ts > as_of ({as_of.isoformat()})"
         )
+        err.leak_count = leak_count
+        err.leaked_chunk_ids = leaked_ids
+        raise err
     return leak_count
 
 
@@ -166,7 +186,8 @@ def run_retrieval(
             except ValueError as e:
                 if "PIT leakage" in str(e):
                     ir.error = str(e)
-                    ir.leakage_count = -1  # Sentinel: leakage detected
+                    ir.leakage_count = getattr(e, "leak_count", 0)
+                    ir.leaked_chunk_ids = getattr(e, "leaked_chunk_ids", [])
                 else:
                     ir.error = str(e)
             except Exception as e:
