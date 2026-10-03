@@ -31,6 +31,45 @@ mock_if_missing(problematic_modules)
 # If a specific test needs it mocked, it should do so itself.
 
 
+@pytest.fixture(autouse=True)
+def _reset_retriever_singletons():
+    """Reset embedding and retriever singletons before and after each test.
+
+    Earlier tests that monkeypatch EMBEDDING_PROVIDER and then importlib.reload
+    leave a cached _embeddings object in the *old* module reference.  Subsequent
+    tests hit that stale singleton and fail with EmbeddingConfigError.
+    Clearing the cache forces get_embeddings() to re-evaluate on every test.
+    """
+    import api.services.embeddings as emb_mod
+    import api.services.hybrid_retriever as hr
+
+    # --- before ---
+    emb_mod._embeddings = None
+
+    hr._corpus_loaded = False
+    hr._corpus.clear()
+    hr._bm25_docs = None
+    hr._bm25_tokenised = None
+    hr._bm25_index = None
+    hr._embeddings_map.clear()
+    hr._stored_index_dim = None
+    hr._stored_embedding_model = None
+
+    yield
+
+    # --- after ---
+    emb_mod._embeddings = None
+
+    hr._corpus_loaded = False
+    hr._corpus.clear()
+    hr._bm25_docs = None
+    hr._bm25_tokenised = None
+    hr._bm25_index = None
+    hr._embeddings_map.clear()
+    hr._stored_index_dim = None
+    hr._stored_embedding_model = None
+
+
 @pytest.fixture()
 def fake_pyspark(monkeypatch):
     """Install lightweight pyspark stubs so tests that exercise code paths

@@ -679,3 +679,112 @@ class HybridRetriever:
                 doc.metadata["_warning"] = "dense_unavailable"
 
         return results
+
+    def retrieve_mode(
+        self,
+        query: str,
+        *,
+        mode: str,
+        ticker: str = "",
+        as_of: Optional[datetime] = None,
+        top_k: Optional[int] = None,
+        rerank: bool = False,
+    ) -> List[Document]:
+        """Run retrieval in a specific mode for evaluation.
+
+        This is the evaluation-safe mode selector used by the eval harness.
+        It uses the same ``bm25_search``, ``vector_search``, ``rrf_fuse``,
+        and ``rerank`` functions as ``retrieve()`` — no duplicated algorithms.
+
+        Args:
+            query: The search query.
+            mode: One of ``bm25``, ``dense``, ``hybrid_rrf``, ``hybrid_rerank``.
+            ticker: Ticker filter (empty string = no filter).
+            as_of: Point-in-time cutoff.
+            top_k: Number of results.
+            rerank: Whether to apply cross-encoder reranking (after fusion).
+
+        Returns:
+            List of Documents with metadata including retrieval_mode and scores.
+        """
+        valid_modes = ("bm25", "dense", "hybrid_rrf", "hybrid_rerank")
+        if mode not in valid_modes:
+            raise ValueError(f"Unknown mode '{mode}'. Valid: {valid_modes}")
+
+        as_of = _normalize_as_of(as_of)
+        effective_top_k = top_k or self.top_k
+        candidate_depth = effective_top_k * 2
+
+        # No ticker alias resolution in eval mode — ticker is explicit
+        effective_ticker = ticker
+
+        # ── BM25-only mode ────────────────────────────────────────────────
+        if mode == "bm25":
+            results = bm25_search(
+                query,
+                top_k=effective_top_k,
+                ticker=effective_ticker,
+                ticker_boost=self.ticker_boost,
+                as_of=as_of,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "bm25"
+            return results
+
+        # ── Dense-only mode ───────────────────────────────────────────────
+        if mode == "dense":
+            results = vector_search(
+                query,
+                top_k=effective_top_k,
+                ticker=effective_ticker,
+                as_of=as_of,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "dense"
+            return results
+
+        # ── Hybrid modes (RRF and RRF+rerank) ────────────────────────────
+        bm25_docs = bm25_search(
+            query,
+            top_k=candidate_depth,
+            ticker=effective_ticker,
+            ticker_boost=self.ticker_boost,
+            as_of=as_of,
+        )
+
+        vec_docs = vector_search(
+            query,
+            top_k=candidate_depth,
+            ticker=effective_ticker,
+            as_of=as_of,
+        )
+
+        if not bm25_docs and not vec_docs:
+            return []
+
+        if not bm25_docs:
+            results = vec_docs[:effective_top_k]
+        elif not vec_docs:
+            results = bm25_docs[:effective_top_k]
+        else:
+            fused = rrf_fuse(
+                [vec_docs, bm25_docs],
+                k=self.rrf_k,
+                boost_ticker=effective_ticker,
+                ticker_boost=self.ticker_boost,
+            )
+            results = fused[:effective_top_k]
+
+        # Apply reranking after fusion for hybrid_rerank mode
+        if rerank or mode == "hybrid_rerank":
+            if results:
+                from api.services.reranker import rerank as _rerank
+                results = _rerank(query, results, top_k=effective_top_k)
+                for doc in results:
+                    doc.metadata["rerank_score"] = doc.metadata.get("rerank_score")
+
+        retrieval_mode = "hybrid_rerank" if (rerank or mode == "hybrid_rerank") else "hybrid_rrf"
+        for doc in results:
+            doc.metadata["retrieval_mode"] = retrieval_mode
+
+        return results

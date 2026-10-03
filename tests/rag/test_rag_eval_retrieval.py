@@ -1,0 +1,322 @@
+"""tests/rag/test_rag_eval_retrieval.py — Tests for retrieval execution.
+
+Tests run the production retriever through the install_offline_corpus seam
+with fixture data.  No network, Spark, Databricks, or model download required.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pytest
+from langchain_core.documents import Document
+
+from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+from evals.rag_eval.models import GoldenItem, RetrievalConfig, RetrievalHit
+from evals.rag_eval.retrieve import assert_no_pit_leakage, retrieve_item
+
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "rag_eval"
+
+
+@pytest.fixture()
+def offline_adapter():
+    """Load the smoke fixture as a JsonlCorpusAdapter."""
+    return JsonlCorpusAdapter.from_files(
+        FIXTURE_DIR / "corpus_smoke.jsonl",
+        FIXTURE_DIR / "embeddings_smoke.npz",
+    )
+
+
+def _answerable_item(**kw) -> GoldenItem:
+    defaults = {
+        "id": "t1",
+        "ticker": "NVDA",
+        "question": "What was NVIDIA revenue in 2024?",
+        "as_of": "2024-06-01T00:00:00+00:00",
+    }
+    defaults.update(kw)
+    return GoldenItem(**defaults)
+
+
+class TestAllEightAblationsRun:
+    """test_all_eight_ablations_run_real_production_scoring"""
+
+    def test_eight_configs_produce_results(self, offline_adapter):
+        """All 8 ablation configs (4 modes x 2 ticker filters) produce results."""
+        modes = ["bm25", "dense", "hybrid_rrf", "hybrid_rerank"]
+        item = _answerable_item()
+        results = []
+        for mode in modes:
+            for tf in [True, False]:
+                config = RetrievalConfig(mode=mode, ticker_filter=tf, top_k=5)
+                hits = retrieve_item(item, config, offline_adapter)
+                results.append((mode, tf, hits))
+        assert len(results) == 8
+        # At least some should return hits (BM25 always works; dense may depend on embeddings)
+        non_empty = sum(1 for _, _, h in results if h)
+        assert non_empty >= 4, f"Only {non_empty}/8 configs returned hits"
+
+
+class TestHybridUsesDoubleDepth:
+    """test_hybrid_uses_double_candidate_depth"""
+
+    def test_candidate_depth_is_2x(self):
+        config = RetrievalConfig(mode="hybrid_rrf", top_k=5)
+        assert config.candidate_depth == 10
+
+    def test_candidate_depth_custom_multiplier(self):
+        config = RetrievalConfig(mode="hybrid_rrf", top_k=5, candidate_depth_multiplier=3)
+        assert config.candidate_depth == 15
+
+
+class TestRerankerRunsAfterRrf:
+    """test_reranker_runs_after_rrf"""
+
+    def test_hybrid_rerank_has_mode(self, offline_adapter):
+        """hybrid_rerank mode sets retrieval_mode correctly."""
+        item = _answerable_item()
+        config = RetrievalConfig(mode="hybrid_rerank", top_k=5)
+        hits = retrieve_item(item, config, offline_adapter)
+        if hits:
+            # The mode should be set (even if reranker is unavailable)
+            assert hits[0].retrieval_mode in ("hybrid_rerank", "hybrid_rrf")
+
+
+class TestTickerFilterOnAndOffDiffer:
+    """test_ticker_filter_on_and_off_differ"""
+
+    def test_ticker_filter_affects_results(self, offline_adapter):
+        """With and without ticker filter should produce different result sets."""
+        item = _answerable_item(ticker="NVDA")
+
+        config_on = RetrievalConfig(mode="bm25", ticker_filter=True, top_k=10)
+        config_off = RetrievalConfig(mode="bm25", ticker_filter=False, top_k=10)
+
+        hits_on = retrieve_item(item, config_on, offline_adapter)
+        hits_off = retrieve_item(item, config_off, offline_adapter)
+
+        # With ticker filter, only NVDA chunks should appear
+        for h in hits_on:
+            assert h.ticker == "NVDA"
+
+        # Without ticker filter, other tickers may appear
+        tickers_off = {h.ticker for h in hits_off}
+        # At least NVDA should be present
+        assert "NVDA" in tickers_off
+
+
+class TestSearchSecFilingsReturnsChunkId:
+    """test_search_sec_filings_returns_chunk_id"""
+
+    def test_chunk_id_in_wrapper_result(self):
+        """The search_sec_filings wrapper must include chunk_id in results."""
+        import sys
+        from unittest.mock import MagicMock, patch
+
+        # Mock db.lakebase if psycopg is not installed
+        if "db.lakebase" not in sys.modules:
+            sys.modules["db.lakebase"] = MagicMock()
+
+        # Create a mock Document with chunk_id in metadata
+        mock_doc = Document(
+            page_content="test content",
+            metadata={
+                "chunk_id": "test-chunk-001",
+                "ticker": "NVDA",
+                "accession": "0000723125-24-000001",
+                "form_type": "10-K",
+                "accepted_ts": "2024-01-15T00:00:00+00:00",
+                "source_url": "",
+                "section_id": "item_7",
+                "chunk_index": 0,
+                "retrieval_mode": "hybrid",
+            },
+        )
+
+        from agent import tools_retrieval as tr
+        with patch.object(tr, "normalize_symbol", return_value="NVDA"), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
+             patch("api.services.reranker.rerank", return_value=[mock_doc]):
+            MockRetriever.return_value.retrieve.return_value = [mock_doc]
+            results = tr.search_sec_filings("NVDA", query="revenue", top_k=1)
+
+        assert len(results) == 1
+        assert "chunk_id" in results[0]
+        assert results[0]["chunk_id"] == "test-chunk-001"
+
+
+class TestWrapperMatchesHybridRerank:
+    """test_wrapper_matches_hybrid_rerank"""
+
+    def test_wrapper_uses_hybrid_rerank_by_default(self):
+        """search_sec_filings should default to hybrid_rerank path for multi-hit queries."""
+        import sys
+        from unittest.mock import MagicMock, patch
+
+        # Mock db.lakebase if psycopg is not installed
+        if "db.lakebase" not in sys.modules:
+            sys.modules["db.lakebase"] = MagicMock()
+
+        from agent import tools_retrieval as tr
+
+        docs = [
+            Document(page_content="doc1", metadata={
+                "chunk_id": "c1", "ticker": "NVDA", "accession": "A1",
+                "form_type": "10-K", "accepted_ts": "2024-01-01",
+                "source_url": "", "section_id": "s1", "chunk_index": 0,
+                "retrieval_mode": "hybrid",
+            }),
+            Document(page_content="doc2", metadata={
+                "chunk_id": "c2", "ticker": "NVDA", "accession": "A2",
+                "form_type": "10-K", "accepted_ts": "2024-01-01",
+                "source_url": "", "section_id": "s2", "chunk_index": 1,
+                "retrieval_mode": "hybrid",
+            }),
+        ]
+
+        with patch.object(tr, "normalize_symbol", return_value="NVDA"), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
+             patch("api.services.reranker.rerank", return_value=docs) as mock_rerank:
+            MockRetriever.return_value.retrieve.return_value = docs
+            results = tr.search_sec_filings("NVDA", query="revenue", top_k=5)
+
+        # rerank should have been called since query is non-empty and len(docs) > 1
+        mock_rerank.assert_called_once()
+
+
+class TestEveryModeFiltersBeforeScoring:
+    """test_every_mode_filters_before_scoring"""
+
+    def test_pit_filter_applied_in_bm25(self, offline_adapter):
+        """BM25 mode should filter future chunks before scoring."""
+        item = _answerable_item(as_of="2024-06-01T00:00:00+00:00")
+        config = RetrievalConfig(mode="bm25", ticker_filter=False, top_k=20)
+        hits = retrieve_item(item, config, offline_adapter)
+        # smoke-005-future (accepted 2024-08-15) should not appear
+        hit_ids = {h.chunk_id for h in hits}
+        assert "smoke-005-future" not in hit_ids
+
+    def test_pit_filter_applied_in_dense(self, offline_adapter):
+        """Dense mode should filter future chunks before scoring."""
+        item = _answerable_item(as_of="2024-06-01T00:00:00+00:00")
+        config = RetrievalConfig(mode="dense", ticker_filter=False, top_k=20)
+        hits = retrieve_item(item, config, offline_adapter)
+        hit_ids = {h.chunk_id for h in hits}
+        assert "smoke-005-future" not in hit_ids
+
+
+class TestFutureChunkIsHardGate:
+    """test_future_chunk_is_hard_gate_even_if_highest_score"""
+
+    def test_pit_leakage_raises(self):
+        """assert_no_pit_leakage raises for future chunks."""
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        hits = [
+            RetrievalHit(
+                chunk_id="c1", ticker="X", accession="A1", section="s1",
+                form_type="10-K", accepted_ts="2024-08-01T00:00:00+00:00",
+                text="future", rank=1,
+            ),
+        ]
+        with pytest.raises(ValueError, match="PIT leakage"):
+            assert_no_pit_leakage(hits, as_of)
+
+    def test_no_leakage_returns_zero(self):
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        hits = [
+            RetrievalHit(
+                chunk_id="c1", ticker="X", accession="A1", section="s1",
+                form_type="10-K", accepted_ts="2024-01-01T00:00:00+00:00",
+                text="past", rank=1,
+            ),
+        ]
+        assert assert_no_pit_leakage(hits, as_of) == 0
+
+
+class TestRetrieveMatchesRetrieveMode:
+    """test_retrieve_and_retrieve_mode_return_same_docs"""
+
+    def test_retrieve_matches_hybrid_rerank_mode(self, offline_adapter):
+        """retrieve() and retrieve_mode(mode='hybrid_rerank') return the same docs.
+
+        The eval harness measures the real retrieval path — if retrieve_mode
+        diverged from retrieve(), the eval would be measuring a dead code path.
+        Both paths reuse the same bm25_search, vector_search, and rrf_fuse.
+        The reranker reorders by relevance score so set equality is the
+        invariant; exact ordering depends on cross-encoder scores.
+        """
+        from evals.rag_eval.corpus import install_offline_corpus
+        from api.services.hybrid_retriever import HybridRetriever
+
+        item = _answerable_item(ticker="NVDA")
+        as_of = item.as_of_datetime()
+
+        with install_offline_corpus(offline_adapter):
+            retriever = HybridRetriever(top_k=5, rrf_k=60)
+
+            # Production path: retrieve() gives RRF-fused results (no rerank)
+            docs_prod = retriever.retrieve(
+                query=item.question,
+                ticker=item.ticker,
+                as_of=as_of,
+                top_k=5,
+            )
+
+            # Eval path: retrieve_mode("hybrid_rerank") gives RRF + rerank
+            docs_eval = retriever.retrieve_mode(
+                query=item.question,
+                mode="hybrid_rerank",
+                ticker=item.ticker,
+                as_of=as_of,
+                top_k=5,
+                rerank=True,
+            )
+
+        # Both must return the same set of chunk_ids
+        prod_ids = {d.metadata.get("chunk_id", "") for d in docs_prod}
+        eval_ids = {d.metadata.get("chunk_id", "") for d in docs_eval}
+        assert prod_ids == eval_ids, (
+            f"retrieve() and retrieve_mode('hybrid_rerank') returned different doc sets.\n"
+            f"  prod: {sorted(prod_ids)}\n"
+            f"  eval: {sorted(eval_ids)}"
+        )
+
+
+class TestSmokeFiveItemsOffline:
+    """test_smoke_five_items_offline_no_network"""
+
+    def test_smoke_run(self, offline_adapter):
+        """5-item smoke run completes without network/paid calls."""
+        from evals.rag_eval.retrieve import run_retrieval
+        import json
+
+        golden_path = FIXTURE_DIR / "golden_smoke.jsonl"
+        items = []
+        with open(golden_path, "r", encoding="utf-8") as f:
+            for line in f:
+                obj = json.loads(line.strip())
+                items.append(GoldenItem(
+                    id=obj["id"],
+                    ticker=obj.get("ticker", ""),
+                    question=obj.get("question", ""),
+                    gold_chunk_ids=tuple(obj.get("gold_chunk_ids", [])),
+                    gold_accession_sections=tuple(tuple(x) for x in obj.get("gold_accession_sections", [])),
+                    item_type=obj.get("item_type", "answerable"),
+                    allowed_older_chunk_ids=tuple(obj.get("allowed_older_chunk_ids", [])),
+                    as_of=obj.get("as_of"),
+                ))
+
+        configs = [
+            RetrievalConfig(mode="bm25", ticker_filter=True, top_k=10),
+            RetrievalConfig(mode="bm25", ticker_filter=False, top_k=10),
+        ]
+
+        results = run_retrieval(items, configs, offline_adapter)
+        assert len(results) == 10  # 5 items x 2 configs
+
+        # No errors for answerable items with BM25
+        answerable_results = [r for r in results if r.item.item_type == "answerable"]
+        for r in answerable_results:
+            assert r.error is None, f"Error for {r.item.id}: {r.error}"

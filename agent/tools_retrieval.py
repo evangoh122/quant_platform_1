@@ -104,6 +104,7 @@ def search_sec_filings(
 
         return [
             {
+                "chunk_id": d.metadata.get("chunk_id", ""),
                 "chunk_text": d.page_content,
                 "accession_number": d.metadata.get("accession", ""),
                 "form_type": d.metadata.get("form_type", ""),
