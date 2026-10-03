@@ -536,3 +536,38 @@ def test_costs_never_below_minimum_bps_times_executed_notional():
     assert entry_cost >= min_cost_frac - 1e-15, (
         f"Entry cost {entry_cost:.8f} < minimum {min_cost_frac:.8f}"
     )
+
+
+def test_cap_weight_changes_with_read_only_input():
+    """cap_weight_changes_by_adv must work when input arrays are read-only.
+
+    Reproduces pandas 3 copy-on-write behaviour on pandas 2: .to_numpy() can
+    return a read-only view, and writing into the output array raises
+    ValueError.  The fix (to_numpy(copy=True)) guarantees a writeable copy.
+    """
+    n_days = 5
+    symbols = ["A", "B"]
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+
+    weights = pd.DataFrame(0.0, index=dates, columns=symbols)
+    weights.iloc[0, 0] = 0.1
+    weights.iloc[1, 0] = 0.2
+
+    adv = pd.DataFrame(1e8, index=dates, columns=symbols)
+    book_capital = 1e6
+    params = CostParams(adv_participation_cap=0.01)
+
+    # Make the underlying numpy arrays read-only (simulates pandas 3 CoW).
+    w_arr = weights.to_numpy()
+    a_arr = adv.to_numpy()
+    w_arr.setflags(write=False)
+    a_arr.setflags(write=False)
+
+    # Build new frames from the read-only arrays — .to_numpy() on these
+    # frames may return read-only views under pandas 3.
+    weights_ro = pd.DataFrame(w_arr, index=dates, columns=symbols)
+    adv_ro = pd.DataFrame(a_arr, index=dates, columns=symbols)
+
+    # Must not raise ValueError: assignment destination is read-only
+    result = cap_weight_changes_by_adv(weights_ro, adv_ro, book_capital, params)
+    assert result.iloc[0, 0] == pytest.approx(0.1)

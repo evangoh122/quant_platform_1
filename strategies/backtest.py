@@ -81,7 +81,7 @@ def cap_weight_changes_by_adv(
     if params is None:
         params = CostParams()
     cap_frac = params.adv_participation_cap  # e.g. 0.01
-    out = weights.copy().to_numpy(dtype=float)
+    out = weights.to_numpy(dtype=float, copy=True)
     prev = np.zeros(out.shape[1])
     # Forward-fill ADV per symbol so the last known ADV is used for names
     # whose ADV becomes NaN (e.g. after leaving the universe).
@@ -334,7 +334,9 @@ def run_backtest(
     # The capped positions are what the portfolio actually holds; P&L and
     # borrow are computed on these, not the uncapped neutralised weights.
     # Zero-ADV names can never accumulate a position.
-    adv_aligned = adv.reindex(index=weights.index, columns=weights.columns).fillna(0.0)
+    # Do not fillna(0) here — cap_weight_changes_by_adv forward-fills per
+    # symbol so the last known ADV is used for names that leave the universe.
+    adv_aligned = adv.reindex(index=weights.index, columns=weights.columns)
     weights = cap_weight_changes_by_adv(weights, adv_aligned, book_capital, params=cost_params)
 
     # Book return on day t is earned by the weights established at t-1.

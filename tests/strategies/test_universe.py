@@ -235,7 +235,7 @@ def test_gold_07_zscore_guard_counts_column_not_star():
     column to match the aggregate semantics.
     """
     import pathlib
-    sql = pathlib.Path("gold/07_gold_regime_features.sql").read_text()
+    sql = (pathlib.Path(__file__).resolve().parents[2] / "gold" / "07_gold_regime_features.sql").read_text()
 
     # The z-score guard is near rsp_spy_ratio_zscore_252 and uses the 251
     # PRECEDING window (252 rows). Extract that section.
