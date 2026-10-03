@@ -178,6 +178,44 @@ or a structured 503 when Lakebase is unreachable — never a 500 crash.
 - CORS is disabled by default (same-origin). Enable only for local dev via
   `CORS_ORIGINS=http://localhost:5173`.
 
+## 10. Render deployment — proxy trust and rate limiting
+
+When deploying on Render, the following configuration applies:
+
+### Fail-closed startup guard
+
+On Render (the `RENDER` environment variable is set), the application
+**refuses to start** unless `PUBLIC_DEMO=1` is also set. This prevents the
+insecure default where an absent `PUBLIC_DEMO` silently enables the full
+write surface. Set `PUBLIC_DEMO=1` explicitly in the Render service
+environment.
+
+### Rate limiter — IP extraction choice
+
+The rate limiter extracts the client IP from the **rightmost**
+`X-Forwarded-For` entry when `RENDER` is set. This is the address that
+Render's edge proxy saw, and it cannot be spoofed by the client.
+
+We intentionally avoid using `--forwarded-allow-ips='*'` because that would
+make `request.client.host` read from the (spoofable) `X-Forwarded-For`
+header, allowing attackers to evade per-IP rate limits by rotating the
+leftmost XFF value.
+
+The per-IP limit defaults to 60 req/min; a global ceiling of 600 req/min
+acts as a backstop. Both are configurable via `RATE_LIMIT_READS` and
+`RATE_LIMIT_GLOBAL`. The LRU cap on distinct IP keys defaults to 10,000
+(configurable via `RATE_LIMIT_LRU_MAX`).
+
+### Uvicorn startup command
+
+```bash
+uvicorn api.main:app --host 0.0.0.0 --port $PORT
+```
+
+Do **not** pass `--forwarded-allow-ips='*'`. Render's proxy is not trusted
+at the uvicorn level; the application reads `X-Forwarded-For` directly for
+rate-limiting purposes only.
+
 ## Lakebase agent tools — approver authority and migrations
 
 ### Approver authority (out-of-band grant only)

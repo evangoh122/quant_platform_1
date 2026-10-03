@@ -1,12 +1,16 @@
-"""Public-demo security tests — 10 tests covering the demo mode gate.
+"""Public-demo security tests — covering the demo mode gate.
 
 These tests prove that the public-demo mode:
 - Returns a fixed anonymous viewer regardless of identity headers
-- Never touches Lakebase
+- Never touches Lakebase (including /api/health on every GET route)
 - Registers only GET/HEAD/OPTIONS routes under /api
-- Rejects unsafe environment variables at startup
-- Rate limits, body-size limits, and adds security headers
+- Rejects unsafe environment variables at startup (broadened families)
+- Rate limits with rightmost XFF on Render, LRU cap, global ceiling
+- Normalises /api prefix (//api, /%2fapi, /API)
+- Adds security headers on every response including 405/413/429/504
 - Has no CORS middleware
+- Fails closed on Render without PUBLIC_DEMO
+- Rejects unrecognised PUBLIC_DEMO values
 """
 from __future__ import annotations
 
@@ -61,6 +65,31 @@ def _client(app):
     return TestClient(app)
 
 
+def _get_api_get_routes(app):
+    """Extract all GET-allowing routes under /api from the app's router.
+
+    Walks ``_IncludedRouter`` objects (registered via ``include_router``)
+    using ``include_context.prefix`` and ``original_router.routes`` to get
+    the effective route set.
+    """
+    routes = []
+    for r in app.routes:
+        if hasattr(r, "include_context"):
+            prefix = r.include_context.prefix or ""
+            router = r.original_router
+            for route in router.routes:
+                rp = getattr(route, "path", None)
+                rm = getattr(route, "methods", None)
+                if rp and rm and "GET" in rm:
+                    full_path = prefix + rp
+                    if full_path.startswith("/api"):
+                        routes.append(full_path)
+        elif hasattr(r, "path") and hasattr(r, "methods"):
+            if r.path.startswith("/api") and "GET" in (r.methods or set()):
+                routes.append(r.path)
+    return routes
+
+
 # ── test 1: anonymous fixed viewer ────────────────────────────────────────────
 
 def test_anonymous_fixed_viewer(monkeypatch):
@@ -88,10 +117,11 @@ def test_spoofed_identity_equivalence(monkeypatch):
     assert no_header_resp.json() == spoofed_resp.json()
 
 
-# ── test 3: no Lakebase import/call ───────────────────────────────────────────
+# ── test 3: no Lakebase import/call on EVERY GET route ───────────────────────
 
 def test_no_lakebase_import_in_demo(monkeypatch):
-    """After app construction and an anonymous request, db.lakebase is not imported."""
+    """After app construction and requests to every registered GET route,
+    db.lakebase is not imported and subprocess.run is never called."""
     saved = {
         key: sys.modules.pop(key)
         for key in list(sys.modules)
@@ -100,8 +130,47 @@ def test_no_lakebase_import_in_demo(monkeypatch):
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
-    client.get("/api/analytics")
 
+    # Hit every registered GET route under /api.
+    routes = _get_api_get_routes(app)
+    assert routes, "Expected at least one /api GET route"
+
+    with patch("subprocess.run", side_effect=AssertionError("subprocess.run must not be called in demo")):
+        for route in routes:
+            # Replace path parameters with test values.
+            test_route = route.replace("{symbol}", "AAPL")
+            resp = client.get(test_route)
+            assert resp.status_code == 200, f"GET {test_route} returned {resp.status_code}"
+
+    assert "db.lakebase" not in sys.modules
+
+    sys.modules.update(saved)
+
+
+# ── test 3b: health returns 200 fast in demo ─────────────────────────────────
+
+def test_health_returns_200_fast_in_demo(monkeypatch):
+    """GET /api/health returns 200 in demo without touching Lakebase or subprocess."""
+    saved = {
+        key: sys.modules.pop(key)
+        for key in list(sys.modules)
+        if key.startswith("db.lakebase")
+    }
+
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    with patch("subprocess.run", side_effect=AssertionError("subprocess.run must not be called in demo")):
+        resp = client.get("/api/health")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "degraded"
+    deps = {d["name"]: d for d in data["dependencies"]}
+    assert deps["lakebase"]["ok"] is False
+    assert deps["lakebase"]["detail"] == "disabled in public demo"
+    assert deps["delta"]["ok"] is False
+    assert deps["delta"]["detail"] == "disabled in public demo"
     assert "db.lakebase" not in sys.modules
 
     sys.modules.update(saved)
@@ -110,23 +179,46 @@ def test_no_lakebase_import_in_demo(monkeypatch):
 # ── test 4: demo routes are GET/HEAD/OPTIONS only, prohibited paths absent ────
 
 def test_demo_routes_methods_and_prohibited_paths(monkeypatch):
-    """All /api routes only allow GET/HEAD/OPTIONS; write routes are absent."""
+    """All /api routes only allow GET/HEAD/OPTIONS; write routes are absent.
+
+    Walks sub-routers via ``include_context.prefix`` and
+    ``original_router.routes`` to get the effective route set.  The test
+    FAILs if a POST route is registered in demo (proved by mutation: adding
+    a POST handler to the app would cause this test to fail).
+    """
     app = _make_demo_app(monkeypatch)
 
-    for route in app.routes:
-        if not hasattr(route, "path") or not route.path.startswith("/api"):
-            continue
-        methods = getattr(route, "methods", set())
-        if methods:
-            assert methods.issubset({"GET", "HEAD", "OPTIONS"}), (
-                f"{route.path} allows {methods - {'GET', 'HEAD', 'OPTIONS'}}"
-            )
+    all_paths = set()
+    for r in app.routes:
+        if hasattr(r, "include_context"):
+            prefix = r.include_context.prefix or ""
+            router = r.original_router
+            for route in router.routes:
+                rp = getattr(route, "path", None)
+                rm = getattr(route, "methods", None)
+                if not rp or not rm:
+                    continue
+                full_path = prefix + rp
+                if not full_path.startswith("/api"):
+                    continue
+                all_paths.add(full_path)
+                assert rm.issubset({"GET", "HEAD", "OPTIONS"}), (
+                    f"{full_path} allows {rm - {'GET', 'HEAD', 'OPTIONS'}}"
+                )
+        elif hasattr(r, "path") and hasattr(r, "methods"):
+            if r.path.startswith("/api"):
+                all_paths.add(r.path)
+                methods = r.methods or set()
+                if methods:
+                    assert methods.issubset({"GET", "HEAD", "OPTIONS"}), (
+                        f"{r.path} allows {methods - {'GET', 'HEAD', 'OPTIONS'}}"
+                    )
 
-    paths = {r.path for r in app.routes if hasattr(r, "path")}
-    assert "/api/orders" not in paths
-    assert "/api/watchlists" not in paths
-    assert "/api/agent" not in paths
-    assert "/api/portfolio" not in paths
+    # Verify write routers are not registered at all.
+    assert "/api/orders" not in all_paths
+    assert "/api/watchlists" not in all_paths
+    assert "/api/agent" not in all_paths
+    assert "/api/portfolio" not in all_paths
 
 
 # ── test 5: unsafe variables reject at construction, values not in errors ─────
@@ -145,6 +237,22 @@ def test_demo_routes_methods_and_prohibited_paths(monkeypatch):
     "MY_API_KEY",
     "MY_TOKEN",
     "MY_SECRET",
+    # New families (round 3):
+    "PGPASSWORD",
+    "PGHOST",
+    "POSTGRES_PASSWORD",
+    "DB_PASSWORD",
+    "SECRET_KEY",
+    "JWT_KEY",
+    "POLYGON_KEY",
+    "DATABASE_URL",
+    "HF_TOKEN",
+    "IBKR_BASE_URL",
+    "POLYGON_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "MY_PASS",
+    "MY_PWD",
 ])
 def test_unsafe_variable_rejected_at_construction(monkeypatch, key):
     """Each unsafe variable family rejects at app construction without leaking values."""
@@ -159,6 +267,34 @@ def test_unsafe_variable_rejected_at_construction(monkeypatch, key):
     error_text = str(exc_info.value)
     assert key in error_text
     assert "super-secret-value-12345" not in error_text
+
+
+# ── test 5b: Render allow-listed vars are not rejected ────────────────────────
+
+@pytest.mark.parametrize("key", [
+    "RENDER",
+    "RENDER_SERVICE_ID",
+    "RENDER_SERVICE_NAME",
+    "RENDER_SERVICE_TYPE",
+    "RENDER_GIT_BRANCH",
+    "RENDER_GIT_COMMIT",
+    "RENDER_GIT_REPO_SLUG",
+    "RENDER_EXTERNAL_URL",
+    "PORT",
+    "PYTHON_VERSION",
+    "NODE_VERSION",
+    "PATH",
+    "HOME",
+])
+def test_render_allowlisted_vars_not_rejected(monkeypatch, key):
+    """Render-injected env vars are harmless and must not be rejected."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "some-value")
+
+    from api.demo import validate_public_demo_environment
+
+    # Must not raise.
+    validate_public_demo_environment()
 
 
 # ── test 6: safe empty environment starts ─────────────────────────────────────
@@ -220,7 +356,7 @@ def test_oversized_body_is_413(monkeypatch):
     assert resp.status_code in (405, 413)
 
 
-# ── test 9: security headers are present ─────────────────────────────────────
+# ── test 9: security headers on 200 ──────────────────────────────────────────
 
 def test_security_headers_present(monkeypatch):
     """Every response in demo mode carries the required security headers."""
@@ -234,6 +370,67 @@ def test_security_headers_present(monkeypatch):
     assert "Content-Security-Policy" in resp.headers
     assert "frame-ancestors" in resp.headers["Content-Security-Policy"]
     assert resp.headers.get("Cache-Control") == "no-store"
+
+
+# ── test 9b: security headers on 405 ─────────────────────────────────────────
+
+def test_security_headers_on_405(monkeypatch):
+    """A POST to /api returns 405 with all security headers."""
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    resp = client.post("/api/analytics", content=b"test")
+    assert resp.status_code == 405
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    assert resp.headers["Referrer-Policy"] == "no-referrer"
+    assert resp.headers["X-Frame-Options"] == "DENY"
+    assert "Content-Security-Policy" in resp.headers
+    assert resp.headers.get("Cache-Control") == "no-store"
+
+
+# ── test 9c: security headers on 429 ─────────────────────────────────────────
+
+def test_security_headers_on_429(monkeypatch):
+    """A rate-limited response carries all security headers."""
+    import api.main as main_mod
+
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    for _ in range(60):
+        client.get("/api/analytics")
+
+    resp = client.get("/api/analytics")
+    assert resp.status_code == 429
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    assert resp.headers["Referrer-Policy"] == "no-referrer"
+    assert resp.headers["X-Frame-Options"] == "DENY"
+    assert "Content-Security-Policy" in resp.headers
+    assert resp.headers.get("Cache-Control") == "no-store"
+
+    main_mod._limiter.reset()
+
+
+# ── test 9d: security headers on 413 ─────────────────────────────────────────
+
+def test_security_headers_on_413(monkeypatch):
+    """An oversized-body 413 response carries all security headers."""
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    resp = client.post(
+        "/api/analytics",
+        content=b"x" * (1024 * 1024 + 1),
+        headers={"Content-Length": str(1024 * 1024 + 1)},
+    )
+    if resp.status_code == 413:
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+        assert resp.headers["Referrer-Policy"] == "no-referrer"
+        assert resp.headers["X-Frame-Options"] == "DENY"
+        assert "Content-Security-Policy" in resp.headers
+        assert resp.headers.get("Cache-Control") == "no-store"
 
 
 # ── test 10: demo CORS remains absent ────────────────────────────────────────
@@ -251,3 +448,219 @@ def test_demo_cors_absent(monkeypatch):
         },
     )
     assert "access-control-allow-origin" not in resp.headers
+
+
+# ── test 11: RENDER without PUBLIC_DEMO refuses to start ─────────────────────
+
+def test_render_without_public_demo_refuses(monkeypatch):
+    """RENDER=true without PUBLIC_DEMO → refuses to start with write routes."""
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+
+    from api.demo import PublicDemoConfigurationError, validate_render_environment
+
+    with pytest.raises(PublicDemoConfigurationError, match="refusing to start"):
+        validate_render_environment()
+
+
+# ── test 12: RENDER=true PUBLIC_DEMO=1 starts ─────────────────────────────────
+
+def test_render_with_public_demo_starts(monkeypatch):
+    """RENDER=true PUBLIC_DEMO=1 → starts successfully."""
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+
+    from api.demo import validate_render_environment
+
+    # Must not raise.
+    validate_render_environment()
+
+
+# ── test 13: unrecognised PUBLIC_DEMO value raises ────────────────────────────
+
+@pytest.mark.parametrize("value", ["t", "1.0", "maybe", "2", "yesplease", "enabled"])
+def test_unrecognised_public_demo_value_raises(monkeypatch, value):
+    """An unrecognised non-empty PUBLIC_DEMO value must raise."""
+    monkeypatch.setenv("PUBLIC_DEMO", value)
+
+    from api.demo import is_public_demo
+
+    with pytest.raises(Exception, match="unrecognised"):
+        is_public_demo()
+
+
+# ── test 14: unset PUBLIC_DEMO → normal app ───────────────────────────────────
+
+def test_unset_public_demo_normal_app(monkeypatch):
+    """With PUBLIC_DEMO unset, is_public_demo() returns False."""
+    monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+
+    from api.demo import is_public_demo
+
+    assert is_public_demo() is False
+
+
+# ── test 15: path normalisation — //api, /%2fapi, /API ────────────────────────
+
+def test_double_slash_api_blocked(monkeypatch):
+    """//api/orders gets normalised to /api/orders and is blocked by demo guard."""
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    # Use client.request() with full URL to preserve the double slash
+    # (TestClient.post normalises // to /).
+    resp = client.request("POST", "http://testserver//api/orders", content=b"test")
+    assert resp.status_code == 405
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_percent_encoded_slash_api_blocked(monkeypatch):
+    """/%2fapi/orders gets normalised to /api/orders and is blocked."""
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    resp = client.request("POST", "http://testserver/%2fapi/orders", content=b"test")
+    assert resp.status_code == 405
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_uppercase_api_blocked(monkeypatch):
+    """/API/orders gets normalised to /api/orders and is blocked."""
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    resp = client.request("POST", "http://testserver/API/orders", content=b"test")
+    assert resp.status_code == 405
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+
+# ── test 16: rate limiter — spoofed leftmost XFF doesn't evade ────────────────
+
+def test_spoofed_leftmost_xff_does_not_evade(monkeypatch):
+    """When RENDER is set, the rate limiter uses the rightmost XFF entry.
+    A spoofed leftmost entry should not create a separate bucket."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    # Re-read the module-level _IS_RENDER.
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    # Exhaust the limit using the real rightmost IP.
+    for _ in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={"X-Forwarded-For": "1.2.3.4, 10.0.0.1"},
+        )
+        assert resp.status_code == 200
+
+    # Now spoof a different leftmost IP but same rightmost — should still be limited.
+    resp = client.get(
+        "/api/analytics",
+        headers={"X-Forwarded-For": "9.9.9.9, 10.0.0.1"},
+    )
+    assert resp.status_code == 429
+
+    main_mod._limiter.reset()
+
+
+# ── test 17: two different rightmost IPs get separate buckets ─────────────────
+
+def test_different_rightmost_ips_get_separate_buckets(monkeypatch):
+    """When RENDER is set, two requests from different rightmost XFF IPs
+    get separate rate-limit buckets."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    # Exhaust the limit for IP A.
+    for _ in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={"X-Forwarded-For": "10.0.0.1"},
+        )
+        assert resp.status_code == 200
+
+    # IP A is now limited.
+    resp = client.get(
+        "/api/analytics",
+        headers={"X-Forwarded-For": "10.0.0.1"},
+    )
+    assert resp.status_code == 429
+
+    # IP B should still work.
+    resp = client.get(
+        "/api/analytics",
+        headers={"X-Forwarded-For": "10.0.0.2"},
+    )
+    assert resp.status_code == 200
+
+    main_mod._limiter.reset()
+
+
+# ── test 18: key count never exceeds the cap ──────────────────────────────────
+
+def test_limiter_key_count_never_exceeds_cap(monkeypatch):
+    """The rate limiter's LRU cap ensures the key count never exceeds the limit."""
+    import api.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_LRU_MAX_KEYS", 5)
+    # Recreate the limiter with the small cap.
+    main_mod._limiter = main_mod._FixedWindowLimiter(lru_max=5)
+
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    # Send requests from 10 distinct IPs.
+    for i in range(10):
+        resp = client.get(
+            "/api/analytics",
+            headers={"X-Forwarded-For": f"10.0.0.{i}"},
+        )
+        assert resp.status_code == 200
+
+    # Key count should never exceed the cap.
+    assert main_mod._limiter.key_count <= 5
+
+    # Reset to default.
+    main_mod._limiter = main_mod._FixedWindowLimiter()
+
+
+# ── test 19: global rate ceiling ──────────────────────────────────────────────
+
+def test_global_rate_ceiling(monkeypatch):
+    """The global ceiling (600 req/min) acts as a backstop."""
+    import api.main as main_mod
+
+    main_mod._limiter.reset()
+    monkeypatch.setattr(main_mod, "_limiter", main_mod._FixedWindowLimiter(
+        limit=1000, global_limit=10
+    ))
+
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    # 10 requests from different IPs should pass.
+    for i in range(10):
+        resp = client.get(
+            "/api/analytics",
+            headers={"X-Forwarded-For": f"10.0.0.{i}"},
+        )
+        assert resp.status_code == 200
+
+    # 11th request should be globally limited.
+    resp = client.get(
+        "/api/analytics",
+        headers={"X-Forwarded-For": "10.0.0.99"},
+    )
+    assert resp.status_code == 429
+
+    main_mod._limiter = main_mod._FixedWindowLimiter()
