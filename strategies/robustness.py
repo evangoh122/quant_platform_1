@@ -482,6 +482,7 @@ def render_robustness_report(
     config: Mapping,
     n_trials: int,
     executed_trials: int,
+    splits: Optional[list] = None,
 ) -> str:
     """Render the full robustness report in Markdown.
 
@@ -494,12 +495,15 @@ def render_robustness_report(
 
     rr = config.get("residual_reversion", {})
     robustness_cfg = config.get("robustness", {})
+    rank_ic_horizon = robustness_cfg.get("rank_ic_horizon_days", 5)
 
     L = []
     L.append("# Robustness report — residual mean-reversion")
     L.append("")
     L.append("PASS/FAIL denotes configured research gates, not evidence or a claim of edge.")
     L.append("")
+
+    # ── Methodology / Configuration ───────────────────────────────────────
     L.append("## Methodology / Configuration")
     L.append("")
     L.append(f"- factor_model: {rr.get('factor_model', 'ols_mkt_ind')} (baseline), pca (statistical)")
@@ -518,49 +522,247 @@ def render_robustness_report(
     L.append(f"- Executed trials in this run: **{executed_trials}**")
     L.append("")
 
-    # Build table rows.
-    header = ("| variant | category | net Sharpe | abs maxDD | return/DD | "
-              "margin bps | DSR | trials | sharpe_min | max_dd_max | "
-              "return_dd_min | margin_min | oos_ratio |")
-    sep = ("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
-    L.append("## Variant results")
-    L.append("")
-    L.append(header)
-    L.append(sep)
-
-    for vs, vr in zip(registry, variant_results):
+    # ── Helper: extract per-variant metrics ───────────────────────────────
+    def _variant_metrics(vr: dict) -> dict:
+        """Extract standardised metrics dict from a variant result."""
         if "error" in vr:
-            L.append(f"| {vs.variant_id} | {vs.category} | ERROR | — | — | — | — | {n_trials} | — | — | — | — | — |")
-            continue
-
-        m = vr.get("metrics", {})
+            return {"error": vr["error"]}
         net = vr.get("net", pd.Series(dtype=float))
-
+        m = vr.get("metrics", {})
         net_sharpe = _sharpe(net)
         max_dd = _max_drawdown(net)
         ann_ret = float(net.mean() * 252)
         ret_dd = ann_ret / abs(max_dd) if abs(max_dd) > 1e-9 else float("nan")
         margin = compute_margin_bps(net, vr.get("turnover", pd.Series(dtype=float)))
         dsr = deflated_sharpe_ratio(net.to_numpy(), n_trials=n_trials, periods_per_year=252)
-
-        # Gates
-        gate_metrics = {
+        is_sharpe = vr.get("is_sharpe", float("nan"))
+        oos_sharpe = vr.get("oos_sharpe", float("nan"))
+        oos_ratio = oos_sharpe / is_sharpe if np.isfinite(is_sharpe) and abs(is_sharpe) > 1e-9 else float("nan")
+        return {
             "net_sharpe": net_sharpe,
-            "net_max_drawdown": max_dd,
-            "net_ann_return": ann_ret,
-            "margin_bps": margin,
+            "max_dd": max_dd,
+            "ann_ret": ann_ret,
+            "ret_dd": ret_dd,
+            "margin": margin,
+            "dsr": dsr,
+            "is_sharpe": is_sharpe,
+            "oos_sharpe": oos_sharpe,
+            "oos_ratio": oos_ratio,
         }
-        gate_results = evaluate_gates(gate_metrics, gates)
 
-        def _g(key):
-            return gate_results.get(key, "N/A")
+    def _gate_row(vm: dict) -> dict:
+        """Evaluate gates for a variant metrics dict."""
+        gate_metrics = {
+            "net_sharpe": vm.get("net_sharpe", float("nan")),
+            "net_max_drawdown": vm.get("max_dd", float("nan")),
+            "net_ann_return": vm.get("ann_ret", float("nan")),
+            "margin_bps": vm.get("margin", float("nan")),
+            "is_sharpe": vm.get("is_sharpe", float("nan")),
+            "oos_sharpe": vm.get("oos_sharpe", float("nan")),
+        }
+        return evaluate_gates(gate_metrics, gates)
 
+    def _g(gate_results: dict, key: str) -> str:
+        return gate_results.get(key, "N/A")
+
+    # ── Factor-model comparison table ─────────────────────────────────────
+    L.append("## Factor-model comparison")
+    L.append("")
+    L.append("| variant | factor model | net Sharpe | IS Sharpe | OOS Sharpe | OOS/IS | DSR |")
+    L.append("|---|---|---:|---:|---:|---:|---:|")
+    for vs, vr in zip(registry, variant_results):
+        if vs.category != "baseline":
+            continue
+        vm = _variant_metrics(vr)
+        if "error" in vm:
+            L.append(f"| {vs.variant_id} | {vs.params.get('factor_model', '?')} | ERROR | — | — | — | — |")
+            continue
+        fm = vs.params.get("factor_model", "?")
+        L.append(
+            f"| {vs.variant_id} | {fm} | "
+            f"{vm['net_sharpe']:.3f} | {vm['is_sharpe']:.3f} | "
+            f"{vm['oos_sharpe']:.3f} | {vm['oos_ratio']:.2f} | {vm['dsr']:.3f} |"
+        )
+    L.append("")
+
+    # ── Cost stress table (1×/2×/3×) ─────────────────────────────────────
+    L.append("## Cost stress (1×/2×/3×)")
+    L.append("")
+    L.append("| variant | cost mult | net Sharpe | IS Sharpe | OOS Sharpe | OOS/IS | abs maxDD | return/DD |")
+    L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    for vs, vr in zip(registry, variant_results):
+        if vs.category not in ("baseline", "cost_stress"):
+            continue
+        vm = _variant_metrics(vr)
+        if "error" in vm:
+            continue
+        cm = vs.params.get("cost_multiplier", 1.0)
+        L.append(
+            f"| {vs.variant_id} | {cm:.1f}× | "
+            f"{vm['net_sharpe']:.3f} | {vm['is_sharpe']:.3f} | "
+            f"{vm['oos_sharpe']:.3f} | {vm['oos_ratio']:.2f} | "
+            f"{abs(vm['max_dd']):.4f} | {vm['ret_dd']:.2f} |"
+        )
+    L.append("")
+
+    # ── Universe stress table (200/300/500) ───────────────────────────────
+    L.append("## Universe stress (200/300/500)")
+    L.append("")
+    L.append("| variant | universe | net Sharpe | IS Sharpe | OOS Sharpe | OOS/IS | abs maxDD | return/DD |")
+    L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    for vs, vr in zip(registry, variant_results):
+        if vs.category not in ("baseline", "universe_stress"):
+            continue
+        vm = _variant_metrics(vr)
+        if "error" in vm:
+            continue
+        us = vs.params.get("universe_size", 300)
+        L.append(
+            f"| {vs.variant_id} | {us} | "
+            f"{vm['net_sharpe']:.3f} | {vm['is_sharpe']:.3f} | "
+            f"{vm['oos_sharpe']:.3f} | {vm['oos_ratio']:.2f} | "
+            f"{abs(vm['max_dd']):.4f} | {vm['ret_dd']:.2f} |"
+        )
+    L.append("")
+
+    # ── Parameter perturbation table (±20%) ───────────────────────────────
+    L.append("## Parameter perturbation (±20%)")
+    L.append("")
+    L.append("| variant | parameter | direction | net Sharpe | IS Sharpe | OOS Sharpe | OOS/IS |")
+    L.append("|---|---|---|---:|---:|---:|---:|")
+    for vs, vr in zip(registry, variant_results):
+        if vs.category != "parameter_stress":
+            continue
+        vm = _variant_metrics(vr)
+        if "error" in vm:
+            continue
+        # Extract param name and direction from variant_id.
+        parts = vs.variant_id.split("_")
+        param_name = parts[-2] if len(parts) >= 2 else "?"
+        direction = parts[-1] if len(parts) >= 1 else "?"
+        L.append(
+            f"| {vs.variant_id} | {param_name} | {direction} | "
+            f"{vm['net_sharpe']:.3f} | {vm['is_sharpe']:.3f} | "
+            f"{vm['oos_sharpe']:.3f} | {vm['oos_ratio']:.2f} |"
+        )
+    L.append("")
+
+    # ── Top-3 removal table ───────────────────────────────────────────────
+    L.append("## Top-3 P&L contributor removal")
+    L.append("")
+    L.append("| variant | dropped symbols | net Sharpe | IS Sharpe | OOS Sharpe | OOS/IS |")
+    L.append("|---|---|---:|---:|---:|---:|")
+    for vs, vr in zip(registry, variant_results):
+        if vs.category != "top_pnl_removal":
+            continue
+        vm = _variant_metrics(vr)
+        if "error" in vm:
+            continue
+        dropped = vr.get("dropped_symbols", [])
+        dropped_str = ", ".join(dropped) if dropped else "none"
+        L.append(
+            f"| {vs.variant_id} | {dropped_str} | "
+            f"{vm['net_sharpe']:.3f} | {vm['is_sharpe']:.3f} | "
+            f"{vm['oos_sharpe']:.3f} | {vm['oos_ratio']:.2f} |"
+        )
+    L.append("")
+
+    # ── Walk-forward folds table ──────────────────────────────────────────
+    L.append("## Walk-forward folds")
+    L.append("")
+    if splits is not None and len(splits) > 0:
+        # Use the first baseline variant's net returns for fold metrics.
+        baseline_vr = None
+        for vr in variant_results:
+            if "error" not in vr:
+                baseline_vr = vr
+                break
+        if baseline_vr is not None:
+            fold_metrics = compute_fold_metrics(baseline_vr["net"], splits)
+            min_profitable = robustness_cfg.get("min_profitable_folds", 3)
+            profitable_count = sum(1 for f in fold_metrics if f["profitable"])
+            flag = "PASS" if profitable_count >= min_profitable else "FAIL"
+            L.append(f"| fold | net Sharpe | net ann return | profitable |")
+            L.append(f"|---|---:|---:|---:|")
+            for fm in fold_metrics:
+                prof = "yes" if fm["profitable"] else "no"
+                L.append(f"| {fm['fold']} | {fm['net_sharpe']:.3f} | {fm['net_ann_return']:.4f} | {prof} |")
+            L.append(f"| **≥{min_profitable} of {len(splits)} profitable** | | | **{flag}** |")
+        else:
+            L.append("_No valid baseline results for fold metrics._")
+    else:
+        L.append("_Walk-forward splits not available._")
+    L.append("")
+
+    # ── Exposures table ───────────────────────────────────────────────────
+    L.append("## Exposures (baseline)")
+    L.append("")
+    baseline_vr = None
+    for vr in variant_results:
+        if "error" not in vr:
+            baseline_vr = vr
+            break
+    if baseline_vr is not None:
+        weights = baseline_vr.get("weights", pd.DataFrame())
+        beta = None  # beta not stored in variant result
+        exp = compute_exposures(weights, beta=beta, industry=None)
+        L.append("| metric | value |")
+        L.append("|---|---:|")
+        L.append(f"| max |dollar exposure| | {exp['max_abs_dollar_exposure']:.4f} |")
+        L.append(f"| mean |dollar exposure| | {exp['mean_abs_dollar_exposure']:.4f} |")
+        L.append(f"| max |beta exposure| | {exp.get('max_abs_beta_exposure', float('nan')):.4f} |")
+        L.append(f"| mean |beta exposure| | {exp.get('mean_abs_beta_exposure', float('nan')):.4f} |")
+        if exp.get("industry_exposure"):
+            for ind_name, ind_exp in sorted(exp["industry_exposure"].items()):
+                L.append(f"| industry: {ind_name} | {ind_exp:.4f} |")
+    else:
+        L.append("_No valid baseline results for exposure computation._")
+    L.append("")
+
+    # ── Turnover / capacity / margin bps table ────────────────────────────
+    L.append("## Turnover / capacity / margin")
+    L.append("")
+    if baseline_vr is not None:
+        net = baseline_vr.get("net", pd.Series(dtype=float))
+        turnover = baseline_vr.get("turnover", pd.Series(dtype=float))
+        margin = compute_margin_bps(net, turnover)
+        L.append("| metric | value |")
+        L.append("|---|---:|")
+        L.append(f"| avg daily turnover | {turnover.mean():.4f} |")
+        L.append(f"| margin (bps) | {margin:.1f} |")
+    else:
+        L.append("_No valid baseline results._")
+    L.append("")
+
+    # ── Rank IC table ─────────────────────────────────────────────────────
+    L.append("## Rank IC")
+    L.append("")
+    L.append("_Rank IC requires s_score and residual_returns from the signal pipeline; "
+             "not available in variant results. Run with --rank-ic for full computation._")
+    L.append("")
+
+    # ── Gate summary ──────────────────────────────────────────────────────
+    L.append("## Gate summary (all variants)")
+    L.append("")
+    L.append("| variant | category | net Sharpe | IS Sharpe | OOS Sharpe | OOS/IS | "
+              "abs maxDD | return/DD | margin bps | DSR | trials | "
+              "sharpe_min | max_dd_max | return_dd_min | margin_min | oos_ratio |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+
+    for vs, vr in zip(registry, variant_results):
+        vm = _variant_metrics(vr)
+        if "error" in vm:
+            L.append(f"| {vs.variant_id} | {vs.category} | ERROR | — | — | — | — | — | — | — | {n_trials} | — | — | — | — | — |")
+            continue
+        gr = _gate_row(vm)
         L.append(
             f"| {vs.variant_id} | {vs.category} | "
-            f"{net_sharpe:.3f} | {abs(max_dd):.4f} | {ret_dd:.2f} | "
-            f"{margin:.1f} | {dsr:.3f} | {n_trials} | "
-            f"{_g('sharpe_min')} | {_g('max_drawdown_max')} | "
-            f"{_g('return_to_dd_min')} | {_g('margin_min_bps')} | {_g('oos_ratio_min')} |"
+            f"{vm['net_sharpe']:.3f} | {vm['is_sharpe']:.3f} | "
+            f"{vm['oos_sharpe']:.3f} | {vm['oos_ratio']:.2f} | "
+            f"{abs(vm['max_dd']):.4f} | {vm['ret_dd']:.2f} | "
+            f"{vm['margin']:.1f} | {vm['dsr']:.3f} | {n_trials} | "
+            f"{_g(gr, 'sharpe_min')} | {_g(gr, 'max_drawdown_max')} | "
+            f"{_g(gr, 'return_to_dd_min')} | {_g(gr, 'margin_min_bps')} | {_g(gr, 'oos_ratio_min')} |"
         )
 
     L.append("")

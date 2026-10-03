@@ -32,14 +32,15 @@ from strategies.neutralize import neutralize_book
 
 # ── Execution lag ─────────────────────────────────────────────────────────────
 
-def enforce_execution_lag(desired: pd.DataFrame) -> pd.DataFrame:
-    """Shift desired positions one bar so ``fills[t] = desired[t-1]``.
+def enforce_execution_lag(desired: pd.DataFrame, bars: int = 1) -> pd.DataFrame:
+    """Shift desired positions *bars* so ``fills[t] = desired[t-bars]``.
 
-    A signal produced at day ``t``'s close can only be filled at day ``t+1``.
-    The first bar's fill is 0 (no signal precedes it). This is the structural
-    guarantee: the backtester has no code path that fills on the signal bar.
+    A signal produced at day ``t``'s close can only be filled at day ``t+1``
+    (default ``bars=1``).  The first *bars* fills are 0 (no signal precedes
+    them). This is the structural guarantee: the backtester has no code path
+    that fills on the signal bar.
     """
-    return desired.shift(1).fillna(0.0)
+    return desired.shift(bars).fillna(0.0)
 
 
 def filter_to_universe(
@@ -302,6 +303,7 @@ def run_backtest(
     target_gross: float = 1.0,
     cost_params: Optional[CostParams] = None,
     n_trials: int = 1,
+    execution_lag_bars: int = 1,
 ) -> Dict:
     """Run the residual mean-reversion backtest over the given date range.
 
@@ -320,7 +322,7 @@ def run_backtest(
     Returns a dict with ``fills``, ``weights``, ``gross``/``net``/``net_2x``
     daily series, the ``costs`` breakdown, ``turnover``, and ``metrics``.
     """
-    fills = enforce_execution_lag(desired_positions)
+    fills = enforce_execution_lag(desired_positions, bars=execution_lag_bars)
     fills = filter_to_universe(fills, universe)
     weights = neutralize_daily(fills, beta=beta, industry=industry,
                                target_gross=target_gross)

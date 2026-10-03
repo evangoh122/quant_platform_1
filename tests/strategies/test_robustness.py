@@ -354,6 +354,8 @@ class TestReport:
                 "metrics": {},
                 "weights": pd.DataFrame(0.0, index=dates, columns=["A"]),
                 "turnover": pd.Series(0.1, index=dates),
+                "is_sharpe": 1.0,
+                "oos_sharpe": 0.7,
             })
 
         report = render_robustness_report(
@@ -367,7 +369,7 @@ class TestReport:
 
         assert "PASS/FAIL denotes configured research gates" in report
         assert "Total unique trials" in report
-        assert "Variant results" in report
+        assert "Gate summary" in report
         assert "Methodology" in report
 
 
