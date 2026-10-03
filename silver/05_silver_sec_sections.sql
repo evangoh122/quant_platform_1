@@ -8,13 +8,26 @@
 -- structured facts and belong in silver_sec_entities, not sections).
 --
 -- chunk_id = record_key (unique per chunk in the source).
--- chunk_index = 0-based order within (accession_number, filing_section).
+-- chunk_index = 0-based order within (accession_number, filing_section),
+--   ordered by the bronze integer chunk_id.
 --
 -- Idempotent: MERGE on (accession_number, filing_section, chunk_id).
 -- Source anti-join: only processes accessions absent from silver.
+--
+-- Universe: all symbols ever in gold_tradable_universe (CTE) unioned with
+--   the 16 SEC-hardcoded tickers. Do NOT filter by config/universe.yaml.
 
 MERGE INTO bootcamp_students.evangoh_capstone.silver_sec_sections AS tgt
 USING (
+  WITH sec_universe AS (
+    SELECT DISTINCT upper(trim(symbol)) AS ticker
+    FROM bootcamp_students.evangoh_capstone.gold_tradable_universe
+    UNION
+    SELECT ticker FROM (VALUES
+      ('NVDA'),('TSM'),('AVGO'),('MU'),('AMD'),('ASML'),('ADI'),('TXN'),
+      ('LRCX'),('AMAT'),('QCOM'),('INTC'),('MRVL'),('KLAC'),('CDNS'),('SNPS')
+    ) AS hardcoded(ticker)
+  )
   SELECT
     src.cik,
     src.ticker,
@@ -26,7 +39,7 @@ USING (
     src.record_key                  AS chunk_id,
     CAST(ROW_NUMBER() OVER (
       PARTITION BY src.accession_number, src.filing_section
-      ORDER BY src.record_key
+      ORDER BY src.chunk_id
     ) AS INT) - 1                   AS chunk_index,
     src.chunk_text,
     CAST(COALESCE(src.chunk_char_count, length(coalesce(src.chunk_text, ''))) AS INT) AS chunk_char_count,
@@ -38,7 +51,7 @@ USING (
     FROM bootcamp_students.evangoh_capstone.silver_sec_sections
   ) existing ON src.accession_number = existing.accession_number
   WHERE existing.accession_number IS NULL
-    AND src.ticker IN (SELECT symbol FROM universe)
+    AND src.ticker IN (SELECT ticker FROM sec_universe)
     AND src.filing_section IS NOT NULL
     AND src.filing_section <> 'metadata'
     AND src.filing_section NOT LIKE 'xbrl_fact_%'

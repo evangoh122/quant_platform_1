@@ -15,9 +15,21 @@
 --
 -- Idempotent: MERGE on the natural composite key with null-safe sentinels.
 -- Source anti-join: only processes accessions absent from silver.
+--
+-- Universe: all symbols ever in gold_tradable_universe (CTE) unioned with
+--   the 16 SEC-hardcoded tickers. Do NOT filter by config/universe.yaml.
 
 MERGE INTO bootcamp_students.evangoh_capstone.silver_sec_entities AS tgt
 USING (
+  WITH sec_universe AS (
+    SELECT DISTINCT upper(trim(symbol)) AS ticker
+    FROM bootcamp_students.evangoh_capstone.gold_tradable_universe
+    UNION
+    SELECT ticker FROM (VALUES
+      ('NVDA'),('TSM'),('AVGO'),('MU'),('AMD'),('ASML'),('ADI'),('TXN'),
+      ('LRCX'),('AMAT'),('QCOM'),('INTC'),('MRVL'),('KLAC'),('CDNS'),('SNPS')
+    ) AS hardcoded(ticker)
+  )
   -- 1. XBRL facts
   SELECT
     src.cik,
@@ -41,7 +53,7 @@ USING (
   ) existing ON src.accession_number = existing.accession_number
   WHERE existing.accession_number IS NULL
     AND src.filing_section LIKE 'xbrl_fact_%'
-    AND src.ticker IN (SELECT symbol FROM universe)
+    AND src.ticker IN (SELECT ticker FROM sec_universe)
     AND src.chunk_text IS NOT NULL
     AND src.cik IS NOT NULL AND src.accession_number IS NOT NULL
     AND src.form_type IS NOT NULL AND src.accepted_ts IS NOT NULL
@@ -74,7 +86,7 @@ USING (
     ) existing ON src.accession_number = existing.accession_number
     WHERE existing.accession_number IS NULL
       AND src.company_name IS NOT NULL
-      AND src.ticker IN (SELECT symbol FROM universe)
+      AND src.ticker IN (SELECT ticker FROM sec_universe)
   ) sub
   WHERE sub.rn = 1
 
@@ -103,7 +115,7 @@ USING (
   ) existing ON src.accession_number = existing.accession_number
   WHERE existing.accession_number IS NULL
     AND src.filing_section = 'item1a_risk_factors'
-    AND src.ticker IN (SELECT symbol FROM universe)
+    AND src.ticker IN (SELECT ticker FROM sec_universe)
     AND src.chunk_text IS NOT NULL
     AND src.cik IS NOT NULL AND src.accession_number IS NOT NULL
     AND src.form_type IS NOT NULL AND src.accepted_ts IS NOT NULL
@@ -136,7 +148,7 @@ USING (
     ) existing ON src.accession_number = existing.accession_number
     WHERE existing.accession_number IS NULL
       AND src.form_type = '8-K'
-      AND src.ticker IN (SELECT symbol FROM universe)
+      AND src.ticker IN (SELECT ticker FROM sec_universe)
   ) sub
   WHERE sub.rn = 1
 ) AS src

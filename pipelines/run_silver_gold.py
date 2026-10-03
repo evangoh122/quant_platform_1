@@ -82,6 +82,12 @@ def get_spark() -> DatabricksSession:
 
 
 def register_universe(spark) -> list[str]:
+    """Register the expanded SEC universe as a temp view.
+
+    Combines gold_tradable_universe (all symbols ever traded) with the
+    16 hardcoded SEC tickers, so silver transforms can ingest new tickers
+    beyond the original MVP universe.
+    """
     symbols = load_universe()
     df = spark.createDataFrame([(s,) for s in symbols], schema="symbol string")
     df.createOrReplaceTempView("universe")

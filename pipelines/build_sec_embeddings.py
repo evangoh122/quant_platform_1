@@ -69,7 +69,8 @@ def build(
     """Build embeddings for chunks not yet embedded.
 
     Uses Spark left anti-join to find unembedded chunks -- never collects
-    all chunk IDs into the driver.
+    all chunk IDs into the driver at once. Processes in bounded batches
+    via toLocalIterator() to keep driver memory bounded.
 
     Returns dict with keys: rows_written, embedding_dim, rows_already_embedded.
     """
@@ -110,65 +111,95 @@ def build(
     if limit > 0:
         anti_join_df = anti_join_df.limit(limit)
 
-    new_rows = anti_join_df.collect()
+    if partitions > 1:
+        anti_join_df = anti_join_df.repartition(partitions)
 
-    if not new_rows:
-        elapsed = time.monotonic() - t0
-        return {
-            "rows_written": 0,
-            "embedding_dim": EMBEDDING_DIM,
-            "rows_already_embedded": -1,  # unknown with anti-join
-            "elapsed_seconds": round(elapsed, 1),
-        }
-
-    # Embed in bounded batches
+    # Use toLocalIterator() to stream rows in bounded batches instead of
+    # collecting all rows into driver memory at once.
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     out_rows = []
-    total = len(new_rows)
+    total_processed = 0
+    rows_written = 0
 
-    for batch_start in range(0, total, batch_size):
-        batch = new_rows[batch_start : batch_start + batch_size]
-        texts = [r["chunk_text"] for r in batch]
-        vecs = embeddings.embed_documents(texts)
+    for row in anti_join_df.toLocalIterator():
+        chunk_text = row["chunk_text"]
+        if not chunk_text:
+            continue
 
-        for r, vec in zip(batch, vecs):
-            # Validate dimension
-            if len(vec) != EMBEDDING_DIM:
-                raise ValueError(
-                    f"Embedding dimension mismatch: expected {EMBEDDING_DIM}, "
-                    f"got {len(vec)} for chunk {r['chunk_id']}"
-                )
+        out_rows.append({
+            "chunk_id": row["chunk_id"],
+            "chunk_text": chunk_text,
+            "accession_number": row["accession_number"],
+            "ticker": row["ticker"],
+            "accepted_epoch": row["accepted_epoch"],
+        })
 
-            epoch = r["accepted_epoch"]
-            accepted_ts = (
-                datetime.fromtimestamp(int(epoch), tz=timezone.utc)
-                if epoch is not None
-                else None
+        # Process in bounded batches
+        if len(out_rows) >= batch_size:
+            rows_written += _embed_and_write_batch(
+                spark, embeddings, out_rows, now,
             )
-            out_rows.append((
-                r["chunk_id"],
-                r["accession_number"],
-                r["ticker"],
-                accepted_ts,
-                vec,
-                EMBEDDING_MODEL,
-                now,
-            ))
+            total_processed += len(out_rows)
+            if total_processed % 500 == 0:
+                print(f"  Processed {total_processed} chunks")
+            out_rows = []
 
-        done = min(batch_start + batch_size, total)
-        if done % 500 == 0 or done == total:
-            print(f"  Embedded {done}/{total}")
+    # Process remaining rows
+    if out_rows:
+        rows_written += _embed_and_write_batch(
+            spark, embeddings, out_rows, now,
+        )
+        total_processed += len(out_rows)
 
-    # Validate all vectors before write
-    for row in out_rows:
-        vec = row[4]
+    elapsed = time.monotonic() - t0
+    return {
+        "rows_written": rows_written,
+        "embedding_dim": EMBEDDING_DIM,
+        "rows_already_embedded": -1,  # unknown with anti-join
+        "elapsed_seconds": round(elapsed, 1),
+    }
+
+
+def _embed_and_write_batch(
+    spark,
+    embeddings,
+    batch: list,
+    now: datetime,
+) -> int:
+    """Embed a batch of chunks and MERGE into the embeddings table.
+
+    Returns the number of rows written.
+    """
+    if not batch:
+        return 0
+
+    texts = [r["chunk_text"] for r in batch]
+    vecs = embeddings.embed_documents(texts)
+
+    out_rows = []
+    for r, vec in zip(batch, vecs):
         if len(vec) != EMBEDDING_DIM:
             raise ValueError(
-                f"Vector dimension {len(vec)} != expected {EMBEDDING_DIM} "
-                f"for chunk {row[0]}"
+                f"Embedding dimension mismatch: expected {EMBEDDING_DIM}, "
+                f"got {len(vec)} for chunk {r['chunk_id']}"
             )
 
-    # Write to Delta via MERGE (append-only: never WHEN MATCHED UPDATE)
+        epoch = r["accepted_epoch"]
+        accepted_ts = (
+            datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+            if epoch is not None
+            else None
+        )
+        out_rows.append((
+            r["chunk_id"],
+            r["accession_number"],
+            r["ticker"],
+            accepted_ts,
+            vec,
+            EMBEDDING_MODEL,
+            now,
+        ))
+
     src_df = spark.createDataFrame(out_rows, schema=EMBEDDINGS_SCHEMA)
     src_df.createOrReplaceTempView("_embed_src")
 
@@ -179,13 +210,7 @@ def build(
         WHEN NOT MATCHED THEN INSERT *
     """)
 
-    elapsed = time.monotonic() - t0
-    return {
-        "rows_written": len(out_rows),
-        "embedding_dim": EMBEDDING_DIM,
-        "rows_already_embedded": -1,
-        "elapsed_seconds": round(elapsed, 1),
-    }
+    return len(out_rows)
 
 
 def main():
