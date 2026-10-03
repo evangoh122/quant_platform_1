@@ -6,7 +6,7 @@ Commit ca929ec:
 - degrades to BM25-only when the embedding fails at query time.
 
 Read `.agents/requests/BUILD-post-merge-round4.md`. Read-only. Write
-`.agents/deepseek/VERDICT-post-merge-round4.md` (===VERDICT START/END===, Status).
+`.agents/deepseek/VERDICT-post-merge-round5.md` (===VERDICT START/END===, Status).
 
 Claude's live results:
 - default → 5 hybrid NVDA results, filing accepted 2024-11-20 (`as_of` 2025-01-01 respected);
@@ -26,3 +26,19 @@ Check:
 
 Run `python3 -m pytest -q -p no:cacheprovider tests/rag tests/test_schema_env_override.py`, with and
 without pyspark and databricks.connect hidden.
+
+## Re-check after round 5 (this run)
+Commit 99a8e1f: config errors raise `EmbeddingConfigError`, and the embedder-failure test is fixed.
+Claude's live results:
+- default → 5 hybrid results (2024-11-20);
+- `EMBEDDING_PROVIDER=huggingface` with no token → `retrieval_unavailable`, BUT the message reads
+  "SEC filing corpus could not be loaded. Check Delta table connectivity." The spec required the
+  message to NAME the missing setting. Does this block? It sends an operator to the wrong place.
+
+Verify:
+- your two round-4 findings are fixed, with the mutation proofs;
+- config vs transient classification;
+- no secret values in any message;
+- the end-to-end tests.
+
+Write `.agents/deepseek/VERDICT-post-merge-round5.md`.
