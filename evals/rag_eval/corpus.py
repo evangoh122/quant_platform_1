@@ -19,6 +19,39 @@ import numpy as np
 from evals.rag_eval.models import CorpusRecord
 
 
+# ── Timestamp resolution ─────────────────────────────────────────────────────
+
+def _resolve_accepted_ts(obj: dict[str, Any]) -> str:
+    """Resolve accepted_ts from a JSONL record dict.
+
+    Priority:
+      1. accepted_epoch (int, seconds UTC) → ISO UTC string
+      2. accepted_ts (str) → pass through if non-empty
+      3. Neither present → raise ValueError at load time
+    """
+    from datetime import datetime, timezone
+
+    epoch = obj.get("accepted_epoch")
+    ts_str = obj.get("accepted_ts", "")
+
+    if epoch is not None:
+        try:
+            dt = datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+            return dt.isoformat()
+        except (ValueError, OSError) as exc:
+            raise ValueError(
+                f"Invalid accepted_epoch {epoch!r}: {exc}"
+            ) from exc
+
+    if ts_str:
+        return ts_str
+
+    raise ValueError(
+        f"Record {obj.get('chunk_id', '?')!r} has neither accepted_epoch nor accepted_ts. "
+        f"Every record must have a timestamp."
+    )
+
+
 # ── Adapter protocol ──────────────────────────────────────────────────────────
 
 class CorpusAdapter(Protocol):
@@ -80,7 +113,7 @@ class JsonlCorpusAdapter:
                     accession=obj.get("accession_number", obj.get("accession", "")),
                     section=obj.get("filing_section", obj.get("section", "")),
                     form_type=obj.get("form_type", ""),
-                    accepted_ts=obj.get("accepted_ts", ""),
+                    accepted_ts=_resolve_accepted_ts(obj),
                     text=obj.get("chunk_text", obj.get("text", "")),
                     chunk_index=obj.get("chunk_index", 0),
                     source_url=obj.get("source_url", ""),
@@ -488,7 +521,7 @@ def build_local_embeddings(
                 accession=obj.get("accession_number", obj.get("accession", "")),
                 section=obj.get("filing_section", obj.get("section", "")),
                 form_type=obj.get("form_type", ""),
-                accepted_ts=obj.get("accepted_ts", ""),
+                accepted_ts=_resolve_accepted_ts(obj),
                 text=obj.get("chunk_text", obj.get("text", "")),
                 chunk_index=obj.get("chunk_index", 0),
                 source_url=obj.get("source_url", ""),

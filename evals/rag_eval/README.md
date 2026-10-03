@@ -110,6 +110,27 @@ build_local_embeddings(
 "
 ```
 
+### Creating a sidecar from pre-computed arrays
+
+If you have embeddings from another source (e.g., a different model, a batch job),
+use the `build_sidecar` CLI:
+
+```bash
+python -m evals.rag_eval.build_sidecar \
+  --npy embeddings.npy \
+  --ids chunk_ids.txt \
+  --corpus corpus.jsonl \
+  --out sidecar.npz \
+  --model "BAAI/bge-small-en-v1.5" \
+  --normalized
+```
+
+Supported formats:
+- `--npy`: `.npy` (NumPy array) or `.f32` (raw float32 binary, requires `--dim`)
+- `--ids`: `.npy` (NumPy array) or `.txt` (one ID per line)
+
+The tool validates embedding/ID count and computes the corpus SHA-256 hash.
+
 **Do not commit the full corpus, full embeddings, or generated reports.**
 
 ## Generation Mode (Phase 2)

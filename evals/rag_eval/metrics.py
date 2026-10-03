@@ -164,10 +164,11 @@ def score_abstention(
         if not hits:
             result["abstention_label"] = "no_gold_retrieved"
         else:
-            # Check if any future evidence leaked through
+            # Check if any future evidence leaked through.
+            # Missing or unparseable timestamps are treated as violations (fail-closed).
             future_hits = [
                 h for h in hits
-                if _parse_ts(h.accepted_ts) and _parse_ts(h.accepted_ts) > as_of
+                if _parse_ts(h.accepted_ts) is None or _parse_ts(h.accepted_ts) > as_of
             ]
             if future_hits:
                 result["abstention_label"] = "future_leakage"
@@ -184,10 +185,11 @@ def score_abstention(
         top = hits[0]
         top_dt = _parse_ts(top.accepted_ts)
 
-        # Check: no future evidence
+        # Check: no future evidence.
+        # Missing or unparseable timestamps are treated as violations (fail-closed).
         future_hits = [
             h for h in hits
-            if _parse_ts(h.accepted_ts) and _parse_ts(h.accepted_ts) > as_of
+            if _parse_ts(h.accepted_ts) is None or _parse_ts(h.accepted_ts) > as_of
         ]
         if future_hits:
             result["allowed_top_hit"] = False

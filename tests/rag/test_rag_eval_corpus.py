@@ -21,7 +21,7 @@ class TestJsonlAdapterValidatesManifest:
         """Valid .npz with matching corpus hash loads successfully."""
         from evals.rag_eval.corpus import JsonlCorpusAdapter
 
-        corpus_line = '{"chunk_id": "c1", "ticker": "X", "chunk_text": "hello"}'
+        corpus_line = '{"chunk_id": "c1", "ticker": "X", "chunk_text": "hello", "accepted_ts": "2024-01-01T00:00:00+00:00"}'
         corpus_path = tmp_path / "corpus.jsonl"
         corpus_path.write_text(corpus_line + "\n", encoding="utf-8")
         # Hash must match how from_files computes it: stripped lines joined by \n
@@ -50,7 +50,7 @@ class TestJsonlAdapterValidatesManifest:
         from evals.rag_eval.corpus import JsonlCorpusAdapter
 
         corpus_path = tmp_path / "corpus.jsonl"
-        corpus_path.write_text('{"chunk_id": "c1", "chunk_text": "x"}\n', encoding="utf-8")
+        corpus_path.write_text('{"chunk_id": "c1", "chunk_text": "x", "accepted_ts": "2024-01-01T00:00:00+00:00"}\n', encoding="utf-8")
 
         emb_path = tmp_path / "emb.npz"
         vecs = np.random.RandomState(42).randn(1, 384).astype(np.float32)
@@ -72,7 +72,7 @@ class TestJsonlAdapterValidatesManifest:
         """Non-uniform embedding dimensions raise ValueError."""
         from evals.rag_eval.corpus import JsonlCorpusAdapter
 
-        corpus_content = '{"chunk_id": "c1", "chunk_text": "x"}\n{"chunk_id": "c2", "chunk_text": "y"}\n'
+        corpus_content = '{"chunk_id": "c1", "chunk_text": "x", "accepted_ts": "2024-01-01T00:00:00+00:00"}\n{"chunk_id": "c2", "chunk_text": "y", "accepted_ts": "2024-01-01T00:00:00+00:00"}\n'
         corpus_path = tmp_path / "corpus.jsonl"
         corpus_path.write_text(corpus_content, encoding="utf-8")
         corpus_sha = hashlib.sha256(corpus_content.encode()).hexdigest()
@@ -101,7 +101,7 @@ class TestDenseRequiresEmbeddings:
         from evals.rag_eval.corpus import JsonlCorpusAdapter
 
         corpus_path = tmp_path / "corpus.jsonl"
-        corpus_path.write_text('{"chunk_id": "c1", "chunk_text": "x"}\n', encoding="utf-8")
+        corpus_path.write_text('{"chunk_id": "c1", "chunk_text": "x", "accepted_ts": "2024-01-01T00:00:00+00:00"}\n', encoding="utf-8")
 
         adapter = JsonlCorpusAdapter.from_files(corpus_path, None)
         assert not adapter.has_embeddings

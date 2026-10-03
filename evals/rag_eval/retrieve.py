@@ -105,10 +105,12 @@ def assert_no_pit_leakage(
     """Check that no returned chunk has accepted_ts > as_of.
 
     Returns the count of leaked chunks.  Raises ValueError if any leak found.
+    Missing or unparseable timestamps are treated as violations (fail-closed).
     """
     leak_count = 0
     for h in hits:
         if not h.accepted_ts:
+            leak_count += 1
             continue
         try:
             ts_str = h.accepted_ts.replace("T", " ").replace("Z", "+00:00")
@@ -118,10 +120,8 @@ def assert_no_pit_leakage(
             if accepted_dt > as_of:
                 leak_count += 1
         except (ValueError, TypeError):
-            # Unparseable acceptance is an error
-            raise ValueError(
-                f"Unparseable accepted_ts '{h.accepted_ts}' for chunk {h.chunk_id}"
-            )
+            # Unparseable timestamp is a PIT violation (fail-closed)
+            leak_count += 1
 
     if leak_count > 0:
         raise ValueError(
