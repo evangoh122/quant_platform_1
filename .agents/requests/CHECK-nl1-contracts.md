@@ -3,7 +3,7 @@
 Branch `slice/nl-contracts`. Spec: `.agents/requests/BUILD-nl1-contracts.md` plus the amendment
 `BUILD-nl1-amendment-put-call.md`. Plan: `docs/PUBLIC_NL_ANALYTICS_V1_PLAN.md`. MiMo built
 `analytics_nl/` (contracts, registry, aliases, policy, schemas, data YAML) with 167 tests. Read-only.
-Write `.agents/deepseek/VERDICT-nl1-contracts-check3.md` (===VERDICT START/END===, Status).
+Write `.agents/deepseek/VERDICT-nl1-contracts-check4.md` (===VERDICT START/END===, Status).
 
 Check, adversarially:
 1. **The LLM output schema cannot express SQL, table or column names, code, or URLs.**
@@ -62,3 +62,16 @@ Verify:
 - the round-1 checks still hold.
 
 Write `.agents/deepseek/VERDICT-nl1-contracts-check3.md`.
+
+## Re-check after round 6 (this run)
+Round 6 makes `relative` a closed `RelativeDate` enum, audits every free-form string field in
+`LLMIntentOutput`, and adds a fuzz test. 258 tests pass. Claude: an injection in `relative` is
+rejected.
+
+Verify:
+- no remaining free-form string field in the LLM output schema accepts hostile content;
+- every enum value resolves correctly in America/New_York, including DST;
+- the fuzz test would catch a regression (mutation: loosen one field → it fails);
+- the schemas are regenerated.
+
+If nothing is blocking, say APPROVED. Write `.agents/deepseek/VERDICT-nl1-contracts-check4.md`.
