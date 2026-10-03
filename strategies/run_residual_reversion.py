@@ -201,7 +201,7 @@ def run_one(
 
 
 CHANGELOG = {
-    2: [
+    3: [
         {
             "fix": "Min-history gate now counts own trading sessions",
             "files": "`gold/06_gold_tradable_universe.sql`, `strategies/universe.py`",
@@ -213,26 +213,26 @@ CHANGELOG = {
             "rationale": "No more hardcoded dates in results header",
         },
     ],
-    3: [
+    4: [
         {
-            "fix": "NaN validity mask with min_obs",
+            "fix": "Missing returns are excluded, not treated as zero",
             "files": "`strategies/residual_reversion.py`",
-            "rationale": "Rolling regressions now mask NaN returns before counting valid rows; only windows with >= min_obs proceed",
+            "rationale": "Per-row validity mask; the regression uses the true count of valid days and is NaN below `min_obs` = ceil(0.8 x window)",
         },
         {
-            "fix": "Reductions never ADV-capped plus forward-filled ADV",
+            "fix": "Exits are never blocked by the ADV cap",
             "files": "`strategies/backtest.py`",
-            "rationale": "ADV median is forward-filled so early dates are not zero-capped; reduction trades exempt from ADV cap",
+            "rationale": "Only increases are capped; ADV is forward-filled for names that leave the universe, so a position can always be reduced to zero",
         },
         {
-            "fix": "Full 60-row median window",
-            "files": "`strategies/universe.py`",
-            "rationale": "Trailing median ADV now uses exactly 60 trading days, not a shorter default",
+            "fix": "Universe median requires a full 60-session window",
+            "files": "`gold/06_gold_tradable_universe.sql`",
+            "rationale": "`med_adv_60d` is NULL unless all 60 prior sessions have volume, matching the pandas reference `min_periods=60`",
         },
         {
-            "fix": "Full 50-row SMA window",
-            "files": "`strategies/residual_reversion.py`",
-            "rationale": "Signal smoothing SMA uses the full 50-row window instead of a truncated default",
+            "fix": "Breadth SMA50 requires a full 50-day window",
+            "files": "`gold/07_gold_regime_features.sql`",
+            "rationale": "The first 49 dates are labelled MIXED instead of BROAD/NARROW from a partial average",
         },
     ],
 }
