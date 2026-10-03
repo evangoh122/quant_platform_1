@@ -59,3 +59,6 @@ python3 -m pytest -q --ignore=tests/lakebase
 |------|--------|
 | `tests/api/test_public_demo_security.py` | `_strip_ambient_secrets` autouse fixture; `_make_demo_app` calls `create_app()` directly; `test_no_lakebase_import_in_demo` saves/restores `db.lakebase`; removed `_isolate_modules`; removed `sys.modules` clearing from `test_unsafe_variable_rejected_at_construction` and `test_safe_empty_environment_starts` |
 | `tests/api/conftest.py` | `client` fixture uses `create_app()` instead of module-level `app` |
+
+## Commit SHA (round 2)
+`888f757` (branch: `slice/render-lane-b`)
