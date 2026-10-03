@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from importlib import resources
 from typing import Any, Protocol
@@ -222,9 +222,11 @@ def resolve_relative_date(
 ) -> tuple[date, date] | None:
     """Resolve relative date expressions.
 
-    Supports 'last month' and 'YTD'. Uses injected clock or as_of date.
+    Supports all RelativeDate enum values. Uses injected clock or as_of date.
     Returns (start, end) or None if unrecognized.
     """
+    from analytics_nl.contracts import RelativeDate
+
     normalized = _normalize(relative)
     tz = ZoneInfo("America/New_York")
 
@@ -234,22 +236,108 @@ def resolve_relative_date(
         c = clock or _SystemClock()
         current_date = c.now().date()
 
-    if normalized == "last month":
+    # Map normalized aliases to enum values
+    _ALIAS_MAP: dict[str, RelativeDate] = {
+        "last week": RelativeDate.last_week,
+        "last month": RelativeDate.last_month,
+        "last quarter": RelativeDate.last_quarter,
+        "last year": RelativeDate.last_year,
+        "ytd": RelativeDate.ytd,
+        "mtd": RelativeDate.mtd,
+        "qtd": RelativeDate.qtd,
+        "last 5 days": RelativeDate.last_5_days,
+        "last 30 days": RelativeDate.last_30_days,
+        "last 90 days": RelativeDate.last_90_days,
+        "last 252 days": RelativeDate.last_252_days,
+    }
+
+    # Also accept enum values directly (e.g. "last_month")
+    for rd in RelativeDate:
+        if normalized == rd.value:
+            _ALIAS_MAP[normalized] = rd
+
+    enum_val = _ALIAS_MAP.get(normalized)
+    if enum_val is None:
+        return None
+
+    from calendar import monthrange
+
+    if enum_val == RelativeDate.last_week:
+        # Monday to Sunday of the prior week
+        days_since_monday = current_date.weekday()
+        end = current_date - timedelta(days=days_since_monday + 1)
+        start = end - timedelta(days=6)
+        return (start, end)
+
+    if enum_val == RelativeDate.last_month:
         # Prior calendar month inclusive
         if current_date.month == 1:
             start = date(current_date.year - 1, 12, 1)
             end = date(current_date.year - 1, 12, 31)
         else:
-            from calendar import monthrange
             start = date(current_date.year, current_date.month - 1, 1)
             _, last_day = monthrange(current_date.year, current_date.month - 1)
             end = date(current_date.year, current_date.month - 1, last_day)
         return (start, end)
 
-    if normalized == "ytd":
+    if enum_val == RelativeDate.last_quarter:
+        # Prior calendar quarter inclusive
+        q = (current_date.month - 1) // 3
+        if q == 0:
+            start = date(current_date.year - 1, 10, 1)
+            end = date(current_date.year - 1, 12, 31)
+        else:
+            start_month = (q - 1) * 3 + 1
+            start = date(current_date.year, start_month, 1)
+            end_month = start_month + 2
+            _, last_day = monthrange(current_date.year, end_month)
+            end = date(current_date.year, end_month, last_day)
+        return (start, end)
+
+    if enum_val == RelativeDate.last_year:
+        # Prior calendar year inclusive
+        start = date(current_date.year - 1, 1, 1)
+        end = date(current_date.year - 1, 12, 31)
+        return (start, end)
+
+    if enum_val == RelativeDate.ytd:
         # Jan 1 through current date inclusive
         start = date(current_date.year, 1, 1)
         end = current_date
+        return (start, end)
+
+    if enum_val == RelativeDate.mtd:
+        # First of month through current date inclusive
+        start = date(current_date.year, current_date.month, 1)
+        end = current_date
+        return (start, end)
+
+    if enum_val == RelativeDate.qtd:
+        # First of quarter through current date inclusive
+        q = (current_date.month - 1) // 3
+        start_month = q * 3 + 1
+        start = date(current_date.year, start_month, 1)
+        end = current_date
+        return (start, end)
+
+    if enum_val == RelativeDate.last_5_days:
+        end = current_date
+        start = current_date - timedelta(days=4)
+        return (start, end)
+
+    if enum_val == RelativeDate.last_30_days:
+        end = current_date
+        start = current_date - timedelta(days=29)
+        return (start, end)
+
+    if enum_val == RelativeDate.last_90_days:
+        end = current_date
+        start = current_date - timedelta(days=89)
+        return (start, end)
+
+    if enum_val == RelativeDate.last_252_days:
+        end = current_date
+        start = current_date - timedelta(days=251)
         return (start, end)
 
     return None

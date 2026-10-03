@@ -276,6 +276,185 @@ class TestInjectedClock:
         assert end == date(2024, 2, 29)
 
 
+class TestAllRelativeDateValues:
+    """Every RelativeDate enum value must resolve correctly, including DST edges."""
+
+    def test_last_week_wednesday(self):
+        """Wednesday June 19, 2024 → last week = Mon Jun 10..Sun Jun 16."""
+        result = resolve_relative_date("last_week", as_of=date(2024, 6, 19))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 6, 10)
+        assert end == date(2024, 6, 16)
+
+    def test_last_week_monday(self):
+        """Monday June 17, 2024 → last week = Mon Jun 10..Sun Jun 16."""
+        result = resolve_relative_date("last_week", as_of=date(2024, 6, 17))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 6, 10)
+        assert end == date(2024, 6, 16)
+
+    def test_last_month_alias(self):
+        """last_month alias must work same as 'last month'."""
+        result = resolve_relative_date("last_month", as_of=date(2024, 2, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 1, 1)
+        assert end == date(2024, 1, 31)
+
+    def test_last_quarter_q2(self):
+        """June 15, 2024 (Q2) → last quarter = Jan 1..Mar 31."""
+        result = resolve_relative_date("last_quarter", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 1, 1)
+        assert end == date(2024, 3, 31)
+
+    def test_last_quarter_q1(self):
+        """Feb 15, 2024 (Q1) → last quarter = Oct 1..Dec 31, 2023."""
+        result = resolve_relative_date("last_quarter", as_of=date(2024, 2, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2023, 10, 1)
+        assert end == date(2023, 12, 31)
+
+    def test_last_quarter_q4(self):
+        """Dec 15, 2024 (Q4) → last quarter = Jul 1..Sep 30."""
+        result = resolve_relative_date("last_quarter", as_of=date(2024, 12, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 7, 1)
+        assert end == date(2024, 9, 30)
+
+    def test_last_year(self):
+        """2024 → last year = Jan 1..Dec 31, 2023."""
+        result = resolve_relative_date("last_year", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2023, 1, 1)
+        assert end == date(2023, 12, 31)
+
+    def test_ytd_alias(self):
+        """ytd alias must work same as 'YTD'."""
+        result = resolve_relative_date("ytd", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 1, 1)
+        assert end == date(2024, 6, 15)
+
+    def test_mtd(self):
+        """June 15, 2024 → MTD = Jun 1..Jun 15."""
+        result = resolve_relative_date("mtd", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 6, 1)
+        assert end == date(2024, 6, 15)
+
+    def test_mtd_first_of_month(self):
+        """June 1, 2024 → MTD = Jun 1..Jun 1."""
+        result = resolve_relative_date("mtd", as_of=date(2024, 6, 1))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 6, 1)
+        assert end == date(2024, 6, 1)
+
+    def test_qtd_q2(self):
+        """June 15, 2024 (Q2) → QTD = Apr 1..Jun 15."""
+        result = resolve_relative_date("qtd", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 4, 1)
+        assert end == date(2024, 6, 15)
+
+    def test_qtd_q1(self):
+        """Feb 15, 2024 (Q1) → QTD = Jan 1..Feb 15."""
+        result = resolve_relative_date("qtd", as_of=date(2024, 2, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 1, 1)
+        assert end == date(2024, 2, 15)
+
+    def test_last_5_days(self):
+        """June 15, 2024 → last 5 days = Jun 11..Jun 15."""
+        result = resolve_relative_date("last_5_days", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 6, 11)
+        assert end == date(2024, 6, 15)
+
+    def test_last_30_days(self):
+        """June 15, 2024 → last 30 days = May 17..Jun 15."""
+        result = resolve_relative_date("last_30_days", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 5, 17)
+        assert end == date(2024, 6, 15)
+
+    def test_last_90_days(self):
+        """June 15, 2024 → last 90 days = Mar 18..Jun 15."""
+        result = resolve_relative_date("last_90_days", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 3, 18)
+        assert end == date(2024, 6, 15)
+
+    def test_last_252_days(self):
+        """June 15, 2024 → last 252 days = Oct 8, 2023..Jun 15, 2024."""
+        result = resolve_relative_date("last_252_days", as_of=date(2024, 6, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2023, 10, 8)
+        assert end == date(2024, 6, 15)
+
+    def test_dst_spring_forward_last_week(self):
+        """March 10, 2024 is DST spring-forward. Last week = Mar 4..Mar 10."""
+        result = resolve_relative_date("last_week", as_of=date(2024, 3, 11))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 3, 4)
+        assert end == date(2024, 3, 10)
+
+    def test_dst_fall_back_last_week(self):
+        """November 3, 2024 is DST fall-back. Last week = Oct 28..Nov 3."""
+        result = resolve_relative_date("last_week", as_of=date(2024, 11, 4))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 10, 28)
+        assert end == date(2024, 11, 3)
+
+    def test_leap_year_last_month(self):
+        """Feb 2024 is leap year. Last month = Jan 1..Jan 31."""
+        result = resolve_relative_date("last_month", as_of=date(2024, 2, 29))
+        assert result is not None
+        start, end = result
+        assert start == date(2024, 1, 1)
+        assert end == date(2024, 1, 31)
+
+    def test_year_boundary_last_quarter(self):
+        """Jan 2024 (Q1) → last quarter = Oct 1..Dec 31, 2023."""
+        result = resolve_relative_date("last_quarter", as_of=date(2024, 1, 15))
+        assert result is not None
+        start, end = result
+        assert start == date(2023, 10, 1)
+        assert end == date(2023, 12, 31)
+
+    def test_all_enum_values_resolve(self):
+        """Every RelativeDate enum value must resolve to a valid date range."""
+        from analytics_nl.contracts import RelativeDate
+        for rd in RelativeDate:
+            result = resolve_relative_date(rd.value, as_of=date(2024, 6, 15))
+            assert result is not None, f"{rd.value} returned None"
+            start, end = result
+            assert start <= end, f"{rd.value}: start {start} > end {end}"
+
+    def test_unknown_returns_none(self):
+        """Unknown strings must return None."""
+        assert resolve_relative_date("foobar", as_of=date(2024, 6, 15)) is None
+        assert resolve_relative_date("next week", as_of=date(2024, 6, 15)) is None
+        assert resolve_relative_date("", as_of=date(2024, 6, 15)) is None
+
+
 class TestMetricAliases:
     """Metric alias resolution for put_call_ratio synonyms."""
 

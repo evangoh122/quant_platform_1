@@ -18,16 +18,13 @@
         "relative": {
           "anyOf": [
             {
-              "maxLength": 50,
-              "minLength": 1,
-              "type": "string"
+              "$ref": "#/$defs/RelativeDate"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Relative"
+          "default": null
         }
       },
       "title": "DateExpression",
@@ -111,6 +108,24 @@
         "aggregate"
       ],
       "title": "Operation",
+      "type": "string"
+    },
+    "RelativeDate": {
+      "description": "Closed set of relative date expressions.\n\nEach value is a canonical wire value that ``resolve_relative_date`` accepts.\nAliases (e.g. \"last month\" → ``last_month``) are handled in the deterministic\nalias layer, NOT in the LLM schema.",
+      "enum": [
+        "last_week",
+        "last_month",
+        "last_quarter",
+        "last_year",
+        "ytd",
+        "mtd",
+        "qtd",
+        "last_5_days",
+        "last_30_days",
+        "last_90_days",
+        "last_252_days"
+      ],
+      "title": "RelativeDate",
       "type": "string"
     }
   },

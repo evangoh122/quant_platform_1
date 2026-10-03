@@ -111,6 +111,27 @@ class CacheStatus(str, Enum):
     bypass = "bypass"
 
 
+class RelativeDate(str, Enum):
+    """Closed set of relative date expressions.
+
+    Each value is a canonical wire value that ``resolve_relative_date`` accepts.
+    Aliases (e.g. "last month" → ``last_month``) are handled in the deterministic
+    alias layer, NOT in the LLM schema.
+    """
+
+    last_week = "last_week"
+    last_month = "last_month"
+    last_quarter = "last_quarter"
+    last_year = "last_year"
+    ytd = "ytd"
+    mtd = "mtd"
+    qtd = "qtd"
+    last_5_days = "last_5_days"
+    last_30_days = "last_30_days"
+    last_90_days = "last_90_days"
+    last_252_days = "last_252_days"
+
+
 class ChartType(str, Enum):
     """Approved chart types."""
 
@@ -315,7 +336,7 @@ class DateExpression(FrozenStrictModel):
     """Date expression from LLM — either explicit range or relative text."""
 
     explicit_range: DateRange | None = None
-    relative: Annotated[str, Field(min_length=1, max_length=50)] | None = None
+    relative: RelativeDate | None = None
 
     @model_validator(mode="after")
     def validate_one_set(self) -> DateExpression:
