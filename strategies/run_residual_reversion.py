@@ -296,6 +296,13 @@ CHANGELOG = {
             "rationale": "Bare relative paths (`gold/...`, `db/migrations`) broke when pytest cwd differed from repo root. Now resolved via `Path(__file__).resolve().parents[2]`",
         },
     ],
+    9: [
+        {
+            "fix": "Single ADV frame for cap and costs — dropped-name exit uses last known ADV",
+            "files": "`strategies/backtest.py`",
+            "rationale": "`run_backtest` rebuilt `adv_aligned` with `fillna(0.0)` before `compute_costs`, so a dropped name's exit was costed at 100% participation (~202 bps) instead of its last known ADV (~12 bps). Now builds ONE ADV frame: per-symbol forward-fill then `fillna(0)` for never-seen symbols; passes the SAME frame to both `cap_weight_changes_by_adv` and `compute_costs`",
+        },
+    ],
 }
 
 

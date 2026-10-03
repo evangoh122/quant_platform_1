@@ -334,20 +334,27 @@ def run_backtest(
     # The capped positions are what the portfolio actually holds; P&L and
     # borrow are computed on these, not the uncapped neutralised weights.
     # Zero-ADV names can never accumulate a position.
-    # Do not fillna(0) here — cap_weight_changes_by_adv forward-fills per
-    # symbol so the last known ADV is used for names that leave the universe.
+    #
+    # Build ONE ADV frame: per-symbol forward-fill of past values only, then
+    # fillna(0) only where a symbol has never had a value.  Pass this SAME
+    # frame to both cap_weight_changes_by_adv and compute_costs so that a
+    # dropped name's exit is costed at its LAST KNOWN ADV, not 100%
+    # participation.
     adv_aligned = adv.reindex(index=weights.index, columns=weights.columns)
+    adv_aligned = adv_aligned.ffill().fillna(0.0)
     weights = cap_weight_changes_by_adv(weights, adv_aligned, book_capital, params=cost_params)
 
     # Book return on day t is earned by the weights established at t-1.
     gross = (weights.shift(1).fillna(0.0) * returns).sum(axis=1)
 
-    adv_aligned = adv.reindex(index=returns.index, columns=returns.columns)
-    adv_aligned = adv_aligned.fillna(0.0)
+    # Use the SAME ffill-then-zero ADV frame for costs.  Reindex to
+    # returns.index in case it extends beyond weights.index; ffill again
+    # so any extra dates still carry the last known ADV.
+    adv_for_costs = adv_aligned.reindex(index=returns.index, columns=returns.columns).ffill().fillna(0.0)
 
-    costs = compute_costs(weights, adv_aligned, book_capital, cost_params,
+    costs = compute_costs(weights, adv_for_costs, book_capital, cost_params,
                           cost_multiplier=1.0)
-    costs_2x = compute_costs(weights, adv_aligned, book_capital, cost_params,
+    costs_2x = compute_costs(weights, adv_for_costs, book_capital, cost_params,
                              cost_multiplier=2.0)
     net = gross - costs["total"]
     net_2x = gross - costs_2x["total"]
