@@ -69,3 +69,14 @@ Verify each one, with proofs:
 
 Also hunt for any OTHER report section that looks computed but isn't.
 Write `.agents/deepseek/VERDICT-strategy-robustness-check3.md`.
+
+## Re-check after round 4 (this run)
+MiMo round 4 addresses your check3 findings (see `.agents/requests/BUILD-strategy-robustness-round4.md`):
+- the rank IC target is the forward residual sum;
+- the t-stat is HAC (Newey-West) or non-overlapping;
+- drop-top-3 re-runs the full backtest (neutralise, cap, costs) → net vs net;
+- sector exposure is reported as the max |net|.
+
+Verify each one, with proofs (synthetic factor-dominated panel; AR-correlated IC series; zero-cost
+hand check). Hunt for any remaining miscomputed quantity in the report.
+Write `.agents/deepseek/VERDICT-strategy-robustness-check4.md`.
