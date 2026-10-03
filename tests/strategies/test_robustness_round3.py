@@ -116,12 +116,14 @@ def _rank_ic_results():
     return {
         "ols_mkt_ind": {
             "mean_ic": -0.05, "std_ic": 0.03, "t_stat": -3.2,
-            "n": 90, "sign": "negative (expected under mean reversion)",
+            "n": 90, "effective_n": 18,
+            "sign": "negative (expected under mean reversion)",
             "hit_rate": 0.65,
         },
         "pca": {
             "mean_ic": -0.03, "std_ic": 0.025, "t_stat": -2.1,
-            "n": 90, "sign": "negative (expected under mean reversion)",
+            "n": 90, "effective_n": 18,
+            "sign": "negative (expected under mean reversion)",
             "hit_rate": 0.58,
         },
     }

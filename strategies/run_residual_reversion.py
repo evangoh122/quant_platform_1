@@ -571,7 +571,7 @@ def main() -> None:
             if hold_vr is None:
                 continue
             w_full = hold_vr["weights"]
-            ret_full = hold_vr["residual_returns"]
+            ret_full = hold_vr["trade_returns"]
             net_full = hold_vr["net"]
             if ret_full is None or w_full.empty:
                 continue
@@ -583,7 +583,8 @@ def main() -> None:
                 train_net = net_full.reindex(train_dates).dropna()
                 if train_net.empty:
                     continue
-                # Identify top-3 from training-window per-symbol P&L.
+                # Identify top-3 from training-window realised P&L
+                # (lagged weights × tradeable returns, same as run_one trades).
                 pnl_sym = (w_full.shift(1).fillna(0.0).reindex(train_net.index) *
                            ret_full.reindex(train_net.index)).sum()
                 top3 = pnl_sym.nlargest(3).index.tolist()
@@ -757,6 +758,7 @@ def _run_variant(variant_spec, closes, universe, adv_wide, industry,
         "oos_sharpe": oos_sharpe,
         "dropped_symbols": list(dropped_syms) if drop_top > 0 else [],
         "s_score": sig.get("s_score"),
+        "trade_returns": sig.get("returns"),
         "residual_returns": sig.get("residual"),
         "beta_mkt": beta_mkt,
         "industry": industry,

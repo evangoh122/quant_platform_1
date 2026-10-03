@@ -834,12 +834,15 @@ def render_robustness_report(
     L.append("## Rank IC")
     L.append("")
     if rank_ic_results:
-        L.append("| factor model | mean IC | IC t-stat | n | sign | hit rate |")
-        L.append("|---|---:|---:|---:|---|---:|")
+        L.append("_t-stat method: Newey-West HAC (Bartlett kernel, lag = H-1)._")
+        L.append("")
+        L.append("| factor model | mean IC | IC t-stat | n | eff. n | sign | hit rate |")
+        L.append("|---|---:|---:|---:|---:|---|---:|")
         for fm, ric in sorted(rank_ic_results.items()):
+            eff_n = ric.get("effective_n", ric["n"])
             L.append(
                 f"| {fm} | {ric['mean_ic']:.4f} | {ric['t_stat']:.2f} | "
-                f"{ric['n']} | {ric['sign']} | {ric['hit_rate']:.2f} |"
+                f"{ric['n']} | {eff_n} | {ric['sign']} | {ric['hit_rate']:.2f} |"
             )
     else:
         L.append("_Rank IC not available; s_score and residual_returns not in variant results._")
