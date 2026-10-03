@@ -41,6 +41,12 @@ class TestEmbeddingBuild:
         mock_anti_join_df.join.return_value = mock_anti_join_df
         mock_anti_join_df.repartition.return_value = mock_anti_join_df
         mock_anti_join_df.limit.return_value = mock_anti_join_df
+        # toLocalIterator yields MagicMock rows (used by new streaming code)
+        mock_anti_join_df.toLocalIterator.return_value = iter([
+            MagicMock(__getitem__=lambda self, k, d=chunk: d.get(k))
+            for chunk in new_chunks
+        ])
+        # collect is still used by some old paths
         mock_anti_join_df.collect.return_value = [
             MagicMock(__getitem__=lambda self, k, d=chunk: d.get(k))
             for chunk in new_chunks

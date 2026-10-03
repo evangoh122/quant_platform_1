@@ -55,6 +55,9 @@ def fake_pyspark(monkeypatch):
         def __gt__(self, other): return self
         def __eq__(self, other): return self  # noqa: E712
         def __ne__(self, other): return self  # noqa: E712
+        def __and__(self, other): return self
+        def __or__(self, other): return self
+        def __invert__(self): return self
         def __getattr__(self, name): return self
         def __call__(self, *a, **kw): return self
 
