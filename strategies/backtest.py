@@ -24,8 +24,6 @@ import pandas as pd
 from strategies.cost_model import (
     CostParams,
     borrow_bps_daily,
-    cost_per_trade,
-    scale_order_to_adv_cap,
 )
 from strategies.neutralize import neutralize_book
 
@@ -178,10 +176,12 @@ def compute_costs(
 ) -> Dict[str, pd.Series]:
     """Daily cost drag (fraction of capital) from turnover and short borrow.
 
-    Turnover is one-way (``0.5 * sum |dw|``). Each traded notional pays
-    ``cost_per_trade`` bps; the order is first capped at 1 % of the name's ADV
-    (``scale_order_to_adv_cap``) so a position sized beyond capacity is reduced.
-    Shorts additionally pay the daily borrow haircut by liquidity bucket.
+    Costs are charged on the notional actually executed after
+    ``cap_weight_changes_by_adv`` (never re-capped here): commission + half the
+    spread + slippage scaled by true participation (executed / ADV, relative to
+    the ADV cap). A name with unknown ADV is charged as 100 % participation
+    (conservative). Shorts additionally pay the daily borrow haircut by
+    liquidity bucket.
 
     Returns ``{"turnover_cost": Series, "borrow_cost": Series, "total": Series}``
     in units of fraction of ``book_capital``.
