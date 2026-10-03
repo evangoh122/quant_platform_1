@@ -59,13 +59,14 @@ def build_cost_params(config: Mapping) -> CostParams:
     cm = config.get("cost_model", {})
     borrow_daily = cm.get("borrow_bps_daily", {"liquid": 0.25, "medium": 0.75, "illiquid": 2.00})
     borrow_thresholds = cm.get("borrow_bucket_thresholds", [5.0e7, 2.0e7])
+    # Coerce every numeric field: YAML 1.1 (PyYAML) reads "5.0e7" as a string.
     return CostParams(
-        commission_bps=cm.get("commission_bps", 0.5),
-        spread_bps=cm.get("spread_bps", 3.0),
-        slippage_bps=cm.get("slippage_bps", 2.0),
-        adv_participation_cap=cm.get("adv_participation_cap", 0.01),
-        borrow_bps_daily=borrow_daily if isinstance(borrow_daily, dict) else dict(borrow_daily),
-        borrow_bucket_thresholds=tuple(borrow_thresholds),
+        commission_bps=float(cm.get("commission_bps", 0.5)),
+        spread_bps=float(cm.get("spread_bps", 3.0)),
+        slippage_bps=float(cm.get("slippage_bps", 2.0)),
+        adv_participation_cap=float(cm.get("adv_participation_cap", 0.01)),
+        borrow_bps_daily={str(k): float(v) for k, v in dict(borrow_daily).items()},
+        borrow_bucket_thresholds=tuple(float(x) for x in borrow_thresholds),
     )
 
 
@@ -117,10 +118,20 @@ def _fetch(w: WorkspaceClient, sql: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
+def _fetch_large(sql: str) -> pd.DataFrame:
+    """Run a large query via Databricks Connect (serverless) and return pandas."""
+    from databricks.connect import DatabricksSession
+
+    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    return spark.sql(sql).toPandas()
+
+
 def fetch_data(w: WorkspaceClient) -> Dict[str, pd.DataFrame]:
     from strategies.universe import screen_universe
 
-    bronze = _fetch(w, f"""
+    # The full bronze daily panel (~20k symbols) exceeds the SQL Statement API's
+    # 25 MB INLINE result limit, so it is pulled through Databricks Connect (Arrow).
+    bronze = _fetch_large(f"""
         SELECT symbol, event_date, close, volume
         FROM {FQN}.bronze_ohlcv_day
         WHERE close IS NOT NULL AND close > 0

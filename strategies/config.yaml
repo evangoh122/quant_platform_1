@@ -23,7 +23,7 @@ cost_model:
     liquid: 0.25
     medium: 0.75
     illiquid: 2.00
-  borrow_bucket_thresholds: [5.0e7, 2.0e7]
+  borrow_bucket_thresholds: [50000000.0, 20000000.0]  # plain decimals: PyYAML reads 5.0e7 as a string
 
 # ── Primary strategy: Residual mean-reversion ────────────────
 residual_reversion:

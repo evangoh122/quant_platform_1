@@ -166,3 +166,24 @@ def test_leverage_wording_says_50pct():
     assert "100% long / 100% short" not in line, (
         f"should NOT say '100% long / 100% short', got: {line}"
     )
+
+
+def test_build_cost_params_from_real_config_is_numeric():
+    """The shipped strategies/config.yaml must produce numeric cost params.
+
+    PyYAML (YAML 1.1) parses exponent literals like ``5.0e7`` as strings, which
+    crashed the live run in ``liquidity_bucket``. Guard both the file and the coercion.
+    """
+    import yaml
+    from strategies.run_residual_reversion import build_cost_params
+
+    with open("strategies/config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    p = build_cost_params(cfg)
+    assert all(isinstance(x, float) for x in p.borrow_bucket_thresholds)
+    assert all(isinstance(v, float) for v in p.borrow_bps_daily.values())
+    for name in ("commission_bps", "spread_bps", "slippage_bps", "adv_participation_cap"):
+        assert isinstance(getattr(p, name), float)
+    # String exponents in a config must still be coerced.
+    p2 = build_cost_params({"cost_model": {"borrow_bucket_thresholds": ["5.0e7", "2.0e7"]}})
+    assert p2.borrow_bucket_thresholds == (5.0e7, 2.0e7)
