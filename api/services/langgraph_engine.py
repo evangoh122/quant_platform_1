@@ -998,7 +998,7 @@ def lineage_node(state: GraphState) -> Dict[str, Any]:
     import json
     import uuid
     from api.db.database import db_manager
-    from api.db.review_queue import init_review_tables, insert_decision
+    from api.db.review_queue import insert_decision
 
     chunk_ids: List[str] = []
     source_docs: List[str] = []
@@ -1417,7 +1417,7 @@ def qualitative_output_node(state: GraphState) -> Dict[str, Any]:
         # Build context from top retrieved chunks — wrapped as untrusted data
         from api.services.security.envelope import (
             encode_sec_chunk, encode_kg_result, encode_tool_result,
-            encode_user_text, encode_history, ContentType, build_provenance,
+            ContentType, build_provenance,
         )
         from api.services.security.output_safety import sanitize_output
 
