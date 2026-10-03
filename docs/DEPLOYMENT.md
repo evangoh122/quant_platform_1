@@ -215,3 +215,107 @@ python -m db.migrate
 
 Forward-only, ordered by filename, re-runnable. Applied versions are recorded in
 `schema_migrations`.
+
+## 10. Render public demo
+
+This section describes the **Render public demo** — a single-service snapshot
+demo that is separate from the Databricks deployment described in §1–§9 above.
+It is defined in §7 of `docs/RENDER_DEPLOY_PLAN.md` and governed by the
+Render lane build request (R1 + R8).
+
+### Purpose
+
+The Render demo is a publicly accessible, read-only showcase. It serves
+pre-reviewed snapshot data through `demo_data/` and contains **no credentials**,
+**no Lakebase connection**, and **no live Databricks access**. It is deployed
+independently via manual deploy and requires Lane B/C safety gates before any
+public URL is shared.
+
+### Environment
+
+The service runs with these environment variables only:
+
+| Variable | Value | Purpose |
+| :--- | :--- | :--- |
+| `PUBLIC_DEMO` | `1` | Enables demo mode; disables all write routes and identity headers |
+| `APP_ENV` | `demo` | Selects demo data sources |
+
+**No secrets are configured.** The following variable families must never
+appear in the Render service configuration:
+
+- `LAKEBASE_*` — Lakebase connection and OAuth tokens
+- `DATABRICKS_*` — Databricks workspace, SQL warehouse, and service principal credentials
+- Broker/API tokens: `POLYGON_API_KEY`, `IBKR_*`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+- Credential-like frontend variables: any `VITE_*` value that contains a token, key, or secret
+
+Variable names in documentation are allowed; actual secret values are not.
+
+### Build
+
+```bash
+pip install -r requirements-render.txt && cd frontend && npm ci && npm run build
+```
+
+This installs only the four minimal runtime dependencies (fastapi, uvicorn,
+pydantic, loguru) and builds the React frontend into `frontend/dist/`. Node
+must be available in the Python build environment.
+
+### Start
+
+```bash
+uvicorn api.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+```
+
+The `$PORT` variable is injected by Render. The app serves both the API
+(`/api/*`) and the built frontend (`frontend/dist/`) from a single process.
+
+### Smoke tests
+
+After deploy, verify from the Render service URL:
+
+```bash
+# 1. Health check
+curl -s $RENDER_URL/api/health
+
+# 2. Frontend served same-origin
+curl -s -o /dev/null -w '%{http_code}\n' $RENDER_URL/
+
+# 3. SPA deep link (must return index.html, not 404)
+curl -s -o /dev/null -w '%{http_code}\n' $RENDER_URL/results/walk-forward
+```
+
+Expected: `/api/health` returns 200; `/` and the deep link both return 200
+with the SPA shell (`index.html`). Deep links must not return 404 — the
+FastAPI static file handler falls back to `index.html` for any path not
+matching `/api/*`.
+
+### SPA deep-link behavior
+
+All non-API routes serve `frontend/dist/index.html` so that client-side
+routing works for paths like `/results/walk-forward`, `/signals`, `/market/NVDA`,
+and `/agent`. The backend does not swallow `/api/*` routes — those are handled
+by FastAPI routers before the static file fallback.
+
+### Rollback / manual deploy
+
+The service uses `autoDeploy: false`. To deploy:
+
+1. Push the latest code to the `slice/render-lane-a` branch.
+2. In the Render dashboard, select the `qp1-showcase` service and click
+   **Manual Deploy > Deploy latest commit**.
+3. Wait for the build to complete and the health check to pass.
+
+To rollback: select a previous deploy in the Render dashboard and click
+**Redeploy**. No automatic rollback is configured.
+
+### Safety gates
+
+This service must not be made public until the following Lane B and Lane C
+gates are complete:
+
+- **Lane B** (R2–R5): demo-mode access control, write-surface removal, startup
+  secret checks, and snapshot reader validation.
+- **Lane C** (R6–R7): snapshot export tooling and abuse controls.
+
+Without these gates, the service would expose write endpoints and trust
+spoofed identity headers.
