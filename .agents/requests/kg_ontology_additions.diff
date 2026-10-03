@@ -1,0 +1,45 @@
+diff --git a/ontology/join_hints.yaml b/ontology/join_hints.yaml
+index d9e7966..469873b 100644
+--- a/ontology/join_hints.yaml
++++ b/ontology/join_hints.yaml
+@@ -39,6 +39,16 @@ lineage:
+     key: [mapped_asset, report_date]
+     pit_column: "information_available_ts = release_ts (NOT report_date)"
+ 
++  silver_sec_entities + silver_sec_sections -> gold_sec_kg_nodes:
++    key: [cik, accession_number, source_chunk_id]
++    pit_column: "accepted_ts — use for PIT filtering of provenance"
++    transform: "Deterministic ID generation, provenance aggregation, restatement detection"
++
++  silver_sec_entities + silver_sec_sections -> gold_sec_kg_edges:
++    key: [src_id, edge_type, dst_id, accession_number, source_chunk_id]
++    pit_column: "valid_from = accepted_ts"
++    transform: "Edge creation with PIT validity; SUPERSEDES edges for restatements"
++
+   gold_model_features:
+     assembly: "PIT AS-OF join: for each (symbol, prediction_ts), latest feature where info_ts <= prediction_ts"
+ 
+diff --git a/ontology/table_semantics.yaml b/ontology/table_semantics.yaml
+index d5f3d80..ae30135 100644
+--- a/ontology/table_semantics.yaml
++++ b/ontology/table_semantics.yaml
+@@ -28,4 +28,16 @@ tables:
+   gold_model_features:
+     grain: "One row per (symbol, prediction_ts)"
+     partition: symbol
+-    critical_rule: "All features available at or before prediction_ts"
+\ No newline at end of file
++    critical_rule: "All features available at or before prediction_ts"
++
++  gold_sec_kg_nodes:
++    grain: "One row per node_id"
++    partition: node_type
++    pit_rule: "Filter provenance by accepted_ts <= as_of for PIT queries"
++    schema_ref: "sec_kg/model.py is canonical for node types and IDs"
++
++  gold_sec_kg_edges:
++    grain: "One row per edge_id (evidence/version relationship)"
++    partition: edge_type
++    pit_rule: "Filter valid_from <= as_of before traversal; valid_from == accepted_ts"
++    schema_ref: "sec_kg/model.py is canonical for edge types"
+\ No newline at end of file

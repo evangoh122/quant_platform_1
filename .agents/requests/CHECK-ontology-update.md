@@ -1,7 +1,7 @@
 # CHECK: ontology update (DeepSeek)
 
 At the owner's request, Codex updated `ontology/` directly (commit "feat(ontology): align with live
-tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update-check2.md` (===VERDICT START/END===,
+tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update-check3.md` (===VERDICT START/END===,
 Status). Your job is FACTUAL CORRECTNESS against the code: the ontology will drive the NL-analytics
 semantic registry and the knowledge graph, so an error here propagates.
 
@@ -37,3 +37,12 @@ branch, not main. Are those skips legitimate, and does the external-contract tes
 
 Mutation-check the new test: a phantom key, a filter column or a join column must each fail it.
 Hunt for any remaining factual error. Write `.agents/deepseek/VERDICT-ontology-update-check2.md`.
+
+## Re-check after Codex round 3 (this run)
+Codex fixed the `bronze_fed_series` vintage grain and the other check2 findings (commit "fix(ontology):
+round 3"). Re-verify every finding against the code. FYI: the KG lane (`slice/rag-kg`) wants to add
+`gold_sec_kg_nodes` and `gold_sec_kg_edges` (see `.agents/requests/kg_ontology_additions.diff`).
+Check whether those entries are accurate against `sec_kg/` on that branch
+(`git show origin/slice/rag-kg:sec_kg/model.py`), so Codex can add them next.
+
+Write `.agents/deepseek/VERDICT-ontology-update-check3.md`.
