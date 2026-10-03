@@ -5,7 +5,8 @@ These tests prove that the public-demo mode:
 - Never touches Lakebase (including /api/health on every GET route)
 - Registers only GET/HEAD/OPTIONS routes under /api
 - Rejects unsafe environment variables at startup (broadened families)
-- Rate limits with rightmost XFF on Render, LRU cap, global ceiling
+- Rate limits with CF-Connecting-IP > True-Client-IP > leftmost XFF on Render
+- Uses token bucket for aggregate limiting (brief 429s, not minute-long outage)
 - Normalises /api prefix (//api, /%2fapi, /API)
 - Adds security headers on every response including 405/413/429/504
 - Has no CORS middleware
@@ -534,22 +535,21 @@ def test_uppercase_api_blocked(monkeypatch):
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
 
 
-# ── test 16: rate limiter — spoofed leftmost XFF doesn't evade ────────────────
+# ── test 16: rate limiter — spoofed rightmost XFF doesn't evade ────────────────
 
-def test_spoofed_leftmost_xff_does_not_evade(monkeypatch):
-    """When RENDER is set, the rate limiter uses the rightmost XFF entry.
-    A spoofed leftmost entry should not create a separate bucket."""
+def test_spoofed_rightmost_xff_does_not_evade(monkeypatch):
+    """When RENDER is set, the rate limiter uses the leftmost XFF entry.
+    A spoofed rightmost entry should not create a separate bucket."""
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    # Re-read the module-level _IS_RENDER.
     monkeypatch.setattr(main_mod, "_IS_RENDER", True)
     main_mod._limiter.reset()
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
 
-    # Exhaust the limit using the real rightmost IP.
+    # Exhaust the limit using the real leftmost IP.
     for _ in range(60):
         resp = client.get(
             "/api/analytics",
@@ -557,20 +557,20 @@ def test_spoofed_leftmost_xff_does_not_evade(monkeypatch):
         )
         assert resp.status_code == 200
 
-    # Now spoof a different leftmost IP but same rightmost — should still be limited.
+    # Now spoof a different rightmost IP but same leftmost — should still be limited.
     resp = client.get(
         "/api/analytics",
-        headers={"X-Forwarded-For": "9.9.9.9, 10.0.0.1"},
+        headers={"X-Forwarded-For": "1.2.3.4, 9.9.9.9"},
     )
     assert resp.status_code == 429
 
     main_mod._limiter.reset()
 
 
-# ── test 17: two different rightmost IPs get separate buckets ─────────────────
+# ── test 17: two different leftmost IPs get separate buckets ──────────────────
 
-def test_different_rightmost_ips_get_separate_buckets(monkeypatch):
-    """When RENDER is set, two requests from different rightmost XFF IPs
+def test_different_leftmost_ips_get_separate_buckets(monkeypatch):
+    """When RENDER is set, two requests from different leftmost XFF IPs
     get separate rate-limit buckets."""
     import api.main as main_mod
 
@@ -833,10 +833,11 @@ def test_codex_examples_all_rejected(monkeypatch, key):
 
     assert key in str(exc_info.value)
 
-# ── test 19: global rate ceiling ──────────────────────────────────────────────
+# ── test 19: global rate ceiling (token bucket) ────────────────────────────────
 
 def test_global_rate_ceiling(monkeypatch):
-    """The global ceiling (600 req/min) acts as a backstop."""
+    """The global token bucket acts as a backstop — once exhausted, the next
+    request is rejected with a short retry-after."""
     import api.main as main_mod
 
     main_mod._limiter.reset()
@@ -863,3 +864,285 @@ def test_global_rate_ceiling(monkeypatch):
     assert resp.status_code == 429
 
     main_mod._limiter = main_mod._FixedWindowLimiter()
+
+
+# ── test 28: CF-Connecting-IP takes priority over XFF when RENDER is set ──────
+
+def test_cf_connecting_ip_takes_priority_over_xff(monkeypatch):
+    """When RENDER is set and CF-Connecting-IP is present, it is used
+    instead of X-Forwarded-For — regardless of XFF values."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    # Exhaust the limit using CF-Connecting-IP.
+    for _ in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={
+                "CF-Connecting-IP": "3.3.3.3",
+                "X-Forwarded-For": "9.9.9.9, 10.0.0.1",
+            },
+        )
+        assert resp.status_code == 200
+
+    # Rotating XFF values should NOT evade — CF-Connecting-IP key is exhausted.
+    resp = client.get(
+        "/api/analytics",
+        headers={
+            "CF-Connecting-IP": "3.3.3.3",
+            "X-Forwarded-For": "8.8.8.8, 7.7.7.7",
+        },
+    )
+    assert resp.status_code == 429
+
+    # A different CF-Connecting-IP should still work.
+    resp = client.get(
+        "/api/analytics",
+        headers={
+            "CF-Connecting-IP": "4.4.4.4",
+            "X-Forwarded-For": "9.9.9.9, 10.0.0.1",
+        },
+    )
+    assert resp.status_code == 200
+
+    main_mod._limiter.reset()
+
+
+# ── test 29: no CF header → leftmost XFF is used ─────────────────────────────
+
+def test_no_cf_header_leftmost_xff_used(monkeypatch):
+    """When RENDER is set and no CF-Connecting-IP or True-Client-IP is present,
+    the leftmost X-Forwarded-For entry is used as the client IP."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    # Exhaust the limit using leftmost XFF.
+    for _ in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={"X-Forwarded-For": "2.2.2.2, <rotating junk>"},
+        )
+        assert resp.status_code == 200
+
+    # Rotating rightmost values should NOT evade — leftmost key is exhausted.
+    resp = client.get(
+        "/api/analytics",
+        headers={"X-Forwarded-For": "2.2.2.2, 11.11.11.11"},
+    )
+    assert resp.status_code == 429
+
+    main_mod._limiter.reset()
+
+
+# ── test 30: invalid CF header falls back to next source ──────────────────────
+
+def test_invalid_cf_header_falls_back(monkeypatch):
+    """A spoofed invalid CF-Connecting-IP (not a valid IP) is skipped,
+    falling back to True-Client-IP, then XFF, then client.host."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    # Invalid CF-Connecting-IP should fall back to True-Client-IP.
+    ip = main_mod._get_client_ip(
+        MagicMock(
+            headers={
+                "cf-connecting-ip": "not-an-ip",
+                "true-client-ip": "5.5.5.5",
+            },
+            client=None,
+        )
+    )
+    assert ip == "5.5.5.5"
+
+    # Both CF headers invalid → falls back to leftmost XFF.
+    ip = main_mod._get_client_ip(
+        MagicMock(
+            headers={
+                "cf-connecting-ip": "abc",
+                "true-client-ip": "",
+                "x-forwarded-for": "6.6.6.6, 7.7.7.7",
+            },
+            client=None,
+        )
+    )
+    assert ip == "6.6.6.6"
+
+    # All headers invalid → falls back to request.client.host.
+    ip = main_mod._get_client_ip(
+        MagicMock(
+            headers={
+                "cf-connecting-ip": "garbage",
+                "true-client-ip": "!!!",
+                "x-forwarded-for": "not-ip",
+            },
+            client=MagicMock(host="8.8.8.8"),
+        )
+    )
+    assert ip == "8.8.8.8"
+
+    main_mod._limiter.reset()
+
+
+# ── test 31: outside Render, headers are ignored ──────────────────────────────
+
+def test_outside_render_headers_ignored(monkeypatch):
+    """When RENDER is not set, CF-Connecting-IP and X-Forwarded-For headers
+    are completely ignored — only request.client.host is used."""
+    import api.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_IS_RENDER", False)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    # All requests from the same client.host share one bucket regardless of headers.
+    for _ in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={
+                "CF-Connecting-IP": "1.1.1.1",
+                "X-Forwarded-For": "2.2.2.2",
+            },
+        )
+        assert resp.status_code == 200
+
+    # 61st request is limited — the spoofed headers didn't create separate buckets.
+    resp = client.get(
+        "/api/analytics",
+        headers={
+            "CF-Connecting-IP": "3.3.3.3",
+            "X-Forwarded-For": "4.4.4.4",
+        },
+    )
+    assert resp.status_code == 429
+
+    main_mod._limiter.reset()
+
+
+# ── test 32: token bucket self-recovers after brief burst ─────────────────────
+
+def test_token_bucket_self_recovers(monkeypatch):
+    """After the token bucket is exhausted, it recovers after the refill
+    interval — aggregate load causes brief 429s, not a minute-long outage."""
+    from api.main import _TokenBucket
+    import time
+
+    # Small bucket: capacity 5, refills at 10/sec → recovers in 0.1s.
+    bucket = _TokenBucket(capacity=5, refill_rate=10.0)
+
+    # Exhaust the bucket.
+    for _ in range(5):
+        allowed, _ = bucket.consume()
+        assert allowed is True
+
+    # Next request should be rejected.
+    allowed, retry_after = bucket.consume()
+    assert allowed is False
+    assert retry_after >= 1
+
+    # Wait for refill (0.15s → ~1.5 tokens).
+    time.sleep(0.15)
+
+    # Should be allowed now.
+    allowed, _ = bucket.consume()
+    assert allowed is True
+
+
+# ── test 33: RENDER with CF-Connecting-IP — 61st request gives 429 ────────────
+
+def test_render_cf_connecting_ip_61st_request_gives_429(monkeypatch):
+    """RENDER set, CF-Connecting-IP: 1.1.1.1 with rotating XFF values —
+    every request uses one key, so the 61st request gets 429."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    for i in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={
+                "CF-Connecting-IP": "1.1.1.1",
+                "X-Forwarded-For": f"10.0.{i}.1, 10.0.{i}.2",
+            },
+        )
+        assert resp.status_code == 200, f"request {i+1} failed"
+
+    # 61st request → 429.
+    resp = client.get(
+        "/api/analytics",
+        headers={
+            "CF-Connecting-IP": "1.1.1.1",
+            "X-Forwarded-For": "10.0.99.1, 10.0.99.2",
+        },
+    )
+    assert resp.status_code == 429
+    assert "Retry-After" in resp.headers
+
+    main_mod._limiter.reset()
+
+
+# ── test 34: generic secret names rejected (TOKEN, SECRET, PASSWORD, etc.) ─────
+
+@pytest.mark.parametrize("key", [
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "DOCKER_AUTH_CONFIG",
+])
+def test_generic_secret_names_rejected(monkeypatch, key):
+    """Bare generic secret names (TOKEN, SECRET, PASSWORD, DOCKER_AUTH_CONFIG)
+    reject non-empty values in demo mode."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+
+
+# ── test 35: _CONNECTION_STRING suffix rejected ───────────────────────────────
+
+@pytest.mark.parametrize("key", [
+    "DATABASE_CONNECTION_STRING",
+    "MYAPP_CONNECTION_STRING",
+])
+def test_connection_string_suffix_rejected(monkeypatch, key):
+    """Any *_CONNECTION_STRING variable rejects non-empty values in demo mode."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)

@@ -61,6 +61,7 @@ _EXPLICIT_BROKER_KEYS = frozenset({
 _SECRET_SUFFIXES = (
     "_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_PASS", "_PWD",
     "_DSN", "_URI", "_PAT", "_APIKEY", "_CREDENTIALS", "_KEY_BASE",
+    "_CONNECTION_STRING",
 )
 
 # Prefixes that indicate secrets.
@@ -74,6 +75,7 @@ _SECRET_PREFIXES = (
 _SECRET_EXACT = frozenset({
     "DATABASE_URL", "HF_TOKEN",
     "CREDENTIALS", "REDIS_URL", "MONGODB_URI", "SECRET_KEY_BASE",
+    "TOKEN", "SECRET", "PASSWORD", "DOCKER_AUTH_CONFIG",
 })
 
 # Render-injected env vars that are harmless and allowed.

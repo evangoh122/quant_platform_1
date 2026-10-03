@@ -190,21 +190,35 @@ insecure default where an absent `PUBLIC_DEMO` silently enables the full
 write surface. Set `PUBLIC_DEMO=1` explicitly in the Render service
 environment.
 
-### Rate limiter — IP extraction choice
+### Rate limiter — IP extraction
 
-The rate limiter extracts the client IP from the **rightmost**
-`X-Forwarded-For` entry when `RENDER` is set. This is the address that
-Render's edge proxy saw, and it cannot be spoofed by the client.
+When `RENDER` is set, the rate limiter extracts the client IP using the
+first match in this priority order:
 
-We intentionally avoid using `--forwarded-allow-ips='*'` because that would
-make `request.client.host` read from the (spoofable) `X-Forwarded-For`
-header, allowing attackers to evade per-IP rate limits by rotating the
-leftmost XFF value.
+1. `CF-Connecting-IP` — set by Cloudflare, which Render uses as its edge.
+   Validated as a real IPv4/IPv6 address; invalid values are skipped.
+2. `True-Client-IP` — also set by Cloudflare/CDN. Validated likewise.
+3. The **leftmost** `X-Forwarded-For` entry — Render's documented position
+   for the real client IP (Render prepends the real client IP to the
+   beginning of the list). Validated as a real IP address.
+4. `request.client.host` — final fallback.
 
-The per-IP limit defaults to 60 req/min; a global ceiling of 600 req/min
-acts as a backstop. Both are configurable via `RATE_LIMIT_READS` and
-`RATE_LIMIT_GLOBAL`. The LRU cap on distinct IP keys defaults to 10,000
-(configurable via `RATE_LIMIT_LRU_MAX`).
+We intentionally do **not** use the rightmost `X-Forwarded-For` entry,
+because client-supplied XFF values are not stripped by Render and a client
+can rotate the rightmost value to evade per-IP limits.
+
+Outside Render (no `RENDER` env var), only `request.client.host` is used
+and all headers are ignored.
+
+We avoid using `--forwarded-allow-ips='*'` because that would make
+`request.client.host` read from the (spoofable) `X-Forwarded-For` header.
+
+The per-IP limit defaults to 60 req/min; an aggregate token bucket of 600
+tokens refills at 10 tokens/sec, so bursts cause brief 429s that
+self-recover within seconds rather than a hard minute-long outage. Both
+are configurable via `RATE_LIMIT_READS` and `RATE_LIMIT_GLOBAL`. The LRU
+cap on distinct IP keys defaults to 10,000 (configurable via
+`RATE_LIMIT_LRU_MAX`).
 
 ### Uvicorn startup command
 
@@ -213,8 +227,19 @@ uvicorn api.main:app --host 0.0.0.0 --port $PORT
 ```
 
 Do **not** pass `--forwarded-allow-ips='*'`. Render's proxy is not trusted
-at the uvicorn level; the application reads `X-Forwarded-For` directly for
+at the uvicorn level; the application reads headers directly for
 rate-limiting purposes only.
+
+### Post-deploy verification
+
+After deploying, verify that per-IP rate limiting works independently for
+distinct clients:
+
+```bash
+# From two different machines, send 70 requests each with rotating
+# spoofed XFF values. Each machine should be limited independently
+# (429 on the 61st request from each machine).
+```
 
 ## Lakebase agent tools — approver authority and migrations
 

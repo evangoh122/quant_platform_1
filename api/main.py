@@ -12,6 +12,7 @@ handlers, never at module import time.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import time
 import urllib.parse
@@ -64,17 +65,48 @@ def _normalize_api_path(path: str) -> str:
     return decoded.lower()
 
 
+class _TokenBucket:
+    """Thread-safe token bucket for aggregate rate limiting.
+
+    Tokens refill at a constant rate up to *capacity*.  Each request consumes
+    one token.  When empty, callers receive a ``retry_after`` of one refill
+    interval (1 / rate), so aggregate load causes brief 429s that self-recover
+    rather than a hard minute-long outage.
+    """
+
+    def __init__(self, capacity: int, refill_rate: float):
+        self._capacity = capacity
+        self._refill_rate = refill_rate
+        self._tokens = float(capacity)
+        self._last_refill = time.monotonic()
+
+    def consume(self) -> tuple[bool, int]:
+        """Try to consume one token.  ``(allowed, retry_after_seconds)``."""
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
+        self._last_refill = now
+
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True, 0
+        # Time until one token is available.
+        wait = (1.0 - self._tokens) / self._refill_rate
+        return False, max(1, int(wait) + 1)
+
+    def reset(self) -> None:
+        self._tokens = float(self._capacity)
+        self._last_refill = time.monotonic()
+
+
 class _FixedWindowLimiter:
     """Per-client-IP, bounded in-memory fixed-window rate limiter.
 
     Tracks request counts in 60-second windows keyed by IP.  Uses a single
     ``OrderedDict`` so LRU eviction removes both the key and its counter —
-    no parallel dicts can drift apart.  Includes a global ceiling as a
-    backstop.
-
-    When ``is_render`` is True, the client IP is extracted from the
-    **rightmost** ``X-Forwarded-For`` entry (the address Render's edge saw).
-    Otherwise ``request.client.host`` is used.
+    no parallel dicts can drift apart.  Aggregate load is governed by a
+    :class:`_TokenBucket` instead of a hard ceiling, so bursts cause brief
+    429s that self-recover within seconds.
     """
 
     def __init__(
@@ -86,11 +118,11 @@ class _FixedWindowLimiter:
     ):
         self._limit = limit
         self._window = window
-        self._global_limit = global_limit
         self._maxsize = lru_max
         self._counts: OrderedDict[str, tuple[int, int]] = OrderedDict()
-        self._global_counts: dict[int, int] = {}
         self._last_cleanup = time.monotonic()
+        # Token bucket: capacity = global_limit, refills at global_limit/60 per second.
+        self._bucket = _TokenBucket(capacity=global_limit, refill_rate=global_limit / 60.0)
 
     def _cleanup(self, now: float) -> None:
         if now - self._last_cleanup < self._window:
@@ -99,7 +131,6 @@ class _FixedWindowLimiter:
         to_remove = [ip for ip, (w, _) in self._counts.items() if w <= cutoff]
         for ip in to_remove:
             del self._counts[ip]
-        self._global_counts = {k: v for k, v in self._global_counts.items() if k > cutoff}
         self._last_cleanup = now
 
     def check(self, ip: str) -> tuple[bool, int]:
@@ -123,17 +154,17 @@ class _FixedWindowLimiter:
             if len(self._counts) > self._maxsize:
                 self._counts.popitem(last=False)
 
-        # ── Global ceiling (only charged for requests that pass per-IP). ─
-        self._global_counts[window_ts] = self._global_counts.get(window_ts, 0) + 1
-        if self._global_counts[window_ts] > self._global_limit:
-            return False, self._window - (int(now) % self._window)
+        # ── Global token bucket (only charged for requests that pass per-IP).
+        allowed, retry_after = self._bucket.consume()
+        if not allowed:
+            return False, retry_after
 
         return True, 0
 
     def reset(self) -> None:
         """Reset all counters (for testing)."""
         self._counts.clear()
-        self._global_counts.clear()
+        self._bucket.reset()
         self._last_cleanup = time.monotonic()
 
     @property
@@ -145,16 +176,49 @@ class _FixedWindowLimiter:
 _limiter = _FixedWindowLimiter()
 
 
+def _parse_ip(value: str) -> str | None:
+    """Return *value* as a normalized IP string, or ``None`` if invalid.
+
+    Strips whitespace, validates via :func:`ipaddress.ip_address`, and
+    normalizes IPv6 (including IPv4-mapped addresses like ``::ffff:1.2.3.4``).
+    """
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except (ValueError, AttributeError):
+        return None
+
+
 def _get_client_ip(request: Request) -> str:
     """Extract the client IP for rate limiting.
 
-    On Render, use the **rightmost** ``X-Forwarded-For`` entry — that is the
-    address Render's edge saw.  Otherwise use ``request.client.host``.
+    On Render (``RENDER`` is set), use the first match in this order:
+
+    1. ``CF-Connecting-IP`` — set by Cloudflare, overwrites client values.
+    2. ``True-Client-IP`` — set by Cloudflare/CDN, overwrites client values.
+    3. The **leftmost** ``X-Forwarded-For`` entry — Render's documented
+       position for the real client IP.
+    4. ``request.client.host`` — fallback.
+
+    Outside Render, always use ``request.client.host`` and ignore every header.
+
+    Each candidate is validated as a real IPv4/IPv6 address; invalid values
+    are silently skipped and the next source is tried.
     """
     if _IS_RENDER:
+        for header in ("cf-connecting-ip", "true-client-ip"):
+            val = request.headers.get(header, "")
+            if val:
+                parsed = _parse_ip(val)
+                if parsed is not None:
+                    return parsed
+
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            return xff.split(",")[-1].strip()
+            first = xff.split(",")[0].strip()
+            parsed = _parse_ip(first)
+            if parsed is not None:
+                return parsed
+
     return request.client.host if request.client else "unknown"
 
 
