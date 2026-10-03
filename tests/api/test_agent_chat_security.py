@@ -5,15 +5,12 @@ deployment mode behavior, and identity binding.
 """
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from api.deps import AppUser, get_current_user
-from api.schemas import ChatRequest, ChatResponse
+from api.deps import AppUser
+from api.schemas import ChatRequest
 from api.services.security.tool_registry import create_default_registry
 from api.services.security.confirmation import ConfirmationStore
 from api.services.security.limits import RateLimitConfig, RateLimiter
@@ -26,7 +23,6 @@ from api.services.security.limits import RateLimitConfig, RateLimiter
 @pytest.fixture
 def app():
     """Create a test FastAPI app with the agent chat route."""
-    from fastapi import FastAPI
     app = FastAPI()
     return app
 
@@ -127,7 +123,7 @@ class TestConfirmationFlow:
 
     def test_proposal_not_a_write(self, confirmation_store):
         """Creating a proposal does NOT execute the write."""
-        proposal = confirmation_store.create_proposal(
+        confirmation_store.create_proposal(
             user_id="user1",
             tool_name="add_to_watchlist",
             arguments={"symbol": "AAPL"},
@@ -202,7 +198,6 @@ class TestDeploymentModes:
 
     def test_authenticated_mode_requires_identity(self):
         """Authenticated mode requires trusted header."""
-        from api.deps import get_current_user
         # Without the trusted header, the request should fail
 
     def test_dev_fallback_is_read_only(self):
@@ -280,7 +275,6 @@ class TestSchemaValidation:
             ChatRequest(message="A" * 5000)
 
     def test_tool_call_no_extra_fields(self):
-        from pydantic import ValidationError
         from api.schemas import ToolCall
         # ToolCall should accept standard fields
         tc = ToolCall(name="test", arguments={"key": "value"}, ok=True)

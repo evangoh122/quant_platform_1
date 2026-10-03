@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
@@ -189,7 +189,7 @@ def chat(
                     proposal_nonce=proposal.nonce,
                     requires_confirmation=True,
                 )
-            except Exception as e:
+            except Exception:
                 logger.exception("Failed to create watchlist proposal")
                 return ChatResponse(
                     reply=_GENERIC_FAILURE_MESSAGE,
@@ -217,7 +217,7 @@ def chat(
                     proposal_nonce=proposal.nonce,
                     requires_confirmation=True,
                 )
-            except Exception as e:
+            except Exception:
                 logger.exception("Failed to create note proposal")
                 return ChatResponse(
                     reply=_GENERIC_FAILURE_MESSAGE,
@@ -326,14 +326,14 @@ def confirm_write(
     try:
         if tool_name == "add_to_watchlist":
             from agent.tools_write import add_to_watchlist
-            tool_result = add_to_watchlist(arguments["symbol"], user.user_id)
+            add_to_watchlist(arguments["symbol"], user.user_id)
             return ConfirmResponse(
                 success=True,
                 result={"status": "added", "symbol": arguments["symbol"]},
             )
         elif tool_name == "save_research_note":
             from agent.tools_write import save_research_note
-            tool_result = save_research_note(
+            save_research_note(
                 arguments["symbol"],
                 arguments.get("note", ""),
                 arguments.get("signal_id"),
@@ -348,7 +348,7 @@ def confirm_write(
                 success=False,
                 reason=f"Unknown write tool: {tool_name}",
             )
-    except Exception as e:
+    except Exception:
         logger.exception("Confirmed write failed for tool %r", tool_name)
         return ConfirmResponse(
             success=False,

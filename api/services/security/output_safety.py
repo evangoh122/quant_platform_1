@@ -221,7 +221,7 @@ def detect_secrets(text: str, configured_secrets: list[str] | None = None) -> li
     if configured_secrets:
         for secret in configured_secrets:
             if secret and len(secret) >= 8 and secret in text:
-                found.append(f"Configured secret value detected")
+                found.append("Configured secret value detected")
 
     return found
 

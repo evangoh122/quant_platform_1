@@ -13,13 +13,11 @@ from typing import Any, Optional
 from api.services.security.input_validator import (
     InputLimits,
     ValidationResult,
-    validate_history,
     validate_input,
 )
 from api.services.security.envelope import (
     ContentType,
     EnvelopeBlock,
-    encode_block,
     encode_history,
     encode_kg_result,
     encode_sec_chunk,
@@ -28,25 +26,20 @@ from api.services.security.envelope import (
     build_provenance,
 )
 from api.services.security.tool_registry import (
-    ToolCategory,
     ToolRegistry,
     get_tool_registry,
 )
 from api.services.security.output_safety import (
     OutputVerdict,
     sanitize_output,
-    detect_secrets,
-    detect_prompt_leak,
     redact_for_audit,
 )
 from api.services.security.audit import (
     SecurityAuditLogger,
-    SecurityEvent,
     get_audit_logger,
 )
 from api.services.security.limits import (
     LimitVerdict,
-    RateLimitConfig,
     RateLimiter,
     get_rate_limiter,
 )
