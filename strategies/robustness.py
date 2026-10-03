@@ -41,6 +41,77 @@ def _fingerprint(params: dict) -> str:
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
+def _config_fingerprint(config: Mapping) -> str:
+    """Hash the config blocks that affect variant computation."""
+    relevant = {
+        "cost_model": dict(config.get("cost_model", {})),
+        "residual_reversion": dict(config.get("residual_reversion", {})),
+        "robustness": dict(config.get("robustness", {})),
+    }
+    blob = json.dumps(relevant, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:12]
+
+
+def _data_fingerprint(panel) -> str:
+    """Hash shape, date range, symbol list, and a value checksum."""
+    import hashlib as _hl
+    h = _hl.sha256()
+    if panel is not None and not panel.empty:
+        h.update(f"shape={panel.shape}".encode())
+        dates = sorted(panel["event_date"].unique())
+        h.update(f"dates={dates[0]!s}:{dates[-1]!s}".encode())
+        syms = sorted(panel["symbol"].unique())
+        h.update(f"symbols={','.join(syms[:20])}...n={len(syms)}".encode())
+        vals = panel["close"].dropna()
+        h.update(f"val_sum={vals.sum():.6f}".encode())
+    else:
+        h.update(b"no_panel")
+    return h.hexdigest()[:12]
+
+
+def _code_fingerprint() -> str:
+    """Hash of all strategies/*.py source files, plus git SHA + dirty flag."""
+    import hashlib as _hl
+    import subprocess
+    from pathlib import Path
+    h = _hl.sha256()
+    strat_dir = Path(__file__).resolve().parent
+    for py_file in sorted(strat_dir.glob("*.py")):
+        h.update(py_file.read_bytes())
+    # Git SHA + dirty flag.
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=strat_dir, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet"],
+            cwd=strat_dir, stderr=subprocess.DEVNULL,
+        ) != 0
+        h.update(f"git={sha}:dirty={dirty}".encode())
+    except Exception:
+        h.update(b"no_git")
+    return h.hexdigest()[:12]
+
+
+def compute_cache_fingerprint(
+    variant_fp: str,
+    config: Mapping,
+    panel=None,
+) -> str:
+    """Composite fingerprint for cache invalidation.
+
+    Covers variant params, config, data, and code version.
+    """
+    combined = (
+        variant_fp
+        + _config_fingerprint(config)
+        + _data_fingerprint(panel)
+        + _code_fingerprint()
+    )
+    return hashlib.sha256(combined.encode()).hexdigest()[:12]
+
+
 def build_variant_registry(base_config: Mapping) -> list[VariantSpec]:
     """Build the single ledger for multiple testing.
 

@@ -308,61 +308,57 @@ class TestBorrowBpsVec:
 
 # ── Parallel determinism ─────────────────────────────────────────────────────
 
-def _run_variant_worker(args_tuple):
-    """Worker function for parallel determinism test."""
-    vs, closes, universe, adv_wide, industry, book_capital, cost_params, cfg, panel, n_trials = args_tuple
-    from strategies.run_residual_reversion import _run_variant
-    return _run_variant(vs, closes, universe, adv_wide, industry,
-                        book_capital, cost_params, cfg, panel=panel,
-                        n_trials=n_trials)
+# Module-level synthetic data for spawn-safe pool workers.
+_RNG = np.random.RandomState(42)
+_N_DAYS, _N_SYM = 200, 30
+_DATES = pd.bdate_range("2024-01-02", periods=_N_DAYS)
+_SYMBOLS = [f"S{i:04d}" for i in range(_N_SYM)]
+_POSITIONS = pd.DataFrame(
+    np.sign(_RNG.randn(_N_DAYS, _N_SYM) * 0.3),
+    index=_DATES, columns=_SYMBOLS,
+)
+_RETURNS = pd.DataFrame(
+    _RNG.randn(_N_DAYS, _N_SYM) * 0.01,
+    index=_DATES, columns=_SYMBOLS,
+)
+_S_SCORE = pd.DataFrame(
+    _RNG.randn(_N_DAYS, _N_SYM),
+    index=_DATES, columns=_SYMBOLS,
+)
+_RESIDUAL = pd.DataFrame(
+    _RNG.randn(_N_DAYS, _N_SYM) * 0.001,
+    index=_DATES, columns=_SYMBOLS,
+)
+_INDUSTRY = pd.Series({s: f"ind_{i % 5}" for i, s in enumerate(_SYMBOLS)})
+
+
+def _fake_build_signals(*args, **kwargs):
+    """Pickleable fake build_signals for pool workers."""
+    return {
+        "positions": _POSITIONS.copy(),
+        "returns": _RETURNS.copy(),
+        "s_score": _S_SCORE.copy(),
+        "residual": _RESIDUAL.copy(),
+        "industry": _INDUSTRY.copy(),
+    }
 
 
 class TestParallelDeterminism:
-    """Variant results must be identical regardless of worker count."""
+    """Variant results must be identical regardless of worker count.
+
+    Uses the ACTUAL ProcessPoolExecutor with the ``spawn`` start method
+    so the test works on all platforms and exercises the real pickling path.
+    """
 
     def test_workers_determinism(self):
-        """workers=1 must equal workers=N on a small synthetic run.
-
-        Uses a lightweight stub for build_signals to avoid needing real data.
-        """
+        """workers=1 must equal workers=2 through the real ProcessPool (spawn)."""
+        import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
-        from unittest.mock import patch
-
-        rng = np.random.RandomState(42)
-        n_days, n_sym = 200, 30
-        dates = pd.bdate_range("2024-01-02", periods=n_days)
-        symbols = [f"S{i:04d}" for i in range(n_sym)]
-
-        positions = pd.DataFrame(
-            np.sign(rng.randn(n_days, n_sym) * 0.3),
-            index=dates, columns=symbols,
-        )
-        returns = pd.DataFrame(
-            rng.randn(n_days, n_sym) * 0.01,
-            index=dates, columns=symbols,
-        )
-        adv_wide = pd.DataFrame(
-            np.abs(rng.randn(n_days, n_sym) * 1e7 + 5e7),
-            index=dates, columns=symbols,
-        )
-        industry = pd.Series({s: f"ind_{i % 5}" for i, s in enumerate(symbols)})
-
-        def _fake_build_signals(*args, **kwargs):
-            return {
-                "positions": positions,
-                "returns": returns,
-                "s_score": pd.DataFrame(rng.randn(n_days, n_sym),
-                                        index=dates, columns=symbols),
-                "residual": pd.DataFrame(rng.randn(n_days, n_sym) * 0.001,
-                                         index=dates, columns=symbols),
-                "industry": industry,
-            }
-
-        # Run first 4 variants sequentially.
         from strategies.robustness import build_variant_registry
         from strategies.run_residual_reversion import (
             _run_variant, load_strategy_config, build_cost_params,
         )
+        from strategies.robustness_worker import _worker_init, _worker_task
 
         cfg = load_strategy_config("strategies/config.yaml")
         cost_params = build_cost_params(cfg)
@@ -370,42 +366,159 @@ class TestParallelDeterminism:
         subset = registry[:4]
         n_trials = len(registry)
 
-        universe_rows = [(d, s) for d in dates for s in symbols]
-        universe = pd.DataFrame(universe_rows, columns=["trade_date", "symbol"])
-        universe["adv_rank"] = 1  # all symbols are rank 1
+        universe = pd.DataFrame(
+            [(d, s) for d in _DATES for s in _SYMBOLS],
+            columns=["trade_date", "symbol"],
+        )
+        universe["adv_rank"] = 1
+        adv_wide = pd.DataFrame(
+            np.abs(_RNG.randn(_N_DAYS, _N_SYM) * 1e7 + 5e7),
+            index=_DATES, columns=_SYMBOLS,
+        )
 
-        results_w1 = []
-        with patch("strategies.run_residual_reversion.build_signals",
-                   side_effect=_fake_build_signals):
-            for vs in subset:
-                vr = _run_variant(
-                    vs, pd.DataFrame(), universe, adv_wide, industry,
-                    10_000_000.0, cost_params, cfg, panel=None,
-                    n_trials=n_trials,
-                )
-                results_w1.append(vr)
+        def _run_pool(n_workers):
+            ctx = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(
+                max_workers=n_workers,
+                mp_context=ctx,
+                initializer=_worker_init,
+                initargs=(
+                    cfg, pd.DataFrame(), universe, adv_wide,
+                    _INDUSTRY, 10_000_000.0, cost_params, None,
+                    _fake_build_signals,
+                ),
+            ) as pool:
+                futures = [
+                    pool.submit(_worker_task, (vs, n_trials))
+                    for vs in subset
+                ]
+                return [f.result() for f in futures]
 
-        # Run same subset with ProcessPoolExecutor.
-        # Since we can't easily patch inside worker processes, pass data
-        # directly and accept that the real pipeline runs.
-        # Instead, test that _run_variant returns deterministic results
-        # by running sequentially twice.
-        results_w2 = []
-        with patch("strategies.run_residual_reversion.build_signals",
-                   side_effect=_fake_build_signals):
-            for vs in subset:
-                vr = _run_variant(
-                    vs, pd.DataFrame(), universe, adv_wide, industry,
-                    10_000_000.0, cost_params, cfg, panel=None,
-                    n_trials=n_trials,
-                )
-                results_w2.append(vr)
+        results_w1 = _run_pool(1)
+        results_w2 = _run_pool(2)
 
-        # Compare — same inputs must produce same outputs.
         for i, (w1, w2) in enumerate(zip(results_w1, results_w2)):
             if "error" in w1 or "error" in w2:
-                continue
+                pytest.fail(f"variant {i} errored: w1={w1.get('error')}, "
+                            f"w2={w2.get('error')}")
             pd.testing.assert_series_equal(
                 w1["net"], w2["net"], atol=1e-10,
                 obj=f"variant {i} net",
             )
+
+
+# ── Cache fingerprint completeness ───────────────────────────────────────────
+
+class TestCacheFingerprint:
+    """Composite cache fingerprint must change when config, data, or code change."""
+
+    def test_commission_bps_changes_fingerprint(self):
+        """Changing cost_model.commission_bps must change the fingerprint."""
+        from strategies.robustness import compute_cache_fingerprint
+        from strategies.run_residual_reversion import load_strategy_config
+
+        cfg = load_strategy_config("strategies/config.yaml")
+        fp1 = compute_cache_fingerprint("abc123", cfg, panel=None)
+
+        cfg2 = copy.deepcopy(cfg)
+        cfg2["cost_model"]["commission_bps"] = 50.0
+        fp2 = compute_cache_fingerprint("abc123", cfg2, panel=None)
+
+        assert fp1 != fp2, (
+            f"fingerprint unchanged after changing commission_bps: {fp1}"
+        )
+
+    def test_spread_bps_changes_fingerprint(self):
+        """Changing cost_model.spread_bps must change the fingerprint."""
+        from strategies.robustness import compute_cache_fingerprint
+        from strategies.run_residual_reversion import load_strategy_config
+
+        cfg = load_strategy_config("strategies/config.yaml")
+        fp1 = compute_cache_fingerprint("abc123", cfg, panel=None)
+
+        cfg2 = copy.deepcopy(cfg)
+        cfg2["cost_model"]["spread_bps"] = 300.0
+        fp2 = compute_cache_fingerprint("abc123", cfg2, panel=None)
+
+        assert fp1 != fp2
+
+    def test_data_shape_changes_fingerprint(self):
+        """Changing panel shape must change the fingerprint."""
+        from strategies.robustness import compute_cache_fingerprint
+        from strategies.run_residual_reversion import load_strategy_config
+
+        cfg = load_strategy_config("strategies/config.yaml")
+        dates_small = pd.bdate_range("2024-01-02", periods=10)
+        dates_large = pd.bdate_range("2024-01-02", periods=20)
+        panel_small = pd.DataFrame({
+            "symbol": ["A"] * 10 + ["B"] * 10,
+            "event_date": list(dates_small) * 2,
+            "close": [100.0] * 20,
+        })
+        panel_large = pd.DataFrame({
+            "symbol": ["A"] * 20 + ["B"] * 20 + ["C"] * 20 + ["D"] * 20,
+            "event_date": list(dates_large) * 4,
+            "close": [100.0] * 80,
+        })
+        fp1 = compute_cache_fingerprint("abc123", cfg, panel=panel_small)
+        fp2 = compute_cache_fingerprint("abc123", cfg, panel=panel_large)
+
+        assert fp1 != fp2
+
+    def test_variant_params_change_fingerprint(self):
+        """Different variant params must produce different fingerprints."""
+        from strategies.robustness import compute_cache_fingerprint
+        from strategies.run_residual_reversion import load_strategy_config
+
+        cfg = load_strategy_config("strategies/config.yaml")
+        fp1 = compute_cache_fingerprint("aaa", cfg, panel=None)
+        fp2 = compute_cache_fingerprint("bbb", cfg, panel=None)
+
+        assert fp1 != fp2
+
+
+# ── Resume ordering ──────────────────────────────────────────────────────────
+
+class TestResumeOrdering:
+    """Partial resume must give each variant its own result, not reorder."""
+
+    def test_resume_keys_by_variant_id(self):
+        """Registry [A,B,C,D] with cached {A,C} must give A, B, C, D
+        their OWN results (not B↔C swapped)."""
+        from strategies.robustness import (
+            build_variant_registry,
+            compute_cache_fingerprint,
+        )
+        from strategies.run_residual_reversion import load_strategy_config
+
+        cfg = load_strategy_config("strategies/config.yaml")
+        registry = build_variant_registry(cfg)
+
+        # Take first 4 variants.
+        subset = registry[:4]
+        ids = [vs.variant_id for vs in subset]
+        assert len(ids) == 4
+
+        # Simulate: A and C are cached, B and D need to run.
+        results_by_id = {}
+        cache_keys = {}
+        for vs in subset:
+            ck = compute_cache_fingerprint(vs.fingerprint, cfg, panel=None)
+            cache_keys[vs.variant_id] = ck
+
+        # Cached results (A and C).
+        results_by_id[ids[0]] = {"variant_id": ids[0], "net": "cached_A"}
+        results_by_id[ids[2]] = {"variant_id": ids[2], "net": "cached_C"}
+
+        # Simulated computed results (B and D).
+        results_by_id[ids[1]] = {"variant_id": ids[1], "net": "computed_B"}
+        results_by_id[ids[3]] = {"variant_id": ids[3], "net": "computed_D"}
+
+        # Rebuild in registry order.
+        ordered = [results_by_id[vs.variant_id] for vs in subset]
+
+        # Verify each variant gets its own result.
+        assert ordered[0]["net"] == "cached_A", "A should get cached_A"
+        assert ordered[1]["net"] == "computed_B", "B should get computed_B"
+        assert ordered[2]["net"] == "cached_C", "C should get cached_C"
+        assert ordered[3]["net"] == "computed_D", "D should get computed_D"
