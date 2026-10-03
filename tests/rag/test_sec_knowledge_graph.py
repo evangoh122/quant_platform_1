@@ -74,6 +74,7 @@ from sec_kg.build import (
 from api.services.sec_knowledge_graph import (
     JsonlGraphStore,
     SecKnowledgeGraph,
+    SparkGraphStore,
 )
 
 
@@ -1428,21 +1429,123 @@ class TestCitationLevel:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestSparkGraphStoreRoundTrip:
-    """SparkGraphStore reads provenance as ARRAY<STRUCT>, matching writer schema."""
+    """SparkGraphStore reads provenance as ARRAY<STRUCT>, matching writer schema.
 
-    def _make_fake_row(self, **kwargs):
-        """Create a fake Row-like object with attribute access."""
-        class FakeRow:
-            def __init__(self, **kw):
-                for k, v in kw.items():
-                    setattr(self, k, v)
-        return FakeRow(**kwargs)
+    Round 4: uses unix_timestamp epoch to avoid tz-naive datetime crash.
+    Fake Spark session returns NAIVE datetimes in a non-UTC local time (UTC+8)
+    plus correct epoch values for the unix_timestamp columns.
+    """
 
-    def test_spark_store_parses_provenance_struct(self):
-        """SparkGraphStore.get_fact returns results when Row has provenance struct."""
-        from datetime import timezone
+    # ── Fake Column / Expression infrastructure ────────────────────────────────
 
-        # Build a real graph
+    class _Expr:
+        """Filter expression tree node."""
+        def __init__(self, op, left, right):
+            self.op = op
+            self.left = left
+            self.right = right
+        def __or__(self, other):
+            return TestSparkGraphStoreRoundTrip._Expr("or", self, other)
+
+    class _FakeCol:
+        """Column stand-in supporting ==, <=, |, isin, alias."""
+        def __init__(self, name):
+            self._name = name
+        def __eq__(self, other):
+            return TestSparkGraphStoreRoundTrip._Expr("eq", self._name, other)
+        def __le__(self, other):
+            return TestSparkGraphStoreRoundTrip._Expr("le", self._name, other)
+        def __or__(self, other):
+            return TestSparkGraphStoreRoundTrip._Expr("or", self, other)
+        def __ror__(self, other):
+            return TestSparkGraphStoreRoundTrip._Expr("or", other, self)
+        def isin(self, vals):
+            return TestSparkGraphStoreRoundTrip._Expr("isin", self._name, list(vals))
+        def alias(self, name):
+            return self
+
+    # ── Fake Row / DataFrame / SparkSession ────────────────────────────────────
+
+    class _FakeRow:
+        """Row-like object with attribute and dict access."""
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+            self._data = kw
+        def __getitem__(self, key):
+            return self._data[key]
+
+    class _FakeDataFrame:
+        """Supports .select().where().collect() chaining."""
+        def __init__(self, rows):
+            self._rows = rows
+        def select(self, *args, **kwargs):
+            return self
+        def where(self, condition):
+            if condition is None:
+                return self
+            filtered = [
+                r for r in self._rows
+                if TestSparkGraphStoreRoundTrip._eval(condition, r)
+            ]
+            return TestSparkGraphStoreRoundTrip._FakeDataFrame(filtered)
+        def collect(self):
+            return self._rows
+
+    class _FakeSparkSession:
+        def __init__(self, table_rows):
+            self._table_rows = table_rows
+        def table(self, name):
+            return TestSparkGraphStoreRoundTrip._FakeDataFrame(
+                self._table_rows.get(name, [])
+            )
+
+    @staticmethod
+    def _eval(expr, row):
+        """Evaluate a filter expression against a FakeRow."""
+        T = TestSparkGraphStoreRoundTrip
+        if isinstance(expr, T._Expr):
+            if expr.op == "eq":
+                return getattr(row, expr.left, None) == expr.right
+            elif expr.op == "le":
+                return getattr(row, expr.left, None) <= expr.right
+            elif expr.op == "isin":
+                return getattr(row, expr.left, None) in expr.right
+            elif expr.op == "or":
+                return T._eval(expr.left, row) or T._eval(expr.right, row)
+            elif expr.op == "and":
+                return T._eval(expr.left, row) and T._eval(expr.right, row)
+        # Bare value (shouldn't happen in well-formed expressions)
+        return True
+
+    class _MockSparkGraphStore(SparkGraphStore):
+        """SparkGraphStore with a fake Spark session for offline testing."""
+        def __init__(self, catalog, schema, node_rows, edge_rows):
+            super().__init__(catalog, schema)
+            self._fake_spark = TestSparkGraphStoreRoundTrip._FakeSparkSession({
+                f"{catalog}.{schema}.gold_sec_kg_nodes": node_rows,
+                f"{catalog}.{schema}.gold_sec_kg_edges": edge_rows,
+            })
+        def _get_spark(self):
+            return self._fake_spark
+
+    # ── Monkeypatch pyspark.sql.functions ──────────────────────────────────────
+
+    def _patch_pyspark(self, monkeypatch):
+        """Replace pyspark.sql.functions with fake implementations."""
+        import pyspark.sql.functions as F_mod
+        T = TestSparkGraphStoreRoundTrip
+        monkeypatch.setattr(F_mod, "col", lambda name: T._FakeCol(name))
+        monkeypatch.setattr(F_mod, "transform", lambda col, fn: T._FakeCol("transformed"))
+        monkeypatch.setattr(F_mod, "unix_timestamp", lambda col=None: T._FakeCol("epoch"))
+        monkeypatch.setattr(F_mod, "struct", lambda *args, **kw: T._FakeCol("struct"))
+
+    # ── Build store with naive datetime rows ───────────────────────────────────
+
+    def _make_store_with_graph(self):
+        """Build a graph and return a _MockSparkGraphStore with naive datetime rows."""
+        from datetime import timedelta
+
         entities = [{
             "cik": "0001045810", "ticker": "NVDA",
             "accession_number": "0001045810-24-000001",
@@ -1469,64 +1572,120 @@ class TestSparkGraphStoreRoundTrip:
         }
         nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
 
-        # Create fake Row objects shaped like the Delta schema
-        # Writer schema: provenance ARRAY<STRUCT<accession_number, source_chunk_id, accepted_ts>>
-        fake_node_rows = []
+        node_rows = []
         for node in nodes:
             prov_list = [
-                {
-                    "accession_number": p.accession_number,
-                    "source_chunk_id": p.source_chunk_id,
-                    "accepted_ts": p.accepted_ts,
-                }
+                self._FakeRow(
+                    accession_number=p.accession_number,
+                    source_chunk_id=p.source_chunk_id,
+                    accepted_ts=p.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=int(p.accepted_ts.timestamp()),
+                )
                 for p in node.provenance
             ]
-            fake_node_rows.append(self._make_fake_row(
+            node_rows.append(self._FakeRow(
                 node_id=node.node_id,
                 node_type=node.node_type,
                 label=node.label,
                 properties_json=node.properties_json,
-                provenance=prov_list,  # NOT provenance_json
+                provenance=prov_list,
                 build_version=node.build_version,
             ))
 
-        fake_edge_rows = []
+        edge_rows = []
         for edge in edges:
-            fake_edge_rows.append(self._make_fake_row(
+            edge_rows.append(self._FakeRow(
                 edge_id=edge.edge_id,
                 src_id=edge.src_id,
                 edge_type=edge.edge_type,
                 dst_id=edge.dst_id,
-                valid_from=edge.valid_from,
+                valid_from=edge.valid_from.replace(tzinfo=None) + timedelta(hours=8),
+                valid_from_epoch=int(edge.valid_from.timestamp()),
                 accession_number=edge.accession_number,
                 source_chunk_id=edge.source_chunk_id,
-                accepted_ts=edge.accepted_ts,
+                accepted_ts=edge.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                accepted_epoch=int(edge.accepted_ts.timestamp()),
                 confidence=edge.confidence,
                 properties_json=edge.properties_json,
                 build_version=edge.build_version,
             ))
 
-        # Verify the fake rows have provenance (not provenance_json)
-        assert hasattr(fake_node_rows[0], "provenance")
-        assert not hasattr(fake_node_rows[0], "provenance_json")
-        assert isinstance(fake_node_rows[0].provenance, list)
-        assert len(fake_node_rows[0].provenance) > 0
+        return self._MockSparkGraphStore("test_cat", "test_sch", node_rows, edge_rows)
+
+    # ── Tests ──────────────────────────────────────────────────────────────────
+
+    def test_spark_store_parses_provenance_struct(self, monkeypatch):
+        """SparkGraphStore.get_fact returns results when Row has provenance struct."""
+        self._patch_pyspark(monkeypatch)
+        store = self._make_store_with_graph()
+        kg = SecKnowledgeGraph(store)
+        result = kg.get_fact("NVDA", "Revenues", "2024-01-28",
+                             datetime(2024, 6, 1, tzinfo=timezone.utc))
+        assert result is not None
+        assert result["value_text"] == "2943719000"
+        accepted = datetime.fromisoformat(result["accepted_ts"])
+        assert accepted.tzinfo is not None
+        assert accepted.tzinfo == timezone.utc
+
+    def test_get_fact_utc_accepted_ts(self, monkeypatch):
+        """get_fact via SparkGraphStore returns correct UTC accepted_ts."""
+        self._patch_pyspark(monkeypatch)
+        store = self._make_store_with_graph()
+        kg = SecKnowledgeGraph(store)
+        result = kg.get_fact("NVDA", "Revenues", "2024-01-28",
+                             datetime(2024, 6, 1, tzinfo=timezone.utc))
+        assert result is not None
+        accepted = datetime.fromisoformat(result["accepted_ts"])
+        # epoch 1700000000 = 2023-11-14T22:13:20Z
+        assert accepted == datetime.fromtimestamp(1700000000, tz=timezone.utc)
+
+    def test_facts_timeseries_pit_filter(self, monkeypatch):
+        """facts_timeseries PIT filter works with SparkGraphStore epoch reads."""
+        self._patch_pyspark(monkeypatch)
+        store = self._make_store_with_graph()
+        kg = SecKnowledgeGraph(store)
+        before = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        results = kg.facts_timeseries("NVDA", "Revenues", before)
+        assert results == []
+        after = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        results = kg.facts_timeseries("NVDA", "Revenues", after)
+        assert len(results) == 1
+        accepted = datetime.fromisoformat(results[0]["accepted_ts"])
+        # epoch 1700000000 = 2023-11-14T22:13:20Z
+        assert accepted == datetime.fromtimestamp(1700000000, tz=timezone.utc)
+
+    def test_neighbors_returns_utc_timestamps(self, monkeypatch):
+        """neighbors via SparkGraphStore returns UTC-aware valid_from and accepted_ts."""
+        self._patch_pyspark(monkeypatch)
+        store = self._make_store_with_graph()
+        kg = SecKnowledgeGraph(store)
+        cid = company_id("0001045810")
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        neighbors = kg.neighbors(cid, ["FILED"], as_of)
+        for n in neighbors:
+            vf = datetime.fromisoformat(n["valid_from"])
+            at = datetime.fromisoformat(n["accepted_ts"])
+            assert vf.tzinfo == timezone.utc
+            assert at.tzinfo == timezone.utc
 
     def test_writer_schema_matches_reader_expectation(self):
         """Writer stores 'provenance' as ARRAY<STRUCT>; reader must read 'provenance'."""
-        # Read the SparkGraphStore source and verify it uses row.provenance
         import os
         src_path = os.path.join(os.path.dirname(__file__), "..", "..",
                                 "api", "services", "sec_knowledge_graph.py")
         with open(src_path, "r") as f:
             source = f.read()
-        # The reader should access row.provenance, not row.provenance_json
         assert "provenance_json" not in source, (
             "SparkGraphStore still references provenance_json"
         )
-        # Verify it accesses .provenance directly
         assert "row.provenance" in source, (
             "SparkGraphStore should access row.provenance"
+        )
+        assert "unix_timestamp" in source, (
+            "SparkGraphStore must use unix_timestamp for epoch reads"
+        )
+        assert "fromtimestamp" in source, (
+            "SparkGraphStore must convert epoch to UTC datetime"
         )
 
 

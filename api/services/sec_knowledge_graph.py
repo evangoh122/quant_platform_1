@@ -166,15 +166,29 @@ class SparkGraphStore:
         return f"{self._catalog}.{self._schema}.gold_sec_kg_edges"
 
     def iter_nodes(self) -> List[KgNode]:
+        from pyspark.sql import functions as F
         spark = self._get_spark()
-        df = spark.table(self._nodes_table())
+        # Read epoch seconds to avoid tz-naive datetime from Spark.
+        df = spark.table(self._nodes_table()).select(
+            "node_id", "node_type", "label", "properties_json", "build_version",
+            F.transform(
+                F.col("provenance"),
+                lambda p: F.struct(
+                    p["accession_number"],
+                    p["source_chunk_id"],
+                    F.unix_timestamp(p["accepted_ts"]).alias("accepted_epoch"),
+                ),
+            ).alias("provenance"),
+        )
         nodes = []
         for row in df.collect():
             provenance = tuple(
                 Provenance(
                     accession_number=p["accession_number"],
                     source_chunk_id=p["source_chunk_id"],
-                    accepted_ts=p["accepted_ts"],
+                    accepted_ts=datetime.fromtimestamp(
+                        int(p["accepted_epoch"]), tz=timezone.utc
+                    ),
                 )
                 for p in (row.provenance or [])
             )
@@ -189,8 +203,16 @@ class SparkGraphStore:
         return nodes
 
     def iter_edges(self) -> List[KgEdge]:
+        from pyspark.sql import functions as F
         spark = self._get_spark()
-        df = spark.table(self._edges_table())
+        # Read epoch seconds to avoid tz-naive datetime from Spark.
+        df = spark.table(self._edges_table()).select(
+            "edge_id", "src_id", "edge_type", "dst_id",
+            F.unix_timestamp(F.col("valid_from")).alias("valid_from_epoch"),
+            "accession_number", "source_chunk_id",
+            F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+            "confidence", "properties_json", "build_version",
+        )
         edges = []
         for row in df.collect():
             edges.append(KgEdge(
@@ -198,10 +220,14 @@ class SparkGraphStore:
                 src_id=row.src_id,
                 edge_type=row.edge_type,
                 dst_id=row.dst_id,
-                valid_from=row.valid_from,
+                valid_from=datetime.fromtimestamp(
+                    int(row.valid_from_epoch), tz=timezone.utc
+                ),
                 accession_number=row.accession_number,
                 source_chunk_id=row.source_chunk_id,
-                accepted_ts=row.accepted_ts,
+                accepted_ts=datetime.fromtimestamp(
+                    int(row.accepted_epoch), tz=timezone.utc
+                ),
                 confidence=row.confidence,
                 properties_json=row.properties_json,
                 build_version=row.build_version,
@@ -211,7 +237,18 @@ class SparkGraphStore:
     def get_node(self, node_id: str) -> Optional[KgNode]:
         from pyspark.sql import functions as F
         spark = self._get_spark()
-        df = spark.table(self._nodes_table()).where(F.col("node_id") == node_id)
+        # Read epoch seconds to avoid tz-naive datetime from Spark.
+        df = spark.table(self._nodes_table()).select(
+            "node_id", "node_type", "label", "properties_json", "build_version",
+            F.transform(
+                F.col("provenance"),
+                lambda p: F.struct(
+                    p["accession_number"],
+                    p["source_chunk_id"],
+                    F.unix_timestamp(p["accepted_ts"]).alias("accepted_epoch"),
+                ),
+            ).alias("provenance"),
+        ).where(F.col("node_id") == node_id)
         rows = df.collect()
         if not rows:
             return None
@@ -220,7 +257,9 @@ class SparkGraphStore:
             Provenance(
                 accession_number=p["accession_number"],
                 source_chunk_id=p["source_chunk_id"],
-                accepted_ts=p["accepted_ts"],
+                accepted_ts=datetime.fromtimestamp(
+                    int(p["accepted_epoch"]), tz=timezone.utc
+                ),
             )
             for p in (row.provenance or [])
         )
@@ -241,14 +280,23 @@ class SparkGraphStore:
     ) -> List[KgEdge]:
         from pyspark.sql import functions as F
         spark = self._get_spark()
-        df = spark.table(self._edges_table()).where(
+        # Read epoch seconds to avoid tz-naive datetime from Spark.
+        df = spark.table(self._edges_table()).select(
+            "edge_id", "src_id", "edge_type", "dst_id",
+            F.unix_timestamp(F.col("valid_from")).alias("valid_from_epoch"),
+            "accession_number", "source_chunk_id",
+            F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+            "confidence", "properties_json", "build_version",
+        ).where(
             (F.col("src_id") == node_id) | (F.col("dst_id") == node_id)
         )
         if edge_types:
             df = df.where(F.col("edge_type").isin(edge_types))
         if as_of is not None:
             as_of = ensure_utc(as_of)
-            df = df.where(F.col("valid_from") <= as_of)
+            # PIT filter using epoch seconds to match the read strategy
+            as_of_epoch = int(as_of.timestamp())
+            df = df.where(F.col("valid_from_epoch") <= as_of_epoch)
 
         edges = []
         for row in df.collect():
@@ -257,10 +305,14 @@ class SparkGraphStore:
                 src_id=row.src_id,
                 edge_type=row.edge_type,
                 dst_id=row.dst_id,
-                valid_from=row.valid_from,
+                valid_from=datetime.fromtimestamp(
+                    int(row.valid_from_epoch), tz=timezone.utc
+                ),
                 accession_number=row.accession_number,
                 source_chunk_id=row.source_chunk_id,
-                accepted_ts=row.accepted_ts,
+                accepted_ts=datetime.fromtimestamp(
+                    int(row.accepted_epoch), tz=timezone.utc
+                ),
                 confidence=row.confidence,
                 properties_json=row.properties_json,
                 build_version=row.build_version,
