@@ -2,7 +2,7 @@
 
 MiMo vectorised `compute_costs` (649× speed-up) and added parallel variants (ProcessPool) plus
 checkpointing. 231 tests pass. Read-only; scratch work in /tmp. Write
-`.agents/deepseek/VERDICT-strategy-robustness-perf.md` (===VERDICT START/END===, Status).
+`.agents/deepseek/VERDICT-strategy-robustness-perf2.md` (===VERDICT START/END===, Status).
 
 Verify:
 1. **Numerical equivalence.**
@@ -21,3 +21,17 @@ Verify:
 5. The property tests and earlier guarantees still hold.
 
 Run `python3 -m pytest -q tests/strategies tests/ml`, and the same suite with pyspark hidden.
+
+## Re-check after round 9 (this run)
+Round 9 moves the workers to `strategies/robustness_worker.py`, uses a real spawn ProcessPool test,
+fingerprints the config, data and code, and keys resume by name. Claude: the 6 pool, fingerprint and
+resume tests FAIL on the round-8 code and PASS now.
+
+Re-verify your 3 findings with your own proofs:
+- the actual pool with workers 1/2/4 gives identical results;
+- worker errors are not swallowed;
+- a cost-param change forces a recompute;
+- a non-prefix cached subset gets the right per-variant results;
+- trial counting is unaffected.
+
+Write `.agents/deepseek/VERDICT-strategy-robustness-perf2.md`.
