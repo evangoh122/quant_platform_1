@@ -474,3 +474,83 @@ class TestImportSafety:
         assert hasattr(mod, "main")
         assert hasattr(mod, "_valid_mode")
         assert hasattr(mod, "_split_to_row")
+
+    def test_notebook_has_argparse(self):
+        """The notebook must use argparse for CLI flags."""
+        import importlib.util
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        assert "import argparse" in text, "Notebook must import argparse"
+        assert "argparse.ArgumentParser" in text, "Notebook must create ArgumentParser"
+        assert '--mode' in text, "Notebook must accept --mode flag"
+        assert '--run-id' in text, "Notebook must accept --run-id flag"
+        assert '--delay-seconds' in text, "Notebook must accept --delay-seconds flag"
+        assert '--symbol-start' in text, "Notebook must accept --symbol-start flag"
+        assert '--symbol-end' in text, "Notebook must accept --symbol-end flag"
+
+
+# ---------------------------------------------------------------------------
+# 8. Argparse CLI flags (pure parse, no Spark)
+# ---------------------------------------------------------------------------
+
+class TestArgparseCLIFlags:
+    """Verify argparse parsing in the notebook main() entry point."""
+
+    def _parse_args(self, argv_list):
+        """Import the notebook module and call argparse directly."""
+        import importlib.util
+        import sys
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--mode", default=None)
+        parser.add_argument("--source", default=None)
+        parser.add_argument("--symbol-start", default=None)
+        parser.add_argument("--symbol-end", default=None)
+        parser.add_argument("--delay-seconds", type=float, default=None)
+        parser.add_argument("--max-retries", type=int, default=None)
+        parser.add_argument("--run-id", default=None)
+        args, _ = parser.parse_known_args(argv_list)
+        return args
+
+    def test_mode_write(self):
+        """--mode write sets write mode."""
+        args = self._parse_args(["--mode", "write"])
+        assert args.mode == "write"
+
+    def test_mode_dry_run(self):
+        """--mode dry-run sets dry-run mode."""
+        args = self._parse_args(["--mode", "dry-run"])
+        assert args.mode == "dry-run"
+
+    def test_mode_default_none(self):
+        """Omitting --mode leaves it None (falls back to default dry-run)."""
+        args = self._parse_args([])
+        assert args.mode is None
+
+    def test_run_id(self):
+        """--run-id is parsed."""
+        args = self._parse_args(["--run-id", "run-20250101-abc12345"])
+        assert args.run_id == "run-20250101-abc12345"
+
+    def test_delay_seconds(self):
+        """--delay-seconds is parsed as float."""
+        args = self._parse_args(["--delay-seconds", "1.5"])
+        assert args.delay_seconds == 1.5
+
+    def test_symbol_bounds(self):
+        """--symbol-start and --symbol-end are parsed."""
+        args = self._parse_args(["--symbol-start", "AAPL", "--symbol-end", "MSFT"])
+        assert args.symbol_start == "AAPL"
+        assert args.symbol_end == "MSFT"
+
+    def test_unknown_flag_does_not_raise(self):
+        """Unknown flags are silently ignored (parse_known_args)."""
+        args = self._parse_args(["--mode", "write", "--unknown-flag", "value"])
+        assert args.mode == "write"

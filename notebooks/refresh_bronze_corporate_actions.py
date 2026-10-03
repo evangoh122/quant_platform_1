@@ -9,6 +9,7 @@ setup inside ``main()``.  ``if __name__ == "__main__": main()``.
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import os
@@ -132,7 +133,20 @@ def main() -> None:
     except ImportError:
         dbutils = None
 
-    # --- Parameters ---
+    # --- Parameters: argparse first (CLI/job), fallback to widgets (interactive) ---
+    parser = argparse.ArgumentParser(
+        description="Refresh bronze corporate actions from live universe."
+    )
+    parser.add_argument("--mode", default=None, help="dry-run or write")
+    parser.add_argument("--source", default=None, help="Data source (yfinance)")
+    parser.add_argument("--symbol-start", default=None, help="Inclusive lower bound for symbol range")
+    parser.add_argument("--symbol-end", default=None, help="Inclusive upper bound for symbol range")
+    parser.add_argument("--delay-seconds", type=float, default=None, help="Min delay between fetches")
+    parser.add_argument("--max-retries", type=int, default=None, help="Max retries per symbol")
+    parser.add_argument("--run-id", default=None, help="Resume run id")
+    args, _ = parser.parse_known_args()
+
+    # Defaults
     mode = "dry-run"
     source = "yfinance"
     symbol_start = ""
@@ -141,35 +155,59 @@ def main() -> None:
     max_retries = 2
     run_id = _new_run_id()
 
+    # Argparse overrides defaults
+    if args.mode is not None:
+        mode = args.mode
+    if args.source is not None:
+        source = args.source
+    if args.symbol_start is not None:
+        symbol_start = args.symbol_start
+    if args.symbol_end is not None:
+        symbol_end = args.symbol_end
+    if args.delay_seconds is not None:
+        delay_seconds = args.delay_seconds
+    if args.max_retries is not None:
+        max_retries = args.max_retries
+    if args.run_id is not None:
+        run_id = args.run_id
+
+    # Widgets override defaults only when argparse didn't supply a value
     if dbutils is not None:
-        try:
-            mode = dbutils.widgets.get("mode")
-        except Exception:
-            pass
-        try:
-            source = dbutils.widgets.get("source")
-        except Exception:
-            pass
-        try:
-            symbol_start = dbutils.widgets.get("symbol_start")
-        except Exception:
-            pass
-        try:
-            symbol_end = dbutils.widgets.get("symbol_end")
-        except Exception:
-            pass
-        try:
-            delay_seconds = float(dbutils.widgets.get("delay_seconds"))
-        except Exception:
-            pass
-        try:
-            max_retries = int(dbutils.widgets.get("max_retries"))
-        except Exception:
-            pass
-        try:
-            run_id = dbutils.widgets.get("run_id")
-        except Exception:
-            pass
+        if args.mode is None:
+            try:
+                mode = dbutils.widgets.get("mode")
+            except Exception:
+                pass
+        if args.source is None:
+            try:
+                source = dbutils.widgets.get("source")
+            except Exception:
+                pass
+        if args.symbol_start is None:
+            try:
+                symbol_start = dbutils.widgets.get("symbol_start")
+            except Exception:
+                pass
+        if args.symbol_end is None:
+            try:
+                symbol_end = dbutils.widgets.get("symbol_end")
+            except Exception:
+                pass
+        if args.delay_seconds is None:
+            try:
+                delay_seconds = float(dbutils.widgets.get("delay_seconds"))
+            except Exception:
+                pass
+        if args.max_retries is None:
+            try:
+                max_retries = int(dbutils.widgets.get("max_retries"))
+            except Exception:
+                pass
+        if args.run_id is None:
+            try:
+                run_id = dbutils.widgets.get("run_id")
+            except Exception:
+                pass
 
     mode = _valid_mode(mode)
     source = _valid_source(source)

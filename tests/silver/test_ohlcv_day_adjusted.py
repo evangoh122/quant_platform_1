@@ -10,6 +10,7 @@ implementation to verify the mathematical contracts.
 import datetime as dt
 import math
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -660,6 +661,89 @@ class TestSQLContract:
             # In actual code, Adj Close should not appear
             assert "Adj Close" not in stripped or "Never" in stripped or "not" in stripped.lower(), \
                 f"Adj Close found in code: {line}"
+
+    def test_daily_info_available_ts_uses_to_utc_timestamp_1630(self):
+        """SQL must use to_utc_timestamp(..., '16:30:00') for daily availability."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        assert "to_utc_timestamp" in text, "Must use to_utc_timestamp (not from_utc_timestamp)"
+        assert "16:30:00" in text, "Must use 16:30:00 (not 16:00:00)"
+        # Ensure from_utc_timestamp is NOT used for the daily availability
+        assert "from_utc_timestamp" not in text, "Must not use from_utc_timestamp"
+
+    def test_daily_info_available_ts_edt_is_2030_utc(self):
+        """2022-06-06 is EDT: 16:30 ET = 20:30 UTC."""
+        from zoneinfo import ZoneInfo
+        event_date = dt.date(2022, 6, 6)
+        et_time = dt.datetime(2022, 6, 6, 16, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+        utc_time = et_time.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        assert utc_time == dt.datetime(2022, 6, 6, 20, 30, 0)
+
+    def test_daily_info_available_ts_est_is_2130_utc(self):
+        """2022-12-05 is EST: 16:30 ET = 21:30 UTC."""
+        from zoneinfo import ZoneInfo
+        event_date = dt.date(2022, 12, 5)
+        et_time = dt.datetime(2022, 12, 5, 16, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+        utc_time = et_time.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        assert utc_time == dt.datetime(2022, 12, 5, 21, 30, 0)
+
+    def test_data_quality_breaks_merge_insert_has_explicit_columns(self):
+        """MERGE INSERT must use explicit column list, not INSERT *."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        # The data_quality_breaks MERGE (section 9) must NOT use INSERT *
+        # Find the section between the data_quality_breaks MERGE and the silver_ohlcv_day_adjusted MERGE
+        dq_section = text.split("Merge silver_ohlcv_day_adjusted")[0]
+        assert "INSERT *" not in dq_section, \
+            "data_quality_breaks MERGE must not use INSERT *"
+        assert "INSERT (" in dq_section, \
+            "data_quality_breaks MERGE must use explicit INSERT column list"
+        assert "reviewed_by" in dq_section and "reviewed_ts" in dq_section, \
+            "INSERT must include reviewed_by and reviewed_ts columns"
+
+    def test_data_quality_breaks_insert_covers_all_target_columns(self):
+        """Parse target DDL and assert INSERT lists every target column exactly once."""
+        from pathlib import Path
+        import re
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+
+        # Extract target DDL columns (between CREATE TABLE ... data_quality_breaks ( ... ) USING DELTA)
+        ddl_match = re.search(
+            r'CREATE TABLE IF NOT EXISTS.*?data_quality_breaks\s*\((.*?)\)\s*USING DELTA',
+            text, re.DOTALL
+        )
+        assert ddl_match, "Could not find data_quality_breaks CREATE TABLE DDL"
+        ddl_body = ddl_match.group(1)
+        # Parse column names from DDL (lines like: "symbol STRING NOT NULL,")
+        target_cols = []
+        for line in ddl_body.splitlines():
+            line = line.strip().rstrip(",")
+            if not line:
+                continue
+            parts = line.split()
+            if parts:
+                col_name = parts[0].lower()
+                if col_name in ("primary", "constraint", "--"):
+                    continue
+                target_cols.append(col_name)
+        assert len(target_cols) == 16, f"Expected 16 target columns, got {len(target_cols)}: {target_cols}"
+
+        # Extract INSERT column list from the MERGE
+        insert_match = re.search(
+            r'data_quality_breaks.*?WHEN NOT MATCHED THEN INSERT\s*\((.*?)\)\s*VALUES',
+            text, re.DOTALL
+        )
+        assert insert_match, "Could not find INSERT column list in data_quality_breaks MERGE"
+        insert_cols_str = insert_match.group(1)
+        insert_cols = [c.strip().lower() for c in insert_cols_str.split(",")]
+
+        assert len(insert_cols) == len(target_cols), \
+            f"INSERT has {len(insert_cols)} columns but target has {len(target_cols)}"
+        assert set(insert_cols) == set(target_cols), \
+            f"Column mismatch: INSERT={sorted(insert_cols)} vs target={sorted(target_cols)}"
 
 
 # ---------------------------------------------------------------------------

@@ -293,7 +293,19 @@ WHEN MATCHED AND tgt.reviewed_by IS NULL THEN UPDATE SET
     tgt.reason                  = src.reason,
     tgt.is_masked               = src.is_masked,
     tgt.processed_ts            = src.processed_ts
-WHEN NOT MATCHED THEN INSERT *
+WHEN NOT MATCHED THEN INSERT (
+    symbol, event_date, previous_event_date, previous_close, close,
+    raw_overnight_return, matched_split_ratio, post_split_gross_return,
+    split_error, classification, reason, is_masked,
+    reviewed_by, reviewed_ts,
+    detected_ts, processed_ts
+) VALUES (
+    src.symbol, src.event_date, src.previous_event_date, src.previous_close, src.close,
+    src.raw_overnight_return, src.matched_split_ratio, src.post_split_gross_return,
+    src.split_error, src.classification, src.reason, src.is_masked,
+    NULL, NULL,
+    src.detected_ts, src.processed_ts
+)
 
 
 -- ============================================================
@@ -334,9 +346,9 @@ USING (
                 THEN TRUE
             ELSE FALSE
         END                                              AS is_data_quality_break,
-        -- Daily bar availability: 16:30 ET on the bar date
-        from_utc_timestamp(
-            to_timestamp(concat(cast(a.event_date AS STRING), ' 16:00:00')),
+        -- Daily bar availability: 16:30 ET on the bar date, converted to UTC
+        to_utc_timestamp(
+            to_timestamp(concat(cast(a.event_date AS STRING), ' 16:30:00')),
             'America/New_York'
         )                                                AS information_available_ts,
         current_timestamp()                              AS processed_ts
