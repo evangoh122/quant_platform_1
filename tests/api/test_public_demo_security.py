@@ -1329,3 +1329,245 @@ def test_client_ip_source_in_render_allow_list():
     as a secret in demo mode."""
     from api.demo import _RENDER_ALLOW_LIST
     assert "CLIENT_IP_SOURCE" in _RENDER_ALLOW_LIST
+
+
+# ── test 42: RATE_LIMIT_DEBUG in Render allow-list ───────────────────────────
+
+def test_rate_limit_debug_in_render_allow_list():
+    """RATE_LIMIT_DEBUG is in the Render allow-list so it is not rejected
+    as a secret in demo mode."""
+    from api.demo import _RENDER_ALLOW_LIST
+    assert "RATE_LIMIT_DEBUG" in _RENDER_ALLOW_LIST
+
+
+# ── test 43: RATE_LIMIT_DEBUG off → no per-request log line ──────────────────
+
+def test_rate_limit_debug_off_no_per_request_log(monkeypatch, caplog):
+    """When RATE_LIMIT_DEBUG is off (default), no per-request debug line appears."""
+    import api.main as main_mod
+    import logging
+
+    monkeypatch.setattr(main_mod, "_RATE_LIMIT_DEBUG", False)
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch)
+    client = _client(app)
+
+    with caplog.at_level(logging.INFO, logger="api.main"):
+        resp = client.get("/api/analytics")
+        assert resp.status_code == 200
+
+    debug_lines = [r for r in caplog.records if "rate_limit_debug" in r.message]
+    assert len(debug_lines) == 0, (
+        f"Expected no rate_limit_debug log line when debug is off, got {len(debug_lines)}"
+    )
+
+    main_mod._limiter.reset()
+
+
+# ── test 44: RATE_LIMIT_DEBUG on → redacted format, no full IP ───────────────
+
+def test_rate_limit_debug_on_logs_redacted_key(monkeypatch, caplog):
+    """When RATE_LIMIT_DEBUG is on, each request logs a redacted IP key.
+    IPv4 → first two octets + '.x.x'. No full IP appears in output."""
+    import api.main as main_mod
+    import logging
+
+    monkeypatch.setattr(main_mod, "_RATE_LIMIT_DEBUG", True)
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    with caplog.at_level(logging.INFO, logger="api.main"):
+        resp = client.get(
+            "/api/analytics",
+            headers={"X-Forwarded-For": "1.2.3.4"},
+        )
+        assert resp.status_code == 200
+
+    debug_lines = [r for r in caplog.records if "rate_limit_debug" in r.message]
+    assert len(debug_lines) >= 1, "Expected at least one rate_limit_debug log line"
+
+    line = debug_lines[0].message
+    assert "1.2.x.x" in line, f"Expected redacted key '1.2.x.x' in log, got: {line}"
+    assert "xff_leftmost" in line, f"Expected source mode in log, got: {line}"
+    # No full IP in output.
+    assert "1.2.3.4" not in line, f"Full IP leaked into log: {line}"
+
+    monkeypatch.setattr(main_mod, "_RATE_LIMIT_DEBUG", False)
+    main_mod._limiter.reset()
+
+
+# ── test 45: _redact_ip IPv4 correctness ─────────────────────────────────────
+
+def test_redact_ip_ipv4():
+    """_redact_ip('1.2.3.4') → '1.2.x.x'."""
+    from api.main import _redact_ip
+    assert _redact_ip("1.2.3.4") == "1.2.x.x"
+    assert _redact_ip("10.0.0.1") == "10.0.x.x"
+    assert _redact_ip("192.168.100.200") == "192.168.x.x"
+
+
+# ── test 46: _redact_ip IPv6 correctness ─────────────────────────────────────
+
+def test_redact_ip_ipv6():
+    """_redact_ip on IPv6 → first two hextets + '::/32'."""
+    from api.main import _redact_ip
+    assert _redact_ip("2001:0db8:85a3:0000:0000:8a2e:0370:7334") == "2001:db8::/32"
+    assert _redact_ip("::1") == "0:0::/32"
+    assert _redact_ip("fe80::1") == "fe80:0::/32"
+
+
+# ── test 47: _redact_ip unknown ──────────────────────────────────────────────
+
+def test_redact_ip_unknown():
+    """_redact_ip on invalid input → 'unknown'."""
+    from api.main import _redact_ip
+    assert _redact_ip("not-an-ip") == "unknown"
+    assert _redact_ip("") == "unknown"
+
+
+# ── test 48: RATE_LIMIT_DEBUG on → no full IP in any log line ────────────────
+
+def test_rate_limit_debug_no_full_ip_in_any_line(monkeypatch, caplog):
+    """RATE_LIMIT_DEBUG on: no full IP appears in any log line, including
+    for IPv6 addresses."""
+    import api.main as main_mod
+    import logging
+
+    monkeypatch.setattr(main_mod, "_RATE_LIMIT_DEBUG", True)
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    with caplog.at_level(logging.INFO, logger="api.main"):
+        resp = client.get(
+            "/api/analytics",
+            headers={"X-Forwarded-For": "10.20.30.40"},
+        )
+        assert resp.status_code == 200
+
+    for record in caplog.records:
+        if "rate_limit_debug" in record.message:
+            assert "10.20.30.40" not in record.message, (
+                f"Full IPv4 leaked into log: {record.message}"
+            )
+
+    monkeypatch.setattr(main_mod, "_RATE_LIMIT_DEBUG", False)
+    main_mod._limiter.reset()
+
+
+# ── test 49: secret exact names — AUTHORIZATION, BASIC_AUTH, SESSION_COOKIE ───
+
+@pytest.mark.parametrize("key", [
+    "AUTHORIZATION",
+    "BASIC_AUTH",
+    "SESSION_COOKIE",
+])
+def test_new_exact_secret_names_rejected(monkeypatch, key):
+    """New exact names (AUTHORIZATION, BASIC_AUTH, SESSION_COOKIE)
+    reject non-empty values in demo mode."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+
+
+# ── test 50: secret suffixes — _ACCESS_KEY_ID, _CERT, _COOKIE, _AUTH ──────────
+
+@pytest.mark.parametrize("key", [
+    "MY_ACCESS_KEY_ID",
+    "DATABASE_CERT",
+    "MY_COOKIE",
+    "CUSTOM_AUTH",
+])
+def test_new_secret_suffixes_rejected(monkeypatch, key):
+    """New suffix families (_ACCESS_KEY_ID, _CERT, _COOKIE, _AUTH)
+    reject non-empty values in demo mode."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+
+
+# ── test 51: URL with sensitive query param rejected ──────────────────────────
+
+@pytest.mark.parametrize("key,value", [
+    ("CUSTOM_URL", "https://host/path?token=secret"),
+    ("MY_URL", "https://host/path?key=abc123"),
+    ("API_URL", "https://host/path?apikey=xyz"),
+    ("DATA_URL", "https://host/path?api_key=xyz"),
+    ("SERVICE_URL", "https://host/path?secret=xyz"),
+    ("AUTH_URL", "https://host/path?password=xyz"),
+    ("DB_URL", "https://host/path?pwd=xyz"),
+    ("SIG_URL", "https://host/path?sig=xyz"),
+    ("SIGN_URL", "https://host/path?signature=xyz"),
+    ("OAUTH_URL", "https://host/path?access_token=xyz"),
+    ("LOGIN_URL", "https://host/path?auth=xyz"),
+    ("MULTI_URL", "https://host/path?page=2&token=secret"),
+])
+def test_url_with_sensitive_query_param_rejected(monkeypatch, key, value):
+    """Any URL with sensitive query parameters (token, key, secret, etc.)
+    is rejected even if the key name doesn't match other secret patterns."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, value)
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert value not in str(exc_info.value)
+
+
+# ── test 52: harmless URL query params are allowed ────────────────────────────
+
+@pytest.mark.parametrize("key,value", [
+    ("PAGE_URL", "https://host/path?page=2"),
+    ("SEARCH_URL", "https://host/path?q=test&limit=10"),
+    ("API_URL", "https://host/path?format=json"),
+])
+def test_harmless_url_query_params_allowed(monkeypatch, key, value):
+    """URLs with non-sensitive query parameters are not rejected."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, value)
+
+    from api.demo import validate_public_demo_environment
+
+    # Must not raise.
+    validate_public_demo_environment()
+
+
+# ── test 53: Render defaults with harmless values not rejected ────────────────
+
+def test_render_defaults_not_rejected_by_url_check(monkeypatch):
+    """Render-injected env vars (RENDER_SERVICE_ID, etc.) with typical
+    values are not rejected by the sensitive URL query param check."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("RENDER_SERVICE_ID", "srv-abc123")
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://myapp.onrender.com")
+
+    from api.demo import validate_public_demo_environment
+
+    # Must not raise.
+    validate_public_demo_environment()

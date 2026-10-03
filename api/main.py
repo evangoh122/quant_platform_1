@@ -40,6 +40,7 @@ _MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(1024 * 102
 _REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 _LRU_MAX_KEYS = int(os.getenv("RATE_LIMIT_LRU_MAX", "10000"))
 _IS_RENDER = bool(os.environ.get("RENDER", "").strip())
+_RATE_LIMIT_DEBUG = os.environ.get("RATE_LIMIT_DEBUG", "").strip() in ("1", "true", "yes", "on")
 
 _VALID_CLIENT_IP_SOURCES = frozenset({"xff_leftmost", "cf_connecting_ip", "peer"})
 
@@ -214,6 +215,27 @@ def _parse_ip(value: str) -> str | None:
         return str(ipaddress.ip_address(value.strip()))
     except (ValueError, AttributeError):
         return None
+
+
+def _redact_ip(ip: str) -> str:
+    """Return a privacy-reduced IP key for diagnostic logging.
+
+    IPv4 → first two octets + ".x.x" (e.g. "1.2.3.4" → "1.2.x.x").
+    IPv6 → first two hextets + "::/32" (e.g. "2001:0db8:85a3::1" → "2001:db8::/32").
+    Unparseable → "unknown".
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except (ValueError, AttributeError):
+        return "unknown"
+    if addr.version == 4:
+        parts = ip.split(".")
+        return f"{parts[0]}.{parts[1]}.x.x"
+    # IPv6: use exploded form to get full hextets, strip leading zeros.
+    hextets = addr.exploded.split(":")
+    h0 = hextets[0].lstrip("0") or "0"
+    h1 = hextets[1].lstrip("0") or "0"
+    return f"{h0}:{h1}::/32"
 
 
 def _get_client_ip(request: Request) -> str:
@@ -396,6 +418,12 @@ def _register_demo_middleware(application: FastAPI) -> None:
         if method in ("GET", "HEAD"):
             client_ip = _get_client_ip(request)
             allowed, retry_after = _limiter.check(client_ip)
+            if _RATE_LIMIT_DEBUG:
+                _log.info(
+                    "rate_limit_debug client_ip_source=%s key=%s",
+                    _CLIENT_IP_SOURCE,
+                    _redact_ip(client_ip),
+                )
             if not allowed:
                 resp = JSONResponse(
                     status_code=429,

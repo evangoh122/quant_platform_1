@@ -241,8 +241,12 @@ After deploying, run these checks before going public:
 
 ```bash
 # (a) Confirm which IP the limiter keys on.
-# Send X-Forwarded-For from one machine; check the log (first two octets only).
+# Enable diagnostic logging, send X-Forwarded-For, check the log (redacted key).
+# Set RATE_LIMIT_DEBUG=1 in your Render service env, then:
 curl -H "X-Forwarded-For: 1.2.3.4" https://YOUR_APP.onrender.com/api/health
+# The log should show: rate_limit_debug client_ip_source=xff_leftmost key=1.2.x.x
+# If the key is "1.2" something is wrong (the redacted format must be "1.2.x.x").
+# Turn RATE_LIMIT_DEBUG off after verification.
 
 # (b) Confirm per-IP limiting with spoofed headers.
 # From one machine, send 70 requests with rotating spoofed XFF,

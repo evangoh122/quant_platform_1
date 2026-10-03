@@ -12,6 +12,7 @@ unrecognised non-empty ``PUBLIC_DEMO`` value (e.g. ``"t"``, ``"1.0"``,
 from __future__ import annotations
 
 import os
+import re
 from typing import Mapping
 
 PUBLIC_DEMO_USER_ID = "public-demo"
@@ -61,7 +62,7 @@ _EXPLICIT_BROKER_KEYS = frozenset({
 _SECRET_SUFFIXES = (
     "_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_PASS", "_PWD",
     "_DSN", "_URI", "_PAT", "_APIKEY", "_CREDENTIALS", "_KEY_BASE",
-    "_CONNECTION_STRING",
+    "_CONNECTION_STRING", "_ACCESS_KEY_ID", "_CERT", "_COOKIE", "_AUTH",
 )
 
 # Prefixes that indicate secrets.
@@ -76,6 +77,7 @@ _SECRET_EXACT = frozenset({
     "DATABASE_URL", "HF_TOKEN",
     "CREDENTIALS", "REDIS_URL", "MONGODB_URI", "SECRET_KEY_BASE",
     "TOKEN", "SECRET", "PASSWORD", "DOCKER_AUTH_CONFIG",
+    "AUTHORIZATION", "BASIC_AUTH", "SESSION_COOKIE",
 })
 
 # Render-injected env vars that are harmless and allowed.
@@ -85,9 +87,27 @@ _RENDER_ALLOW_LIST = frozenset({
     "RENDER_GIT_OWNER", "RENDER_GIT_PROVIDER", "RENDER_GIT_PR_NUMBER",
     "RENDER_INSTANCE_ID", "RENDER_REGION", "RENDER_EXTERNAL_URL",
     "RENDER_EXTERNAL_HOSTNAME", "RENDER_DISK_MOUNT_PATH",
-    "CLIENT_IP_SOURCE",
+    "CLIENT_IP_SOURCE", "RATE_LIMIT_DEBUG",
     "PORT", "PYTHON_VERSION", "NODE_VERSION", "PATH", "HOME",
 })
+
+
+# Sensitive URL query parameter names (case-insensitive).
+_SENSITIVE_QUERY_PARAMS = re.compile(
+    r"(?:^|&)(?:token|key|apikey|api_key|secret|password|pwd|sig|signature|access_token|auth)=(?:[^&]*)",
+    re.IGNORECASE,
+)
+
+
+def _has_sensitive_query_param(value: str) -> bool:
+    """Return ``True`` if *value* looks like a URL with sensitive query params."""
+    if "://" not in value:
+        return False
+    query_start = value.find("?")
+    if query_start < 0:
+        return False
+    query = value[query_start + 1:]
+    return bool(_SENSITIVE_QUERY_PARAMS.search(query))
 
 
 def _is_unsafe_key(key: str, value: str) -> bool:
@@ -108,6 +128,9 @@ def _is_unsafe_key(key: str, value: str) -> bool:
         return True
     # Any *_URL whose value contains embedded credentials.
     if key.endswith("_URL") and ("@" in value or "://user:" in value):
+        return True
+    # Any URL with sensitive query parameters (token, key, secret, etc.).
+    if _has_sensitive_query_param(value):
         return True
     return False
 
