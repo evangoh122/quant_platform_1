@@ -80,3 +80,13 @@ MiMo round 4 addresses your check3 findings (see `.agents/requests/BUILD-strateg
 Verify each one, with proofs (synthetic factor-dominated panel; AR-correlated IC series; zero-cost
 hand check). Hunt for any remaining miscomputed quantity in the report.
 Write `.agents/deepseek/VERDICT-strategy-robustness-check4.md`.
+
+## Re-check after round 5 (this run)
+MiMo round 5 (commit cc2f9e0):
+- per-fold drop-top-3 picks names by REALISED P&L (`trade_returns`) on the train window;
+- rank IC uses the residuals under a distinct key;
+- the Rank IC table shows the method (Newey-West HAC, lag H-1) and `effective_n`.
+
+Verify both check4 findings with proofs. Then do a final full pass over EVERY report quantity: is
+each one computed, on the right quantity, without look-ahead, and like-for-like? If everything
+passes, say so explicitly. Write `.agents/deepseek/VERDICT-strategy-robustness-check5.md`.
