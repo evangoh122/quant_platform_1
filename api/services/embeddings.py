@@ -172,7 +172,7 @@ def get_embeddings():
                 return None
 
         if EMBEDDING_PROVIDER == "huggingface":
-            model_name = os.getenv("HF_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
+            model_name = os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
             try:
                 _embeddings = HFInferenceEmbeddings(model_name)
                 return _embeddings

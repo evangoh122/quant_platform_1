@@ -69,13 +69,10 @@ def build(spark) -> dict:
     _ensure_table(spark)
 
     # 1. Get chunk_ids already embedded for this model
-    try:
-        existing_df = spark.table(EMBEDDINGS_TABLE).filter(
-            f"embedding_model = '{EMBEDDING_MODEL}'"
-        ).select("chunk_id")
-        existing_ids = set(r["chunk_id"] for r in existing_df.collect())
-    except Exception:
-        existing_ids = set()
+    existing_df = spark.table(EMBEDDINGS_TABLE).filter(
+        f"embedding_model = '{EMBEDDING_MODEL}'"
+    ).select("chunk_id")
+    existing_ids = set(r["chunk_id"] for r in existing_df.collect())
 
     # 2. Get all chunks (including metadata columns)
     # Use unix_timestamp to avoid client-tz drift on Spark TIMESTAMP columns.
