@@ -82,3 +82,17 @@ Attack it again:
 Confirm the global rate limit now covers static requests without breaking the Render health check.
 Re-run your earlier attacks to confirm nothing regressed. Write
 `.agents/deepseek/VERDICT-render-lane-b-check4.md`.
+
+## Re-check after round 6 (this run)
+MiMo round 6 (commit 774efae) adds `try/except` around path resolution, an over-long path guard,
+and a global exception handler that returns a generic 500 carrying every security header.
+Claude's real-uvicorn check: `/` + 300×"A" → 200 `index.html` with `X-Frame-Options`; the traversal
+paths still → `index.html`.
+
+Re-verify:
+- the long-path and symlink-loop cases;
+- a deliberately raising route → 500 with all headers and no traceback;
+- the global handler doesn't swallow `HTTPException` (404/405/413/429 must keep their codes);
+- re-run all earlier attacks for regressions.
+
+Write `.agents/deepseek/VERDICT-render-lane-b-check5.md`.
