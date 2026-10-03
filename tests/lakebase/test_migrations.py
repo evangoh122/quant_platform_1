@@ -125,3 +125,45 @@ def test_orders_status_check_rejects_invalid(migrated, cleanup_user):
                     ("o_bad", uid, "TEST", "PAPER", "BUY", 1, 10.0, "MARKET",
                      "NOT_A_STATUS", "ik_bad"),
                 )
+
+
+def test_migration_003_downgrades_preexisting_trader(lakebase):
+    """003 revokes approval authority from a pre-existing 'trader' row.
+
+    Runs 001 + 002, seeds a 'trader' (as round-4 auto-provisioning would have),
+    then applies 003 and asserts the role becomes 'viewer'. Executed in a scratch
+    schema so the shared schema is untouched.
+    """
+    import uuid
+    from pathlib import Path
+
+    migrations = Path("db/migrations")
+    schema = f"scratch_{uuid.uuid4().hex[:12]}"
+    trader = f"trader_{uuid.uuid4().hex}"
+
+    with lakebase.connection() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA " + schema)
+            cur.execute("SELECT set_config('search_path', %s, false)", (schema,))
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute((migrations / "001_operational_schema.sql").read_text())
+                cur.execute((migrations / "002_approvals_accounts.sql").read_text())
+                cur.execute(
+                    "INSERT INTO users (user_id, display_name, role) VALUES (%s, %s, 'trader')",
+                    (trader, trader),
+                )
+                cur.execute(
+                    (migrations / "003_revoke_auto_provisioned_approvers.sql").read_text()
+                )
+                cur.execute("SELECT role FROM users WHERE user_id = %s", (trader,))
+                assert cur.fetchone() == ("viewer",)
+            conn.rollback()
+        finally:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT set_config('search_path', 'public', false)")
+                cur.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
+            conn.autocommit = False

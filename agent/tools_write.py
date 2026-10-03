@@ -3,17 +3,44 @@
 Every tool performs a real transactional write against the Lakebase Postgres.
 Queries are parameterized (``%s`` placeholders only) — never f-string SQL.
 
-The execution boundary is non-bypassable by construction. The agent-facing tool
-surface accepts only order identities and the acting user; it never accepts
-trusted risk state (``engine``, ``market_session_open``, ``human_approved``,
-``approved_by``, ``bridge``, buying power, or paper-mode flags). Those are
-acquired by the production entry point from the store / market clock / broker
-bridge. Test injection lives only behind private ``_``-prefixed seams that the
-tool surface does not expose.
+The agent-facing / trusted-internal separation is *advisory within this
+process*, not an enforcement boundary. What is actually true today:
+
+* The public placement entry point ``approve_and_place_paper_order(order_id)``
+  accepts only an order identity and acquires the database connection, risk
+  engine, market clock, and broker bridge itself. It never accepts trusted risk
+  state (``engine``, ``market_session_open``, ``human_approved``,
+  ``approved_by``, ``bridge``, buying power, ``db``, or paper-mode flags).
+* Approval authority is separated from existence. ``_ensure_user`` provisions
+  previously-unseen identities with the non-approving ``'viewer'`` role; the
+  ``'trader'`` role (the only value in ``_APPROVER_ROLES``) is granted only by
+  the out-of-band admin CLI ``scripts/grant_approver.py`` — never by an agent
+  tool. ``record_approval`` therefore rejects auto-provisioned identities and
+  cross-user approvals, but it does not stop a same-process Python caller from
+  reaching the private seam below.
+* The ``_``-prefixed seams (``_approve_and_place_paper_order``,
+  ``_cancel_paper_order``) exist for test injection and are **not** an
+  enforcement boundary: Python permits importing them directly, and ``__all__``
+  governs only wildcard imports.
+
+Boundaries intentionally NOT enforced here and tracked separately, pending the
+authenticated API / agent-runtime layer (which does not exist in this repo yet):
+*tool-surface isolation* — proving the agent-facing tool registry cannot reach
+the private seams — and *approver authentication* — proving the caller really is
+the ``approver_id`` they assert. A same-process Python caller that can import
+this module and reach the private seams is **not** prevented by anything here.
+
+Idempotency: ``orders.idempotency_key`` is ``UNIQUE``. That constraint is the
+real duplicate guard; a repeated key is an idempotent replay handled by
+``create_order_intent`` (``ON CONFLICT ... DO NOTHING`` + read-back), which
+returns the existing order with ``reason == "DUPLICATE_IDEMPOTENCY_KEY"``. The
+placement path therefore performs no redundant "seen" pre-check — such a check
+is structurally unreachable under the unique constraint.
 """
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
@@ -29,6 +56,19 @@ from agent.guardrails import (
 )
 from db.lakebase import Lakebase, get_lakebase
 from execution.bridge import IBKRBridge
+
+# Public tool surface. Private ``_``-prefixed seams are deliberately excluded so
+# ``from agent.tools_write import *`` can never surface the injectable internals.
+__all__ = [
+    "ApprovalContext",
+    "add_to_watchlist",
+    "save_research_note",
+    "create_order_intent",
+    "record_approval",
+    "approve_and_place_paper_order",
+    "cancel_paper_order",
+    "record_agent_action",
+]
 
 # Statuses from which a new placement is still allowed.
 _PLACEABLE_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED")
@@ -56,6 +96,30 @@ _TERMINAL_STATUSES = ("CANCELLED", "REJECTED", "FAILED", "FILLED")
 # Sentinel user for audit rows that have no attributable user (e.g. NOT_FOUND).
 _SYSTEM_USER = "system"
 
+# users.role values permitted to record an approval. Only 'trader' is
+# approver-authorized. 'trader' is NEVER granted by auto-provisioning
+# (_ensure_user creates 'viewer') nor by any agent tool: it is granted solely
+# out-of-band by scripts/grant_approver.py. Real approver authentication — who
+# may approve which orders, for whom, from the authenticated principal — is the
+# authenticated API layer's job and is pending (see module docstring).
+_APPROVER_ROLES = ("trader",)
+
+
+@dataclass(frozen=True)
+class ApprovalContext:
+    """Approval context carrying the caller-asserted approver identity.
+
+    ``approver_id`` is the principal the caller asserts performed the approval;
+    it is a plain string and nothing here authenticates it. ``record_approval``
+    verifies the id is (1) an actual ``ApprovalContext``, (2) resolves to an
+    existing ``users`` row whose role permits approval, and (3) is the order's
+    owner. This rejects fabricated identities, auto-provisioned identities, and
+    cross-user approvals. It cannot prove the caller *is* that principal —
+    approver authentication belongs to the pending authenticated API layer.
+    """
+
+    approver_id: str
+
 
 def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4()}"
@@ -68,11 +132,16 @@ def _dec(value, scale: str = "0.00000001") -> Optional[Decimal]:
 
 
 def _ensure_user(cur, user_id: str) -> None:
-    """Guarantee the referenced user row exists (idempotent upsert)."""
+    """Guarantee the referenced user row exists (idempotent upsert).
+
+    New identities are provisioned with the non-approving ``'viewer'`` role.
+    Approval authority (``'trader'``) is granted only out-of-band by
+    ``scripts/grant_approver.py``; no agent tool may mint an approver.
+    """
     cur.execute(
         """
         INSERT INTO users (user_id, display_name, role, created_at)
-        VALUES (%s, %s, 'trader', now())
+        VALUES (%s, %s, 'viewer', now())
         ON CONFLICT (user_id) DO NOTHING
         """,
         (user_id, user_id),
@@ -189,8 +258,11 @@ def create_order_intent(
                 ),
             )
             row = cur.fetchone()
-            if row is None:
-                # idempotent replay: return the existing order untouched.
+            duplicate = row is None
+            if duplicate:
+                # Idempotent replay: the UNIQUE constraint on idempotency_key is
+                # the real duplicate guard. Return the existing order untouched,
+                # with a structured DUPLICATE_IDEMPOTENCY_KEY reason.
                 cur.execute(
                     """
                     SELECT order_id, status, idempotency_key FROM orders
@@ -211,19 +283,41 @@ def create_order_intent(
                     f"order_id={row[0]}", "success",
                 )
 
-    return {"order_id": row[0], "status": row[1], "idempotency_key": row[2]}
+    result = {"order_id": row[0], "status": row[1], "idempotency_key": row[2]}
+    if duplicate:
+        result["reason"] = "DUPLICATE_IDEMPOTENCY_KEY"
+        result["replay"] = True
+    return result
 
 
 # ── human approval (trusted record) ───────────────────────────────────────────
-def record_approval(order_id: str, approver_id: str, *,
+def record_approval(order_id: str, approver: ApprovalContext, *,
                     db: Optional[Lakebase] = None) -> dict:
     """Persist a durable human-approval record for a PENDING_APPROVAL order.
 
     Placement reads this record back; it does not trust a caller-supplied
-    boolean. The ``approver_id`` must be the authenticated principal (threaded
-    from the request context by the orchestrator), never an agent assertion.
+    boolean. The ``approver`` must be an actual :class:`ApprovalContext`
+    instance; anything else is rejected with ``INVALID_APPROVAL_CONTEXT``
+    before any database work. Before writing anything, this verifies
+    ``approver_id`` resolves to an existing ``users`` row whose role is in
+    ``_APPROVER_ROLES`` (auto-provisioned identities are ``'viewer'`` and are
+    therefore rejected with ``APPROVER_NOT_PERMITTED``), then verifies the
+    approver is the order's owner (``APPROVER_NOT_OWNER``). An unknown,
+    non-permitted, or non-owner approver is rejected with a structured reason
+    and no approval row is written. This stops fabricated identities and
+    cross-user approval, not a same-process caller (see module docstring).
     """
+    if not isinstance(approver, ApprovalContext):
+        return {
+            "order_id": order_id, "status": "REJECTED", "ok": False,
+            "reason": "INVALID_APPROVAL_CONTEXT",
+            "detail": {
+                "expected": "ApprovalContext",
+                "received": type(approver).__name__,
+            },
+        }
     db = db or get_lakebase()
+    approver_id = approver.approver_id
     approval_id = _id("approval")
 
     with db.transaction() as conn:
@@ -253,7 +347,51 @@ def record_approval(order_id: str, approver_id: str, *,
                     "reason": f"cannot approve order in state {status}",
                 }
 
-            _ensure_user(cur, approver_id)
+            # Verify the approver is a real, permitted principal before writing
+            # the approval. Auto-provisioned identities hold 'viewer' and are
+            # rejected here; only the out-of-band 'trader' role may approve.
+            # This does not stop a same-process caller (see module docstring).
+            cur.execute(
+                "SELECT role FROM users WHERE user_id = %s",
+                (approver_id,),
+            )
+            urow = cur.fetchone()
+            if urow is None:
+                _log_action(
+                    cur, user_id, "record_approval", "write",
+                    f"order_id={order_id}", "unknown approver", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": "UNKNOWN_APPROVER",
+                    "detail": {"approver_id": approver_id},
+                }
+            approver_role = urow[0]
+            if approver_role not in _APPROVER_ROLES:
+                _log_action(
+                    cur, user_id, "record_approval", "write",
+                    f"order_id={order_id}", "approver role not permitted", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": "APPROVER_NOT_PERMITTED",
+                    "detail": {"approver_id": approver_id, "role": approver_role},
+                }
+
+            # Single-user paper-trading tool: "explicit human approval" means a
+            # user confirming their own order. A granted approver may not approve
+            # another user's order.
+            if approver_id != user_id:
+                _log_action(
+                    cur, user_id, "record_approval", "write",
+                    f"order_id={order_id}", "approver is not the order owner", "rejected",
+                )
+                return {
+                    "order_id": order_id, "status": status, "ok": False,
+                    "reason": "APPROVER_NOT_OWNER",
+                    "detail": {"approver_id": approver_id, "owner_id": user_id},
+                }
+
             cur.execute(
                 """
                 INSERT INTO approvals (approval_id, order_id, approver_id, created_at)
@@ -284,16 +422,18 @@ def record_approval(order_id: str, approver_id: str, *,
 
 
 # ── approval / placement ──────────────────────────────────────────────────────
-def approve_and_place_paper_order(order_id: str, *, db: Optional[Lakebase] = None) -> dict:
+def approve_and_place_paper_order(order_id: str) -> dict:
     """Re-run risk checks against trusted state, require a recorded approval,
     then place via the broker bridge.
 
-    This public signature intentionally exposes only the order identity. The
-    risk engine, market session, account buying power, allow-list, approval
-    record, and broker bridge are all acquired by this entry point, so the agent
-    cannot override any of them.
+    The public signature exposes only the order identity. The database
+    connection, risk engine, market session, account buying power, allow-list,
+    approval record, and broker bridge are all acquired by this entry point
+    rather than accepted as arguments, so the tool surface cannot pass them in.
+    This is not an enforcement boundary against a same-process caller: the
+    private test seam below remains importable (see module docstring).
     """
-    db = db or get_lakebase()
+    db = get_lakebase()
     engine = RiskEngine(load_allowlist=True)
     bridge = IBKRBridge()
     market_session_open = is_market_session_open()
@@ -315,9 +455,15 @@ def _approve_and_place_paper_order(
     market_session_open: bool,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Private seam: full placement logic with injectable dependencies for tests.
+    """Test seam: full placement logic with injectable dependencies.
 
-    The agent-facing tool surface never reaches this function directly.
+    Absent from ``__all__`` (which governs only ``import *``), and production
+    code reaches this only through :func:`approve_and_place_paper_order`, which
+    acquires every dependency itself. Tests inject fake stores / bridges /
+    engines here. This seam is **not** an enforcement boundary: Python permits
+    importing and calling it directly with injected ``db``/``bridge``/``engine``/
+    ``market_session_open``/``now``. Isolating the agent-facing tool surface from
+    it is the authenticated API layer's job and is pending.
     """
     # Phase 1 — validate against trusted state and commit submission intent.
     with db.transaction() as conn:
@@ -440,18 +586,12 @@ def _approve_and_place_paper_order(
                 for r in cur.fetchall()
             ]
 
-            # Idempotency-key consumption: has this key already been seen on a
-            # *different* order that reached the broker?
-            cur.execute(
-                """
-                SELECT 1 FROM orders
-                WHERE idempotency_key = %s AND order_id <> %s
-                  AND status = ANY(%s)
-                LIMIT 1
-                """,
-                (key, order_id, list(_BROKER_SUCCESS_STATUSES)),
-            )
-            idempotency_key_seen = cur.fetchone() is not None
+            # Idempotency: orders.idempotency_key is UNIQUE — that constraint is
+            # the real duplicate guard. A repeated key is an idempotent replay
+            # handled by create_order_intent (which returns the existing order
+            # with reason DUPLICATE_IDEMPOTENCY_KEY). No redundant "seen"
+            # pre-check is performed here: under the unique constraint such a
+            # check can never return true.
 
             # Stale-signal source. A signal_id that cannot be resolved is a
             # hard failure — never a silent skip.
@@ -483,7 +623,6 @@ def _approve_and_place_paper_order(
                 buying_power=buying_power,
                 open_orders=open_orders,
                 idempotency_key=key,
-                idempotency_key_seen=idempotency_key_seen,
                 is_paper=is_paper,
                 market_session_open=market_session_open,
                 now=now,
