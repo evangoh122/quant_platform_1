@@ -41,7 +41,7 @@ metrics:
 
   sentiment_score:
     formula: "(positive_words - negative_words) / total_words"
-    dictionary: "Loughran-McDonald"
+    dictionary: "custom (partly derived from Loughran-McDonald)"
     range: "[-1, +1]"
 
   risk_factor_change:

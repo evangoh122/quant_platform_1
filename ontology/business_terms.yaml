@@ -9,7 +9,7 @@ terms:
     critical_rule: "NEVER join on filing_date; ALWAYS use accepted_ts or release_ts."
 
   information_available_ts:
-    definition: "Timestamp when information was actually observable. SEC=EDGAR acceptance_ts, COT=CFTC release_ts, OHLCV=bar close time."
+    definition: "Timestamp when information was actually observable. SEC=EDGAR acceptance_ts, COT=CFTC release_ts, OHLCV=bar close time (event_ts + bar interval, e.g. +1 minute for minute bars)."
     critical_rule: "Every gold feature must carry this column."
 
   signal:
