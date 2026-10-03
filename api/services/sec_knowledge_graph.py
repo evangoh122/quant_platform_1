@@ -170,14 +170,13 @@ class SparkGraphStore:
         df = spark.table(self._nodes_table())
         nodes = []
         for row in df.collect():
-            prov_data = json.loads(row.provenance_json) if hasattr(row, 'provenance_json') else []
             provenance = tuple(
                 Provenance(
                     accession_number=p["accession_number"],
                     source_chunk_id=p["source_chunk_id"],
                     accepted_ts=p["accepted_ts"],
                 )
-                for p in prov_data
+                for p in (row.provenance or [])
             )
             nodes.append(KgNode(
                 node_id=row.node_id,
@@ -217,14 +216,13 @@ class SparkGraphStore:
         if not rows:
             return None
         row = rows[0]
-        prov_data = json.loads(row.provenance_json) if hasattr(row, 'provenance_json') else []
         provenance = tuple(
             Provenance(
                 accession_number=p["accession_number"],
                 source_chunk_id=p["source_chunk_id"],
                 accepted_ts=p["accepted_ts"],
             )
-            for p in prov_data
+            for p in (row.provenance or [])
         )
         return KgNode(
             node_id=row.node_id,

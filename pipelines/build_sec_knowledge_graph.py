@@ -91,7 +91,7 @@ def build(
         entities.extend(enrichments)
 
     # Build graph
-    nodes, edges = build_graph(entities, chunk_metadata, BUILD_VERSION)
+    nodes, edges, stats = build_graph(entities, chunk_metadata, BUILD_VERSION)
 
     # Define Delta table schemas
     provenance_schema = ArrayType(StructType([

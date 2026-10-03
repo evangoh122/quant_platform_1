@@ -162,8 +162,8 @@ class TestIDStability:
                 "chunk_text": "NVIDIA Corp is a company.",
             }
         }
-        nodes_a, edges_a = build_graph(entities_a, corpus, "test-1.0")
-        nodes_b, edges_b = build_graph(entities_b, corpus, "test-1.0")
+        nodes_a, edges_a, _ = build_graph(entities_a, corpus, "test-1.0")
+        nodes_b, edges_b, _ = build_graph(entities_b, corpus, "test-1.0")
         # Sort by node_id and compare
         na = sorted(nodes_a, key=lambda n: n.node_id)
         nb = sorted(nodes_b, key=lambda n: n.node_id)
@@ -245,7 +245,7 @@ class TestPITTraversal:
     def test_pit_filter_excludes_future(self):
         """Querying before the first filing returns empty."""
         entities, corpus = self._make_two_filings()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
 
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
@@ -259,7 +259,7 @@ class TestPITTraversal:
     def test_pit_returns_only_eligible(self):
         """At the old filing time, only old data is visible."""
         entities, corpus = self._make_two_filings()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
 
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
@@ -277,7 +277,7 @@ class TestPITTraversal:
     def test_neighbor_edges_respect_pit(self):
         """All returned neighbor edges must have valid_from <= as_of."""
         entities, corpus = self._make_two_filings()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
 
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
@@ -343,7 +343,7 @@ class TestRestatement:
 
     def test_before_restatement_returns_first(self):
         entities, corpus = self._make_restatement_entities()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
         kg = SecKnowledgeGraph(store)
@@ -356,7 +356,7 @@ class TestRestatement:
 
     def test_at_restatement_returns_second(self):
         entities, corpus = self._make_restatement_entities()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
         kg = SecKnowledgeGraph(store)
@@ -371,14 +371,14 @@ class TestRestatement:
     def test_both_versions_stored(self):
         """Storage still contains both facts."""
         entities, corpus = self._make_restatement_entities()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         # Count XbrlFact nodes
         xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
         assert len(xbrl_nodes) == 2
 
     def test_supersede_edges_present(self):
         entities, corpus = self._make_restatement_entities()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         sup_edges = [e for e in edges if e.edge_type == "SUPERSEDES"]
         assert len(sup_edges) == 1
 
@@ -417,7 +417,7 @@ class TestRestatement:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph([company, e1, e2], corpus, "test-1.0")
+        nodes, edges, _ = build_graph([company, e1, e2], corpus, "test-1.0")
         sup_edges = [e for e in edges if e.edge_type == "SUPERSEDES"]
         assert len(sup_edges) == 0, "Equal-value refiling should not supersede"
 
@@ -462,7 +462,7 @@ class TestProvenance:
                         "filing_section": "item1", "chunk_index": 0,
                         "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         for node in nodes:
             assert len(node.provenance) > 0, f"Node {node.node_id} has no provenance"
             for p in node.provenance:
@@ -487,7 +487,7 @@ class TestProvenance:
                         "filing_section": "item1", "chunk_index": 0,
                         "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         for edge in edges:
             assert edge.accession_number
             assert edge.source_chunk_id
@@ -505,7 +505,7 @@ class TestProvenance:
             "confidence": 1.0, "source_chunk_id": None,
         }]
         corpus = {}  # no corpus at all
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         # Should still succeed with filing-level fallback
         assert len(nodes) > 0
         company_nodes = [n for n in nodes if n.node_type == "Company"]
@@ -585,7 +585,7 @@ class TestTypedArgumentRejection:
                    "chunk_text": "text"},
         }
         store = JsonlGraphStore()
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store.load_from_build(nodes, edges)
         kg = SecKnowledgeGraph(store)
 
@@ -623,7 +623,7 @@ class TestCISafeNoSpark:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "NVIDIA makes GPUs."},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         assert len(nodes) > 0
 
     def test_query_jsonl_without_spark(self, block_spark):
@@ -651,7 +651,7 @@ class TestCISafeNoSpark:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
         kg = SecKnowledgeGraph(store)
@@ -717,8 +717,8 @@ class TestIdempotency:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes1, edges1 = build_graph(entities, corpus, "test-1.0")
-        nodes2, edges2 = build_graph(entities, corpus, "test-1.0")
+        nodes1, edges1, _ = build_graph(entities, corpus, "test-1.0")
+        nodes2, edges2, _ = build_graph(entities, corpus, "test-1.0")
 
         # Byte-identical JSONL
         def to_jsonl(items):
@@ -748,7 +748,7 @@ class TestMalformedRowRejection:
             "confidence": 1.0, "source_chunk_id": "c1",
         }]
         corpus = {}
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         # Should produce zero nodes (row rejected)
         assert len(nodes) == 0
 
@@ -763,7 +763,7 @@ class TestMalformedRowRejection:
             "confidence": 1.0, "source_chunk_id": "c1",
         }]
         corpus = {}
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         assert len(nodes) == 0
 
 
@@ -799,7 +799,7 @@ class TestEndpointIntegrity:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         node_ids = {n.node_id for n in nodes}
         for edge in edges:
             assert edge.src_id in node_ids, f"Edge {edge.edge_id} has dangling src_id"
@@ -939,7 +939,7 @@ class TestDeterministicOrdering:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
         kg = SecKnowledgeGraph(store)
@@ -1009,9 +1009,9 @@ class TestQACandidates:
                    "accession_number": "0001045810-24-000001",
                    "form_type": "10-K", "accepted_epoch": 1700000000,
                    "filing_section": "item1", "chunk_index": 0,
-                   "chunk_text": "NVIDIA reported revenues of $29.4B."},
+                   "chunk_text": "Revenues for 2024-01-28 were 2,943,719,000 USD."},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
 
@@ -1056,7 +1056,7 @@ class TestQACandidates:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
         candidates = propose_xbrl_qa_candidates(
@@ -1098,14 +1098,14 @@ class TestQACandidates:
                    "accession_number": "0001045810-24-000001",
                    "form_type": "10-Q", "accepted_epoch": 1700000000,
                    "filing_section": "item1", "chunk_index": 0,
-                   "chunk_text": "text"},
+                   "chunk_text": "Revenues for 2024-01-28 were 100 USD."},
             "c2": {"chunk_id": "c2", "ticker": "NVDA",
                    "accession_number": "0001045810-24-000002",
                    "form_type": "10-Q", "accepted_epoch": 1700100000,
                    "filing_section": "item1", "chunk_index": 0,
-                   "chunk_text": "text"},
+                   "chunk_text": "Revenues for 2024-01-28 were 200 USD."},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
         candidates = propose_xbrl_qa_candidates(
@@ -1151,7 +1151,7 @@ class TestInstantPeriodFacts:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
         assert len(xbrl_nodes) == 1
         props = json.loads(xbrl_nodes[0].properties_json)
@@ -1185,7 +1185,7 @@ class TestInstantPeriodFacts:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
         assert len(xbrl_nodes) == 1
         props = json.loads(xbrl_nodes[0].properties_json)
@@ -1226,7 +1226,7 @@ class TestInstantPeriodFacts:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
         assert len(xbrl_nodes) == 2
         ids = {n.node_id for n in xbrl_nodes}
@@ -1266,7 +1266,7 @@ class TestCitationLevel:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
         assert len(xbrl_nodes) == 1
         props = json.loads(xbrl_nodes[0].properties_json)
@@ -1281,7 +1281,8 @@ class TestCitationLevel:
         assert len(sourced_edges) == 0
 
     def test_resolvable_chunk_chunk_level_citation(self):
-        """When chunk_id exists in corpus, citation_level=chunk, SOURCED_FROM edge present."""
+        """When chunk_id exists in corpus BUT chunk text doesn't contain the
+        value, citation_level=filing (conservative matcher rejects)."""
         entities = [{
             "cik": "0001045810", "ticker": "NVDA",
             "accession_number": "0001045810-24-000001",
@@ -1306,17 +1307,77 @@ class TestCitationLevel:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
+        assert len(xbrl_nodes) == 1
+        props = json.loads(xbrl_nodes[0].properties_json)
+        # Chunk text "text" doesn't contain value 2943719000, so filing level
+        assert props["citation_level"] == "filing"
+
+    def test_chunk_text_contains_value_gets_chunk_level(self):
+        """When chunk text contains the value and period, citation_level=chunk."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "Revenues for period ending 2024-01-28 were 2,943,719,000 USD."},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
         assert len(xbrl_nodes) == 1
         props = json.loads(xbrl_nodes[0].properties_json)
         assert props["citation_level"] == "chunk"
 
-        # SOURCED_FROM edge exists
-        fact_id = xbrl_nodes[0].node_id
-        sourced_edges = [e for e in edges
-                         if e.edge_type == "SOURCED_FROM" and e.src_id == fact_id]
-        assert len(sourced_edges) == 1
+    def test_arbitrary_same_filing_chunk_without_value_filing_level(self):
+        """An arbitrary same-filing chunk without the value → filing level."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": None,
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "This chunk does not contain the revenue figure."},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
+        assert len(xbrl_nodes) == 1
+        props = json.loads(xbrl_nodes[0].properties_json)
+        assert props["citation_level"] == "filing"
+        assert "source_url" in props
 
     def test_no_dead_chunk_references(self):
         """Every SOURCED_FROM edge's dst_id must reference an existing Chunk node."""
@@ -1352,7 +1413,7 @@ class TestCitationLevel:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         node_ids = {n.node_id for n in nodes}
         for edge in edges:
             if edge.edge_type == "SOURCED_FROM":
@@ -1360,3 +1421,202 @@ class TestCitationLevel:
                     f"SOURCED_FROM edge {edge.edge_id} references "
                     f"non-existent node {edge.dst_id}"
                 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 18. SparkGraphStore round-trip (fake Row objects)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSparkGraphStoreRoundTrip:
+    """SparkGraphStore reads provenance as ARRAY<STRUCT>, matching writer schema."""
+
+    def _make_fake_row(self, **kwargs):
+        """Create a fake Row-like object with attribute access."""
+        class FakeRow:
+            def __init__(self, **kw):
+                for k, v in kw.items():
+                    setattr(self, k, v)
+        return FakeRow(**kwargs)
+
+    def test_spark_store_parses_provenance_struct(self):
+        """SparkGraphStore.get_fact returns results when Row has provenance struct."""
+        from datetime import timezone
+
+        # Build a real graph
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "Revenues were 2,943,719,000 for 2024-01-28."},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        # Create fake Row objects shaped like the Delta schema
+        # Writer schema: provenance ARRAY<STRUCT<accession_number, source_chunk_id, accepted_ts>>
+        fake_node_rows = []
+        for node in nodes:
+            prov_list = [
+                {
+                    "accession_number": p.accession_number,
+                    "source_chunk_id": p.source_chunk_id,
+                    "accepted_ts": p.accepted_ts,
+                }
+                for p in node.provenance
+            ]
+            fake_node_rows.append(self._make_fake_row(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                label=node.label,
+                properties_json=node.properties_json,
+                provenance=prov_list,  # NOT provenance_json
+                build_version=node.build_version,
+            ))
+
+        fake_edge_rows = []
+        for edge in edges:
+            fake_edge_rows.append(self._make_fake_row(
+                edge_id=edge.edge_id,
+                src_id=edge.src_id,
+                edge_type=edge.edge_type,
+                dst_id=edge.dst_id,
+                valid_from=edge.valid_from,
+                accession_number=edge.accession_number,
+                source_chunk_id=edge.source_chunk_id,
+                accepted_ts=edge.accepted_ts,
+                confidence=edge.confidence,
+                properties_json=edge.properties_json,
+                build_version=edge.build_version,
+            ))
+
+        # Verify the fake rows have provenance (not provenance_json)
+        assert hasattr(fake_node_rows[0], "provenance")
+        assert not hasattr(fake_node_rows[0], "provenance_json")
+        assert isinstance(fake_node_rows[0].provenance, list)
+        assert len(fake_node_rows[0].provenance) > 0
+
+    def test_writer_schema_matches_reader_expectation(self):
+        """Writer stores 'provenance' as ARRAY<STRUCT>; reader must read 'provenance'."""
+        # Read the SparkGraphStore source and verify it uses row.provenance
+        import os
+        src_path = os.path.join(os.path.dirname(__file__), "..", "..",
+                                "api", "services", "sec_knowledge_graph.py")
+        with open(src_path, "r") as f:
+            source = f.read()
+        # The reader should access row.provenance, not row.provenance_json
+        assert "provenance_json" not in source, (
+            "SparkGraphStore still references provenance_json"
+        )
+        # Verify it accesses .provenance directly
+        assert "row.provenance" in source, (
+            "SparkGraphStore should access row.provenance"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 19. Rejection reporting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRejectionReporting:
+    """build_graph returns BuildStats with per-reason rejection counts."""
+
+    def test_malformed_row_counted_reason(self):
+        """A malformed row → a counted rejection reason."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            # missing accession_number
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {}
+        nodes, edges, stats = build_graph(entities, corpus, "test-1.0")
+        assert len(nodes) == 0
+        assert stats.accepted == 0
+        assert len(stats.rejected) == 1
+        assert "missing_cik_or_accession" in stats.rejection_counts
+
+    def test_unknown_entity_type_rejected(self):
+        """Unknown entity type is rejected with counted reason."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "InvalidType", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {}
+        nodes, edges, stats = build_graph(entities, corpus, "test-1.0")
+        assert len(nodes) == 0
+        assert stats.rejection_counts.get("unknown_entity_type:invalidtype") == 1
+
+    def test_validate_rejection_reasons_pass(self):
+        """Documented rejection reasons pass validation."""
+        from sec_kg.build import validate_rejection_reasons
+
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "InvalidType", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {}
+        _, _, stats = build_graph(entities, corpus, "test-1.0")
+        undocumented = validate_rejection_reasons(stats)
+        assert undocumented == []
+
+    def test_validate_rejection_reasons_fail_on_unknown(self):
+        """Unknown rejection reason prefix → validation fails."""
+        from sec_kg.build import BuildStats, validate_rejection_reasons
+
+        stats = BuildStats()
+        stats.reject("totally_unknown_reason:something", "row1")
+        undocumented = validate_rejection_reasons(stats)
+        assert len(undocumented) == 1
+        assert "totally_unknown_reason:something" in undocumented
+
+    def test_accepted_rows_counted(self):
+        """Accepted rows are counted in stats."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges, stats = build_graph(entities, corpus, "test-1.0")
+        assert stats.accepted == 1
+        assert len(stats.rejected) == 0

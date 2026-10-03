@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import re
+
 from sec_kg.model import (
     BUILD_VERSION,
     EdgeType,
@@ -41,6 +43,27 @@ from sec_kg.model import (
     section_id,
     xbrl_fact_id,
 )
+
+
+# ── Allowed rejection reasons ────────────────────────────────────────────────
+
+ALLOWED_REJECTION_REASONS: set = {
+    "unknown_entity_type",
+    "missing_cik_or_accession",
+    "missing_xbrl_identity",
+    "missing_period_end",
+    "missing_accepted_epoch",
+    "dangling_edge",
+    "missing_segment_identity",
+    "missing_product_identity",
+    "missing_customer_identity",
+}
+# Also allow *_error:ExceptionType patterns for per-entity-type error buckets
+_ERROR_PREFIXES = {
+    "company_error", "filing_error", "chunk_error", "xbrl_error",
+    "risk_factor_error", "event_error", "segment_error", "product_error",
+    "customer_error",
+}
 
 
 # ── Rejection tracking ──────────────────────────────────────────────────────
@@ -98,21 +121,91 @@ def _edgar_filing_url(cik: str, accession: str) -> str:
     return f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/{accession}-index.htm"
 
 
+_NUMBER_RE = re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?")
+
+
+def _extract_numbers_from_text(text: str) -> List[float]:
+    """Extract all numeric values from text, handling comma-separated thousands."""
+    results = []
+    for m in _NUMBER_RE.finditer(text):
+        s = m.group().replace(",", "")
+        try:
+            results.append(float(s))
+        except ValueError:
+            continue
+    return results
+
+
+def _normalize_number_str(s: str) -> Optional[float]:
+    """Normalize a number string (possibly with commas) to float."""
+    s = s.strip().replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _chunk_text_matches_value(
+    chunk_text: str,
+    entity_value: str,
+    period: str,
+    metric: str,
+) -> bool:
+    """Conservative check: chunk text contains the entity value AND period or metric.
+
+    Handles normalised forms like 274300000 ↔ "274.3 million" ↔ "274,300".
+    Returns True only when confident the chunk contains the fact.
+    """
+    if not chunk_text or not entity_value:
+        return False
+
+    target = _normalize_number_str(entity_value)
+    if target is None or target == 0:
+        return False
+
+    text_numbers = _extract_numbers_from_text(chunk_text)
+
+    value_matched = False
+    for n in text_numbers:
+        if n == 0:
+            continue
+        if abs(n - target) / max(abs(target), abs(n)) < 0.0001:
+            value_matched = True
+            break
+
+    if not value_matched:
+        return False
+
+    if period and period in chunk_text:
+        return True
+    if metric and metric.lower() in chunk_text.lower():
+        return True
+
+    return False
+
+
 def resolve_source_chunk_id(
     accession: str,
     entity_chunk_id: Optional[str],
     corpus_by_accession: Dict[str, List[str]],
     corpus_chunk_ids: Optional[set] = None,
+    corpus: Optional[Dict[str, Dict[str, Any]]] = None,
+    entity_value: Optional[str] = None,
+    metric: Optional[str] = None,
+    period: Optional[str] = None,
 ) -> Tuple[str, bool, str]:
     """Resolve source_chunk_id for an entity row.
 
     Returns (chunk_id, synthetic_source, citation_level).
-    citation_level is "chunk" when the chunk resolves in the corpus,
+    citation_level is "chunk" when the chunk resolves in the corpus
+    AND (for XBRL facts) the chunk text verifiably contains the fact,
     or "filing" when falling back to filing-level citation.
 
     If entity has a chunk_id AND it exists in corpus, use it.
-    If accession has chunks in corpus, use lexicographically smallest.
-    Otherwise generate sentinel 'filing:<accession>' and mark synthetic.
+    If accession has chunks in corpus AND entity_value is not given,
+    use lexicographically smallest.
+    If entity_value is given, verify chunk text contains the value
+    in normalised form AND period or metric.  Otherwise filing level.
     """
     if corpus_chunk_ids is None:
         corpus_chunk_ids = set()
@@ -122,11 +215,24 @@ def resolve_source_chunk_id(
     if entity_chunk_id and entity_chunk_id.strip():
         chunk_candidate = normalize_unicode(entity_chunk_id)
         if chunk_candidate in corpus_chunk_ids:
+            if entity_value and corpus:
+                chunk_text = corpus.get(chunk_candidate, {}).get("chunk_text", "")
+                if _chunk_text_matches_value(chunk_text, entity_value,
+                                              period or "", metric or ""):
+                    return chunk_candidate, False, "chunk"
+                return f"filing:{acc_norm}", True, "filing"
             return chunk_candidate, False, "chunk"
         # chunk_id present but not in corpus — fall through to accession lookup
 
     chunks = corpus_by_accession.get(acc_norm, [])
     if chunks:
+        if entity_value and corpus:
+            for cid in sorted(chunks):
+                chunk_text = corpus.get(cid, {}).get("chunk_text", "")
+                if _chunk_text_matches_value(chunk_text, entity_value,
+                                              period or "", metric or ""):
+                    return cid, False, "chunk"
+            return f"filing:{acc_norm}", True, "filing"
         return sorted(chunks)[0], False, "chunk"
 
     return f"filing:{acc_norm}", True, "filing"
@@ -138,7 +244,7 @@ def build_graph(
     entities: Sequence[Dict[str, Any]],
     corpus: Dict[str, Dict[str, Any]],
     build_version: str = BUILD_VERSION,
-) -> Tuple[List[KgNode], List[KgEdge]]:
+) -> Tuple[List[KgNode], List[KgEdge], BuildStats]:
     """Build the knowledge graph from entity rows and corpus chunks.
 
     Args:
@@ -147,7 +253,7 @@ def build_graph(
         build_version: version string for provenance
 
     Returns:
-        (nodes, edges) — validated, sorted, deterministic
+        (nodes, edges, stats) — validated, sorted, deterministic + rejection stats
     """
     stats = BuildStats()
 
@@ -431,7 +537,10 @@ def build_graph(
             source_chunk_id_raw = row.get("source_chunk_id")
             chunk_resolved, synthetic, citation_level = resolve_source_chunk_id(
                 accession, source_chunk_id_raw, corpus_by_accession,
-                corpus_chunk_ids
+                corpus_chunk_ids, corpus=corpus,
+                entity_value=value_text,
+                metric=metric_concept,
+                period=period_end_raw,
             )
             confidence = row.get("confidence")
 
@@ -750,7 +859,17 @@ def build_graph(
     node_list.sort(key=lambda n: n.node_id)
     valid_edges.sort(key=lambda e: e.edge_id)
 
-    return node_list, valid_edges
+    return node_list, valid_edges, stats
+
+
+def validate_rejection_reasons(stats: BuildStats) -> List[str]:
+    """Return list of undocumented rejection reasons (empty = all documented)."""
+    undocumented = []
+    for reason in stats.rejection_counts:
+        prefix = reason.split(":")[0]
+        if prefix not in ALLOWED_REJECTION_REASONS and prefix not in _ERROR_PREFIXES:
+            undocumented.append(reason)
+    return undocumented
 
 
 def _get_accepted_ts(row: Dict[str, Any]) -> datetime:

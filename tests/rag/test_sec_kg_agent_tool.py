@@ -80,7 +80,7 @@ class TestQuerySecFactsValidation:
                    "filing_section": "item1", "chunk_index": 0,
                    "chunk_text": "text"},
         }
-        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
         store = JsonlGraphStore()
         store.load_from_build(nodes, edges)
         kg = SecKnowledgeGraph(store)

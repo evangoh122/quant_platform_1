@@ -20,11 +20,12 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sec_kg.build import build_graph
+from sec_kg.build import build_graph, validate_rejection_reasons
 from sec_kg.model import BUILD_VERSION, ensure_utc
 
 
@@ -127,12 +128,21 @@ def main():
     # Build graph
     print("Building knowledge graph...")
     start_time = time.time()
-    nodes, edges = build_graph(entities, corpus, BUILD_VERSION)
+    nodes, edges, stats = build_graph(entities, corpus, BUILD_VERSION)
     build_time = time.time() - start_time
     print(f"  Built {len(nodes)} nodes, {len(edges)} edges in {build_time:.2f}s")
 
-    # Count rejected rows
-    rejected_count = len(entities) - len(nodes)  # approximate
+    # Validate rejection reasons
+    undocumented = validate_rejection_reasons(stats)
+    if undocumented:
+        print(f"ERROR: Undocumented rejection reasons: {undocumented}", file=sys.stderr)
+        sys.exit(1)
+
+    # Count entity types from input
+    entity_type_counts: Dict[str, int] = {}
+    for entity in entities:
+        etype = str(entity.get("entity_type", "")).lower()
+        entity_type_counts[etype] = entity_type_counts.get(etype, 0) + 1
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -185,8 +195,10 @@ def main():
         "output_edges_hash": edges_hash,
         "node_count": len(nodes),
         "edge_count": len(edges),
-        "rejected_row_count": rejected_count,
-        "rejection_reasons": {},
+        "input_rows_by_entity_type": entity_type_counts,
+        "accepted_rows": stats.accepted,
+        "rejected_rows": len(stats.rejected),
+        "rejection_reasons": dict(stats.rejection_counts),
         "extraction_mode": "llm" if args.enable_llm_extraction else "deterministic",
         "extraction_budget": args.llm_budget,
         "extraction_used": args.enable_llm_extraction and args.llm_budget > 0,
