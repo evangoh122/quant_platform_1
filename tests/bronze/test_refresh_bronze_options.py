@@ -353,7 +353,7 @@ def test_trading_days_skips_holiday():
 def test_trading_day_missing_file_counts_as_failed(monkeypatch, capsys):
     """A trading day whose S3 object 404s (head_object raises a non-403
     ClientError) must increment the failed counter, not entitlement_gap."""
-    from botocore.exceptions import ClientError
+    ClientError = pytest.importorskip("botocore.exceptions").ClientError
 
     monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
 
@@ -553,7 +553,7 @@ _TARGET_ROWS = [
 
 def _run_anti_join(incoming_rows, target_rows):
     """Execute _anti_join_new through the fake engine and return result rows."""
-    import pyspark.sql.functions as F_mod
+    F_mod = pytest.importorskip("pyspark.sql.functions")
 
     spark = _FakeSparkSession()
     spark._register(_TABLE, target_rows)
