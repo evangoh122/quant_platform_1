@@ -50,6 +50,7 @@ STEPS = [
     ("gold_ohlcv_features", "gold/01_gold_ohlcv_features.sql", "sql"),
     ("gold_options_features", "gold/02_gold_options_features.sql", "sql"),
     ("gold_sec_features", "gold/gold_sec_features.py", "py"),
+    ("gold_sec_coverage", "gold/07_gold_sec_coverage.sql", "sql"),
     ("gold_cot_features", "gold/04_gold_cot_features.sql", "sql"),
     ("gold_model_features", "gold/05_gold_model_features.sql", "sql"),
 ]
@@ -59,7 +60,7 @@ TARGET_TABLES = [
     "silver_options_trades", "silver_sec_sections", "silver_sec_entities",
     "silver_cot_positions",
     "gold_ohlcv_features", "gold_options_features", "gold_sec_features",
-    "gold_cot_features", "gold_model_features",
+    "gold_sec_coverage", "gold_cot_features", "gold_model_features",
 ]
 
 DATE_START = "1900-01-01"

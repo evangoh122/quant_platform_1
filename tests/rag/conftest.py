@@ -23,6 +23,9 @@ problematic_modules = [
     'sec_edgar_downloader',
     'langchain_text_splitters',
     'bs4',
+    'psycopg',
+    'psycopg.rows',
+    'psycopg_pool',
 ]
 
 mock_if_missing(problematic_modules)

@@ -680,33 +680,22 @@ class TestEmbeddingBuildIdempotency:
 
         mock_spark = MagicMock()
 
-        existing_chunks = ["chunk_1", "chunk_2", "chunk_3"]
+        # Anti-join returns empty (all chunks already embedded)
+        mock_anti_join_df = MagicMock()
+        mock_anti_join_df.filter.return_value = mock_anti_join_df
+        mock_anti_join_df.select.return_value = mock_anti_join_df
+        mock_anti_join_df.join.return_value = mock_anti_join_df
+        mock_anti_join_df.limit.return_value = mock_anti_join_df
+        mock_anti_join_df.collect.return_value = []
 
-        mock_existing_df = MagicMock()
-        mock_existing_df.filter.return_value = mock_existing_df
-        mock_existing_df.select.return_value = mock_existing_df
-        mock_existing_df.collect.return_value = [
-            MagicMock(__getitem__=lambda self, k, cid=cid: cid) for cid in existing_chunks
-        ]
-
-        mock_chunks_df = MagicMock()
-        mock_chunks_df.select.return_value = mock_chunks_df
-        mock_chunks_df.filter.return_value = mock_chunks_df
-        mock_chunks_df.collect.return_value = [
-            MagicMock(__getitem__=lambda self, k, cid=cid: {
-                "chunk_id": cid,
-                "chunk_text": f"Text for {cid}",
-                "accession_number": "0000723125-25-000042",
-                "ticker": "NVDA",
-                "accepted_epoch": 1736899200,  # 2025-01-15 00:00:00 UTC
-            }.get(k))
-            for cid in existing_chunks
-        ]
+        mock_embedded_df = MagicMock()
+        mock_embedded_df.filter.return_value = mock_embedded_df
+        mock_embedded_df.select.return_value = mock_embedded_df
 
         def table_side_effect(name):
             if "embeddings" in name:
-                return mock_existing_df
-            return mock_chunks_df
+                return mock_embedded_df
+            return mock_anti_join_df
 
         mock_spark.table.side_effect = table_side_effect
         mock_spark.sql.return_value = MagicMock()
@@ -716,11 +705,10 @@ class TestEmbeddingBuildIdempotency:
                 return [[0.1] * 384 for _ in texts]
 
         with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
-            result = build(mock_spark)
+            result = build(mock_spark, batch_size=256, partitions=4)
 
         assert result["rows_written"] == 0
         assert result["embedding_dim"] == 384
-        assert result["rows_already_embedded"] == 3
 
     def test_create_table_called(self, fake_pyspark):
         """CREATE TABLE IF NOT EXISTS must be issued before MERGE."""
@@ -768,22 +756,24 @@ class TestEmbeddingBuildIdempotency:
             "accepted_epoch": 1736899200,  # 2025-01-15 00:00:00 UTC
         }
 
-        mock_existing_df = MagicMock()
-        mock_existing_df.filter.return_value = mock_existing_df
-        mock_existing_df.select.return_value = mock_existing_df
-        mock_existing_df.collect.return_value = []
-
-        mock_chunks_df = MagicMock()
-        mock_chunks_df.select.return_value = mock_chunks_df
-        mock_chunks_df.filter.return_value = mock_chunks_df
-        mock_chunks_df.collect.return_value = [
+        # Anti-join returns one chunk to embed
+        mock_anti_join_df = MagicMock()
+        mock_anti_join_df.filter.return_value = mock_anti_join_df
+        mock_anti_join_df.select.return_value = mock_anti_join_df
+        mock_anti_join_df.join.return_value = mock_anti_join_df
+        mock_anti_join_df.limit.return_value = mock_anti_join_df
+        mock_anti_join_df.collect.return_value = [
             MagicMock(__getitem__=lambda self, k, d=chunk_data: d.get(k))
         ]
 
+        mock_embedded_df = MagicMock()
+        mock_embedded_df.filter.return_value = mock_embedded_df
+        mock_embedded_df.select.return_value = mock_embedded_df
+
         def table_side_effect(name):
             if "embeddings" in name:
-                return mock_existing_df
-            return mock_chunks_df
+                return mock_embedded_df
+            return mock_anti_join_df
 
         mock_spark.table.side_effect = table_side_effect
 
@@ -804,7 +794,7 @@ class TestEmbeddingBuildIdempotency:
                 return [[0.1] * 384 for _ in texts]
 
         with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
-            build(mock_spark)
+            build(mock_spark, batch_size=256, partitions=4)
 
         assert len(captured_rows) == 1
         row = captured_rows[0]
@@ -823,44 +813,40 @@ class TestEmbeddingBuildIdempotency:
         assert "accepted_ts" in schema_str
 
     def test_real_idempotency_count(self, fake_pyspark):
-        """rows_already_embedded must reflect actual count, not hardcoded."""
+        """rows_already_embedded returns -1 with anti-join (unknown count)."""
         from pipelines.build_sec_embeddings import build
 
         mock_spark = MagicMock()
 
-        all_chunks = ["c1", "c2", "c3", "c4", "c5"]
-        already_embedded = ["c1", "c2"]
-
-        mock_existing_df = MagicMock()
-        mock_existing_df.filter.return_value = mock_existing_df
-        mock_existing_df.select.return_value = mock_existing_df
-        mock_existing_df.collect.return_value = [
-            MagicMock(__getitem__=lambda self, k, cid=cid: cid) for cid in already_embedded
+        new_chunks = [
+            {"chunk_id": "c3", "chunk_text": "Text c3", "accession_number": "ACC",
+             "ticker": "TICK", "accepted_epoch": 1735689600},
+            {"chunk_id": "c4", "chunk_text": "Text c4", "accession_number": "ACC",
+             "ticker": "TICK", "accepted_epoch": 1735689600},
+            {"chunk_id": "c5", "chunk_text": "Text c5", "accession_number": "ACC",
+             "ticker": "TICK", "accepted_epoch": 1735689600},
         ]
 
-        chunk_data_map = {
-            cid: {
-                "chunk_id": cid,
-                "chunk_text": f"Text {cid}",
-                "accession_number": "ACC",
-                "ticker": "TICK",
-                "accepted_epoch": 1735689600,  # 2025-01-01 00:00:00 UTC
-            }
-            for cid in all_chunks
-        }
-
-        mock_chunks_df = MagicMock()
-        mock_chunks_df.select.return_value = mock_chunks_df
-        mock_chunks_df.filter.return_value = mock_chunks_df
-        mock_chunks_df.collect.return_value = [
+        # Anti-join result: chunks not yet embedded
+        mock_anti_join_df = MagicMock()
+        mock_anti_join_df.filter.return_value = mock_anti_join_df
+        mock_anti_join_df.select.return_value = mock_anti_join_df
+        mock_anti_join_df.join.return_value = mock_anti_join_df
+        mock_anti_join_df.limit.return_value = mock_anti_join_df
+        mock_anti_join_df.collect.return_value = [
             MagicMock(__getitem__=lambda self, k, d=d: d.get(k))
-            for d in chunk_data_map.values()
+            for d in new_chunks
         ]
+
+        # Embedded chunks table
+        mock_embedded_df = MagicMock()
+        mock_embedded_df.filter.return_value = mock_embedded_df
+        mock_embedded_df.select.return_value = mock_embedded_df
 
         def table_side_effect(name):
             if "embeddings" in name:
-                return mock_existing_df
-            return mock_chunks_df
+                return mock_embedded_df
+            return mock_anti_join_df
 
         mock_spark.table.side_effect = table_side_effect
         mock_spark.sql.return_value = MagicMock()
@@ -870,10 +856,10 @@ class TestEmbeddingBuildIdempotency:
                 return [[0.1] * 384 for _ in texts]
 
         with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
-            result = build(mock_spark)
+            result = build(mock_spark, batch_size=256, partitions=4)
 
         assert result["rows_written"] == 3
-        assert result["rows_already_embedded"] == 2
+        assert result["rows_already_embedded"] == -1
 
 
 # ── Timezone-safe accepted_ts tests ─────────────────────────────────────────

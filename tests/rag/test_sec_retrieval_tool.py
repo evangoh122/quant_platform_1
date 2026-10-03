@@ -5,22 +5,25 @@ Verifies distinct error types: no_coverage, ticker_required, retrieval_unavailab
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
-# Hide pyspark/databricks
+# Hide pyspark/databricks/psycopg
 _pyspark_mock = MagicMock()
 sys.modules.setdefault("pyspark", _pyspark_mock)
 sys.modules.setdefault("pyspark.sql", _pyspark_mock.sql)
 sys.modules.setdefault("pyspark.sql.functions", _pyspark_mock.sql.functions)
 sys.modules.setdefault("databricks", MagicMock())
 sys.modules.setdefault("databricks.connect", MagicMock())
+sys.modules.setdefault("psycopg", MagicMock())
+sys.modules.setdefault("psycopg.rows", MagicMock())
+sys.modules.setdefault("psycopg_pool", MagicMock())
 
 
 class TestSearchSecFilingsErrors:
     """Verify search_sec_filings returns exactly the right error structure."""
 
-    def test_no_coverage_returns_exact_structure(self, monkeypatch):
+    def test_no_coverage_returns_exact_structure(self):
         """NoCoverageError -> [{"error": "no_coverage", "ticker": symbol}]"""
         from agent.tools_retrieval import search_sec_filings
         from api.services.hybrid_retriever import NoCoverageError
@@ -28,15 +31,14 @@ class TestSearchSecFilingsErrors:
         def raise_no_coverage(*args, **kwargs):
             raise NoCoverageError("XYZ")
 
-        monkeypatch.setattr(
-            "api.services.hybrid_retriever.HybridRetriever.retrieve",
-            raise_no_coverage,
-        )
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.side_effect = raise_no_coverage
+            result = search_sec_filings("XYZ", query="test query")
 
-        result = search_sec_filings("XYZ", query="test query")
         assert result == [{"error": "no_coverage", "ticker": "XYZ"}]
 
-    def test_no_coverage_does_not_invoke_substring_fallback(self, monkeypatch):
+    def test_no_coverage_does_not_invoke_substring_fallback(self):
         """NoCoverageError must not trigger the substring fallback path."""
         from agent.tools_retrieval import search_sec_filings
         from api.services.hybrid_retriever import NoCoverageError
@@ -44,16 +46,15 @@ class TestSearchSecFilingsErrors:
         def raise_no_coverage(*args, **kwargs):
             raise NoCoverageError("XYZ")
 
-        monkeypatch.setattr(
-            "api.services.hybrid_retriever.HybridRetriever.retrieve",
-            raise_no_coverage,
-        )
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.side_effect = raise_no_coverage
+            result = search_sec_filings("XYZ", query="test")
 
-        result = search_sec_filings("XYZ", query="test")
         assert result[0]["error"] == "no_coverage"
         assert "retrieval_mode" not in result[0]
 
-    def test_ticker_required_returns_exact_structure(self, monkeypatch):
+    def test_ticker_required_returns_exact_structure(self):
         """TickerRequiredError -> [{"error": "ticker_required"}]"""
         from agent.tools_retrieval import search_sec_filings
         from api.services.hybrid_retriever import TickerRequiredError
@@ -61,15 +62,14 @@ class TestSearchSecFilingsErrors:
         def raise_ticker_required(*args, **kwargs):
             raise TickerRequiredError()
 
-        monkeypatch.setattr(
-            "api.services.hybrid_retriever.HybridRetriever.retrieve",
-            raise_ticker_required,
-        )
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.side_effect = raise_ticker_required
+            result = search_sec_filings("XYZ", query="test")
 
-        result = search_sec_filings("XYZ", query="test")
         assert result == [{"error": "ticker_required"}]
 
-    def test_retrieval_unavailable_preserved(self, monkeypatch):
+    def test_retrieval_unavailable_preserved(self):
         """CorpusUnavailableError -> [{"error": "retrieval_unavailable", ...}]"""
         from agent.tools_retrieval import search_sec_filings
         from api.services.exceptions import CorpusUnavailableError
@@ -77,17 +77,16 @@ class TestSearchSecFilingsErrors:
         def raise_unavailable(*args, **kwargs):
             raise CorpusUnavailableError("table not found")
 
-        monkeypatch.setattr(
-            "api.services.hybrid_retriever.HybridRetriever.retrieve",
-            raise_unavailable,
-        )
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.side_effect = raise_unavailable
+            result = search_sec_filings("NVDA", query="test")
 
-        result = search_sec_filings("NVDA", query="test")
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
         assert "ticker" in result[0]
 
-    def test_embedding_config_error_returns_structured(self, monkeypatch):
+    def test_embedding_config_error_returns_structured(self):
         """EmbeddingConfigError -> [{"error": "retrieval_unavailable", "reason": "embedding_config"}]"""
         from agent.tools_retrieval import search_sec_filings
         from api.services.exceptions import EmbeddingConfigError
@@ -95,12 +94,11 @@ class TestSearchSecFilingsErrors:
         def raise_config(*args, **kwargs):
             raise EmbeddingConfigError("dim mismatch", user_safe=True)
 
-        monkeypatch.setattr(
-            "api.services.hybrid_retriever.HybridRetriever.retrieve",
-            raise_config,
-        )
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.side_effect = raise_config
+            result = search_sec_filings("NVDA", query="test")
 
-        result = search_sec_filings("NVDA", query="test")
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
         assert result[0]["reason"] == "embedding_config"

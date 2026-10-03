@@ -28,3 +28,29 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+
+    sec_embeddings:
+      name: quant-platform-sec-embeddings-${bundle.target}
+      tasks:
+        - task_key: build_embeddings
+          spark_python_task:
+            python_file: ../pipelines/build_sec_embeddings.py
+            parameters: ["--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+
+    sec_rag_ingest:
+      name: quant-platform-sec-rag-ingest-${bundle.target}
+      tasks:
+        - task_key: ingest_sec_filings
+          spark_python_task:
+            python_file: ../pipelines/sec_rag_ingest.py
+            parameters: ["--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
