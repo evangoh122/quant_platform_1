@@ -1,61 +1,47 @@
 metrics:
-  return_Nm:
-    formula: "(close[t] - close[t-N]) / close[t-N]"
-    variants: [return_1m, return_5m, return_15m, return_30m]
-    source: silver_ohlcv
-
+  return_N:
+    formula: "close[t] / NULLIF(close[t-N], 0) - 1"
+    variants: [return_1m, return_5m, return_15m, return_30m, return_20d]
+    source_table: gold_ohlcv_features
   rolling_realized_volatility:
-    formula: "STDDEV(return_1m) OVER (ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW)"
+    formula: "STDDEV_SAMP(return_1m) over the trailing N bars"
     variants: [rvol_5m, rvol_15m, rvol_30m]
-
-  atr_14:
-    formula: "EMA_14( MAX(high-low, ABS(high-prev_close), ABS(low-prev_close)) )"
-
-  rsi_14:
-    formula: "100 - (100 / (1 + AVG(up_moves_14) / AVG(down_moves_14)))"
-    range: "[0, 100]; >70 overbought, <30 oversold"
-
-  vwap_deviation:
-    formula: "(close - vwap) / vwap"
-
-  relative_volume:
-    formula: "volume / AVG(volume) OVER (ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)"
-
+    source_table: gold_ohlcv_features
+  drawdown:
+    formula: "equity[t] / MAX(equity[0:t]) - 1"
+    source_table: gold_trading_signals
+    note: "Maximum drawdown is the absolute value of the minimum drawdown over the evaluation period."
+  momentum_N:
+    formula: "close[t] / NULLIF(close[t-N], 0) - 1"
+    variants: [momentum_5m, momentum_15m, momentum_20d, momentum_12m_ex_1m]
+    source_table: gold_ohlcv_features
+  med_adv_60d:
+    formula: "MEDIAN(close * volume) over the 60 completed trading days strictly before the as_of_date"
+    source_table: gold_tradable_universe
+  rsp_spy_ratio:
+    formula: "close_RSP[t] / NULLIF(close_SPY[t], 0)"
+    source_table: gold_regime_features
+  breadth_regime:
+    formula: "BROAD if rsp_spy_ratio > SMA_50(rsp_spy_ratio) and rsp_spy_ratio / rsp_spy_ratio[t-20] - 1 > 0; NARROW if both comparisons reverse; otherwise MIXED"
+    source_table: gold_regime_features
+  implied_volatility:
+    formula: "Provider implied_volatility for the option nearest ATM; iv_atm selects minimum ABS(strike / underlying_price - 1), with deterministic expiry/contract tie-breaks"
+    source_table: gold_options_features
   put_call_ratio:
-    formula: "SUM(put_volume) / NULLIF(SUM(call_volume), 0)"
-    note: ">1 bearish; <0.7 bullish"
-
-  iv_atm:
-    formula: "IV of nearest-to-ATM option"
-
-  iv_skew:
-    formula: "iv_25d_put - iv_25d_call"
-    note: "Positive = downside protection demand"
-
-  iv_term_slope:
-    formula: "IV(near_expiry_ATM) - IV(far_expiry_ATM)"
-
-  volume_anomaly_zscore:
-    formula: "(volume_today - AVG(volume_20d)) / STDDEV(volume_20d)"
-    note: ">2.0 is unusual"
-
-  sentiment_score:
-    formula: "(positive_words - negative_words) / total_words"
-    dictionary: "custom (partly derived from Loughran-McDonald)"
-    range: "[-1, +1]"
-
-  risk_factor_change:
-    formula: "1 - cosine_similarity(current_item1a, prior_item1a)"
-    note: ">0.3 is material"
-
-  lev_money_pctile_52w:
-    formula: "PERCENT_RANK() OVER 52-week window"
-    note: ">0.9 extreme long; <0.1 extreme short"
-
-  crowding_score:
-    formula: "weighted_avg(lev_money_pctile, asset_mgr_pctile, dealer_pctile)"
-
-  end_to_end_latency:
-    formula: "signal_visible_ts - provider_event_ts"
-    slo: "<60 seconds (<=50 sec typical)"
-    budget: {provider_to_ingestion: "0-10s", spark_micro_batch: "<=15s", feature_update: "<=10s", model_inference: "<=5s", persist_refresh: "<=10s"}
+    formula: "SUM(put volume) / NULLIF(SUM(call volume), 0) by underlying and session"
+    source_table: gold_options_features
+  cot_crowding_score:
+    formula: "(lev_money_zscore_52w + asset_mgr_zscore_52w) / 2"
+    source_table: gold_cot_features
+    note: "Requires a complete trailing 52-report window; do not backfill before release_ts."
+  residual:
+    formula: "epsilon[i,t] = return[i,t] - alpha[i] - SUM_k(beta[i,k] * factor_return[k,t])"
+    source_table: gold_model_features
+  s_score:
+    formula: "SUM(epsilon[i,t-L:t]) / NULLIF(STDDEV_SAMP(epsilon[i,t-L:t]), 0)"
+    source_table: gold_model_features
+    note: "Betas and residual scale must be fitted using observations strictly before the signal timestamp."
+  deflated_sharpe_ratio:
+    formula: "Phi((SR - Phi^-1(1 - 1/max(n_trials,2))) * SQRT(T-1) / SQRT(1 - skew*SR + ((kurtosis-1)/4)*SR^2))"
+    source_table: gold_trading_signals
+    note: "SR is annualized; n_trials is the actual number of tested configurations."
