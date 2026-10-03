@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from agent.guardrails import normalize_symbol
+from api.services.exceptions import EmbeddingConfigError
 from db.lakebase import get_lakebase
 
 _OPEN_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SUBMITTED", "PARTIALLY_FILLED")
@@ -118,6 +119,19 @@ def search_sec_filings(
             }
             for d in docs
         ]
+    except EmbeddingConfigError as e:
+        import logging
+        logging.error("Embedding config error: %s", e)
+        safe_msg = (
+            "Embedding configuration error — check EMBEDDING_PROVIDER, "
+            "HF_TOKEN, or HUGGINGFACEHUB_API_TOKEN settings."
+        )
+        return [{
+            "error": "retrieval_unavailable",
+            "reason": "embedding_config",
+            "message": safe_msg,
+            "ticker": symbol,
+        }]
     except CorpusUnavailableError as e:
         import logging
         logging.error("SEC filing retrieval unavailable: %s", e)

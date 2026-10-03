@@ -2070,7 +2070,9 @@ class TestHuggingfaceWithoutToken:
         assert result[0]["error"] == "retrieval_unavailable"
         assert result[0]["ticker"] == "NVDA"
         # The message must name the missing setting, not the secret value
-        assert "HF_TOKEN" in result[0].get("message", "") or "SEC filing corpus" in result[0].get("message", "")
+        msg = result[0].get("message", "")
+        assert "HF_TOKEN" in msg, f"Expected 'HF_TOKEN' in message, got: {msg}"
+        assert "SEC filing corpus" not in msg, f"EmbeddingConfigError must NOT get generic corpus message: {msg}"
 
 
 class TestEmbedderFailureDegradesToBM25Only:
@@ -2319,7 +2321,36 @@ class TestEmbeddingE2EThroughSearchSecFilings:
         assert result[0]["error"] == "retrieval_unavailable"
         assert result[0]["ticker"] == "NVDA"
         # Must name the missing setting, not the secret value
-        assert "HF_TOKEN" in result[0].get("message", "") or "SEC filing corpus" in result[0].get("message", "")
+        msg = result[0].get("message", "")
+        assert "HF_TOKEN" in msg, f"Expected 'HF_TOKEN' in message, got: {msg}"
+        assert "SEC filing corpus" not in msg, f"EmbeddingConfigError must NOT get generic corpus message: {msg}"
+
+    def test_token_value_never_leaks_in_message(self, monkeypatch):
+        """EmbeddingConfigError message must never contain the actual secret value."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        secret_value = "hf_FAKE_TOKEN_VALUE_12345"
+        monkeypatch.setenv("HF_TOKEN", secret_value)
+
+        from agent.tools_retrieval import search_sec_filings
+        from api.services.exceptions import EmbeddingConfigError
+
+        def fake_retrieve(*args, **kwargs):
+            raise EmbeddingConfigError(
+                f"EMBEDDING_PROVIDER is 'huggingface' but neither HF_TOKEN nor "
+                f"HUGGINGFACEHUB_API_TOKEN is set. Got: {secret_value}"
+            )
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        msg = result[0].get("message", "")
+        assert secret_value not in msg, f"Secret token value leaked into message: {msg}"
 
     def test_dimension_mismatch_returns_retrieval_unavailable(self, monkeypatch):
         """Dimension mismatch → CorpusUnavailableError → retrieval_unavailable."""
