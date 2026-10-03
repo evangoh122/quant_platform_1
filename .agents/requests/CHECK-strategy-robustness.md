@@ -50,3 +50,22 @@ Re-verify every item with proofs:
 Also check that merging round 8 didn't break the robustness code paths: costs on the executed
 notional inside the cost-stress variants, and the dense-grid screen inside `fetch_data`.
 Write `.agents/deepseek/VERDICT-strategy-robustness-check2.md`.
+
+## Re-check after round 3 (this run)
+MiMo round 3 (commit 499b502) addresses your check2 findings (see
+`.agents/requests/BUILD-strategy-robustness-round3.md`):
+- real rank IC;
+- capacity;
+- beta and sector exposures;
+- drop-top-3 chosen per fold on TRAIN P&L;
+- a guard test against placeholders and unused `compute_*` functions.
+
+Verify each one, with proofs:
+- rank IC alignment, no overlap leakage, and an honest t-stat;
+- capacity numbers sane vs ADV;
+- exposures use the real betas and taxonomy;
+- drop-top uses only train-window P&L;
+- the guard test FAILS on 0e972e0.
+
+Also hunt for any OTHER report section that looks computed but isn't.
+Write `.agents/deepseek/VERDICT-strategy-robustness-check3.md`.
