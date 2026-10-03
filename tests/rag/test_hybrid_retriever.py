@@ -1568,3 +1568,285 @@ class TestSearchSecFilingsError:
         assert result[0]["retrieval_mode"] == "hybrid", (
             "Naive as_of fell into substring fallback instead of hybrid path"
         )
+
+
+# ── Fix #1: BM25 ticker filter tests ─────────────────────────────────────────
+
+class TestBM25TickerFilter:
+    """Verify BM25 filters by ticker when set, not just boosts.
+
+    CodeRabbit finding: bm25_search only boosted matching tickers but kept
+    non-matching ones, so RRF could return other companies' chunks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_corpus(self, monkeypatch):
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("NVIDIA revenue growth driven by AI chips",
+                      ticker="NVDA", accession="NVDA1", accepted_ts="2025-01-01"),
+            _make_doc("NVIDIA CUDA ecosystem dominance in ML",
+                      ticker="NVDA", accession="NVDA2", accepted_ts="2025-01-01"),
+            _make_doc("Apple iPhone sales record quarter revenue",
+                      ticker="AAPL", accession="AAPL1", accepted_ts="2025-01-01"),
+        ]
+
+        tokenised = [hr.tokenize(d.page_content) for d in self.docs]
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_bm25_docs", self.docs)
+        monkeypatch.setattr(hr, "_bm25_tokenised", tokenised)
+        monkeypatch.setattr(hr, "_bm25_index", hr.BM25Okapi(tokenised))
+        monkeypatch.setattr(hr, "_embeddings_map", embeddings_map)
+        monkeypatch.setattr(hr, "_corpus", {
+            hashlib.md5(d.page_content.encode()).hexdigest()[:16]: (
+                d.page_content,
+                d.metadata["ticker"],
+                d.metadata["accession"],
+                d.metadata["accepted_ts"],
+                d.metadata["form_type"],
+                d.metadata["section_id"],
+                d.metadata["chunk_index"],
+                d.metadata.get("source_url", ""),
+            )
+            for d in self.docs
+        })
+
+        class StubEmbeddings:
+            def embed_query(self, text):
+                np.random.seed(hash(text) % (2**31))
+                v = np.random.randn(384).astype(np.float32)
+                v /= np.linalg.norm(v)
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: StubEmbeddings())
+
+    def test_bm25_filters_by_ticker_not_just_boosts(self):
+        """With ticker=NVDA, no AAPL chunk must appear in results."""
+        from api.services.hybrid_retriever import bm25_search
+
+        results = bm25_search("Apple iPhone revenue record", top_k=10, ticker="NVDA")
+        tickers = [d.metadata["ticker"] for d in results]
+        assert "AAPL" not in tickers, (
+            "BM25 returned AAPL chunk when ticker=NVDA — ticker filter missing"
+        )
+
+    def test_bm25_returns_empty_when_no_ticker_match(self):
+        """With ticker=MSFT (not in corpus), must return empty."""
+        from api.services.hybrid_retriever import bm25_search
+
+        results = bm25_search("revenue growth", top_k=10, ticker="MSFT")
+        assert results == [], (
+            "BM25 should return empty when ticker has no matching docs"
+        )
+
+    def test_hybrid_no_leak_across_tickers(self):
+        """Hybrid retrieve with ticker=NVDA must not return AAPL chunks."""
+        from api.services.hybrid_retriever import HybridRetriever
+
+        retriever = HybridRetriever(top_k=10)
+        results = retriever.retrieve("Apple iPhone revenue", ticker="NVDA", top_k=10)
+        tickers = [d.metadata["ticker"] for d in results]
+        assert "AAPL" not in tickers, (
+            "Hybrid retriever leaked AAPL chunk when ticker=NVDA"
+        )
+
+
+# ── Fix #2: Transient load failure retry tests ───────────────────────────────
+
+class TestTransientLoadFailureRetry:
+    """Verify transient load failures don't disable retrieval forever.
+
+    CodeRabbit finding: on exception, _corpus_loaded was set to True,
+    preventing retries.
+    """
+
+    def test_first_load_fails_second_succeeds(self, fake_pyspark, monkeypatch):
+        """First load raises CorpusUnavailableError, second succeeds."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Reset module state
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+
+        call_count = [0]
+
+        def _get_spark_sometimes():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("transient connection error")
+            # Second call: return a mock spark that yields empty results
+            mock_spark = MagicMock()
+            mock_chunks_df = MagicMock()
+            mock_chunks_df.select.return_value = mock_chunks_df
+            mock_chunks_df.collect.return_value = []
+            mock_embed_df = MagicMock()
+            mock_embed_df.select.return_value = mock_embed_df
+            mock_embed_df.collect.return_value = []
+
+            def table_side(name):
+                if "embeddings" in name:
+                    return mock_embed_df
+                return mock_chunks_df
+
+            mock_spark.table.side_effect = table_side
+            return mock_spark
+
+        monkeypatch.setattr(hr, "_get_spark", _get_spark_sometimes)
+
+        # Use monkeypatch.setitem on sys.modules to avoid import issues
+        # when pyspark is set to None (nopyspark mode)
+        mock_f = MagicMock()
+        mock_f.unix_timestamp.return_value = mock_f
+        mock_f.col.return_value = mock_f
+        mock_f.alias.return_value = mock_f
+
+        # First call: raises
+        with pytest.raises(CorpusUnavailableError):
+            monkeypatch.setitem(sys.modules, "pyspark.sql.functions", mock_f)
+            hr._load_corpus()
+
+        # _corpus_loaded must be False so next call retries
+        assert hr._corpus_loaded is False, (
+            "_corpus_loaded should be False after failure to allow retry"
+        )
+
+        # Second call: does not raise (retry succeeds, even if corpus is empty)
+        monkeypatch.setitem(sys.modules, "pyspark.sql.functions", mock_f)
+        hr._load_corpus()
+
+        assert hr._corpus_loaded is True
+
+    def test_partial_state_cleared_on_failure(self, fake_pyspark, monkeypatch):
+        """On failure, partial _corpus and _embeddings_map must be cleared."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        # Inject partial state
+        monkeypatch.setattr(hr, "_corpus", {"fake_id": ("text", "T", "A", "", "", "", 0, "")})
+        monkeypatch.setattr(hr, "_embeddings_map", {"fake_id": np.zeros(384)})
+        monkeypatch.setattr(hr, "_bm25_docs", [Document(page_content="x", metadata={})])
+        monkeypatch.setattr(hr, "_bm25_tokenised", [["x"]])
+        monkeypatch.setattr(hr, "_bm25_index", "not_none")
+
+        def boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(hr, "_get_spark", boom)
+
+        with pytest.raises(CorpusUnavailableError):
+            hr._load_corpus()
+
+        assert len(hr._corpus) == 0, "_corpus should be cleared after failure"
+        assert len(hr._embeddings_map) == 0, "_embeddings_map should be cleared after failure"
+        assert hr._bm25_docs is None
+        assert hr._bm25_tokenised is None
+        assert hr._bm25_index is None
+
+
+# ── Fix #3: Embedding dim check tests ─────────────────────────────────────────
+
+class TestEmbeddingDimCheck:
+    """Verify vector_search raises on dimension mismatch.
+
+    CodeRabbit finding: wrong-dim query vectors silently produced garbage.
+    """
+
+    def test_dim_mismatch_raises_corpus_unavailable(self, fake_pyspark, monkeypatch):
+        """Query vector with wrong dimension must raise CorpusUnavailableError."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError, vector_search
+
+        # Setup minimal corpus — must have non-empty _corpus so _load_corpus passes
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": np.zeros(384, dtype=np.float32)})
+
+        class WrongDimEmbeddings:
+            def embed_query(self, text):
+                return [0.1] * 1024  # Wrong dim
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
+
+        with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
+            vector_search("test query")
+
+    def test_correct_dim_works(self, fake_pyspark, monkeypatch):
+        """Query vector with correct dimension proceeds normally."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import vector_search
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+
+        vec = np.zeros(384, dtype=np.float32)
+        vec[0] = 1.0
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": vec})
+
+        class CorrectDimEmbeddings:
+            def embed_query(self, text):
+                v = np.zeros(384, dtype=np.float32)
+                v[0] = 1.0
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: CorrectDimEmbeddings())
+
+        # Should not raise
+        results = vector_search("test query")
+        assert isinstance(results, list)
+
+
+# ── Fix #4: build_sec_embeddings read error propagation tests ─────────────────
+
+class TestBuildEmbeddingsReadError:
+    """Verify build_sec_embeddings doesn't swallow existing-ID read errors.
+
+    CodeRabbit finding: blind except Exception set existing_ids = set(),
+    masking read failures.
+    """
+
+    def test_read_error_propagates(self, fake_pyspark):
+        """When reading existing IDs fails, build() must raise, not write."""
+        from pipelines.build_sec_embeddings import build
+
+        mock_spark = MagicMock()
+
+        # Make table() for embeddings raise (simulates read failure)
+        def table_side_effect(name):
+            if "embeddings" in name:
+                raise RuntimeError("Table not found: gold_sec_chunk_embeddings")
+            mock_df = MagicMock()
+            mock_df.select.return_value = mock_df
+            mock_df.filter.return_value = mock_df
+            mock_df.collect.return_value = []
+            return mock_df
+
+        mock_spark.table.side_effect = table_side_effect
+
+        class StubEmbeddings:
+            def embed_documents(self, texts):
+                return [[0.1] * 384 for _ in texts]
+
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            with pytest.raises(RuntimeError, match="Table not found"):
+                build(mock_spark)
+
+        # Must not have written anything
+        mock_spark.createDataFrame.assert_not_called()

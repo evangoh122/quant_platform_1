@@ -340,10 +340,23 @@ def _load_corpus() -> bool:
             return bool(_corpus)
 
         except CorpusUnavailableError:
+            # Clear partial state so the next call retries from scratch
+            _corpus_loaded = False
+            _corpus.clear()
+            _embeddings_map.clear()
+            _bm25_docs = None
+            _bm25_tokenised = None
+            _bm25_index = None
             raise
         except Exception as e:
             logger.error("Failed to load corpus: {}", e)
-            _corpus_loaded = True
+            # Clear partial state so the next call retries from scratch
+            _corpus_loaded = False
+            _corpus.clear()
+            _embeddings_map.clear()
+            _bm25_docs = None
+            _bm25_tokenised = None
+            _bm25_index = None
             raise CorpusUnavailableError(f"Failed to load corpus: {e}") from e
 
 
@@ -430,6 +443,14 @@ def bm25_search(
     if not docs:
         return []
 
+    # When ticker is set, filter candidates to that ticker before ranking.
+    # This prevents other companies' chunks from leaking through RRF fusion.
+    # The boost path (ticker_boost) is only for ticker resolved from query.
+    if ticker:
+        docs = [d for d in docs if d.metadata.get("ticker") == ticker]
+        if not docs:
+            return []
+
     # Rebuild a temporary BM25 index over the filtered docs for correctness
     # (PIT filter changes which documents are eligible)
     tokenised = [tokenize(d.page_content) for d in docs]
@@ -438,13 +459,7 @@ def bm25_search(
     query_tokens = tokenize(query)
     raw_scores = bm25.get_scores(query_tokens)
 
-    if ticker:
-        boosted = [
-            (idx, s * ticker_boost if docs[idx].metadata.get("ticker") == ticker else s)
-            for idx, s in enumerate(raw_scores)
-        ]
-    else:
-        boosted = list(enumerate(raw_scores))
+    boosted = list(enumerate(raw_scores))
 
     scored = sorted(boosted, key=lambda x: x[1], reverse=True)
     return [docs[idx] for idx, _ in scored[:top_k]]
@@ -481,6 +496,13 @@ def vector_search(
         return []
 
     qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
+
+    # Verify query vector dimension matches the expected embedding dim
+    if len(qvec) != EMBEDDING_DIM:
+        raise CorpusUnavailableError(
+            f"Query embedding dimension mismatch: got {len(qvec)}, expected {EMBEDDING_DIM}. "
+            f"The embedding model may not match the index."
+        )
 
     # Build candidate docs from corpus entries that have embeddings
     candidates: List[Tuple[float, Document]] = []
