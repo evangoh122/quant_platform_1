@@ -2,7 +2,7 @@
 
 Commit "fix(strategy): round 9" fixes CI and CodeRabbit's findings on #16 (see
 `.agents/requests/BUILD-strategy-round9.md`). Read-only. Write
-`.agents/deepseek/VERDICT-strategy-check8.md` (===VERDICT START/END===, Status).
+`.agents/deepseek/VERDICT-strategy-check9.md` (===VERDICT START/END===, Status).
 
 Claude's checks:
 - Under pandas 3.0.6, the pre-round-9 code fails 10 tests and round 9 passes all 47.
@@ -30,4 +30,22 @@ Verify:
 - the end-to-end exit-cost test asserts exact bps;
 - the r9 report is consistent.
 
-Write `.agents/deepseek/VERDICT-strategy-check8.md`.
+Write `.agents/deepseek/VERDICT-strategy-check9.md`.
+
+## Re-check after round 11 (this run)
+CodeRabbit (verified by Claude) found that exit-day P&L was dropped because masked returns fed the
+backtest. Round 11 adds `valuation_returns` (unmasked) for `run_backtest`, while signals keep using
+the masked returns.
+
+Verify:
+- every `run_backtest` / `run_one` call site uses `valuation_returns`;
+- signals are unchanged;
+- the end-to-end exit-day test asserts the exact P&L.
+
+IMPORTANT CONTEXT: `bronze_ohlcv_day` is UNADJUSTED for splits (237 jumps ≥40% in universe
+symbols, e.g. AMZN 2022-06-06 −95%). A corporate-actions lane (`slice/corporate-actions`) will
+provide `silver_ohlcv_day_adjusted`. Unmasked valuation returns make split artifacts flow straight
+into P&L. Confirm that the code is correct GIVEN correct inputs, and list the exact call sites that
+must switch to adjusted closes once that lane lands. No live rerun until then.
+
+Write `.agents/deepseek/VERDICT-strategy-check9.md`.
