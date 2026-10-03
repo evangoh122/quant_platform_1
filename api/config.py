@@ -33,6 +33,11 @@ class Config:
         self._db_path = None
         self._review_db_path = None
 
+    # ── Unity Catalog schema ────────────────────────────────────────────────
+    @property
+    def SCHEMA(self) -> str:
+        return os.getenv("SCHEMA", "evangoh_capstone")
+
     @property
     def DB_PATH(self) -> str:
         if self._db_path is None:
