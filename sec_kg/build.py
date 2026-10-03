@@ -91,26 +91,45 @@ def detect_conflicts(nodes: List[KgNode]) -> List[str]:
 
 # ── Source chunk resolution ──────────────────────────────────────────────────
 
+def _edgar_filing_url(cik: str, accession: str) -> str:
+    """Build EDGAR filing URL from CIK and accession number."""
+    cik_clean = cik.lstrip("0")
+    acc_clean = accession.replace("-", "")
+    return f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/{accession}-index.htm"
+
+
 def resolve_source_chunk_id(
     accession: str,
     entity_chunk_id: Optional[str],
     corpus_by_accession: Dict[str, List[str]],
-) -> Tuple[str, bool]:
+    corpus_chunk_ids: Optional[set] = None,
+) -> Tuple[str, bool, str]:
     """Resolve source_chunk_id for an entity row.
 
-    Returns (chunk_id, synthetic_source).
-    If entity has a chunk_id, use it.
+    Returns (chunk_id, synthetic_source, citation_level).
+    citation_level is "chunk" when the chunk resolves in the corpus,
+    or "filing" when falling back to filing-level citation.
+
+    If entity has a chunk_id AND it exists in corpus, use it.
     If accession has chunks in corpus, use lexicographically smallest.
     Otherwise generate sentinel 'filing:<accession>' and mark synthetic.
     """
+    if corpus_chunk_ids is None:
+        corpus_chunk_ids = set()
+
+    acc_norm = normalize_accession(accession)
+
     if entity_chunk_id and entity_chunk_id.strip():
-        return normalize_unicode(entity_chunk_id), False
+        chunk_candidate = normalize_unicode(entity_chunk_id)
+        if chunk_candidate in corpus_chunk_ids:
+            return chunk_candidate, False, "chunk"
+        # chunk_id present but not in corpus — fall through to accession lookup
 
-    chunks = corpus_by_accession.get(normalize_accession(accession), [])
+    chunks = corpus_by_accession.get(acc_norm, [])
     if chunks:
-        return sorted(chunks)[0], False
+        return sorted(chunks)[0], False, "chunk"
 
-    return f"filing:{normalize_accession(accession)}", True
+    return f"filing:{acc_norm}", True, "filing"
 
 
 # ── Core build ──────────────────────────────────────────────────────────────
@@ -134,10 +153,12 @@ def build_graph(
 
     # Pre-index corpus by accession for chunk resolution
     corpus_by_accession: Dict[str, List[str]] = defaultdict(list)
+    corpus_chunk_ids: set = set()
     for chunk_id, chunk_data in corpus.items():
         acc = normalize_accession(chunk_data.get("accession_number", ""))
         if acc:
             corpus_by_accession[acc].append(chunk_id)
+        corpus_chunk_ids.add(chunk_id)
 
     # Separate entity types
     company_rows = []
@@ -239,8 +260,9 @@ def build_graph(
                 continue
 
             accepted_ts = _get_accepted_ts(row)
-            chunk_resolved, synthetic = resolve_source_chunk_id(
-                accession, row.get("source_chunk_id"), corpus_by_accession
+            chunk_resolved, synthetic, citation_level = resolve_source_chunk_id(
+                accession, row.get("source_chunk_id"), corpus_by_accession,
+                corpus_chunk_ids
             )
             cid = company_id(cik)
 
@@ -275,8 +297,9 @@ def build_graph(
                 continue
 
             accepted_ts = _get_accepted_ts(row)
-            chunk_resolved, synthetic = resolve_source_chunk_id(
-                accession, row.get("source_chunk_id"), corpus_by_accession
+            chunk_resolved, synthetic, citation_level = resolve_source_chunk_id(
+                accession, row.get("source_chunk_id"), corpus_by_accession,
+                corpus_chunk_ids
             )
             fid = filing_id(cik, accession)
             cid = company_id(cik)
@@ -361,11 +384,16 @@ def build_graph(
             cik = normalize_cik(str(row.get("cik", "")))
             accession = normalize_accession(str(row.get("accession_number", "")))
             metric_concept = normalize_unicode(str(row.get("entity_key", "")))
-            period_start_raw = str(row.get("period_start", ""))
-            period_end_raw = str(row.get("period_end", ""))
+            period_start_val = row.get("period_start")
+            period_start_raw = str(period_start_val) if period_start_val is not None else ""
+            period_end_val = row.get("period_end")
+            period_end_raw = str(period_end_val) if period_end_val is not None else ""
             unit = normalize_unit(str(row.get("entity_unit", "")))
             if not cik or not accession or not metric_concept:
                 stats.reject("missing_xbrl_identity", str(row.get("entity_key", "")))
+                continue
+            if not period_end_raw:
+                stats.reject("missing_period_end", str(row.get("entity_key", "")))
                 continue
 
             period_start = iso_date(period_start_raw) if period_start_raw else ""
@@ -392,27 +420,31 @@ def build_graph(
             metric_concept = normalize_unicode(str(row.get("entity_key", "")))
             value_text = normalize_unicode(str(row.get("entity_value", "")))
             unit = normalize_unit(str(row.get("entity_unit", "")))
-            period_start_raw = str(row.get("period_start", ""))
-            period_end_raw = str(row.get("period_end", ""))
+            period_start_val = row.get("period_start")
+            period_start_raw = str(period_start_val) if period_start_val is not None else ""
+            period_end_val = row.get("period_end")
+            period_end_raw = str(period_end_val) if period_end_val is not None else ""
             period_start = iso_date(period_start_raw) if period_start_raw else ""
             period_end = iso_date(period_end_raw)
             ticker = normalize_ticker(str(row.get("ticker", "")))
             form_type = normalize_unicode(str(row.get("form_type", "")))
             source_chunk_id_raw = row.get("source_chunk_id")
-            chunk_resolved, synthetic = resolve_source_chunk_id(
-                accession, source_chunk_id_raw, corpus_by_accession
+            chunk_resolved, synthetic, citation_level = resolve_source_chunk_id(
+                accession, source_chunk_id_raw, corpus_by_accession,
+                corpus_chunk_ids
             )
             confidence = row.get("confidence")
 
             decimal_value = parse_decimal(value_text)
 
             fact_id = xbrl_fact_id(cik, accession, metric_concept,
-                                   period_start, period_end, unit,
-                                   value_text, chunk_resolved)
+                                    period_start, period_end, unit,
+                                    value_text, chunk_resolved)
             metric_node_id = metric_id(metric_concept)
             period_node_id = period_id(period_start, period_end)
             chunk_node_id = chunk_id_from_parts(chunk_resolved)
             company_node_id = company_id(cik)
+            filing_node_id = filing_id(cik, accession)
 
             properties = {
                 "value_text": value_text,
@@ -420,11 +452,15 @@ def build_graph(
                 "unit": unit,
                 "period_start": period_start,
                 "period_end": period_end,
+                "period_type": "instant" if not period_start else "duration",
                 "form_type": form_type,
                 "ticker": ticker,
                 "cik": cik,
                 "metric": metric_concept,
+                "citation_level": citation_level,
             }
+            if citation_level == "filing":
+                properties["source_url"] = _edgar_filing_url(cik, accession)
             if synthetic:
                 properties["synthetic_source"] = True
 
@@ -443,18 +479,26 @@ def build_graph(
                          f"{period_start or '?'}/{period_end}",
                          {"period_start": period_start, "period_end": period_end},
                          prov)
-            # Ensure chunk node if not already built from corpus
-            if chunk_node_id not in nodes:
-                _ensure_node(chunk_node_id, NodeType.CHUNK.value,
-                             f"Chunk {chunk_resolved[:16]}",
-                             {"chunk_id": chunk_resolved,
-                              "accession_number": accession,
-                              "synthetic_source": True}, prov)
+            # Ensure chunk node only when citation resolves to a real chunk
+            if citation_level == "chunk":
+                if chunk_node_id not in nodes:
+                    _ensure_node(chunk_node_id, NodeType.CHUNK.value,
+                                 f"Chunk {chunk_resolved[:16]}",
+                                 {"chunk_id": chunk_resolved,
+                                  "accession_number": accession}, prov)
             # Ensure company if not already built
             if company_node_id not in nodes:
                 _ensure_node(company_node_id, NodeType.COMPANY.value,
                              ticker, {"cik": cik, "ticker": ticker,
-                                      "synthetic_source": True}, prov)
+                                       "synthetic_source": True}, prov)
+            # Ensure filing node for filing-level citations
+            if citation_level == "filing" and filing_node_id not in nodes:
+                _ensure_node(filing_node_id, NodeType.FILING.value,
+                             f"Filing {accession}",
+                             {"accession_number": accession, "cik": cik,
+                              "form_type": form_type,
+                              "source_url": _edgar_filing_url(cik, accession),
+                              "synthetic_source": True}, prov)
 
             # Edges: Company -> REPORTED_FACT -> Fact
             _add_edge(company_node_id, EdgeType.REPORTED_FACT.value,
@@ -465,9 +509,10 @@ def build_graph(
             # Fact -> FOR_PERIOD -> Period
             _add_edge(fact_id, EdgeType.FOR_PERIOD.value,
                       period_node_id, accession, chunk_resolved, accepted_ts)
-            # Fact -> SOURCED_FROM -> Chunk
-            _add_edge(fact_id, EdgeType.SOURCED_FROM.value,
-                      chunk_node_id, accession, chunk_resolved, accepted_ts)
+            # Fact -> SOURCED_FROM -> Chunk (only when chunk resolves)
+            if citation_level == "chunk":
+                _add_edge(fact_id, EdgeType.SOURCED_FROM.value,
+                          chunk_node_id, accession, chunk_resolved, accepted_ts)
 
             # SUPERSEDES edge: different value from previous version
             if prev_fact_id is not None and prev_value != value_text:
@@ -496,8 +541,9 @@ def build_graph(
 
             accepted_ts = _get_accepted_ts(row)
             source_chunk_id_raw = row.get("source_chunk_id")
-            chunk_resolved, synthetic = resolve_source_chunk_id(
-                accession, source_chunk_id_raw, corpus_by_accession
+            chunk_resolved, synthetic, citation_level = resolve_source_chunk_id(
+                accession, source_chunk_id_raw, corpus_by_accession,
+                corpus_chunk_ids
             )
             confidence = row.get("confidence")
 
@@ -511,7 +557,10 @@ def build_graph(
                 "cik": cik,
                 "accession_number": accession,
                 "ticker": normalize_ticker(str(row.get("ticker", ""))),
+                "citation_level": citation_level,
             }
+            if citation_level == "filing":
+                properties["source_url"] = _edgar_filing_url(cik, accession)
             if synthetic:
                 properties["synthetic_source"] = True
 
@@ -529,18 +578,19 @@ def build_graph(
                              f"Filing {accession}",
                              {"accession_number": accession, "cik": cik,
                               "synthetic_source": True}, prov)
-            if chunk_node_id not in nodes:
+            if citation_level == "chunk" and chunk_node_id not in nodes:
                 _ensure_node(chunk_node_id, NodeType.CHUNK.value,
                              f"Chunk {chunk_resolved[:16]}",
                              {"chunk_id": chunk_resolved,
-                              "accession_number": accession,
-                              "synthetic_source": True}, prov)
+                              "accession_number": accession}, prov)
 
-            # DISCLOSED_RISK and SOURCED_FROM edges
+            # DISCLOSED_RISK edge (always to filing)
             _add_edge(filing_node_id, EdgeType.DISCLOSED_RISK.value,
                       rf_id, accession, chunk_resolved, accepted_ts, confidence)
-            _add_edge(rf_id, EdgeType.SOURCED_FROM.value,
-                      chunk_node_id, accession, chunk_resolved, accepted_ts)
+            # SOURCED_FROM edge (only when chunk resolves)
+            if citation_level == "chunk":
+                _add_edge(rf_id, EdgeType.SOURCED_FROM.value,
+                          chunk_node_id, accession, chunk_resolved, accepted_ts)
             stats.accept()
         except Exception as e:
             stats.reject(f"risk_factor_error:{e}", str(row.get("entity_key", "")))
@@ -558,8 +608,9 @@ def build_graph(
 
             accepted_ts = _get_accepted_ts(row)
             source_chunk_id_raw = row.get("source_chunk_id")
-            chunk_resolved, synthetic = resolve_source_chunk_id(
-                accession, source_chunk_id_raw, corpus_by_accession
+            chunk_resolved, synthetic, citation_level = resolve_source_chunk_id(
+                accession, source_chunk_id_raw, corpus_by_accession,
+                corpus_chunk_ids
             )
             confidence = row.get("confidence")
 
@@ -573,7 +624,10 @@ def build_graph(
                 "cik": cik,
                 "accession_number": accession,
                 "ticker": normalize_ticker(str(row.get("ticker", ""))),
+                "citation_level": citation_level,
             }
+            if citation_level == "filing":
+                properties["source_url"] = _edgar_filing_url(cik, accession)
             if synthetic:
                 properties["synthetic_source"] = True
 
@@ -590,17 +644,17 @@ def build_graph(
                              f"Filing {accession}",
                              {"accession_number": accession, "cik": cik,
                               "synthetic_source": True}, prov)
-            if chunk_node_id not in nodes:
+            if citation_level == "chunk" and chunk_node_id not in nodes:
                 _ensure_node(chunk_node_id, NodeType.CHUNK.value,
                              f"Chunk {chunk_resolved[:16]}",
                              {"chunk_id": chunk_resolved,
-                              "accession_number": accession,
-                              "synthetic_source": True}, prov)
+                              "accession_number": accession}, prov)
 
             _add_edge(filing_node_id, EdgeType.REPORTED_EVENT.value,
                       ev_id, accession, chunk_resolved, accepted_ts, confidence)
-            _add_edge(ev_id, EdgeType.SOURCED_FROM.value,
-                      chunk_node_id, accession, chunk_resolved, accepted_ts)
+            if citation_level == "chunk":
+                _add_edge(ev_id, EdgeType.SOURCED_FROM.value,
+                          chunk_node_id, accession, chunk_resolved, accepted_ts)
             stats.accept()
         except Exception as e:
             stats.reject(f"event_error:{e}", str(row.get("entity_key", "")))
@@ -622,8 +676,9 @@ def build_graph(
 
                 accepted_ts = _get_accepted_ts(row)
                 source_chunk_id_raw = row.get("source_chunk_id")
-                chunk_resolved, synthetic = resolve_source_chunk_id(
-                    accession, source_chunk_id_raw, corpus_by_accession
+                chunk_resolved, synthetic, citation_level = resolve_source_chunk_id(
+                    accession, source_chunk_id_raw, corpus_by_accession,
+                    corpus_chunk_ids
                 )
 
                 opt_id = optional_entity_id(etype, cik, label)

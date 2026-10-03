@@ -389,11 +389,14 @@ class SecKnowledgeGraph:
             "unit": latest["props"].get("unit", ""),
             "period_start": latest["props"].get("period_start", ""),
             "period_end": latest["props"].get("period_end", ""),
+            "period_type": latest["props"].get("period_type", ""),
             "is_restatement": is_restatement,
             "supersedes_fact_id": supersedes_fact_id,
             "chunk_id": latest["best_prov"].source_chunk_id,
             "accession_number": latest["best_prov"].accession_number,
             "accepted_ts": latest["best_prov"].accepted_ts.isoformat(),
+            "citation_level": latest["props"].get("citation_level", "chunk"),
+            "source_url": latest["props"].get("source_url", ""),
             "provenance": all_provs,
         }
 
@@ -432,9 +435,12 @@ class SecKnowledgeGraph:
                 "unit": props.get("unit", ""),
                 "period_start": props.get("period_start", ""),
                 "period_end": props.get("period_end", ""),
+                "period_type": props.get("period_type", ""),
                 "chunk_id": best_prov.source_chunk_id,
                 "accession_number": best_prov.accession_number,
                 "accepted_ts": best_prov.accepted_ts.isoformat(),
+                "citation_level": props.get("citation_level", "chunk"),
+                "source_url": props.get("source_url", ""),
             })
 
         results.sort(key=lambda r: (r["accepted_ts"], r["accession_number"],

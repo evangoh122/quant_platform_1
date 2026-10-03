@@ -494,7 +494,7 @@ class TestProvenance:
             assert edge.accepted_ts.tzinfo is not None
 
     def test_accession_fallback_for_company(self):
-        """Company rows with null source_chunk_id get synthetic sentinel."""
+        """Company rows with null source_chunk_id get filing-level citation."""
         entities = [{
             "cik": "0001045810", "ticker": "NVDA",
             "accession_number": "0001045810-24-000001",
@@ -506,7 +506,7 @@ class TestProvenance:
         }]
         corpus = {}  # no corpus at all
         nodes, edges = build_graph(entities, corpus, "test-1.0")
-        # Should still succeed with synthetic sentinel
+        # Should still succeed with filing-level fallback
         assert len(nodes) > 0
         company_nodes = [n for n in nodes if n.node_type == "Company"]
         assert len(company_nodes) == 1
@@ -1116,3 +1116,247 @@ class TestQACandidates:
         # Should propose only the latest version (value=200)
         assert len(candidates) == 1
         assert candidates[0]["answer_value"] == "200"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 16. Instant-period XBRL facts
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInstantPeriodFacts:
+    """XBRL facts with period_start=null (instant) must build correctly."""
+
+    def test_instant_fact_builds_node(self):
+        """A fact with period_start=null produces an XbrlFact node."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Assets",
+            "entity_value": "50000000000", "entity_unit": "USD",
+            "period_start": None, "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
+        assert len(xbrl_nodes) == 1
+        props = json.loads(xbrl_nodes[0].properties_json)
+        assert props["period_start"] == ""
+        assert props["period_end"] == "2024-01-28"
+        assert props["period_type"] == "instant"
+
+    def test_duration_fact_has_period_type(self):
+        """A fact with period_start set has period_type=duration."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
+        assert len(xbrl_nodes) == 1
+        props = json.loads(xbrl_nodes[0].properties_json)
+        assert props["period_start"] == "2023-01-29"
+        assert props["period_type"] == "duration"
+
+    def test_instant_and_duration_same_metric_no_collision(self):
+        """Instant and duration facts for the same metric have different IDs."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Assets",
+            "entity_value": "50000000000", "entity_unit": "USD",
+            "period_start": None, "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Assets",
+            "entity_value": "50000000000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
+        assert len(xbrl_nodes) == 2
+        ids = {n.node_id for n in xbrl_nodes}
+        assert len(ids) == 2, "Instant and duration facts must have different IDs"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 17. Citation level: chunk vs filing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCitationLevel:
+    """Unresolvable chunk ids produce filing-level citations, not dead references."""
+
+    def test_unresolvable_chunk_filing_level_citation(self):
+        """When chunk_id is not in corpus and accession has no chunks, citation_level=filing."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000099",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Assets",
+            "entity_value": "50000000000", "entity_unit": "USD",
+            "period_start": None, "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "nonexistent_chunk",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
+        assert len(xbrl_nodes) == 1
+        props = json.loads(xbrl_nodes[0].properties_json)
+        assert props["citation_level"] == "filing"
+        assert "source_url" in props
+        assert props["source_url"].startswith("https://www.sec.gov/")
+
+        # No SOURCED_FROM edge for this fact
+        fact_id = xbrl_nodes[0].node_id
+        sourced_edges = [e for e in edges
+                         if e.edge_type == "SOURCED_FROM" and e.src_id == fact_id]
+        assert len(sourced_edges) == 0
+
+    def test_resolvable_chunk_chunk_level_citation(self):
+        """When chunk_id exists in corpus, citation_level=chunk, SOURCED_FROM edge present."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        xbrl_nodes = [n for n in nodes if n.node_type == "XbrlFact"]
+        assert len(xbrl_nodes) == 1
+        props = json.loads(xbrl_nodes[0].properties_json)
+        assert props["citation_level"] == "chunk"
+
+        # SOURCED_FROM edge exists
+        fact_id = xbrl_nodes[0].node_id
+        sourced_edges = [e for e in edges
+                         if e.edge_type == "SOURCED_FROM" and e.src_id == fact_id]
+        assert len(sourced_edges) == 1
+
+    def test_no_dead_chunk_references(self):
+        """Every SOURCED_FROM edge's dst_id must reference an existing Chunk node."""
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000099",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Assets",
+            "entity_value": "50000000000", "entity_unit": "USD",
+            "period_start": None, "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "nonexistent_chunk",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges = build_graph(entities, corpus, "test-1.0")
+        node_ids = {n.node_id for n in nodes}
+        for edge in edges:
+            if edge.edge_type == "SOURCED_FROM":
+                assert edge.dst_id in node_ids, (
+                    f"SOURCED_FROM edge {edge.edge_id} references "
+                    f"non-existent node {edge.dst_id}"
+                )
