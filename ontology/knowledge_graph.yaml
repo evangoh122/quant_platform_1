@@ -1,33 +1,32 @@
 knowledge_graph:
-  deterministic_counts: {node_types: 9, edge_types: 9}
-  optional_llm_counts: {node_types: 3, edge_types: 6}
-  pit_rule: "Every node and edge is visible only when its provenance accepted_ts (nodes) or valid_from (edges) is <= query_as_of_ts. Edge valid_from equals accepted_ts. XBRL restatements remain separate facts linked by SUPERSEDES edges; no valid-to field is stored, so consumers must follow those edges when resolving the fact current as of a timestamp."
+  deterministic_counts: {node_types: 9, edge_types: 10}
+  optional_llm_counts: {node_types: 3, edge_types: 3}
+  pit_rule: "Every node and edge is visible only when its provenance accepted_ts (nodes) or valid_from (edges) is <= query_as_of_ts. Every edge has valid_from == accepted_ts. XBRL restatements remain separate facts linked by SUPERSEDES edges; no valid-to field is stored, so consumers must follow those edges when resolving the fact current as of a timestamp."
+  citation_rule: "SOURCED_FROM exists only when citation_level == 'chunk'. When citation_level == 'filing', the entity or fact instead carries filing-level citation metadata (accession_number and source_url) and no synthetic Chunk or SOURCED_FROM edge is created."
   node_types:
-    Company: {key: cik, source_table: silver_sec_entities}
-    Filing: {key: accession_number, source_table: silver_sec_sections}
-    Section: {key: [accession_number, filing_section], source_table: silver_sec_sections}
-    Chunk: {key: chunk_id, source_table: silver_sec_sections}
-    XbrlFact: {key: [accession_number, entity_key, entity_unit, period_start, period_end], source_table: silver_sec_entities}
-    Metric: {key: entity_key, source_table: silver_sec_entities}
-    Period: {key: [period_start, period_end], source_table: silver_sec_entities}
-    RiskFactor: {key: [accession_number, entity_key], source_table: silver_sec_entities}
-    Event: {key: [accession_number, entity_key], source_table: silver_sec_entities}
+    Company: {key: cik, source_table: silver_sec_entities, populated_by: deterministic}
+    Filing: {key: accession_number, source_table: silver_sec_sections, populated_by: deterministic}
+    Section: {key: [accession_number, filing_section], source_table: silver_sec_sections, populated_by: deterministic}
+    Chunk: {key: chunk_id, source_table: silver_sec_sections, populated_by: deterministic}
+    XbrlFact: {key: [accession_number, entity_key, entity_unit, period_start, period_end], source_table: silver_sec_entities, populated_by: deterministic}
+    Metric: {key: entity_key, source_table: silver_sec_entities, populated_by: deterministic}
+    Period: {key: [period_start, period_end], source_table: silver_sec_entities, populated_by: deterministic}
+    RiskFactor: {key: [accession_number, entity_key], source_table: silver_sec_entities, populated_by: deterministic}
+    Event: {key: [accession_number, entity_key], source_table: silver_sec_entities, populated_by: deterministic}
     Segment: {key: [cik, entity_value], source_table: silver_sec_entities, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
     Product: {key: [cik, entity_value], source_table: silver_sec_entities, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
     Customer: {key: [cik, entity_value], source_table: silver_sec_entities, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
   edge_types:
-    COMPANY_FILED_FILING: {from: Company, to: Filing, evidence_table: silver_sec_sections, pit: accepted_ts}
-    FILING_HAS_SECTION: {from: Filing, to: Section, evidence_table: silver_sec_sections, pit: accepted_ts}
-    SECTION_HAS_CHUNK: {from: Section, to: Chunk, evidence_table: silver_sec_sections, pit: accepted_ts}
-    CHUNK_MENTIONS_COMPANY: {from: Chunk, to: Company, evidence_table: silver_sec_entities, pit: accepted_ts}
-    FILING_REPORTS_FACT: {from: Filing, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts}
-    FACT_MEASURES_METRIC: {from: XbrlFact, to: Metric, evidence_table: silver_sec_entities, pit: accepted_ts}
-    FACT_FOR_PERIOD: {from: XbrlFact, to: Period, evidence_table: silver_sec_entities, pit: accepted_ts}
-    FILING_DISCLOSES_RISK: {from: Filing, to: RiskFactor, evidence_table: silver_sec_entities, pit: accepted_ts}
-    FILING_REPORTS_EVENT: {from: Filing, to: Event, evidence_table: silver_sec_entities, pit: accepted_ts}
-    COMPANY_HAS_SEGMENT: {from: Company, to: Segment, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
-    COMPANY_OFFERS_PRODUCT: {from: Company, to: Product, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
-    COMPANY_HAS_CUSTOMER: {from: Company, to: Customer, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
-    SEGMENT_REPORTS_FACT: {from: Segment, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
-    PRODUCT_REPORTS_FACT: {from: Product, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
-    CUSTOMER_RELATED_TO_EVENT: {from: Customer, to: Event, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    FILED: {from: Company, to: Filing, evidence_table: silver_sec_sections, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    HAS_SECTION: {from: Filing, to: Section, evidence_table: silver_sec_sections, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    HAS_CHUNK: {from: Section, to: Chunk, evidence_table: silver_sec_sections, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    REPORTED_FACT: {from: Company, to: XbrlFact, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    INSTANCE_OF: {from: XbrlFact, to: Metric, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    FOR_PERIOD: {from: XbrlFact, to: Period, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    SOURCED_FROM: {from: [XbrlFact, RiskFactor, Event], to: Chunk, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic, condition: "citation_level == 'chunk'; filing-level citations do not create this edge"}
+    DISCLOSED_RISK: {from: Filing, to: RiskFactor, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    REPORTED_EVENT: {from: Filing, to: Event, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic}
+    HAS_SEGMENT: {from: Company, to: Segment, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    HAS_PRODUCT: {from: Company, to: Product, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    HAS_CUSTOMER: {from: Company, to: Customer, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    SUPERSEDES: {from: XbrlFact, to: XbrlFact, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic, condition: "a later accepted fact for the same identity has a different value"}

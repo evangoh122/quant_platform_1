@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 import re
+import subprocess
 
 import pytest
 import yaml
@@ -12,6 +13,7 @@ SQL_DIRS = (ROOT / "silver", ROOT / "gold")
 FED_REFRESH = ROOT / "notebooks" / "refresh_bronze_fed.py"
 EQUITIES_REFRESH = ROOT / "notebooks" / "refresh_bronze_equities.py"
 OPTIONS_REFRESH = ROOT / "notebooks" / "refresh_bronze_options.py"
+SEC_KG_ENUM_SNAPSHOT = ROOT / "tests" / "fixtures" / "sec_kg_enum_snapshot.yaml"
 
 # These transforms are not present on this branch, but their checked schema is
 # part of the ontology contract. Keep this small: SQL-backed tables are parsed.
@@ -144,6 +146,44 @@ def _python_list_constant(path, name):
     raise AssertionError(f"{name} not found in {path.relative_to(ROOT)}")
 
 
+def _enum_values(source, enum_name):
+    """Extract string Enum values without importing sec_kg dependencies."""
+    module = ast.parse(source, filename="sec_kg/model.py")
+    for statement in module.body:
+        if isinstance(statement, ast.ClassDef) and statement.name == enum_name:
+            return {
+                ast.literal_eval(item.value)
+                for item in statement.body
+                if isinstance(item, ast.Assign)
+                and len(item.targets) == 1
+                and isinstance(item.targets[0], ast.Name)
+            }
+    raise AssertionError(f"{enum_name} not found in canonical sec_kg/model.py")
+
+
+def _canonical_kg_vocabulary():
+    """Prefer readable source; fall back to the documented reviewed snapshot."""
+    local_model = ROOT / "sec_kg" / "model.py"
+    source = local_model.read_text(encoding="utf-8") if local_model.is_file() else None
+    if source is None:
+        result = subprocess.run(
+            ["git", "show", "origin/slice/rag-kg:sec_kg/model.py"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            source = result.stdout
+    if source is not None:
+        return {
+            "node_types": _enum_values(source, "NodeType"),
+            "edge_types": _enum_values(source, "EdgeType"),
+        }
+    snapshot = yaml.safe_load(SEC_KG_ENUM_SNAPSHOT.read_text(encoding="utf-8"))
+    return {name: set(values) for name, values in snapshot.items()}
+
+
 def _create_table_columns(path):
     """Parse the literal Delta DDL issued by a notebook's table creator."""
     source = path.read_text(encoding="utf-8")
@@ -164,6 +204,13 @@ def test_every_yaml_parses():
     documents = _documents()
     assert documents
     assert all(document is not None for document in documents.values())
+
+
+def test_knowledge_graph_vocabulary_matches_canonical_sec_kg_enums():
+    graph = _documents()["knowledge_graph.yaml"]["knowledge_graph"]
+    canonical = _canonical_kg_vocabulary()
+    assert set(graph["node_types"]) == canonical["node_types"]
+    assert set(graph["edge_types"]) == canonical["edge_types"]
 
 
 def test_every_referenced_table_has_semantics():
