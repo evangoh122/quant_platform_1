@@ -32,3 +32,21 @@ Run:
 - `python3 -m pytest -q -p no:cacheprovider tests/strategies tests/ml`;
 - the same suite with pyspark hidden, via a sitecustomize that sets `sys.modules[m]=None` for
   pyspark, pyspark.sql, pyspark.sql.functions and pyspark.sql.types.
+
+## Re-check after round 2 (this run)
+MiMo round 2 (commit 0e972e0) addresses your four blocking findings. See
+`.agents/requests/BUILD-strategy-robustness-round2.md`. Strategy round 8 from #16 has been merged in
+since (executed-notional costs, dense-grid `universe.py`, z-score guard).
+
+Re-verify every item with proofs:
+- **Top-500 is real.** It comes from a full bronze panel, and it differs from top-300.
+- **Parity.** Top-300 from the pandas screen matches the SQL semantics, including a missing session.
+- **Drop-top-3** executes, uses training-window P&L, and the dropped names hold zero weight.
+- **Report tables.** Every required table, plus the IS/OOS columns and the OOS-ratio gate, is present
+  and computed.
+- **Config.** The keys are really consumed, and the cost params come from config in the baseline.
+- **Honest trial count.** No counted variant is a silent duplicate.
+
+Also check that merging round 8 didn't break the robustness code paths: costs on the executed
+notional inside the cost-stress variants, and the dense-grid screen inside `fetch_data`.
+Write `.agents/deepseek/VERDICT-strategy-robustness-check2.md`.
