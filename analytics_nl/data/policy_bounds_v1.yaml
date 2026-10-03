@@ -1,0 +1,29 @@
+# NL1 Policy Bounds v1
+# Versioned typed policy data for intent classification.
+
+policy_version: "1.0.0"
+semantic_model_version: "1.0.0"
+
+# Hard bounds by layer
+hard_bounds:
+  gold:
+    date_bound_years: 10
+    row_bound: 5000
+    description: "Gold layer: max 10 years, 5000 rows, registry-defined entity limits"
+  silver:
+    date_bound_years: 2
+    ticker_bound: 10
+    row_bound: 10000
+    description: "Silver layer: max 2 years, 10 tickers, 10000 rows"
+
+# Soft thresholds for cost classification
+soft_thresholds:
+  cheap:
+    max_days: 31
+    max_entities: 2
+    max_rows: 500
+  normal:
+    max_days: 366
+    max_entities: 5
+    max_rows: 2500
+  # Anything above normal thresholds but within hard bounds = EXPENSIVE
