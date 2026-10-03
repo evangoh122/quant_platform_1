@@ -200,11 +200,65 @@ def run_one(
     return res
 
 
+CHANGELOG = {
+    2: [
+        {
+            "fix": "Min-history gate now counts own trading sessions",
+            "files": "`gold/06_gold_tradable_universe.sql`, `strategies/universe.py`",
+            "rationale": "`COUNT(dollar_volume)` instead of `COUNT(*)` — pre-listing NULL rows no longer inflate history",
+        },
+        {
+            "fix": "Date range derived from data",
+            "files": "`strategies/run_residual_reversion.py`",
+            "rationale": "No more hardcoded dates in results header",
+        },
+    ],
+    3: [
+        {
+            "fix": "NaN validity mask with min_obs",
+            "files": "`strategies/residual_reversion.py`",
+            "rationale": "Rolling regressions now mask NaN returns before counting valid rows; only windows with >= min_obs proceed",
+        },
+        {
+            "fix": "Reductions never ADV-capped plus forward-filled ADV",
+            "files": "`strategies/backtest.py`",
+            "rationale": "ADV median is forward-filled so early dates are not zero-capped; reduction trades exempt from ADV cap",
+        },
+        {
+            "fix": "Full 60-row median window",
+            "files": "`strategies/universe.py`",
+            "rationale": "Trailing median ADV now uses exactly 60 trading days, not a shorter default",
+        },
+        {
+            "fix": "Full 50-row SMA window",
+            "files": "`strategies/residual_reversion.py`",
+            "rationale": "Signal smoothing SMA uses the full 50-row window instead of a truncated default",
+        },
+    ],
+}
+
+
+def parse_round_from_output(path: str) -> int:
+    """Derive the round number from an output filename like ``residual_reversion_r4.md``.
+
+    Raises ``ValueError`` if the filename does not match ``_r<N>.md``.
+    """
+    import re
+    m = re.search(r"_r(\d+)\.md$", path)
+    if not m:
+        raise ValueError(f"cannot derive round from output path: {path!r}")
+    return int(m.group(1))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--output", default="strategies/results/residual_reversion_r3.md")
+    ap.add_argument("--output", default="strategies/results/residual_reversion_r4.md")
+    ap.add_argument("--round", type=int, default=None)
     ap.add_argument("--book-capital", type=float, default=10_000_000.0)
     args = ap.parse_args()
+
+    if args.round is None:
+        args.round = parse_round_from_output(args.output)
 
     w = WorkspaceClient(profile=os.getenv("DATABRICKS_PROFILE", "evangohsg"))
     data = fetch_data(w)
@@ -280,6 +334,7 @@ def main() -> None:
     lines = _render(
         base_res, gated_res, oos_net, n_trials, capacity, args.book_capital,
         WINDOW, LOOKBACK, ENTRY, EXIT, dates[0], dates[-1], len(dates), len(splits),
+        round_num=args.round,
     )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
@@ -288,22 +343,29 @@ def main() -> None:
 
 
 def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
-            window, lookback, entry, exit_thresh, date_start, date_end, n_dates, n_folds) -> List[str]:
+            window, lookback, entry, exit_thresh, date_start, date_end, n_dates, n_folds,
+            round_num: int = 3) -> List[str]:
     bm = base_res["metrics"]
     gm = gated_res["metrics"]
+    prev = round_num - 1
     L = []
-    L.append("# Residual mean-reversion — round 3 (real data)")
+    L.append(f"# Residual mean-reversion — round {round_num} (real data)")
     L.append("")
     L.append("Market/industry residual mean-reversion on the point-in-time top-300")
     L.append(f"tradable universe (`gold_tradable_universe`), {date_start:%Y-%m-%d} → {date_end:%Y-%m-%d}.")
     L.append("Industry labels are the repo `config/tickers.yaml` taxonomy, **not** GICS.")
     L.append("")
-    L.append("## What changed vs r2")
+    L.append(f"## What changed vs r{prev}")
     L.append("")
-    L.append("| # | Fix | Files | Rationale |")
-    L.append("|---|-----|-------|-----------|")
-    L.append("| 1 | Min-history gate now counts own trading sessions | `gold/06_gold_tradable_universe.sql`, `strategies/universe.py` | `COUNT(dollar_volume)` instead of `COUNT(*)` — pre-listing NULL rows no longer inflate history |")
-    L.append("| 2 | Date range derived from data | `strategies/run_residual_reversion.py` | No more hardcoded dates in results header |")
+
+    rows = CHANGELOG.get(round_num, [])
+    if rows:
+        L.append("| # | Fix | Files | Rationale |")
+        L.append("|---|-----|-------|-----------|")
+        for i, row in enumerate(rows, 1):
+            L.append(f"| {i} | {row['fix']} | {row['files']} | {row['rationale']} |")
+    else:
+        L.append("_No changelog entries for this round._")
     L.append("")
     L.append("## Configuration")
     L.append("")
