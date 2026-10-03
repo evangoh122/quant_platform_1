@@ -1,0 +1,41 @@
+bundle:
+  name: qp1-stream-streaming
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog that holds the dlt_ streaming medallion tables.
+    default: bootcamp_students
+  schema:
+    description: Target schema for the dlt_ streaming tables (never overlaps real tables).
+    default: evangoh_capstone
+  source_catalog:
+    description: Catalog of the source bronze_ohlcv table read as a stream.
+    default: bootcamp_students
+  source_schema:
+    description: Schema of the source bronze_ohlcv table read as a stream.
+    default: evangoh_capstone
+  source_table:
+    description: Source table read as a stream (never written by this pipeline).
+    default: bronze_ohlcv
+  workspace_root:
+    description: Workspace path that holds bundle-managed files for this target.
+    default: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+  pipeline_channel:
+    description: SDP release channel. CURRENT is the stable default.
+    default: CURRENT
+  pipeline_development:
+    description: Run the pipeline in development mode (faster startup, relaxed validation).
+    default: false
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      root_path: ${var.workspace_root}
+    variables:
+      schema: evangoh_capstone
+      pipeline_development: true
