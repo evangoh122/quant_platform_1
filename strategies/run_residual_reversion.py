@@ -346,6 +346,28 @@ CHANGELOG = {
             "rationale": "Round 6 routed same-side partial reductions (e.g. +0.4 to +0.2) into the capped open leg. Any move toward zero is now free and only moves away from zero are capped; a seeded 500-sequence property test enforces the invariants",
         },
     ],
+    7: [
+        {
+            "fix": "Exit/reduction costs charged on full executed notional",
+            "files": "`strategies/backtest.py`",
+            "rationale": "`compute_costs` was re-capping orders through `scale_order_to_adv_cap`, charging costs on at most 1% of ADV even for large exits. Now charges on the actual executed notional with true participation for slippage",
+        },
+        {
+            "fix": "Universe pandas matches SQL dense-grid semantics",
+            "files": "`strategies/universe.py`",
+            "rationale": "Reindex each symbol onto the full market calendar before rolling so missing sessions are NaN rows (matching SQL NULL rows), not absent rows",
+        },
+        {
+            "fix": "Z-score guard counts non-NULL column values",
+            "files": "`gold/07_gold_regime_features.sql`",
+            "rationale": "`COUNT(*)` counted all rows in window regardless of NULL `rsp_spy_ratio`; `AVG`/`STDDEV` ignore NULLs, so partial windows produced z-scores. Changed to `COUNT(rsp_spy_ratio)`",
+        },
+        {
+            "fix": "Leverage wording corrected to 50%/50%",
+            "files": "`strategies/run_residual_reversion.py`",
+            "rationale": "Gross 1.0 with dollar neutrality is 50% long / 50% short, not 100%/100%",
+        },
+    ],
 }
 
 
@@ -669,7 +691,7 @@ def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
     L.append(f"- universe: top 300 by trailing 60-day median dollar volume (recency 5, min history 252)")
     L.append(f"- residual regression: rolling window {window} days, lookback L = {lookback}")
     L.append(f"- entry: long s <= -{entry}, short s >= +{entry}; exit |s| < {exit_thresh}")
-    L.append(f"- book capital: ${book_capital:,.0f}; target gross 1.0 (100% long / 100% short)")
+    L.append(f"- book capital: ${book_capital:,.0f}; target gross 1.0 (50% long / 50% short)")
     L.append(f"- dates: {n_dates} trading days; purged walk-forward folds: {n_folds}")
     L.append(f"- ADV cap: 1% of trailing median dollar volume per name per day")
     L.append("")

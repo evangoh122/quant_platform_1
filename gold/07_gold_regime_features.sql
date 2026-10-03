@@ -86,7 +86,7 @@ USING (
         - (spy / NULLIF(LAG(spy, 20) OVER (ORDER BY trade_date), 0) - 1)
         AS rsp_spy_20d,
       CASE
-        WHEN COUNT(*) OVER (
+        WHEN COUNT(rsp_spy_ratio) OVER (
           ORDER BY trade_date ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
         ) >= 252 THEN
           (rsp_spy_ratio - AVG(rsp_spy_ratio) OVER (
