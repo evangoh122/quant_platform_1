@@ -169,6 +169,7 @@ def build_signals(
                                  max_hold=max_hold)
     return {
         "returns": tradeable_returns,
+        "valuation_returns": returns[tradeable],
         "market": market,
         "industry": industry,
         "beta_mkt": res["beta_mkt"],
@@ -303,6 +304,13 @@ CHANGELOG = {
             "rationale": "`run_backtest` rebuilt `adv_aligned` with `fillna(0.0)` before `compute_costs`, so a dropped name's exit was costed at 100% participation (~202 bps) instead of its last known ADV (~12 bps). Now builds ONE ADV frame: per-symbol forward-fill then `fillna(0)` for never-seen symbols; passes the SAME frame to both `cap_weight_changes_by_adv` and `compute_costs`",
         },
     ],
+    10: [
+        {
+            "fix": "Exit-day P&L no longer dropped by masked returns",
+            "files": "`strategies/run_residual_reversion.py`",
+            "rationale": "`build_signals` masked returns to the PIT universe for signal construction, but the same masked frame was passed to `run_backtest` where `gross = (weights.shift(1) * returns).sum()` skipped NaN. When a held name left the universe on day t, the P&L of the position held from t-1 was silently dropped. Now returns unmasked `valuation_returns` for the backtest while keeping masked `returns` for signals",
+        },
+    ],
 }
 
 
@@ -369,14 +377,14 @@ def main() -> None:
         val_dates = dates[val_idx]
         best_h, best_sr = None, -np.inf
         for h in hold_candidates:
-            r = run_one(signals[h]["positions"], signals[h]["returns"], universe,
+            r = run_one(signals[h]["positions"], signals[h]["valuation_returns"], universe,
                         adv_wide, beta_mkt, industry, args.book_capital, n_trials)
             tr = r["net"].loc[train_dates].dropna()
             sr = _sharpe(tr)
             if sr > best_sr:
                 best_h, best_sr = h, sr
         # Evaluate the chosen config out-of-sample on the validation fold.
-        r = run_one(signals[best_h]["positions"], signals[best_h]["returns"], universe,
+        r = run_one(signals[best_h]["positions"], signals[best_h]["valuation_returns"], universe,
                     adv_wide, beta_mkt, industry, args.book_capital, n_trials)
         oos_frames.append(r["net"].loc[val_dates])
         print(f"fold {fold_i}: train chose max_hold={best_h} (train sharpe {best_sr:.3f}), "
@@ -391,9 +399,9 @@ def main() -> None:
     gate = regime_map.reindex(base_pos.index).eq("NARROW").astype(float)
     gated_positions = base_pos.mul(gate, axis=0)
 
-    base_res = run_one(base_pos, signals[h_default]["returns"], universe, adv_wide,
+    base_res = run_one(base_pos, signals[h_default]["valuation_returns"], universe, adv_wide,
                        beta_mkt, industry, args.book_capital, n_trials)
-    gated_res = run_one(gated_positions, signals[h_default]["returns"], universe, adv_wide,
+    gated_res = run_one(gated_positions, signals[h_default]["valuation_returns"], universe, adv_wide,
                         beta_mkt, industry, args.book_capital, n_trials)
 
     capacity = _capacity(adv_wide)
