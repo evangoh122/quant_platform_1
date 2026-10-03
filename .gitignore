@@ -82,3 +82,6 @@ Thumbs.db
 # ---- agent coordination scratch (verdicts ARE tracked; logs are not) ----
 .agentlogs/
 *.agent.log
+
+# ---- robustness cache ----
+strategies/results/.robustness_cache/

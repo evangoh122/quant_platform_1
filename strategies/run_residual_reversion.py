@@ -439,6 +439,11 @@ def main() -> None:
                     help="Run full robustness suite and write report")
     ap.add_argument("--robustness-output",
                     default="strategies/results/robustness_r1.md")
+    ap.add_argument("--workers", type=int,
+                    default=min(8, os.cpu_count() or 1),
+                    help="Parallel workers for robustness variants")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="Force rerun of all variants (ignore cache)")
     args = ap.parse_args()
 
     if args.round is None:
@@ -565,16 +570,136 @@ def main() -> None:
         univ_sub = screen_universe(
             panel[["symbol", "event_date", "dollar_volume"]], n=baseline_universe_size,
         ) if panel is not None else universe
-        closes_sub = closes[closes["symbol"].isin(set(univ_sub["symbol"]))].copy()
+        closes_sub = closes[closes["symbol"].isin(
+            set(univ_sub["symbol"]) | FACTOR_INSTRUMENTS)].copy()
 
         variant_results = []
+        n_trials = len(registry)
+
+        # ── Checkpointing ─────────────────────────────────────────────────
+        cache_dir = Path("strategies/results/.robustness_cache")
+        if not args.no_resume:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+        def _load_cache(fp: str):
+            p = cache_dir / f"{fp}.json"
+            if not p.exists():
+                return None
+            import json
+            with open(p, "r") as f:
+                d = json.load(f)
+            # Restore Series from lists.
+            for key in ("net", "gross", "turnover"):
+                if key in d and isinstance(d[key], list):
+                    d[key] = pd.Series(d[key])
+            return d
+
+        def _save_cache(fp: str, vr: dict):
+            import json
+            serialisable = {}
+            for k, v in vr.items():
+                if isinstance(v, pd.Series):
+                    serialisable[k] = v.tolist()
+                elif isinstance(v, (pd.DataFrame, pd.DatetimeIndex)):
+                    continue  # too large; not needed for resume
+                elif isinstance(v, np.ndarray):
+                    serialisable[k] = v.tolist()
+                else:
+                    serialisable[k] = v
+            with open(cache_dir / f"{fp}.json", "w") as f:
+                json.dump(serialisable, f)
+
+        # ── Parallel variant execution ────────────────────────────────────
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        def _worker_init(c, cl, u, aw, ind, bc, cp, p):
+            global _WORKER_DATA
+            _WORKER_DATA = {
+                "cfg": c, "closes": cl, "universe": u, "adv_wide": aw,
+                "industry": ind, "book_capital": bc, "cost_params": cp,
+                "panel": p,
+            }
+
+        def _worker_task(args_tuple):
+            vs, nt = args_tuple
+            d = _WORKER_DATA
+            vr = _run_variant(
+                vs, d["closes"], d["universe"], d["adv_wide"],
+                d["industry"], d["book_capital"], d["cost_params"],
+                d["cfg"], panel=d["panel"], n_trials=nt,
+            )
+            return vr
+
+        # Build work list, skipping cached fingerprints.
+        work = []
+        skipped = 0
         for vs in registry:
-            try:
-                vr = _run_variant(vs, closes, universe, adv_wide, industry,
-                                  book_capital, cost_params, cfg, panel=panel)
-                variant_results.append(vr)
-            except Exception as e:
-                variant_results.append({"variant_id": vs.variant_id, "error": str(e)})
+            if not args.no_resume:
+                cached = _load_cache(vs.fingerprint)
+                if cached is not None:
+                    variant_results.append(cached)
+                    skipped += 1
+                    continue
+            work.append((vs, n_trials))
+
+        if skipped:
+            print(f"resumed {skipped} cached variants, {len(work)} to run",
+                  flush=True)
+
+        # Initialise results slots for remaining work.
+        result_offset = len(variant_results)
+        variant_results.extend([None] * len(work))
+
+        workers = min(args.workers, len(work)) if work else 1
+        t_start = time.time()
+        done_count = 0
+
+        if work:
+            with ProcessPoolExecutor(
+                max_workers=workers,
+                initializer=_worker_init,
+                initargs=(cfg, closes, universe, adv_wide, industry,
+                          book_capital, cost_params, panel),
+            ) as pool:
+                futures = {
+                    pool.submit(_worker_task, w): i
+                    for i, w in enumerate(work)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        vr = future.result()
+                    except Exception as e:
+                        vr = {"variant_id": work[idx][0].variant_id,
+                              "error": str(e)}
+                    variant_results[result_offset + idx] = vr
+                    # Checkpoint.
+                    if "error" not in vr and not args.no_resume:
+                        _save_cache(work[idx][0].fingerprint, vr)
+                    done_count += 1
+                    elapsed = time.time() - t_start
+                    rate = done_count / elapsed if elapsed > 0 else 0
+                    remaining = len(work) - done_count
+                    eta = remaining / rate if rate > 0 else 0
+                    print(f"  variant {done_count}/{len(work)} "
+                          f"({work[idx][0].variant_id}) "
+                          f"[{elapsed:.0f}s elapsed, ETA {eta:.0f}s]",
+                          flush=True)
+
+        # Sort results back into registry order (cache + parallel results).
+        # The cache-loaded results are already in order; parallel results
+        # fill the remaining slots.  Rebuild in registry order.
+        ordered_results = []
+        cache_idx = 0
+        par_idx = 0
+        for vs in registry:
+            if not args.no_resume and cache_idx < skipped:
+                ordered_results.append(variant_results[cache_idx])
+                cache_idx += 1
+            else:
+                ordered_results.append(variant_results[result_offset + par_idx])
+                par_idx += 1
+        variant_results = ordered_results
 
         # ── Rank IC per factor model (baseline variants) ──────────────────
         rank_ic_results = {}
@@ -695,7 +820,8 @@ def main() -> None:
 
 
 def _run_variant(variant_spec, closes, universe, adv_wide, industry,
-                 book_capital, cost_params, cfg, panel=None):
+                 book_capital, cost_params, cfg, panel=None,
+                 n_trials=None):
     """Run a single variant for the robustness suite."""
     from strategies.robustness import build_variant_registry, remove_top_pnl_contributors
     from strategies.universe import screen_universe
@@ -722,7 +848,8 @@ def _run_variant(variant_spec, closes, universe, adv_wide, industry,
         univ_sub = screen_universe(
             panel[["symbol", "event_date", "dollar_volume"]], n=universe_size,
         )
-        closes_sub = closes[closes["symbol"].isin(set(univ_sub["symbol"]))].copy()
+        keep_syms = set(univ_sub["symbol"]) | FACTOR_INSTRUMENTS
+        closes_sub = closes[closes["symbol"].isin(keep_syms)].copy()
     else:
         univ_sub = universe[universe["adv_rank"] <= universe_size].copy()
         closes_sub = closes
@@ -732,7 +859,8 @@ def _run_variant(variant_spec, closes, universe, adv_wide, industry,
                         pca_components=pca_components,
                         min_obs_fraction=min_obs_fraction)
     beta_mkt = sig.get("beta_mkt")
-    n_trials = len(build_variant_registry(cfg))
+    if n_trials is None:
+        n_trials = len(build_variant_registry(cfg))
 
     # Handle top-P&L contributor removal.
     if drop_top > 0:
