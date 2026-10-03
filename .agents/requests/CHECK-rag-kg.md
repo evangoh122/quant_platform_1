@@ -76,3 +76,19 @@ Verify:
 
 Re-run the earlier checks (PIT, restatements, IDs, `query_sec_facts` security, ontology alignment).
 Write `.agents/deepseek/VERDICT-rag-kg-check3.md`.
+
+## Re-check after round 4 (this run)
+Round 4 reads every Spark timestamp via `unix_timestamp`, then `fromtimestamp(..., tz=utc)`, in all
+`SparkGraphStore` methods, including inside the provenance struct array. The new tests instantiate
+the real `SparkGraphStore` with fake rows carrying naive local-time datetimes (UTC+8) and correct
+epochs. Claude: `tests/rag` passes 382; the KG tests pass under `TZ=Asia/Singapore` and
+`TZ=America/New_York`.
+
+Verify:
+- no naive datetime ever reaches `ensure_utc`;
+- the epoch path is used for EVERY timestamp column (top-level and nested);
+- `get_fact` / `facts_timeseries` / `neighbors` return results through `SparkGraphStore` with the
+  correct UTC values and PIT filtering;
+- re-run the earlier checks.
+
+If nothing is blocking, say APPROVED. Write `.agents/deepseek/VERDICT-rag-kg-check4.md`.
