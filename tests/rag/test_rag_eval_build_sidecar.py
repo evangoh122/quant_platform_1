@@ -66,7 +66,7 @@ class TestBuildSidecar:
         out_path = tmp_path / "sidecar.npz"
 
         with pytest.raises(ValueError, match="does not match"):
-            build_sidecar(npy_path, ids_path, corpus_path, out_path)
+            build_sidecar(npy_path, ids_path, corpus_path, out_path, model_name="test-model")
 
     def test_build_sidecar_from_npy_ids(self, tmp_path):
         """Build sidecar from .npy embeddings and .npy IDs."""
@@ -87,7 +87,7 @@ class TestBuildSidecar:
 
         out_path = tmp_path / "sidecar.npz"
 
-        build_sidecar(npy_path, ids_path, corpus_path, out_path)
+        build_sidecar(npy_path, ids_path, corpus_path, out_path, model_name="test-model")
 
         data = np.load(str(out_path), allow_pickle=False)
         assert len(data["embeddings"]) == 2
@@ -116,10 +116,11 @@ class TestBuildSidecar:
 
         out_path = tmp_path / "sidecar.npz"
 
-        build_sidecar(npy_path, ids_path, corpus_path, out_path, normalized=True)
+        build_sidecar(npy_path, ids_path, corpus_path, out_path, normalized=True, model_name="BAAI/bge-small-en-v1.5")
 
         # Load with adapter
         adapter = JsonlCorpusAdapter.from_files(corpus_path, out_path)
         assert len(adapter.records()) == 2
         assert adapter.has_embeddings
         assert adapter.embedding_dimension == 384
+        assert adapter.embedding_model_name == "BAAI/bge-small-en-v1.5"

@@ -373,6 +373,19 @@ def aggregate_results(
             "abstention_label": ir.abstention_label,
         }
 
+    # Per-mode metrics with n_evaluated and n_errors
+    per_mode: dict[str, dict[str, Any]] = {}
+    modes = sorted(set(ir.config.mode for ir in item_results))
+    for mode in modes:
+        mode_items = [ir for ir in item_results if ir.config.mode == mode]
+        mode_answerable = [ir for ir in mode_items if ir.item.item_type == "answerable"]
+        n_evaluated = sum(1 for ir in mode_items if not ir.error)
+        n_errors = sum(1 for ir in mode_items if ir.error)
+        mode_metrics: dict[str, Any] = _avg_metrics(mode_answerable, metric_names)
+        mode_metrics["n_evaluated"] = n_evaluated
+        mode_metrics["n_errors"] = n_errors
+        per_mode[mode] = mode_metrics
+
     # Leakage
     leakage_total = sum(ir.leakage_count for ir in item_results)
     leakage_by_config: dict[str, int] = {}
@@ -384,6 +397,7 @@ def aggregate_results(
         "overall": overall,
         "per_type": per_type,
         "per_ticker": per_ticker,
+        "per_mode": per_mode,
         "secondary": _avg_metrics(answerable, [n for n in metric_names if "_section" in n]),
         "bootstrap": bootstrap,
         "abstention": abstention,

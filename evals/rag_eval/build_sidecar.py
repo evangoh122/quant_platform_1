@@ -84,10 +84,17 @@ def build_sidecar(
         ids_path: Path to chunk IDs (.npy or .txt).
         corpus_path: Path to corpus JSONL (for hash validation).
         out_path: Output .npz path.
-        model_name: Embedding model name (optional metadata).
+        model_name: Embedding model name (required metadata for stored-model check).
         dim: Embedding dimension (required for raw .f32 files).
         normalized: Whether embeddings are L2-normalized.
     """
+    if not model_name:
+        raise ValueError(
+            "model_name is required. The embedding model name must be recorded "
+            "in the sidecar for the stored-model check in vector_search to work. "
+            "Example: --model BAAI/bge-small-en-v1.5"
+        )
+
     embeddings = _load_embeddings(npy_path, dim)
     chunk_ids = _load_ids(ids_path)
     corpus_sha = _compute_corpus_sha(corpus_path)

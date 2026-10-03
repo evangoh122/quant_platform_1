@@ -121,6 +121,21 @@ def render_markdown(report: dict[str, Any]) -> str:
                     lines.append(f"| {k} | {v} |")
             lines.append("")
 
+    # Per-mode metrics
+    per_mode = report.get("per_mode_metrics", {})
+    if per_mode:
+        lines.append("## Per-Mode Metrics\n")
+        lines.append("| Mode | n_evaluated | n_errors | recall@5 | MRR@10 | nDCG@10 |")
+        lines.append("|------|-------------|----------|----------|--------|---------|")
+        for mode, metrics in sorted(per_mode.items()):
+            ne = metrics.get("n_evaluated", 0)
+            nerr = metrics.get("n_errors", 0)
+            r5 = metrics.get("recall_at_5", 0.0)
+            mrr = metrics.get("mrr_at_10", 0.0)
+            ndcg = metrics.get("ndcg_at_10", 0.0)
+            lines.append(f"| {mode} | {ne} | {nerr} | {r5:.4f} | {mrr:.4f} | {ndcg:.4f} |")
+        lines.append("")
+
     # Bootstrap CIs
     bootstrap = report.get("bootstrap_cis", {})
     if bootstrap:

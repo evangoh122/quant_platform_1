@@ -262,6 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         overall_metrics=agg["overall"],
         per_type_metrics=agg["per_type"],
         per_ticker_metrics=agg["per_ticker"],
+        per_mode_metrics=agg.get("per_mode", {}),
         secondary_metrics=agg["secondary"],
         bootstrap_cis=agg["bootstrap"],
         abstention_results=agg["abstention"],
@@ -280,11 +281,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  Markdown: {md_path}")
 
     # Print summary
+    error_count = sum(1 for ir in item_results if ir.error)
+    total_items = len(item_results)
+    n_evaluated = total_items - error_count
+
+    pit_status = "PASS"
+    if error_count:
+        pit_status = "INCOMPLETE"
+    elif pit_leakage_total > 0:
+        pit_status = "FAIL"
+
     print(f"\n{'='*60}")
-    print(f"  PIT Leakage: {pit_leakage_total} {'PASS' if pit_leakage_total == 0 else 'FAIL'}")
+    print(f"  Items: {total_items} total, {n_evaluated} evaluated, {error_count} errors")
+    print(f"  PIT Leakage: {pit_leakage_total} {pit_status}")
     print(f"  Overall recall@5: {agg['overall'].get('recall_at_5', 0):.4f}")
     print(f"  Overall MRR@10: {agg['overall'].get('mrr_at_10', 0):.4f}")
     print(f"  Overall nDCG@10: {agg['overall'].get('ndcg_at_10', 0):.4f}")
+
+    # Per-mode summary
+    per_mode = agg.get("per_mode", {})
+    if per_mode:
+        print(f"\n  Per-mode breakdown:")
+        for mode, mode_agg in sorted(per_mode.items()):
+            me = mode_agg.get("n_evaluated", 0)
+            merr = mode_agg.get("n_errors", 0)
+            mr5 = mode_agg.get("recall_at_5", 0.0)
+            print(f"    {mode}: n_evaluated={me}, n_errors={merr}, recall@5={mr5:.4f}")
+
     print(f"{'='*60}")
 
     # Exit nonzero for any failure condition
@@ -292,8 +315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("FAIL: PIT leakage detected", file=sys.stderr)
         return 1
 
-    # Check for errors in item results
-    error_count = sum(1 for ir in item_results if ir.error)
+    # Check for errors in item results — any error makes the run FAIL
     if error_count:
         print(f"FAIL: {error_count} item(s) had errors", file=sys.stderr)
         return 1

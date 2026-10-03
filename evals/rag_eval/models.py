@@ -146,6 +146,7 @@ class RunReport:
     overall_metrics: dict[str, Any] = field(default_factory=dict)
     per_type_metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
     per_ticker_metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
+    per_mode_metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
     secondary_metrics: dict[str, Any] = field(default_factory=dict)
     bootstrap_cis: dict[str, Any] = field(default_factory=dict)
     abstention_results: dict[str, Any] = field(default_factory=dict)

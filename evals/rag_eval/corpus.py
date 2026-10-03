@@ -167,7 +167,7 @@ class JsonlCorpusAdapter:
 
     @property
     def corpus_sha256(self) -> str:
-        return self._corpus_sha56 if hasattr(self, '_corpus_sha56') else self._corpus_sha256
+        return self._corpus_sha256
 
     @property
     def has_embeddings(self) -> bool:
@@ -237,6 +237,14 @@ def _load_npz_sidecar(
         raise ValueError(
             f"Corpus hash mismatch: sidecar was built for corpus "
             f"{manifest_corpus_hash[:12]}..., current corpus is {corpus_sha[:12]}...."
+        )
+
+    # Validate model name is present — required for the stored-model check
+    # in vector_search to work correctly.
+    if not manifest_model:
+        raise ValueError(
+            "Embedding sidecar is missing 'embedding_model' metadata. "
+            "Rebuild the sidecar with --model set to the embedding model name."
         )
 
     # Build mapping
