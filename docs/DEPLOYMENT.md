@@ -313,9 +313,9 @@ To rollback: select a previous deploy in the Render dashboard and click
 This service must not be made public until the following Lane B and Lane C
 gates are complete:
 
-- **Lane B** (R2–R5): demo-mode access control, write-surface removal, startup
-  secret checks, and snapshot reader validation.
-- **Lane C** (R6–R7): snapshot export tooling and abuse controls.
+- **Lane B** (R2, R3, R4, R7; PR #21): demo-mode access control, write-surface
+  removal, startup secret checks, and abuse controls (rate limits, headers).
+- **Lane C** (R5, R6): snapshot reader validation and snapshot export tooling.
 
 Without these gates, the service would expose write endpoints and trust
 spoofed identity headers.
