@@ -90,3 +90,17 @@ MiMo round 5 (commit cc2f9e0):
 Verify both check4 findings with proofs. Then do a final full pass over EVERY report quantity: is
 each one computed, on the right quantity, without look-ahead, and like-for-like? If everything
 passes, say so explicitly. Write `.agents/deepseek/VERDICT-strategy-robustness-check5.md`.
+
+## Re-check after round 6 (this run)
+Codex's review (`.agents/codex/VERDICT-strategy-robustness.md`) found:
+- PCA loadings depending on day-t availability (look-ahead);
+- an ineffective unused-`compute_*` guard;
+- no PCA K validation.
+
+MiMo round 6 claims to fix all three. Verify with proofs:
+- a day-t NaN or huge value leaves the day-t loadings identical;
+- the AST guard fails on an added unused import;
+- K outside [10, 15] raises.
+
+Re-run the full pass on the report quantities. Write
+`.agents/deepseek/VERDICT-strategy-robustness-check6.md`.
