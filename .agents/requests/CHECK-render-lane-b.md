@@ -137,3 +137,20 @@ Re-verify your check6 attack:
 - the docs carry the post-deploy verification steps.
 
 Re-run all earlier attacks. Write `.agents/deepseek/VERDICT-render-lane-b-check7.md`.
+
+## Re-check after round 9 (this run)
+Codex's review 3 (`.agents/codex/VERDICT-render-lane-b-3.md`): two MEDIUM findings. MiMo round 9
+(commit d7cfc1c) adds opt-in `RATE_LIMIT_DEBUG` with redacted keys, plus more secret patterns
+(`AUTHORIZATION`, `*_COOKIE`, `*_CERT`, `*_ACCESS_KEY_ID`, sensitive URL query params).
+
+Claude's check:
+- `CUSTOM_URL=https://h/p?token=s` → refuses to start;
+- `DOCS_URL=https://h/p?page=2` → starts.
+
+Verify:
+- the debug log never emits a full IP or header value, and is off by default;
+- the query-param detection (case, encoding, fragments, multiple params), with no false positives on
+  Render defaults;
+- re-run earlier attacks.
+
+Write `.agents/deepseek/VERDICT-render-lane-b-check8.md`.
