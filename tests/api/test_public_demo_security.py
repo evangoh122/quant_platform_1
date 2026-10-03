@@ -634,6 +634,205 @@ def test_limiter_key_count_never_exceeds_cap(monkeypatch):
     main_mod._limiter = main_mod._FixedWindowLimiter()
 
 
+# ── test 20: per-IP rejection does NOT consume global counter (round 4) ───────
+
+def test_per_ip_rejection_does_not_consume_global(monkeypatch):
+    """One IP exhausting its per-IP limit must NOT exhaust the global ceiling.
+
+    Regression for Codex finding #1: the global counter was incremented
+    before the per-IP check, so rejected per-IP requests still consumed
+    global capacity.  After the fix, only requests that pass the per-IP
+    check are charged against the global ceiling.
+    """
+    from api.main import _FixedWindowLimiter
+
+    # global_limit=20, per-IP limit=5.  Attacker sends 50 from one IP.
+    limiter = _FixedWindowLimiter(limit=5, window=60, global_limit=20, lru_max=100)
+
+    for _ in range(50):
+        allowed, _ = limiter.check("attacker")
+        # First 5 allowed, rest rejected — but none should charge global.
+        # (We don't assert here; we check the victim below.)
+
+    # Victim's first request must be allowed (global counter should be 5, not 51).
+    allowed, retry = limiter.check("victim")
+    assert allowed is True, (
+        f"victim's first request rejected — global counter was polluted; "
+        f"retry_after={retry}"
+    )
+
+
+# ── test 21: LRU bound actually bounds _counts (round 4) ─────────────────────
+
+def test_lru_bound_bounds_counts_structure(monkeypatch):
+    """With lru_max=5 and 1,000 distinct IPs, both key_count and the
+    internal _counts dict must stay ≤ 5.
+
+    Regression for Codex finding #2: evicting from _lru did not remove the
+    corresponding _counts entry, so _counts grew to 1,000 while key_count
+    reported 5.  After the fix there is one OrderedDict; eviction is atomic.
+    """
+    from api.main import _FixedWindowLimiter
+
+    limiter = _FixedWindowLimiter(limit=100, window=60, global_limit=99999, lru_max=5)
+
+    for i in range(1000):
+        ip = f"10.0.{i // 256}.{i % 256}"
+        limiter.check(ip)
+
+    assert limiter.key_count <= 5, f"key_count={limiter.key_count}, expected ≤ 5"
+    assert len(limiter._counts) <= 5, (
+        f"len(_counts)={len(limiter._counts)}, expected ≤ 5 — "
+        "LRU eviction did not remove counter entries"
+    )
+
+
+# ── test 22: broadened secret prefixes (round 4) ─────────────────────────────
+
+@pytest.mark.parametrize("key", [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AZURE_CLIENT_ID",
+    "AZURE_TENANT_ID",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GCP_PROJECT",
+    "GITHUB_TOKEN",
+    "GITHUB_PAT",
+    "GH_TOKEN",
+    "STRIPE_SECRET_KEY",
+    "STRIPE_APIKEY",
+    "SENTRY_DSN",
+    "SENTRY_AUTH_TOKEN",
+])
+def test_broadened_secret_prefixes_rejected(monkeypatch, key):
+    """New prefix families (AWS_, AZURE_, GOOGLE_, GCP_, GITHUB_, GH_,
+    STRIPE_, SENTRY_) reject non-empty values in demo mode."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+
+
+# ── test 23: broadened secret suffixes (round 4) ──────────────────────────────
+
+@pytest.mark.parametrize("key", [
+    "MYAPP_DSN",
+    "DATABASE_URI",
+    "SERVICE_PAT",
+    "VENDOR_APIKEY",
+    "APP_CREDENTIALS",
+    "RAILS_SECRET_KEY_BASE",
+])
+def test_broadened_secret_suffixes_rejected(monkeypatch, key):
+    """New suffix families (_DSN, _URI, _PAT, _APIKEY, _CREDENTIALS,
+    _KEY_BASE) reject non-empty values in demo mode."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+
+
+# ── test 24: broadened exact names (round 4) ──────────────────────────────────
+
+@pytest.mark.parametrize("key", [
+    "CREDENTIALS",
+    "REDIS_URL",
+    "MONGODB_URI",
+    "SECRET_KEY_BASE",
+])
+def test_broadened_exact_names_rejected(monkeypatch, key):
+    """New exact names (CREDENTIALS, REDIS_URL, MONGODB_URI,
+    SECRET_KEY_BASE) reject non-empty values in demo mode."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    assert "secret-value" not in str(exc_info.value)
+
+
+# ── test 25: URL with embedded credentials (round 4) ──────────────────────────
+
+@pytest.mark.parametrize("key,value", [
+    ("CUSTOM_URL", "postgres://user:pass@host/db"),
+    ("MY_SERVICE_URL", "https://admin:secret@example.com/api"),
+    ("DATA_URL", "mysql://root:password@db.internal:3306/main"),
+])
+def test_url_with_embedded_credentials_rejected(monkeypatch, key, value):
+    """Any *_URL whose value contains '@' or '://user:' is rejected
+    even if the key name doesn't match other secret patterns."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, value)
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+    # The URL value itself must not leak into the error.
+    assert value not in str(exc_info.value)
+
+
+# ── test 26: clean URL without credentials is allowed (round 4) ───────────────
+
+@pytest.mark.parametrize("key,value", [
+    ("API_URL", "https://api.example.com/v1"),
+    ("WEBHOOK_URL", "https://hooks.example.com/notify"),
+])
+def test_clean_url_without_credentials_allowed(monkeypatch, key, value):
+    """A *_URL without '@' or '://user:' is not rejected."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, value)
+
+    from api.demo import validate_public_demo_environment
+
+    # Must not raise.
+    validate_public_demo_environment()
+
+
+# ── test 27: Codex's specific examples all rejected (round 4) ─────────────────
+
+@pytest.mark.parametrize("key", [
+    "AWS_ACCESS_KEY_ID",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GITHUB_PAT",
+    "REDIS_URL",
+    "MONGODB_URI",
+    "SENTRY_DSN",
+    "STRIPE_APIKEY",
+    "SECRET_KEY_BASE",
+    "AZURE_CLIENT_ID",
+    "CREDENTIALS",
+])
+def test_codex_examples_all_rejected(monkeypatch, key):
+    """All examples from Codex's verdict are rejected."""
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "secret-value")
+
+    from api.demo import PublicDemoConfigurationError, validate_public_demo_environment
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        validate_public_demo_environment()
+
+    assert key in str(exc_info.value)
+
 # ── test 19: global rate ceiling ──────────────────────────────────────────────
 
 def test_global_rate_ceiling(monkeypatch):

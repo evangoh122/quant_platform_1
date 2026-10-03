@@ -58,15 +58,23 @@ _EXPLICIT_BROKER_KEYS = frozenset({
 })
 
 # Suffixes that indicate secrets.
-_SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_PASS", "_PWD")
+_SECRET_SUFFIXES = (
+    "_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_PASS", "_PWD",
+    "_DSN", "_URI", "_PAT", "_APIKEY", "_CREDENTIALS", "_KEY_BASE",
+)
 
 # Prefixes that indicate secrets.
 _SECRET_PREFIXES = (
     "PG", "POSTGRES_", "IBKR_", "POLYGON_", "OPENAI_", "ANTHROPIC_",
+    "AWS_", "AZURE_", "GOOGLE_", "GCP_", "GITHUB_", "GH_",
+    "STRIPE_", "SENTRY_",
 )
 
 # Exact names that are secrets.
-_SECRET_EXACT = frozenset({"DATABASE_URL", "HF_TOKEN"})
+_SECRET_EXACT = frozenset({
+    "DATABASE_URL", "HF_TOKEN",
+    "CREDENTIALS", "REDIS_URL", "MONGODB_URI", "SECRET_KEY_BASE",
+})
 
 # Render-injected env vars that are harmless and allowed.
 _RENDER_ALLOW_LIST = frozenset({
@@ -94,6 +102,9 @@ def _is_unsafe_key(key: str, value: str) -> bool:
     if any(key.startswith(p) for p in _SECRET_PREFIXES):
         return True
     if key in _SECRET_EXACT:
+        return True
+    # Any *_URL whose value contains embedded credentials.
+    if key.endswith("_URL") and ("@" in value or "://user:" in value):
         return True
     return False
 

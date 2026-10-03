@@ -17,7 +17,6 @@ import time
 import urllib.parse
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,37 +64,12 @@ def _normalize_api_path(path: str) -> str:
     return decoded.lower()
 
 
-class _LRUCache(OrderedDict):
-    """Simple LRU cache — evicts the oldest entry when capacity is exceeded."""
-
-    def __init__(self, maxsize: int = _LRU_MAX_KEYS):
-        super().__init__()
-        self._maxsize = maxsize
-
-    def __getitem__(self, key: str) -> Any:
-        self.move_to_end(key)
-        return super().__getitem__(key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        if len(self) > self._maxsize:
-            self.popitem(last=False)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        if key in self:
-            self.move_to_end(key)
-            return super().__getitem__(key)
-        return default
-
-
 class _FixedWindowLimiter:
     """Per-client-IP, bounded in-memory fixed-window rate limiter.
 
-    Tracks request counts in 60-second windows keyed by ``(ip, window_ts)``.
-    Old windows are evicted lazily on each request to bound memory.
-    Key count is bounded by an LRU cap.  Includes a global ceiling as a
+    Tracks request counts in 60-second windows keyed by IP.  Uses a single
+    ``OrderedDict`` so LRU eviction removes both the key and its counter —
+    no parallel dicts can drift apart.  Includes a global ceiling as a
     backstop.
 
     When ``is_render`` is True, the client IP is extracted from the
@@ -113,16 +87,18 @@ class _FixedWindowLimiter:
         self._limit = limit
         self._window = window
         self._global_limit = global_limit
-        self._counts: dict[tuple[str, int], int] = {}
+        self._maxsize = lru_max
+        self._counts: OrderedDict[str, tuple[int, int]] = OrderedDict()
         self._global_counts: dict[int, int] = {}
-        self._lru: _LRUCache[str, None] = _LRUCache(maxsize=lru_max)
         self._last_cleanup = time.monotonic()
 
     def _cleanup(self, now: float) -> None:
         if now - self._last_cleanup < self._window:
             return
         cutoff = int(now) - self._window * 2
-        self._counts = {k: v for k, v in self._counts.items() if k[1] > cutoff}
+        to_remove = [ip for ip, (w, _) in self._counts.items() if w <= cutoff]
+        for ip in to_remove:
+            del self._counts[ip]
         self._global_counts = {k: v for k, v in self._global_counts.items() if k > cutoff}
         self._last_cleanup = now
 
@@ -132,31 +108,38 @@ class _FixedWindowLimiter:
         self._cleanup(now)
         window_ts = int(now) // self._window
 
-        # Global ceiling check.
+        # ── Per-IP check first (LRU-bounded). ────────────────────────────
+        if ip in self._counts:
+            stored_window, count = self._counts[ip]
+            if stored_window == window_ts:
+                if count >= self._limit:
+                    return False, self._window - (int(now) % self._window)
+                self._counts[ip] = (window_ts, count + 1)
+            else:
+                self._counts[ip] = (window_ts, 1)
+            self._counts.move_to_end(ip)
+        else:
+            self._counts[ip] = (window_ts, 1)
+            if len(self._counts) > self._maxsize:
+                self._counts.popitem(last=False)
+
+        # ── Global ceiling (only charged for requests that pass per-IP). ─
         self._global_counts[window_ts] = self._global_counts.get(window_ts, 0) + 1
         if self._global_counts[window_ts] > self._global_limit:
             return False, self._window - (int(now) % self._window)
 
-        # Per-IP check with LRU-bounded key set.
-        key = (ip, window_ts)
-        if ip not in self._lru:
-            self._lru[ip] = None
-        self._counts[key] = self._counts.get(key, 0) + 1
-        if self._counts[key] > self._limit:
-            return False, self._window - (int(now) % self._window)
         return True, 0
 
     def reset(self) -> None:
         """Reset all counters (for testing)."""
         self._counts.clear()
         self._global_counts.clear()
-        self._lru.clear()
         self._last_cleanup = time.monotonic()
 
     @property
     def key_count(self) -> int:
         """Number of distinct IP keys currently tracked."""
-        return len(self._lru)
+        return len(self._counts)
 
 
 _limiter = _FixedWindowLimiter()
