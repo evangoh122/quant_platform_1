@@ -282,6 +282,15 @@ def compute_pca_residuals(
     on the lagged factor scores; apply those frozen quantities to day *t* to
     produce its residual.  No fitting or imputation uses day *t* values.
 
+    **Fit-tolerance design choice:** Unlike the OLS path which applies
+    ``min_obs`` to tolerate per-symbol gaps within the training window, the
+    PCA path requires a *full* window per symbol (``train_slice.notna().all``).
+    This is intentional — Ledoit-Wolf shrinkage estimation of the covariance
+    matrix needs complete observations.  Symbols with any NaN in
+    ``[t-window, t-1]`` are excluded from the fit for that date.  The
+    ``min_obs`` parameter here controls only the trailing residual volatility
+    (sigma) computation, matching the OLS path's tolerance.
+
     Returns a dict of wide frames: ``residual``, ``sigma``, ``s_score``, plus
     inspectable lagged ``loadings`` (long frame: date, symbol, component,
     loading) and factor diagnostics.
@@ -387,7 +396,7 @@ def compute_pca_residuals(
             loadings_j = coef[1:]  # (K,)
             # Predicted return on day t (using frozen loadings and frozen factor projection).
             predicted = intercept + day_t_factors @ loadings_j if K > 0 else intercept
-            residual.iloc[t, j] = day_t_sym[j] - (predicted * scales[j] + means[j])
+            residual.loc[dates[t], sym] = day_t_sym[j] - (predicted * scales[j] + means[j])
 
             # Store loadings for inspection.
             for k in range(K):

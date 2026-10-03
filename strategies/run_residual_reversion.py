@@ -593,6 +593,7 @@ def main() -> None:
 
                 # OOS drop-3 NET: run actual backtest on trimmed universe.
                 oos_drop3 = oos_full.copy()  # fallback
+                drop3_failed = None
                 if top3 and panel is not None:
                     keep = [s for s in univ_sub["symbol"] if s not in set(top3)]
                     univ_trim = univ_sub[univ_sub["symbol"].isin(keep)].copy()
@@ -612,14 +613,15 @@ def main() -> None:
                             execution_lag_bars=execution_lag_bars,
                         )
                         oos_drop3 = res_trim["net"].reindex(common_val).dropna()
-                    except Exception:
-                        pass  # fall back to full OOS
+                    except Exception as exc:
+                        drop3_failed = f"drop3 failed: {type(exc).__name__}"
 
                 fold_results.append({
                     "fold": fold_i,
                     "dropped": top3,
                     "oos_sharpe": _sharpe(oos_full),
-                    "oos_sharpe_drop3": _sharpe(oos_drop3),
+                    "oos_sharpe_drop3": _sharpe(oos_drop3) if drop3_failed is None else None,
+                    "drop3_error": drop3_failed,
                 })
             drop_top3_results[h] = {
                 "folds": fold_results,

@@ -205,8 +205,8 @@ def remove_top_pnl_contributors(
 ) -> dict:
     """Identify top *n_remove* P&L contributors and recompute without them.
 
-    Uses executed/lagged weights and allocated costs.  No future information
-    is fed back into the original strategy.
+    Uses executed/lagged weights and gross P&L (weights × returns, no cost
+    allocation).  No future information is fed back into the original strategy.
     """
     # Per-symbol total realized net P&L contribution.
     pnl_by_sym = (weights.shift(1).fillna(0.0) * returns).sum()
@@ -731,13 +731,16 @@ def render_robustness_report(
             L.append("")
             fold_rows = d3.get("folds", [])
             if fold_rows:
-                L.append("| fold | dropped symbols | OOS Sharpe (full) | OOS Sharpe (drop3) |")
-                L.append("|---|---|---:|---:|")
+                L.append("| fold | dropped symbols | OOS Sharpe (full) | OOS Sharpe (drop3) | note |")
+                L.append("|---|---|---:|---:|---|")
                 for fr in fold_rows:
                     ds = ", ".join(fr["dropped"]) if fr["dropped"] else "none"
+                    drop3_val = fr.get("oos_sharpe_drop3")
+                    drop3_str = f"{drop3_val:.3f}" if drop3_val is not None else "n/a"
+                    note = fr.get("drop3_error", "")
                     L.append(
                         f"| {fr['fold']} | {ds} | "
-                        f"{fr['oos_sharpe']:.3f} | {fr['oos_sharpe_drop3']:.3f} |"
+                        f"{fr['oos_sharpe']:.3f} | {drop3_str} | {note} |"
                     )
                 all_dropped = d3.get("all_dropped_symbols", [])
                 if all_dropped:
