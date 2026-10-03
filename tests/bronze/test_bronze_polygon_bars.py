@@ -9,11 +9,19 @@ These tests verify that the ETL correctly:
 - Respects rate limiting between API calls
 """
 import pytest
-from unittest.mock import MagicMock, patch
-from datetime import datetime, timezone
+from etl.extract_polygon import _ms_to_iso, _polygon_ticker
 
-from etl.extract_polygon import run_polygon_bars_etl, _ms_to_iso, _polygon_ticker
-from db.database import get_connection
+try:
+    from unittest.mock import MagicMock, patch
+    from datetime import datetime, timezone
+    from etl.extract_polygon import run_polygon_bars_etl
+    from db.database import get_connection
+    _HAS_DB = True
+except ImportError:
+    _HAS_DB = False
+
+
+requires_db = pytest.mark.skipif(not _HAS_DB, reason="db.database (DuckDB) removed; Delta is the store")
 
 
 @pytest.fixture
@@ -34,6 +42,7 @@ def mock_aggs():
     return bars
 
 
+@requires_db
 def test_polygon_bars_writes_raw_rows(tmp_db, mock_aggs):
     """Verify bars are inserted into polygon_bars table."""
     client = MagicMock()
@@ -55,6 +64,7 @@ def test_polygon_bars_writes_raw_rows(tmp_db, mock_aggs):
         assert rows[0][3] == 100.0  # open
 
 
+@requires_db
 def test_polygon_bars_upsert_deduplication(tmp_db, mock_aggs):
     """Verify INSERT OR IGNORE deduplicates on (ticker, ts, timespan)."""
     client = MagicMock()
@@ -86,6 +96,7 @@ def test_polygon_bars_ms_to_iso_none():
     assert _ms_to_iso(None) is None
 
 
+@requires_db
 def test_polygon_bars_handles_null_fields(tmp_db):
     """Verify bars with missing fields write NULL correctly."""
     client = MagicMock()
@@ -117,6 +128,7 @@ def test_polygon_bars_handles_null_fields(tmp_db):
         assert row[5] == 95.0   # low
 
 
+@requires_db
 def test_polygon_bars_multiple_tickers(tmp_db, mock_aggs):
     """Verify bars are written for multiple tickers."""
     client = MagicMock()
@@ -139,6 +151,7 @@ def test_polygon_bars_multiple_tickers(tmp_db, mock_aggs):
         assert msft == 5
 
 
+@requires_db
 def test_polygon_bars_api_failure_continues(tmp_db):
     """Verify ETL continues to next ticker if one fails."""
     client = MagicMock()
@@ -165,6 +178,7 @@ def test_polygon_bars_api_failure_continues(tmp_db):
         assert rows[0][0] == "OK"
 
 
+@requires_db
 def test_polygon_bars_cash_ticker_conversion(tmp_db, mock_aggs):
     """Verify CASH tickers convert to polygon format (C:EURUSD)."""
     client = MagicMock()
@@ -180,6 +194,7 @@ def test_polygon_bars_cash_ticker_conversion(tmp_db, mock_aggs):
     assert call_args[0][0] == "C:EURUSD"
 
 
+@requires_db
 def test_polygon_bars_ind_ticker_conversion(tmp_db, mock_aggs):
     """Verify IND tickers convert to polygon format (I:SPX)."""
     client = MagicMock()

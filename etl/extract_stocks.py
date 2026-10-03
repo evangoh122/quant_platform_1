@@ -8,8 +8,18 @@ from typing import List
 
 from loguru import logger
 
-from db.database import get_connection
 from etl.ibkr_client import IBKRClient
+
+
+def _get_connection():
+    try:
+        from db.database import get_connection
+    except ImportError:
+        raise RuntimeError(
+            "DuckDB local store was retired; production ingestion writes Delta "
+            "via notebooks/01_ingest_market_data.py"
+        )
+    return get_connection()
 from etl.utils import utcnow as _utcnow
 
 
@@ -72,7 +82,7 @@ def run_stock_etl(client: IBKRClient, tickers: List[dict]) -> int:
         logger.warning("No stock data received from TWS")
         return 0
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         conn.executemany("""
             INSERT INTO stock_quotes
                 (ticker, ts, bid, ask, last, close, volume, open, high, low, vwap)

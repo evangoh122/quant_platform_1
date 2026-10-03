@@ -2,8 +2,9 @@
 tests/test_extract_options.py
 Tests for option chain refresh and option quote extraction.
 """
-import threading
 import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
+import threading
 from unittest.mock import MagicMock
 from db.database import get_connection
 from etl.extract_options import refresh_option_chains, run_option_etl

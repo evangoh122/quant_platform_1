@@ -2,8 +2,9 @@
 tests/test_extract_stocks.py
 Tests for stock quote ETL.
 """
-import threading
 import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
+import threading
 from unittest.mock import MagicMock
 from db.database import get_connection
 from etl.extract_stocks import run_stock_etl

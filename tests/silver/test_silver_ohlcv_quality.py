@@ -10,6 +10,7 @@ These tests verify that:
 - Schema consistency between polygon_bars and polygon_option_bars
 """
 import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
 from datetime import datetime, timezone
 
 from db.database import get_connection

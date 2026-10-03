@@ -6,7 +6,16 @@ Pulls Legacy (Futures Only) reports.
 import requests
 from loguru import logger
 from typing import Optional
-from db.database import get_connection
+def _get_connection():
+    try:
+        from db.database import get_connection
+    except ImportError:
+        raise RuntimeError(
+            "DuckDB local store was retired; production ingestion writes Delta "
+            "via notebooks/01_ingest_market_data.py"
+        )
+    return get_connection()
+
 
 _BASE_URL = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"
 
@@ -119,7 +128,7 @@ def run_cot_etl(limit: int = 2000) -> int:
         logger.warning("No COT rows found in API response")
         return 0
 
-    conn = get_connection()
+    conn = _get_connection()
     try:
         # Use INSERT OR IGNORE to handle duplicates (market_name + report_date UNIQUE constraint)
         conn.executemany("""
