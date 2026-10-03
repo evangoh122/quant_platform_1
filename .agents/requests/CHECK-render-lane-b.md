@@ -61,3 +61,24 @@ Codex's review (`.agents/codex/VERDICT-render-lane-b.md`) found 2 limiter defect
 
 Re-run your earlier attacks to confirm nothing regressed. Write
 `.agents/deepseek/VERDICT-render-lane-b-check3.md`.
+
+## Re-check after round 5 (this run)
+MiMo round 5 (commit 04a960a) fixes your CRITICAL SPA path traversal and rate-limits every request.
+Claude's check against a real uvicorn with a stub dist and a secret file outside it:
+`/../secret.txt`, `/%2e%2e/secret.txt`, `/%2e%2e%2fsecret.txt`, `/..%2fsecret.txt` and
+`/%2e%2e/.../etc/passwd` all return `index.html`; `/assets/../../secret.txt` returns 404.
+
+Attack it again:
+- double encoding;
+- overlong UTF-8;
+- backslashes;
+- NUL bytes;
+- symlinks inside dist;
+- case and Unicode normalisation;
+- very long paths;
+- `/assets` mount edge cases;
+- HEAD requests.
+
+Confirm the global rate limit now covers static requests without breaking the Render health check.
+Re-run your earlier attacks to confirm nothing regressed. Write
+`.agents/deepseek/VERDICT-render-lane-b-check4.md`.
