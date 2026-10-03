@@ -2,7 +2,7 @@
 
 Commit 08fed84 makes `api/config.py` the single source of truth for the HF embedding model and the
 embedding dimension. This addresses the Codex review in `.agents/codex/VERDICT-post-merge-coderabbit.md`.
-Read-only. Write `.agents/deepseek/VERDICT-post-merge-round2.md` (===VERDICT START/END===, Status).
+Read-only. Write `.agents/deepseek/VERDICT-post-merge-round3.md` (===VERDICT START/END===, Status).
 
 Check:
 - Is there one source of truth now? `embeddings.py`, `hybrid_retriever.EMBEDDING_DIM` and
@@ -16,3 +16,10 @@ Check:
 
 Run, both with and without pyspark and databricks.connect hidden:
 `python3 -m pytest -q -p no:cacheprovider tests/rag tests/test_schema_env_override.py`
+
+## Re-check after round 3 (this run)
+Commit 792e746 validates the query dimension against the STORED index dimension, checks the stored
+model name, and restores the sentence-transformers default to bge-small (384). Re-verify your blocking
+finding: `EMBEDDING_PROVIDER=sentence_transformers` with a 1024-d model against the 384-d index →
+`retrieval_unavailable`, not `substring_fallback`. Mixed stored dimensions → unavailable.
+Write `.agents/deepseek/VERDICT-post-merge-round3.md`.
