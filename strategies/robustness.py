@@ -334,11 +334,13 @@ def compute_capacity(
     # Minimum finite constraint across all dates/symbols.
     finite_caps = caps.values[np.isfinite(caps.values)]
     min_cap = float(np.min(finite_caps)) if len(finite_caps) > 0 else float("nan")
+    p5 = float(np.percentile(finite_caps, 5)) if len(finite_caps) > 0 else float("nan")
     p10 = float(np.percentile(finite_caps, 10)) if len(finite_caps) > 0 else float("nan")
     p50 = float(np.percentile(finite_caps, 50)) if len(finite_caps) > 0 else float("nan")
 
     return {
         "min_capacity": min_cap,
+        "p5_capacity": p5,
         "p10_capacity": p10,
         "p50_capacity": p50,
     }
@@ -401,12 +403,15 @@ def compute_rank_ic(
     t_stat = mean / (std / np.sqrt(len(ic_series))) if len(ic_series) > 1 and std > 0 else float("nan")
     sign = "negative (expected under mean reversion)" if mean < 0 else "positive"
 
+    hit_rate = float((ic_series < 0).sum() / len(ic_series)) if len(ic_series) > 0 else float("nan")
+
     return {
         "mean_ic": mean,
         "std_ic": std,
         "t_stat": t_stat,
         "n": len(ic_values),
         "sign": sign,
+        "hit_rate": hit_rate,
     }
 
 
@@ -483,6 +488,8 @@ def render_robustness_report(
     n_trials: int,
     executed_trials: int,
     splits: Optional[list] = None,
+    rank_ic_results: Optional[Mapping[str, dict]] = None,
+    drop_top3_results: Optional[Mapping[int, dict]] = None,
 ) -> str:
     """Render the full robustness report in Markdown.
 
@@ -521,6 +528,13 @@ def render_robustness_report(
     L.append(f"- Total registry size (all unique configurations): **{n_trials}**")
     L.append(f"- Executed trials in this run: **{executed_trials}**")
     L.append("")
+
+    # Resolve the first valid baseline variant once for reuse.
+    baseline_vr = None
+    for vr in variant_results:
+        if "error" not in vr:
+            baseline_vr = vr
+            break
 
     # ── Helper: extract per-variant metrics ───────────────────────────────
     def _variant_metrics(vr: dict) -> dict:
@@ -667,16 +681,33 @@ def render_robustness_report(
         )
     L.append("")
 
+    # ── Per-fold drop-top-3 analysis (training-window P&L only) ──────────
+    if drop_top3_results:
+        for h, d3 in sorted(drop_top3_results.items()):
+            L.append(f"### Drop-top-3 (max_hold={h}, training-window P&L)")
+            L.append("")
+            fold_rows = d3.get("folds", [])
+            if fold_rows:
+                L.append("| fold | dropped symbols | OOS Sharpe (full) | OOS Sharpe (drop3) |")
+                L.append("|---|---|---:|---:|")
+                for fr in fold_rows:
+                    ds = ", ".join(fr["dropped"]) if fr["dropped"] else "none"
+                    L.append(
+                        f"| {fr['fold']} | {ds} | "
+                        f"{fr['oos_sharpe']:.3f} | {fr['oos_sharpe_drop3']:.3f} |"
+                    )
+                all_dropped = d3.get("all_dropped_symbols", [])
+                if all_dropped:
+                    L.append("")
+                    L.append(f"Symbols dropped in ≥1 fold: {', '.join(sorted(set(all_dropped)))}")
+            else:
+                L.append("_No baseline variant available for this hold period._")
+            L.append("")
+
     # ── Walk-forward folds table ──────────────────────────────────────────
     L.append("## Walk-forward folds")
     L.append("")
     if splits is not None and len(splits) > 0:
-        # Use the first baseline variant's net returns for fold metrics.
-        baseline_vr = None
-        for vr in variant_results:
-            if "error" not in vr:
-                baseline_vr = vr
-                break
         if baseline_vr is not None:
             fold_metrics = compute_fold_metrics(baseline_vr["net"], splits)
             min_profitable = robustness_cfg.get("min_profitable_folds", 3)
@@ -697,15 +728,11 @@ def render_robustness_report(
     # ── Exposures table ───────────────────────────────────────────────────
     L.append("## Exposures (baseline)")
     L.append("")
-    baseline_vr = None
-    for vr in variant_results:
-        if "error" not in vr:
-            baseline_vr = vr
-            break
     if baseline_vr is not None:
         weights = baseline_vr.get("weights", pd.DataFrame())
-        beta = None  # beta not stored in variant result
-        exp = compute_exposures(weights, beta=beta, industry=None)
+        beta = baseline_vr.get("beta_mkt")
+        ind = baseline_vr.get("industry")
+        exp = compute_exposures(weights, beta=beta, industry=ind)
         L.append("| metric | value |")
         L.append("|---|---:|")
         L.append(f"| max |dollar exposure| | {exp['max_abs_dollar_exposure']:.4f} |")
@@ -730,6 +757,30 @@ def render_robustness_report(
         L.append("|---|---:|")
         L.append(f"| avg daily turnover | {turnover.mean():.4f} |")
         L.append(f"| margin (bps) | {margin:.1f} |")
+        weights_cap = baseline_vr.get("weights", pd.DataFrame())
+        adv_cap = baseline_vr.get("adv_wide")
+        if not weights_cap.empty and adv_cap is not None:
+            cap = compute_capacity(weights_cap, adv_cap, book_capital=1.0)
+            L.append(f"| capacity p50 (median) | ${cap['p50_capacity']:,.0f} |")
+            L.append(f"| capacity p5 | ${cap['p5_capacity']:,.0f} |")
+            # Compute book size at which cap binds on >X% of trades.
+            dw = weights_cap.diff().abs()
+            dw.iloc[0] = weights_cap.iloc[0].abs()
+            adv_a = adv_cap.reindex(index=weights_cap.index, columns=weights_cap.columns).fillna(0.0)
+            participation_cap = 0.01
+            raw_caps = pd.DataFrame(np.nan, index=weights_cap.index, columns=weights_cap.columns)
+            for date in weights_cap.index:
+                for sym in weights_cap.columns:
+                    delta = dw.loc[date, sym]
+                    a = adv_a.loc[date, sym]
+                    if delta > 0 and a > 0:
+                        raw_caps.loc[date, sym] = participation_cap * a / delta
+            finite_raw = raw_caps.values[np.isfinite(raw_caps.values)]
+            if len(finite_raw) > 0:
+                for x in [5, 10, 25]:
+                    threshold = float(np.percentile(finite_raw, x))
+                    pct_bound = float(np.sum(finite_raw <= threshold) / len(finite_raw) * 100)
+                    L.append(f"| book size binding >{x}% trades | ${threshold:,.0f} |")
     else:
         L.append("_No valid baseline results._")
     L.append("")
@@ -737,8 +788,16 @@ def render_robustness_report(
     # ── Rank IC table ─────────────────────────────────────────────────────
     L.append("## Rank IC")
     L.append("")
-    L.append("_Rank IC requires s_score and residual_returns from the signal pipeline; "
-             "not available in variant results. Run with --rank-ic for full computation._")
+    if rank_ic_results:
+        L.append("| factor model | mean IC | IC t-stat | n | sign | hit rate |")
+        L.append("|---|---:|---:|---:|---|---:|")
+        for fm, ric in sorted(rank_ic_results.items()):
+            L.append(
+                f"| {fm} | {ric['mean_ic']:.4f} | {ric['t_stat']:.2f} | "
+                f"{ric['n']} | {ric['sign']} | {ric['hit_rate']:.2f} |"
+            )
+    else:
+        L.append("_Rank IC not available; s_score and residual_returns not in variant results._")
     L.append("")
 
     # ── Gate summary ──────────────────────────────────────────────────────

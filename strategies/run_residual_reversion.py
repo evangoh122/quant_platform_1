@@ -532,6 +532,67 @@ def main() -> None:
             except Exception as e:
                 variant_results.append({"variant_id": vs.variant_id, "error": str(e)})
 
+        # ── Rank IC per factor model (baseline variants) ──────────────────
+        rank_ic_results = {}
+        rank_ic_horizon = robustness_cfg.get("rank_ic_horizon_days", 5)
+        for vs, vr in zip(registry, variant_results):
+            if vs.category != "baseline" or "error" in vr:
+                continue
+            fm = vs.params.get("factor_model", "ols_mkt_ind")
+            if fm in rank_ic_results:
+                continue
+            s_score = vr.get("s_score")
+            residual_returns = vr.get("residual_returns")
+            if s_score is not None and residual_returns is not None:
+                rank_ic_results[fm] = compute_rank_ic(
+                    s_score, residual_returns, horizon_days=rank_ic_horizon,
+                )
+
+        # ── Per-fold drop-top-3 (training-window P&L only) ───────────────
+        drop_top3_results = {}
+        for h in hold_candidates:
+            hold_vr = None
+            for vs, vr in zip(registry, variant_results):
+                if vs.category == "baseline" and vs.params.get("max_hold") == h and "error" not in vr:
+                    hold_vr = vr
+                    break
+            if hold_vr is None:
+                continue
+            w = hold_vr["weights"]
+            ret = hold_vr["residual_returns"]
+            net = hold_vr["net"]
+            if ret is None or w.empty:
+                continue
+            fold_results = []
+            all_dropped = []
+            for fold_i, (train_idx, val_idx) in enumerate(splits):
+                train_dates = dates[train_idx]
+                val_dates = dates[val_idx]
+                train_net = net.reindex(train_dates).dropna()
+                if train_net.empty:
+                    continue
+                pnl_sym = (w.shift(1).fillna(0.0).reindex(train_net.index) *
+                           ret.reindex(train_net.index)).sum()
+                top3 = pnl_sym.nlargest(3).index.tolist()
+                all_dropped.extend(top3)
+                common_val = val_dates.intersection(net.index)
+                oos_full = net.reindex(common_val).dropna()
+                oos_drop3 = oos_full.copy()
+                if top3:
+                    per_sym_val = (w.shift(1).fillna(0.0).reindex(common_val) *
+                                   ret.reindex(common_val))
+                    oos_drop3 = (per_sym_val.drop(columns=top3, errors="ignore").sum(axis=1))
+                fold_results.append({
+                    "fold": fold_i,
+                    "dropped": top3,
+                    "oos_sharpe": _sharpe(oos_full),
+                    "oos_sharpe_drop3": _sharpe(oos_drop3),
+                })
+            drop_top3_results[h] = {
+                "folds": fold_results,
+                "all_dropped_symbols": all_dropped,
+            }
+
         report = render_robustness_report(
             registry=registry,
             variant_results=variant_results,
@@ -540,6 +601,8 @@ def main() -> None:
             n_trials=len(registry),
             executed_trials=exec_count,
             splits=splits,
+            rank_ic_results=rank_ic_results,
+            drop_top3_results=drop_top3_results,
         )
         os.makedirs(os.path.dirname(args.robustness_output), exist_ok=True)
         with open(args.robustness_output, "w", encoding="utf-8") as f:
@@ -658,6 +721,11 @@ def _run_variant(variant_spec, closes, universe, adv_wide, industry,
         "is_sharpe": is_sharpe,
         "oos_sharpe": oos_sharpe,
         "dropped_symbols": list(dropped_syms) if drop_top > 0 else [],
+        "s_score": sig.get("s_score"),
+        "residual_returns": sig.get("returns"),
+        "beta_mkt": beta_mkt,
+        "industry": industry,
+        "adv_wide": adv_wide,
     }
 
 
