@@ -55,3 +55,16 @@ Verify:
 - real Delta failures keep the corpus message.
 
 Write `.agents/deepseek/VERDICT-post-merge-round6.md`.
+
+## Re-check after round 7 (this run)
+Codex's review (`.agents/codex/VERDICT-post-merge-round6.md`): the dim/model mismatch raised a plain
+`CorpusUnavailableError`, which loses `reason: embedding_config`. Commit f8570bf raises
+`EmbeddingConfigError`, with a `user_safe` flag.
+
+Verify:
+- the dim and model mismatch → `reason: embedding_config`, a message naming the setting, no "Delta";
+- mixed stored dims stay a corpus error;
+- the tightened tests fail on the previous HEAD (prove it in /tmp);
+- what `user_safe` does, and whether it could ever leak a secret into the message.
+
+Write `.agents/deepseek/VERDICT-post-merge-round7.md`.
