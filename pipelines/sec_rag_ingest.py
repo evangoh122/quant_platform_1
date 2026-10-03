@@ -111,13 +111,17 @@ class TickerEntry:
 
 
 class ExistingAccessionReader(Protocol):
-    """Reads existing accession numbers from bronze table."""
+    """Reads existing accession numbers from bronze table.
+
+    Returns a mapping of accession_number -> (cik, ticker) for conflict detection.
+    An accession already owned by a different CIK must fail loudly.
+    """
 
     def read_existing_accessions(
         self,
         catalog: str,
         schema: str,
-    ) -> Set[str]: ...
+    ) -> Dict[str, Tuple[str, str]]: ...
 
 
 class DataWriter(Protocol):
@@ -979,8 +983,8 @@ def run_ingest(
             result.missing_count += 1
             logger.warning("CIK mapping: %s — %s: %s", mapping.status, symbol, mapping.reason)
 
-    # Get existing accessions for anti-join
-    existing_accessions: Set[str] = set()
+    # Get existing accessions for anti-join (with ownership info)
+    existing_accessions: Dict[str, Tuple[str, str]] = {}
     if accession_reader is not None:
         existing_accessions = accession_reader.read_existing_accessions(catalog, schema)
     result.existing_count = len(existing_accessions)
@@ -992,12 +996,19 @@ def run_ingest(
         all_filings[ticker] = filings
         result.discovered_count += len(filings)
 
-    # Anti-join against existing
+    # Anti-join against existing — with conflict detection
     planned: List[Tuple[str, str, str, FilingMeta]] = []  # (ticker, cik, company_name, filing)
     for ticker, cik in mapped_tickers:
         for filing in all_filings.get(ticker, []):
             dashed = filing.accession_number
             if dashed in existing_accessions:
+                existing_cik, existing_ticker = existing_accessions[dashed]
+                if existing_cik != cik:
+                    raise ValueError(
+                        f"Accession ownership conflict: {dashed} already owned by "
+                        f"CIK {existing_cik} (ticker={existing_ticker}), "
+                        f"but current request is CIK {cik} (ticker={ticker})"
+                    )
                 result.skipped_existing_count += 1
                 continue
             planned.append((ticker, cik, ticker, filing))
@@ -1046,10 +1057,17 @@ def run_ingest(
         )
 
         try:
-            # Second anti-join (race safety)
+            # Second anti-join (race safety) with conflict detection
             if accession_reader is not None:
                 current_existing = accession_reader.read_existing_accessions(catalog, schema)
                 if filing.accession_number in current_existing:
+                    existing_cik, existing_ticker = current_existing[filing.accession_number]
+                    if existing_cik != cik:
+                        raise ValueError(
+                            f"Accession ownership conflict (race): {filing.accession_number} "
+                            f"already owned by CIK {existing_cik} (ticker={existing_ticker}), "
+                            f"but current request is CIK {cik} (ticker={ticker})"
+                        )
                     log_entry.status = "skipped_existing"
                     log_entry.completed_ts = datetime.now(timezone.utc).replace(tzinfo=None)
                     result.skipped_existing_count += 1

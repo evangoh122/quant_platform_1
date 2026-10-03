@@ -473,3 +473,37 @@
   feature_snapshot_id                string NOT NULL
   status                             string NOT NULL
   processed_ts                       timestamp NOT NULL
+
+### sec_ingest_log  (17 cols)
+  run_id                             string NOT NULL
+  ticker                             string NOT NULL
+  cik                                string NOT NULL
+  accession_number                   string NOT NULL
+  form_type                          string NOT NULL
+  filing_date                        string
+  accepted_ts                        timestamp
+  status                             string NOT NULL
+  rows_appended                      int
+  attempt                            int
+  error_code                         string
+  error_message                      string
+  started_ts                         timestamp
+  completed_ts                       timestamp
+  dry_run                            boolean
+  logged_ts                          timestamp NOT NULL
+
+### sec_cik_mapping_log  (7 cols)
+  ticker                             string NOT NULL
+  lookup_symbol                      string
+  cik                                string
+  status                             string NOT NULL
+  reason                             string
+  mapped_ts                          timestamp
+  run_id                             string
+
+### gold_sec_coverage  (5 cols)
+  ticker                             string NOT NULL
+  cik                                string
+  n_chunks                           int NOT NULL
+  n_accessions                       int NOT NULL
+  latest_accepted_ts                 timestamp

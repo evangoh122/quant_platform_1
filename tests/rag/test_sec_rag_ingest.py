@@ -122,12 +122,12 @@ class FakeUniverseReader:
 
 
 class FakeAccessionReader:
-    """Returns a pre-configured set of existing accessions."""
+    """Returns a pre-configured dict of existing accessions -> (cik, ticker)."""
 
-    def __init__(self, accessions: Optional[Set[str]] = None):
-        self._accessions = accessions or set()
+    def __init__(self, accessions: Optional[Dict[str, Tuple[str, str]]] = None):
+        self._accessions = accessions or {}
 
-    def read_existing_accessions(self, catalog: str, schema: str) -> Set[str]:
+    def read_existing_accessions(self, catalog: str, schema: str) -> Dict[str, Tuple[str, str]]:
         return self._accessions
 
 
@@ -584,10 +584,10 @@ class TestIdempotency:
         assert result1.total_rows_appended > 0
 
         # Run 2: existing accessions should be skipped
-        existing = set()
+        existing = {}
         for batch in writer.appended:
             for row in batch:
-                existing.add(row["accession_number"])
+                existing[row["accession_number"]] = (row["cik"], row["ticker"])
 
         result2 = run_ingest(
             catalog="test", schema="test",
@@ -852,7 +852,10 @@ class TestAccessionConflict:
 
         universe = [TickerEntry(ticker="NVDA", phase=1)]
         # Pre-existing accessions should cause them to be skipped
-        existing = {"0001045810-25-000010", "0001045810-24-000020"}
+        existing = {
+            "0001045810-25-000010": ("0001045810", "NVDA"),
+            "0001045810-24-000020": ("0001045810", "NVDA"),
+        }
 
         result = run_ingest(
             catalog="test", schema="test",
