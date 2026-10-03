@@ -10,6 +10,7 @@ resources:
         - task_key: refresh_silver_gold
           spark_python_task:
             python_file: ../pipelines/run_silver_gold.py
+            parameters: ["--schema", "${var.schema}"]
           environment_key: serverless
       environments:
         - environment_key: serverless

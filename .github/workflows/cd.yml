@@ -11,6 +11,11 @@ on:
         options:
           - dev
           - prod
+      start_app:
+        description: Restart the app after deploy
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,10 +36,12 @@ jobs:
       DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -47,7 +54,11 @@ jobs:
           npm run build
 
       - name: Set up Databricks CLI
-        uses: databricks/setup-cli@v0.276.0
+        uses: databricks/setup-cli@095d26a91ccd1ff8860b6832b0739d71f21ced75 # v0.276.0
 
       - name: Deploy bundle
         run: databricks bundle deploy -t "${{ inputs.target }}"
+
+      - name: Start app
+        if: ${{ inputs.start_app }}
+        run: databricks bundle run quant_platform -t "${{ inputs.target }}"

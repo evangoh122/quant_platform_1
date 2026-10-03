@@ -4,3 +4,10 @@ resources:
       name: quant-platform-${bundle.target}
       description: Quant Platform API and web application.
       source_code_path: ..
+      config:
+        command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+        env:
+          - name: CATALOG
+            value: bootcamp_students
+          - name: SCHEMA
+            value: ${var.schema}
