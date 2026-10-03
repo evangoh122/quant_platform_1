@@ -96,3 +96,26 @@ Re-verify:
 - re-run all earlier attacks for regressions.
 
 Write `.agents/deepseek/VERDICT-render-lane-b-check5.md`.
+
+## Re-check after round 7 (this run)
+Codex found a CRITICAL flaw: the limiter keyed on the rightmost XFF entry, which a client can
+spoof; Render puts the real client first and doesn't strip client values (see
+`.agents/codex/VERDICT-render-lane-b-2.md`). MiMo round 7 (commit 6213f24) adds `_get_client_ip`:
+`CF-Connecting-IP` → `True-Client-IP` → leftmost XFF → `client.host`, with strict IP validation.
+It also adds a token bucket and more generic secret names.
+
+Claude's direct probe:
+- CF 1.1.1.1 + XFF 9.9.9.9,8.8.8.8 → 1.1.1.1;
+- XFF 2.2.2.2,7.7.7.7 → 2.2.2.2;
+- CF "abc" + XFF 3.3.3.3 → 3.3.3.3;
+- none → `client.host`.
+
+Attack it:
+- Can a client influence the chosen key when Cloudflare sets `CF-Connecting-IP`? When Cloudflare is
+  bypassed?
+- IPv6 and IPv4-mapped normalisation.
+- Can the token bucket be starved, or grow memory without bound?
+- Do the generic secret names cause false positives on Render defaults?
+- Re-run all earlier attacks.
+
+Write `.agents/deepseek/VERDICT-render-lane-b-check6.md`.
