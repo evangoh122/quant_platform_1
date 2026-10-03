@@ -24,8 +24,6 @@ import pandas as pd
 from strategies.cost_model import (
     CostParams,
     borrow_bps_daily,
-    cost_per_trade,
-    scale_order_to_adv_cap,
 )
 from strategies.neutralize import neutralize_book
 
@@ -84,7 +82,7 @@ def cap_weight_changes_by_adv(
     if params is None:
         params = CostParams()
     cap_frac = params.adv_participation_cap  # e.g. 0.01
-    out = weights.copy().to_numpy(dtype=float)
+    out = weights.to_numpy(dtype=float, copy=True)
     prev = np.zeros(out.shape[1])
     # Forward-fill ADV per symbol so the last known ADV is used for names
     # whose ADV becomes NaN (e.g. after leaving the universe).
@@ -179,10 +177,12 @@ def compute_costs(
 ) -> Dict[str, pd.Series]:
     """Daily cost drag (fraction of capital) from turnover and short borrow.
 
-    Turnover is one-way (``0.5 * sum |dw|``). Each traded notional pays
-    ``cost_per_trade`` bps; the order is first capped at 1 % of the name's ADV
-    (``scale_order_to_adv_cap``) so a position sized beyond capacity is reduced.
-    Shorts additionally pay the daily borrow haircut by liquidity bucket.
+    Costs are charged on the notional actually executed after
+    ``cap_weight_changes_by_adv`` (never re-capped here): commission + half the
+    spread + slippage scaled by true participation (executed / ADV, relative to
+    the ADV cap). A name with unknown ADV is charged as 100 % participation
+    (conservative). Shorts additionally pay the daily borrow haircut by
+    liquidity bucket.
 
     Returns ``{"turnover_cost": Series, "borrow_cost": Series, "total": Series}``
     in units of fraction of ``book_capital``.
@@ -336,18 +336,27 @@ def run_backtest(
     # The capped positions are what the portfolio actually holds; P&L and
     # borrow are computed on these, not the uncapped neutralised weights.
     # Zero-ADV names can never accumulate a position.
-    adv_aligned = adv.reindex(index=weights.index, columns=weights.columns).fillna(0.0)
+    #
+    # Build ONE ADV frame: per-symbol forward-fill of past values only, then
+    # fillna(0) only where a symbol has never had a value.  Pass this SAME
+    # frame to both cap_weight_changes_by_adv and compute_costs so that a
+    # dropped name's exit is costed at its LAST KNOWN ADV, not 100%
+    # participation.
+    adv_aligned = adv.reindex(index=weights.index, columns=weights.columns)
+    adv_aligned = adv_aligned.ffill().fillna(0.0)
     weights = cap_weight_changes_by_adv(weights, adv_aligned, book_capital, params=cost_params)
 
     # Book return on day t is earned by the weights established at t-1.
     gross = (weights.shift(1).fillna(0.0) * returns).sum(axis=1)
 
-    adv_aligned = adv.reindex(index=returns.index, columns=returns.columns)
-    adv_aligned = adv_aligned.fillna(0.0)
+    # Use the SAME ffill-then-zero ADV frame for costs.  Reindex to
+    # returns.index in case it extends beyond weights.index; ffill again
+    # so any extra dates still carry the last known ADV.
+    adv_for_costs = adv_aligned.reindex(index=returns.index, columns=returns.columns).ffill().fillna(0.0)
 
-    costs = compute_costs(weights, adv_aligned, book_capital, cost_params,
+    costs = compute_costs(weights, adv_for_costs, book_capital, cost_params,
                           cost_multiplier=1.0)
-    costs_2x = compute_costs(weights, adv_aligned, book_capital, cost_params,
+    costs_2x = compute_costs(weights, adv_for_costs, book_capital, cost_params,
                              cost_multiplier=2.0)
     net = gross - costs["total"]
     net_2x = gross - costs_2x["total"]

@@ -137,7 +137,7 @@ def test_migration_003_downgrades_preexisting_trader(lakebase):
     import uuid
     from pathlib import Path
 
-    migrations = Path("db/migrations")
+    migrations = Path(__file__).resolve().parents[2] / "db" / "migrations"
     schema = f"scratch_{uuid.uuid4().hex[:12]}"
     trader = f"trader_{uuid.uuid4().hex}"
 

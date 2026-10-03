@@ -295,7 +295,10 @@ def run_one(
     """Run the backtest for a single configuration, restricted to the dates in
     ``positions``. Returns the daily series and the metric bundle."""
     dates = positions.index
-    adv = adv_wide.reindex(index=dates, columns=positions.columns).fillna(0.0)
+    # Do NOT fillna(0) here — cap_weight_changes_by_adv forward-fills per
+    # symbol so the last known ADV is used for names that leave the universe.
+    # Passing NaN lets the cap helper see which names have no ADV history.
+    adv = adv_wide.reindex(index=dates, columns=positions.columns)
     beta_aligned = beta_mkt.reindex(dates) if beta_mkt is not None else None
     res = run_backtest(
         positions,
@@ -383,6 +386,30 @@ CHANGELOG = {
             "fix": "Leverage wording corrected to 50%/50%",
             "files": "`strategies/run_residual_reversion.py`",
             "rationale": "Gross 1.0 with dollar neutrality is 50% long / 50% short, not 100%/100%",
+        },
+    ],
+    8: [
+        {
+            "fix": "pandas 3 read-only array guard",
+            "files": "`strategies/backtest.py`",
+            "rationale": "`cap_weight_changes_by_adv` wrote into a `.to_numpy()` array that pandas 3 may return as a read-only view (copy-on-write). Changed to `to_numpy(copy=True)` so the output array is always writeable regardless of pandas version",
+        },
+        {
+            "fix": "ADV forward-fill before zero-fill",
+            "files": "`strategies/run_residual_reversion.py`, `strategies/backtest.py`",
+            "rationale": "`run_one` filled missing ADV with 0 before `cap_weight_changes_by_adv`, preventing the cap helper from forward-filling the last known ADV for names that leave the universe. Now ADV is passed with NaN so the cap function can ffill per symbol; exits use last known ADV instead of 100% participation",
+        },
+        {
+            "fix": "Test paths resolved from __file__",
+            "files": "`tests/strategies/test_universe.py`, `tests/lakebase/test_migrations.py`",
+            "rationale": "Bare relative paths (`gold/...`, `db/migrations`) broke when pytest cwd differed from repo root. Now resolved via `Path(__file__).resolve().parents[2]`",
+        },
+    ],
+    9: [
+        {
+            "fix": "Single ADV frame for cap and costs — dropped-name exit uses last known ADV",
+            "files": "`strategies/backtest.py`",
+            "rationale": "`run_backtest` rebuilt `adv_aligned` with `fillna(0.0)` before `compute_costs`, so a dropped name's exit was costed at 100% participation (~202 bps) instead of its last known ADV (~12 bps). Now builds ONE ADV frame: per-symbol forward-fill then `fillna(0)` for never-seen symbols; passes the SAME frame to both `cap_weight_changes_by_adv` and `compute_costs`",
         },
     ],
 }

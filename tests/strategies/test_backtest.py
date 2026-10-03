@@ -536,3 +536,160 @@ def test_costs_never_below_minimum_bps_times_executed_notional():
     assert entry_cost >= min_cost_frac - 1e-15, (
         f"Entry cost {entry_cost:.8f} < minimum {min_cost_frac:.8f}"
     )
+
+
+def test_cap_weight_changes_with_read_only_input():
+    """cap_weight_changes_by_adv must work when input arrays are read-only.
+
+    Reproduces pandas 3 copy-on-write behaviour on pandas 2: .to_numpy() can
+    return a read-only view, and writing into the output array raises
+    ValueError.  The fix (to_numpy(copy=True)) guarantees a writeable copy.
+    """
+    n_days = 5
+    symbols = ["A", "B"]
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+
+    weights = pd.DataFrame(0.0, index=dates, columns=symbols)
+    weights.iloc[0, 0] = 0.1
+    weights.iloc[1, 0] = 0.2
+
+    adv = pd.DataFrame(1e8, index=dates, columns=symbols)
+    book_capital = 1e6
+    params = CostParams(adv_participation_cap=0.01)
+
+    # Make the underlying numpy arrays read-only (simulates pandas 3 CoW).
+    w_arr = weights.to_numpy()
+    a_arr = adv.to_numpy()
+    w_arr.setflags(write=False)
+    a_arr.setflags(write=False)
+
+    # Build new frames from the read-only arrays — .to_numpy() on these
+    # frames may return read-only views under pandas 3.
+    weights_ro = pd.DataFrame(w_arr, index=dates, columns=symbols)
+    adv_ro = pd.DataFrame(a_arr, index=dates, columns=symbols)
+
+    # Must not raise ValueError: assignment destination is read-only
+    result = cap_weight_changes_by_adv(weights_ro, adv_ro, book_capital, params)
+    assert result.iloc[0, 0] == pytest.approx(0.1)
+
+
+# ── ADV cost forward-fill tests (round 10) ──────────────────────────────────
+
+def test_exit_cost_uses_last_known_adv_not_100pct_participation():
+    """A name held, then dropped from the universe with NaN ADV after the drop.
+    The exit-day cost must equal the cost computed with its LAST KNOWN ADV,
+    not 100% participation (which would be ~200 bps).
+
+    Before the fix, run_backtest rebuilt adv_aligned with fillna(0.0) before
+    compute_costs, so a dropped name's ADV was 0 → participation = 1.0 →
+    ~200 bps on exit instead of the correct ~12 bps.
+    """
+    dates = pd.date_range("2024-01-01", periods=20, freq="B")
+    symbols = ["A", "B"]
+
+    # Signal: hold long A from day 1 through end.  A drops out of universe on day 10.
+    desired = pd.DataFrame(0.0, index=dates, columns=symbols)
+    desired.loc[dates[1]:, "A"] = 1.0
+
+    # A is in universe for days 0-9, then drops out.
+    universe = pd.DataFrame(
+        [(d, "A") for d in dates[:10]],
+        columns=["trade_date", "symbol"],
+    )
+
+    returns = pd.DataFrame(0.001, index=dates, columns=symbols)
+
+    # ADV = 1e8 for A in-universe, NaN after it drops out.
+    adv = pd.DataFrame(1e8, index=dates, columns=symbols)
+    adv.loc[dates[10]:, "A"] = np.nan
+
+    book_capital = 10_000_000.0
+    params = CostParams()
+
+    res = run_backtest(desired, returns, universe, adv,
+                       book_capital=book_capital, cost_params=params)
+    weights = res["weights"]
+
+    # A must have exited by the end (position liquidated).
+    assert weights.loc[dates[-1], "A"] == 0.0, (
+        f"A's weight is {weights.loc[dates[-1], 'A']} on last day — should be 0"
+    )
+
+    # Find the exit day: first day after day 10 where A's weight drops to 0.
+    exit_day = None
+    for d in dates[10:]:
+        if weights.loc[d, "A"] == 0.0 and weights.loc[dates[dates.get_loc(d) - 1], "A"] != 0.0:
+            exit_day = d
+            break
+    assert exit_day is not None, "A should have exited on a specific day"
+
+    # The exit-day cost should use LAST KNOWN ADV (1e8), not 100% participation.
+    # With ADV=1e8, book_capital=10M, exit weight ~0.5 (capped accumulation):
+    #   notional = |Δweight| * book_capital
+    #   participation = notional / 1e8
+    #   bps = 0.5 + 0.5*3 + 2*(participation/0.01)
+    # This should be << 202 bps (which is what 100% participation gives).
+    exit_cost_frac = res["costs"]["turnover_cost"].loc[exit_day]
+
+    # Compute expected cost using last known ADV.
+    exit_weight_change = abs(weights.loc[exit_day, "A"] - weights.loc[dates[dates.get_loc(exit_day) - 1], "A"])
+    exit_notional = exit_weight_change * book_capital
+    last_known_adv = 1e8
+    participation = exit_notional / last_known_adv
+    expected_bps = (
+        params.commission_bps
+        + 0.5 * params.spread_bps
+        + params.slippage_bps * (participation / params.adv_participation_cap)
+    )
+    expected_cost_frac = exit_notional * expected_bps / 1e4 / book_capital
+
+    assert exit_cost_frac == pytest.approx(expected_cost_frac, rel=1e-6), (
+        f"Exit cost {exit_cost_frac:.8f} should use last known ADV "
+        f"(expected {expected_cost_frac:.8f}), not 100% participation"
+    )
+
+    # Sanity: the cost should be MUCH less than 100% participation (202 bps).
+    cost_100pct = exit_notional * (
+        params.commission_bps + 0.5 * params.spread_bps
+        + params.slippage_bps * (1.0 / params.adv_participation_cap)
+    ) / 1e4 / book_capital
+    assert exit_cost_frac < cost_100pct * 0.1, (
+        f"Exit cost {exit_cost_frac:.8f} should be < 10% of 100% participation cost "
+        f"{cost_100pct:.8f}"
+    )
+
+
+def test_never_held_adv_name_charged_100pct_participation():
+    """A name with ADV=0 (never had a value) is charged at 100% participation
+    in compute_costs.  Through run_backtest, such a name cannot accumulate a
+    position (cap blocks it), so we test compute_costs directly."""
+    dates = pd.date_range("2024-01-01", periods=5, freq="B")
+    symbols = ["A", "B"]
+
+    # Simulate a position that somehow exists (e.g., from a prior period).
+    weights = pd.DataFrame(0.0, index=dates, columns=symbols)
+    weights.loc[dates[0], "A"] = 0.5  # entry
+    weights.loc[dates[1], "A"] = 0.0  # exit
+
+    book_capital = 10_000_000.0
+
+    # A has ADV=0 on all days (never had a value → fillna(0) in run_backtest).
+    adv = pd.DataFrame(0.0, index=dates, columns=symbols)
+    params = CostParams()
+
+    costs = compute_costs(weights, adv, book_capital, params)
+
+    # Exit day: ADV=0 → participation = 1.0 (100%), bps = 0.5 + 1.5 + 200 = 202.
+    exit_cost_frac = costs["turnover_cost"].loc[dates[1]]
+    exit_notional = 0.5 * book_capital  # |0.5 - 0.0| * book_capital
+    expected_bps = (
+        params.commission_bps
+        + 0.5 * params.spread_bps
+        + params.slippage_bps * (1.0 / params.adv_participation_cap)  # 100% participation
+    )
+    expected_cost_frac = exit_notional * expected_bps / 1e4 / book_capital
+
+    assert exit_cost_frac == pytest.approx(expected_cost_frac, rel=1e-6), (
+        f"Exit cost {exit_cost_frac:.8f} should be 100% participation "
+        f"(expected {expected_cost_frac:.8f}) for never-ADV name"
+    )
