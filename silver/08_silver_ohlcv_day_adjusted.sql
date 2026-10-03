@@ -1,0 +1,352 @@
+-- silver_ohlcv_day_adjusted: bronze_ohlcv_day + bronze_corporate_actions
+--                           -> silver_ohlcv_day_adjusted + data_quality_breaks
+--
+-- Deterministic daily deduplication, split factor computation, globally
+-- back-adjusted OHLC/VWAP/volume, break classification and masked returns.
+--
+-- Idempotent: MERGE on (symbol, event_date).  A newly ingested future split
+-- necessarily changes older current-scale adjusted levels, so a matched
+-- update is required (not insert-only).
+--
+-- The stored adj_* columns are GLOBAL/CURRENT-SCALE back-adjusted display
+-- levels.  They are approved for computing returns (the same factor cancels
+-- within a split-free interval, and across an ex-date the prior bar includes
+-- the split while the ex-date bar does not).  They are NOT approved as
+-- model price-level features at a historical observation time.
+--
+-- Break detection: a candidate is a consecutive observed bar pair with
+-- abs(close/prev_close - 1) >= 0.40.  A candidate is explained by a
+-- same-date split only if abs((close/prev_close)*split_ratio - 1) <= 0.03.
+
+-- ============================================================
+-- 1. Create data_quality_breaks table if not exists
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bootcamp_students.evangoh_capstone.data_quality_breaks (
+    symbol                  STRING    NOT NULL,
+    event_date              DATE      NOT NULL,
+    previous_event_date     DATE,
+    previous_close          DOUBLE,
+    close                   DOUBLE,
+    raw_overnight_return    DOUBLE,
+    matched_split_ratio     DOUBLE,
+    post_split_gross_return DOUBLE,
+    split_error             DOUBLE,
+    classification          STRING    NOT NULL,
+    reason                  STRING,
+    is_masked               BOOLEAN   NOT NULL,
+    reviewed_by             STRING,
+    reviewed_ts             TIMESTAMP,
+    detected_ts             TIMESTAMP NOT NULL,
+    processed_ts            TIMESTAMP NOT NULL
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
+
+
+-- ============================================================
+-- 2. Create silver_ohlcv_day_adjusted table if not exists
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bootcamp_students.evangoh_capstone.silver_ohlcv_day_adjusted (
+    symbol                      STRING    NOT NULL,
+    event_date                  DATE      NOT NULL,
+    event_ts                    TIMESTAMP,
+    open                        DOUBLE,
+    high                        DOUBLE,
+    low                         DOUBLE,
+    close                       DOUBLE,
+    volume                      BIGINT,
+    vwap                        DOUBLE,
+    trade_count                 INT,
+    cumulative_split_ratio      DOUBLE,
+    price_adjustment_factor     DOUBLE,
+    adj_open                    DOUBLE,
+    adj_high                    DOUBLE,
+    adj_low                     DOUBLE,
+    adj_close                   DOUBLE,
+    adj_vwap                    DOUBLE,
+    adj_volume                  DOUBLE,
+    raw_overnight_return        DOUBLE,
+    adjusted_return_1d_unmasked DOUBLE,
+    return_1d                   DOUBLE,
+    is_data_quality_break       BOOLEAN,
+    information_available_ts    TIMESTAMP,
+    processed_ts                TIMESTAMP
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
+
+
+-- ============================================================
+-- 3. Deduplicated daily source (latest ingest_ts per key)
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _deduped_daily AS
+SELECT
+    symbol,
+    event_ts,
+    DATE(event_ts)          AS event_date,
+    open,
+    high,
+    low,
+    close,
+    CAST(volume AS BIGINT)  AS volume,
+    vwap,
+    CAST(trade_count AS INT) AS trade_count
+FROM (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol, event_ts
+            ORDER BY ingest_ts DESC NULLS LAST, source, source_file
+        ) AS rn
+    FROM bootcamp_students.evangoh_capstone.bronze_ohlcv_day
+    WHERE timespan = 'day'
+      AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
+      AND close > 0
+      AND high >= GREATEST(open, close)
+      AND low  <= LEAST(open, close)
+      AND COALESCE(volume, 0) >= 0
+) sub
+WHERE rn = 1;
+
+
+-- ============================================================
+-- 4. Universe filter: only symbols in Gold + SPY/RSP/QQQ
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _universe AS
+SELECT DISTINCT UPPER(TRIM(symbol)) AS symbol
+FROM bootcamp_students.evangoh_capstone.gold_tradable_universe
+WHERE symbol IS NOT NULL
+UNION SELECT 'SPY'
+UNION SELECT 'RSP'
+UNION SELECT 'QQQ';
+
+
+-- ============================================================
+-- 5. Cumulative split factors per (symbol, event_date)
+--    cumulative_split_ratio(d) = PRODUCT(split_ratio for splits
+--    where ex_date > d).  Uses log-sum-exp for numerical stability.
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _split_factors AS
+SELECT
+    d.symbol,
+    d.event_date,
+    COALESCE(
+        EXP(SUM(LN(COALESCE(s.split_ratio, 1.0)))),
+        1.0
+    ) AS cumulative_split_ratio
+FROM (
+    SELECT DISTINCT symbol, event_date
+    FROM _deduped_daily
+    WHERE symbol IN (SELECT symbol FROM _universe)
+) d
+LEFT JOIN bootcamp_students.evangoh_capstone.bronze_corporate_actions s
+    ON  s.symbol = d.symbol
+    AND s.ex_date > d.event_date   -- strictly greater: ex-date bar is already on new basis
+GROUP BY d.symbol, d.event_date;
+
+
+-- ============================================================
+-- 6. Adjusted prices and raw returns
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _adjusted AS
+SELECT
+    dd.symbol,
+    dd.event_date,
+    dd.event_ts,
+    dd.open,
+    dd.high,
+    dd.low,
+    dd.close,
+    dd.volume,
+    dd.vwap,
+    dd.trade_count,
+    COALESCE(sf.cumulative_split_ratio, 1.0) AS cumulative_split_ratio,
+    1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0) AS price_adjustment_factor,
+    -- Adjusted OHLCV
+    dd.open  * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))  AS adj_open,
+    dd.high  * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))  AS adj_high,
+    dd.low   * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))  AS adj_low,
+    dd.close * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))  AS adj_close,
+    CASE WHEN dd.vwap IS NOT NULL
+         THEN dd.vwap * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))
+         ELSE NULL
+    END AS adj_vwap,
+    dd.volume * COALESCE(sf.cumulative_split_ratio, 1.0) AS adj_volume,
+    -- Raw overnight return (for break detection)
+    dd.close / NULLIF(LAG(dd.close) OVER (PARTITION BY dd.symbol ORDER BY dd.event_date), 0)
+        AS raw_gross_return,
+    -- Lagged close for break evidence
+    LAG(dd.close) OVER (PARTITION BY dd.symbol ORDER BY dd.event_date)
+        AS previous_close,
+    LAG(dd.event_date) OVER (PARTITION BY dd.symbol ORDER BY dd.event_date)
+        AS previous_event_date,
+    -- Adjusted returns
+    dd.close * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))
+        / NULLIF(
+            LAG(dd.close * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0)))
+                OVER (PARTITION BY dd.symbol ORDER BY dd.event_date),
+            0
+        ) - 1.0 AS adjusted_return_1d_unmasked
+FROM _deduped_daily dd
+JOIN _universe u ON u.symbol = dd.symbol
+LEFT JOIN _split_factors sf
+    ON  sf.symbol = dd.symbol
+    AND sf.event_date = dd.event_date;
+
+
+-- ============================================================
+-- 7. Break candidates: abs(raw_gross_return - 1) >= 0.40
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _break_candidates AS
+SELECT
+    a.symbol,
+    a.event_date,
+    a.previous_event_date,
+    a.previous_close,
+    a.close,
+    a.raw_gross_return - 1.0 AS raw_overnight_return,
+    a.raw_gross_return,
+    -- Same-day split ratio (product of all splits on this ex_date)
+    COALESCE(day_splits.day_split_ratio, 1.0) AS day_split_ratio,
+    -- Post-split gross return
+    a.raw_gross_return * COALESCE(day_splits.day_split_ratio, 1.0) AS post_split_gross_return,
+    -- Split error
+    ABS(a.raw_gross_return * COALESCE(day_splits.day_split_ratio, 1.0) - 1.0) AS split_error
+FROM _adjusted a
+LEFT JOIN (
+    SELECT
+        symbol,
+        ex_date,
+        EXP(SUM(LN(split_ratio))) AS day_split_ratio
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    GROUP BY symbol, ex_date
+) day_splits
+    ON  day_splits.symbol = a.symbol
+    AND day_splits.ex_date = a.event_date
+WHERE a.raw_gross_return IS NOT NULL
+  AND a.previous_close IS NOT NULL
+  AND ABS(a.raw_gross_return - 1.0) >= 0.40;
+
+
+-- ============================================================
+-- 8. Classification
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _classified_breaks AS
+SELECT
+    bc.*,
+    CASE
+        -- Explained by a same-date split (within 3% tolerance)
+        WHEN bc.day_split_ratio != 1.0 AND bc.split_error <= 0.03
+            THEN 'SPLIT_EXPLAINED'
+        -- Has a same-date split but residual is too large
+        WHEN bc.day_split_ratio != 1.0 AND bc.split_error > 0.03
+            THEN 'UNEXPLAINED_PENDING'
+        -- No matching split at all
+        ELSE 'UNEXPLAINED_PENDING'
+    END AS classification,
+    CASE
+        WHEN bc.day_split_ratio != 1.0 AND bc.split_error <= 0.03
+            THEN 'same-date split within 3% tolerance'
+        WHEN bc.day_split_ratio != 1.0 AND bc.split_error > 0.03
+            THEN 'same-date split but residual exceeds 3%'
+        ELSE 'no matching split event'
+    END AS reason,
+    CASE
+        WHEN bc.day_split_ratio != 1.0 AND bc.split_error <= 0.03
+            THEN FALSE  -- SPLIT_EXPLAINED: not masked
+        ELSE TRUE       -- UNEXPLAINED_PENDING: masked until reviewed
+    END AS is_masked
+FROM _break_candidates bc;
+
+
+-- ============================================================
+-- 9. Merge data_quality_breaks (preserve reviewed decisions)
+-- ============================================================
+MERGE INTO bootcamp_students.evangoh_capstone.data_quality_breaks AS tgt
+USING (
+    SELECT
+        cb.symbol,
+        cb.event_date,
+        cb.previous_event_date,
+        cb.previous_close,
+        cb.close,
+        cb.raw_overnight_return,
+        cb.day_split_ratio     AS matched_split_ratio,
+        cb.post_split_gross_return,
+        cb.split_error,
+        cb.classification,
+        cb.reason,
+        cb.is_masked,
+        current_timestamp()    AS detected_ts,
+        current_timestamp()    AS processed_ts
+    FROM _classified_breaks cb
+) AS src
+ON tgt.symbol = src.symbol AND tgt.event_date = src.event_date
+-- Only update UNREVIEWED rows; preserve manual review decisions
+WHEN MATCHED AND tgt.reviewed_by IS NULL THEN UPDATE SET
+    tgt.previous_event_date     = src.previous_event_date,
+    tgt.previous_close          = src.previous_close,
+    tgt.close                   = src.close,
+    tgt.raw_overnight_return    = src.raw_overnight_return,
+    tgt.matched_split_ratio     = src.matched_split_ratio,
+    tgt.post_split_gross_return = src.post_split_gross_return,
+    tgt.split_error             = src.split_error,
+    tgt.classification          = src.classification,
+    tgt.reason                  = src.reason,
+    tgt.is_masked               = src.is_masked,
+    tgt.processed_ts            = src.processed_ts
+WHEN NOT MATCHED THEN INSERT *
+
+
+-- ============================================================
+-- 10. Merge silver_ohlcv_day_adjusted
+-- ============================================================
+;
+MERGE INTO bootcamp_students.evangoh_capstone.silver_ohlcv_day_adjusted AS tgt
+USING (
+    SELECT
+        a.symbol,
+        a.event_date,
+        a.event_ts,
+        a.open,
+        a.high,
+        a.low,
+        a.close,
+        a.volume,
+        a.vwap,
+        a.trade_count,
+        a.cumulative_split_ratio,
+        a.price_adjustment_factor,
+        a.adj_open,
+        a.adj_high,
+        a.adj_low,
+        a.adj_close,
+        a.adj_vwap,
+        a.adj_volume,
+        a.raw_gross_return - 1.0                        AS raw_overnight_return,
+        a.adjusted_return_1d_unmasked,
+        -- Canonical return: NULL when active break is masked
+        CASE
+            WHEN br.event_date IS NOT NULL AND br.is_masked = TRUE
+                THEN NULL
+            ELSE a.adjusted_return_1d_unmasked
+        END                                              AS return_1d,
+        CASE
+            WHEN br.event_date IS NOT NULL AND br.is_masked = TRUE
+                THEN TRUE
+            ELSE FALSE
+        END                                              AS is_data_quality_break,
+        -- Daily bar availability: 16:30 ET on the bar date
+        from_utc_timestamp(
+            to_timestamp(concat(cast(a.event_date AS STRING), ' 16:00:00')),
+            'America/New_York'
+        )                                                AS information_available_ts,
+        current_timestamp()                              AS processed_ts
+    FROM _adjusted a
+    LEFT JOIN bootcamp_students.evangoh_capstone.data_quality_breaks br
+        ON  br.symbol = a.symbol
+        AND br.event_date = a.event_date
+        AND br.is_masked = TRUE
+        AND br.classification IN ('UNEXPLAINED_PENDING', 'CONFIRMED_DATA_BREAK')
+) AS src
+ON tgt.symbol = src.symbol AND tgt.event_date = src.event_date
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *
