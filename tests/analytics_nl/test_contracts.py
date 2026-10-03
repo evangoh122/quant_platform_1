@@ -191,6 +191,57 @@ class TestCanonicalIntent:
         assert intent.operation == Operation.trend
         assert intent.metric == Metric.price
 
+    def test_put_call_ratio_trend_intent(self):
+        intent = CanonicalIntent(
+            semantic_model_version=SEMANTIC_MODEL_VERSION,
+            operation=Operation.trend,
+            metric=Metric.put_call_ratio,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            date_range=DateRange(start=date(2024, 1, 1), end=date(2024, 12, 31)),
+            grouping=Grouping.day,
+            limit=100,
+        )
+        assert intent.metric == Metric.put_call_ratio
+
+    def test_put_call_ratio_compare_intent(self):
+        intent = CanonicalIntent(
+            semantic_model_version=SEMANTIC_MODEL_VERSION,
+            operation=Operation.compare,
+            metric=Metric.put_call_ratio,
+            entities=[
+                TickerEntity(canonical_id="AAPL"),
+                TickerEntity(canonical_id="MSFT"),
+            ],
+            date_range=DateRange(start=date(2024, 1, 1), end=date(2024, 12, 31)),
+            grouping=Grouping.day,
+            limit=100,
+        )
+        assert intent.metric == Metric.put_call_ratio
+
+    def test_put_call_ratio_rank_intent(self):
+        intent = CanonicalIntent(
+            semantic_model_version=SEMANTIC_MODEL_VERSION,
+            operation=Operation.rank,
+            metric=Metric.put_call_ratio,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            date_range=DateRange(start=date(2024, 1, 1), end=date(2024, 12, 31)),
+            grouping=Grouping.ticker,
+            limit=10,
+        )
+        assert intent.metric == Metric.put_call_ratio
+
+    def test_put_call_ratio_aggregate_intent(self):
+        intent = CanonicalIntent(
+            semantic_model_version=SEMANTIC_MODEL_VERSION,
+            operation=Operation.aggregate,
+            metric=Metric.put_call_ratio,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            date_range=DateRange(start=date(2024, 1, 1), end=date(2024, 12, 31)),
+            grouping=Grouping.ticker,
+            limit=100,
+        )
+        assert intent.metric == Metric.put_call_ratio
+
     def test_duplicate_entities_rejected(self):
         with pytest.raises(ValidationError, match="Duplicate entity"):
             CanonicalIntent(
@@ -435,13 +486,16 @@ class TestChartEnvelope:
 
 
 class TestMetricEnum:
-    """Verify exactly 8 metrics with implied_volatility."""
+    """Verify exactly 9 metrics with implied_volatility and put_call_ratio."""
 
     def test_exact_metric_count(self):
-        assert len(Metric) == 8
+        assert len(Metric) == 9
 
     def test_implied_volatility_present(self):
         assert "implied_volatility" in [m.value for m in Metric]
+
+    def test_put_call_ratio_present(self):
+        assert "put_call_ratio" in [m.value for m in Metric]
 
     def test_market_capitalization_absent(self):
         """market_capitalization must NOT be an accepted value."""
@@ -452,6 +506,7 @@ class TestMetricEnum:
         expected = {
             "price", "return", "volume", "realized_volatility",
             "drawdown", "momentum", "relative_performance", "implied_volatility",
+            "put_call_ratio",
         }
         actual = {m.value for m in Metric}
         assert actual == expected

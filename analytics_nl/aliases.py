@@ -98,6 +98,12 @@ class AliasResolver:
             normalized = _normalize(alias)
             self._sector_aliases[normalized] = (info["canonical_id"], EntityType(info["entity_type"]))
 
+        # Metric aliases
+        self._metric_aliases: dict[str, str] = {}
+        for alias, info in alias_data.get("metric_aliases", {}).items():
+            normalized = _normalize(alias)
+            self._metric_aliases[normalized] = info["canonical_metric"]
+
     def resolve(self, text: str) -> AliasResult:
         """Resolve a single text mention to a canonical entity."""
         # Reject hostile input
@@ -155,6 +161,21 @@ class AliasResolver:
             status=AliasResolutionStatus.unknown,
             reason_code="no_match",
         )
+
+    def resolve_metric(self, text: str) -> str | None:
+        """Resolve a metric name or alias to its canonical metric value.
+
+        Returns the canonical metric string (e.g. "put_call_ratio") or None
+        if no match.  Also accepts direct canonical metric names.
+        """
+        normalized = _normalize(text)
+        # Direct canonical name
+        from analytics_nl.contracts import Metric
+        for m in Metric:
+            if _normalize(m.value) == normalized:
+                return m.value
+        # Alias lookup
+        return self._metric_aliases.get(normalized)
 
 
 def load_alias_data() -> dict[str, Any]:

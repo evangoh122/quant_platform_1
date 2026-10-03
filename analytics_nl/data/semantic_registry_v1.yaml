@@ -716,3 +716,90 @@ entries:
     max_entities: 100
     row_limit: 1000
     entry_version: "1.0.0"
+
+  # ── put_call_ratio × operations ─────────────────────────────────────
+  put_call_ratio.trend:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Daily put/call ratio over time"
+    input_columns: [symbol, trade_date, put_call_ratio]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [trade_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: trade_date, type: date, nullable: false}
+      - {name: put_call_ratio, type: number, nullable: true}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  put_call_ratio.compare:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Aligned put/call ratio for named entities"
+    input_columns: [symbol, trade_date, put_call_ratio]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [trade_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: trade_date, type: date, nullable: false}
+      - {name: put_call_ratio, type: number, nullable: true}
+    chart_families: [line, table]
+    max_entities: 20
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  put_call_ratio.rank:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Latest put/call ratio ranked by value"
+    input_columns: [symbol, trade_date, put_call_ratio]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [put_call_ratio, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: trade_date, type: date, nullable: false}
+      - {name: put_call_ratio, type: number, nullable: true}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  put_call_ratio.aggregate:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Period aggregation of put/call ratio (mean only — summing a ratio is invalid)"
+    input_columns: [symbol, trade_date, put_call_ratio]
+    aggregation: mean_only
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [mean], default: mean}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"

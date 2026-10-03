@@ -274,3 +274,35 @@ class TestInjectedClock:
         start, end = result
         assert start == date(2024, 2, 1)
         assert end == date(2024, 2, 29)
+
+
+class TestMetricAliases:
+    """Metric alias resolution for put_call_ratio synonyms."""
+
+    def test_put_slash_call(self, resolver):
+        result = resolver.resolve_metric("put/call")
+        assert result == "put_call_ratio"
+
+    def test_put_call_ratio(self, resolver):
+        result = resolver.resolve_metric("put call ratio")
+        assert result == "put_call_ratio"
+
+    def test_pcr(self, resolver):
+        result = resolver.resolve_metric("PCR")
+        assert result == "put_call_ratio"
+
+    def test_pcr_lowercase(self, resolver):
+        result = resolver.resolve_metric("pcr")
+        assert result == "put_call_ratio"
+
+    def test_p_slash_c_ratio(self, resolver):
+        result = resolver.resolve_metric("p/c ratio")
+        assert result == "put_call_ratio"
+
+    def test_canonical_name(self, resolver):
+        result = resolver.resolve_metric("put_call_ratio")
+        assert result == "put_call_ratio"
+
+    def test_unknown_metric_returns_none(self, resolver):
+        result = resolver.resolve_metric("nonexistent_metric")
+        assert result is None

@@ -155,6 +155,7 @@ Codex final validation must not begin until `.agents/deepseek/VERDICT-nl1-contra
 - **OpenTelemetry backend/exporter and destinations:** required before NL0 CSP/env allowlists and NL4 instrumentation freeze.
 - **Turnstile:** owner must choose/approve site, hostname, keys, and verification policy for NL0/NL-R.
 - **Databricks service principal:** an admin must create it and grant warehouse use plus least-privilege `SELECT` on dedicated serving views only.
-- **Eighth metric:** this spec recommends and freezes `implied_volatility` (`iv_atm`) for NL1; owner must confirm before later contracts are treated as final.
+- **Eighth metric:** this spec recommends and freezes `implied_volatility` (`iv_atm`) for NL1; owner must confirm before later contracts are treated as final. **RESOLVED** (2026-10-04): owner confirmed BOTH options metrics — `implied_volatility` (8th) and `put_call_ratio` (9th). Market cap stays out.
+- **Ninth metric:** **RESOLVED** (2026-10-04): `put_call_ratio` from `gold_options_features.put_call_ratio` via `serve_options_metrics_v1`. Aggregation: mean only (never sum).
 - **Serving-view creation:** a Databricks admin/owner must review, create, validate, optimize, and grant the proposed views; NL1 only documents proposed DDL and must not claim deployment.
 

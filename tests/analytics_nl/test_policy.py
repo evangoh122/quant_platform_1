@@ -285,3 +285,73 @@ class TestSilverBounds:
         result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
         # This is gold layer (3 years), should be EXPENSIVE but not rejected
         assert result.cost_class in (CostClass.EXPENSIVE, CostClass.NORMAL, CostClass.CHEAP)
+
+
+class TestPutCallRatioPolicy:
+    """Valid intents for each operation on put_call_ratio."""
+
+    def test_trend_accepted(self, registry, bounds):
+        intent = _make_intent(
+            metric=Metric.put_call_ratio,
+            operation=Operation.trend,
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert result.allows_compilation is True
+
+    def test_compare_accepted(self, registry, bounds):
+        intent = _make_intent(
+            metric=Metric.put_call_ratio,
+            operation=Operation.compare,
+            entities=[
+                TickerEntity(canonical_id="AAPL"),
+                TickerEntity(canonical_id="MSFT"),
+            ],
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert result.allows_compilation is True
+
+    def test_rank_accepted(self, registry, bounds):
+        intent = CanonicalIntent(
+            semantic_model_version=SEMANTIC_MODEL_VERSION,
+            operation=Operation.rank,
+            metric=Metric.put_call_ratio,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            date_range=DateRange(start=date(2024, 1, 1), end=date(2024, 12, 31)),
+            grouping=Grouping.ticker,
+            limit=10,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert result.allows_compilation is True
+
+    def test_aggregate_accepted(self, registry, bounds):
+        intent = CanonicalIntent(
+            semantic_model_version=SEMANTIC_MODEL_VERSION,
+            operation=Operation.aggregate,
+            metric=Metric.put_call_ratio,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            date_range=DateRange(start=date(2024, 1, 1), end=date(2024, 12, 31)),
+            grouping=Grouping.ticker,
+            limit=100,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert result.allows_compilation is True
+
+    def test_aggregate_registry_allows_only_mean(self, registry):
+        """The aggregate entry for put_call_ratio must not allow sum.
+
+        Disclosed assumption: summing a ratio metric (put_volume/call_volume)
+        is mathematically invalid.  The registry enforces this by restricting
+        the agg_function enum to [mean] only and using the mean_only
+        aggregation token.
+        """
+        entry = registry.entries["put_call_ratio.aggregate"]
+        assert entry.aggregation == "mean_only"
+        agg_param = entry.parameters["agg_function"]
+        assert agg_param.enum == ["mean"]
+        assert "sum" not in agg_param.enum

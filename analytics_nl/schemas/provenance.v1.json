@@ -158,7 +158,8 @@
         "drawdown",
         "momentum",
         "relative_performance",
-        "implied_volatility"
+        "implied_volatility",
+        "put_call_ratio"
       ],
       "title": "Metric",
       "type": "string"

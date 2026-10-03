@@ -51,6 +51,7 @@ class Metric(str, Enum):
     momentum = "momentum"
     relative_performance = "relative_performance"
     implied_volatility = "implied_volatility"
+    put_call_ratio = "put_call_ratio"
 
 
 class EntityType(str, Enum):

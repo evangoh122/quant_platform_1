@@ -30,6 +30,13 @@ companies:
   exxon: {canonical_id: XOM, entity_type: ticker}
   "exxon mobil": {canonical_id: XOM, entity_type: ticker}
 
+# Metric name aliases (canonical metric → accepted synonyms)
+metric_aliases:
+  "put/call": {canonical_metric: put_call_ratio}
+  "put call ratio": {canonical_metric: put_call_ratio}
+  "pcr": {canonical_metric: put_call_ratio}
+  "p/c ratio": {canonical_metric: put_call_ratio}
+
 # Sector aliases
 sectors:
   technology: {canonical_id: technology, entity_type: sector}

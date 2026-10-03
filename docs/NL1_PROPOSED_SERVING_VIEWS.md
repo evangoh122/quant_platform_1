@@ -175,7 +175,7 @@ JOIN benchmark_returns b ON e.trade_date = b.trade_date;
 
 ## serve_options_metrics_v1
 
-Daily implied volatility (iv_atm) for options-capable underlyings.
+Daily implied volatility (iv_atm) and put/call ratio for options-capable underlyings.
 
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_options_metrics_v1 AS
@@ -183,12 +183,14 @@ SELECT
     symbol,
     trade_date,
     iv_atm,
+    put_call_ratio,
     information_available_ts
 FROM (
     SELECT
         symbol,
         trade_date,
         iv_atm,
+        put_call_ratio,
         information_available_ts,
         ROW_NUMBER() OVER (
             PARTITION BY symbol, trade_date

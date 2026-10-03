@@ -30,7 +30,7 @@ class TestRegistryLoading:
 
 
 class TestRegistryCoverage:
-    """All 32 metric×operation pairs must be registered."""
+    """All 36 metric×operation pairs must be registered."""
 
     def test_all_pairs_registered(self, registry):
         for metric in Metric:
@@ -39,7 +39,7 @@ class TestRegistryCoverage:
                 assert key in registry.entries, f"Missing registry entry: {key}"
 
     def test_entry_count(self, registry):
-        assert len(registry.entries) == 32
+        assert len(registry.entries) == 36
 
 
 class TestRegistryIdentifiers:
@@ -161,3 +161,36 @@ class TestRegistryNoPhysicalNames:
                 assert pattern not in entry.serving_view.lower(), (
                     f"Physical pattern {pattern!r} in entry {key} serving_view"
                 )
+
+
+class TestPutCallRatioEntries:
+    """put_call_ratio registry entries must enforce mean-only aggregation."""
+
+    def test_aggregate_entry_exists(self, registry):
+        key = "put_call_ratio.aggregate"
+        assert key in registry.entries
+
+    def test_aggregate_uses_mean_only_token(self, registry):
+        entry = registry.entries["put_call_ratio.aggregate"]
+        assert entry.aggregation == "mean_only"
+
+    def test_aggregate_enum_allows_only_mean(self, registry):
+        entry = registry.entries["put_call_ratio.aggregate"]
+        agg_param = entry.parameters["agg_function"]
+        assert agg_param.enum == ["mean"]
+        assert agg_param.default == "mean"
+
+    def test_all_four_operations_registered(self, registry):
+        for op in ("trend", "compare", "rank", "aggregate"):
+            key = f"put_call_ratio.{op}"
+            assert key in registry.entries, f"Missing {key}"
+
+    def test_all_entries_use_options_view(self, registry):
+        for op in ("trend", "compare", "rank", "aggregate"):
+            entry = registry.entries[f"put_call_ratio.{op}"]
+            assert entry.serving_view == "serve_options_metrics_v1"
+
+    def test_all_entries_have_put_call_ratio_column(self, registry):
+        for op in ("trend", "compare", "rank", "aggregate"):
+            entry = registry.entries[f"put_call_ratio.{op}"]
+            assert "put_call_ratio" in entry.input_columns
