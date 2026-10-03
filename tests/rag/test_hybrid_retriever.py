@@ -672,7 +672,7 @@ class TestTickerResolution:
 class TestEmbeddingBuildIdempotency:
     """Verify the embedding build pipeline is idempotent."""
 
-    def test_second_run_writes_zero_rows(self):
+    def test_second_run_writes_zero_rows(self, fake_pyspark):
         """Mock Spark session to verify MERGE idempotency logic."""
         from pipelines.build_sec_embeddings import build
 
@@ -720,7 +720,7 @@ class TestEmbeddingBuildIdempotency:
         assert result["embedding_dim"] == 384
         assert result["rows_already_embedded"] == 3
 
-    def test_create_table_called(self):
+    def test_create_table_called(self, fake_pyspark):
         """CREATE TABLE IF NOT EXISTS must be issued before MERGE."""
         from pipelines.build_sec_embeddings import build
 
@@ -752,7 +752,7 @@ class TestEmbeddingBuildIdempotency:
         assert "ticker" in create_sql
         assert "accepted_ts" in create_sql
 
-    def test_metadata_columns_included_in_output(self):
+    def test_metadata_columns_included_in_output(self, fake_pyspark):
         """Embedded rows must carry accession_number, ticker, accepted_ts."""
         from pipelines.build_sec_embeddings import build
 
@@ -820,7 +820,7 @@ class TestEmbeddingBuildIdempotency:
         assert "ticker" in schema_str
         assert "accepted_ts" in schema_str
 
-    def test_real_idempotency_count(self):
+    def test_real_idempotency_count(self, fake_pyspark):
         """rows_already_embedded must reflect actual count, not hardcoded."""
         from pipelines.build_sec_embeddings import build
 
@@ -990,7 +990,7 @@ class TestAcceptedEpochTimezoneSafe:
         )
         assert proc.returncode == 0, f"Old-code failure demonstration failed:\n{proc.stderr}\n{proc.stdout}"
 
-    def test_load_corpus_uses_epoch(self, monkeypatch):
+    def test_load_corpus_uses_epoch(self, fake_pyspark, monkeypatch):
         """_load_corpus with accepted_epoch rows stores correct UTC ISO strings."""
         from api.services import hybrid_retriever as hr
 
@@ -1233,7 +1233,7 @@ class TestSearchSecFilingsError:
 
         assert result == []
 
-    def test_fallback_results_tagged_with_retrieval_mode(self, monkeypatch):
+    def test_fallback_results_tagged_with_retrieval_mode(self, fake_pyspark, monkeypatch):
         """Non-corpus exception must return results tagged with retrieval_mode."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
@@ -1276,7 +1276,7 @@ class TestSearchSecFilingsError:
         assert result[0]["retrieval_mode"] == "substring_fallback"
         assert result[0]["_warning"] == "hybrid_retrieval_failed"
 
-    def test_fallback_as_of_filters_future_filings(self, monkeypatch):
+    def test_fallback_as_of_filters_future_filings(self, fake_pyspark, monkeypatch):
         """Rows with accepted_ts after as_of must be excluded from fallback results."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
@@ -1358,7 +1358,7 @@ class TestSearchSecFilingsError:
         # filtered (since 2026 > now). But the key assertion is that the
         # as_of code path was hit — verified by the where_calls count above.
 
-    def test_fallback_output_keys_match_hybrid_path(self, monkeypatch):
+    def test_fallback_output_keys_match_hybrid_path(self, fake_pyspark, monkeypatch):
         """Fallback must return the same keys as the hybrid path."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
