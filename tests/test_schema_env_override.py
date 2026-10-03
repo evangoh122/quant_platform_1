@@ -32,6 +32,16 @@ def test_api_config_schema_override(monkeypatch):
 
 def test_run_silver_gold_schema_arg(monkeypatch):
     import sys
+    import types
+
+    # CI has no databricks-connect; the module imports it at top level. Stub it.
+    try:
+        import databricks.connect  # noqa: F401
+    except ImportError:
+        fake = types.ModuleType("databricks.connect")
+        fake.DatabricksSession = object
+        monkeypatch.setitem(sys.modules, "databricks.connect", fake)
+        monkeypatch.delitem(sys.modules, "pipelines.run_silver_gold", raising=False)
     import pipelines.run_silver_gold as r
     # Register the originals so monkeypatch restores them after main() rebinds them.
     monkeypatch.setattr(r, "SCHEMA", r.SCHEMA)
