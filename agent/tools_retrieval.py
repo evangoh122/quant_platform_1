@@ -15,7 +15,7 @@ and never becomes a SQL fragment.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from agent.guardrails import normalize_symbol
 from api.services.exceptions import EmbeddingConfigError
@@ -194,6 +194,103 @@ def search_sec_filings(
                 "message": "SEC filing corpus could not be loaded. Check Delta table connectivity.",
                 "ticker": symbol,
             }]
+
+
+def query_sec_facts(
+    ticker: str,
+    metric: str,
+    period: str,
+    as_of: datetime,
+    *,
+    graph: Any = None,
+) -> dict:
+    """Query the SEC knowledge graph for XBRL facts.
+
+    Strict Pydantic input validation: rejects naive/string/integer ``as_of``,
+    non-string metric/period, unknown/extra args, and injection-shaped tickers
+    before any store method is called.
+
+    Returns a JSON-safe envelope labelled ``content_type: 'untrusted_tool_data'``
+    with ``results`` and provenance.  Never concatenates tool values into
+    instructions or executes values.
+    """
+    from pydantic import BaseModel, Field, field_validator, model_validator
+    from typing import Any as _Any
+
+    class _QuerySecFactsInput(BaseModel):
+        model_config = {"extra": "forbid"}
+
+        ticker: str
+        metric: str = Field(min_length=1)
+        period: str = Field(min_length=1)
+        as_of: datetime
+
+        @model_validator(mode="before")
+        @classmethod
+        def _validate_types(cls, data: dict) -> dict:
+            as_of = data.get("as_of")
+            if isinstance(as_of, (int, float)):
+                raise ValueError(
+                    "as_of must be a timezone-aware datetime, not a number"
+                )
+            if isinstance(as_of, str):
+                raise ValueError(
+                    "as_of must be a timezone-aware datetime, not a string"
+                )
+            return data
+
+        @field_validator("as_of")
+        @classmethod
+        def _tz_aware(cls, v: datetime) -> datetime:
+            if v.tzinfo is None:
+                raise ValueError(
+                    "as_of must be timezone-aware UTC, not naive"
+                )
+            return v
+
+        @field_validator("ticker")
+        @classmethod
+        def _valid_ticker(cls, v: str) -> str:
+            return normalize_symbol(v)
+
+        @field_validator("metric", "period")
+        @classmethod
+        def _non_blank_str(cls, v: str) -> str:
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError("must be a non-blank string")
+            return v
+
+    # Validate all inputs through strict Pydantic model
+    validated = _QuerySecFactsInput(
+        ticker=ticker, metric=metric, period=period, as_of=as_of,
+    )
+
+    # Get or create graph store
+    if graph is None:
+        from api.services.sec_knowledge_graph import SecKnowledgeGraph
+        graph = _get_default_graph()
+
+    # Execute query
+    result = graph.get_fact(
+        ticker=validated.ticker,
+        metric=validated.metric,
+        period=validated.period,
+        as_of=validated.as_of,
+    )
+
+    return {
+        "content_type": "untrusted_tool_data",
+        "results": [result] if result else [],
+        "provenance": result.get("provenance", []) if result else [],
+    }
+
+
+def _get_default_graph():
+    """Lazy default graph store (Delta-backed in production)."""
+    from api.services.sec_knowledge_graph import SecKnowledgeGraph, SparkGraphStore
+    from db.delta_adapter import CATALOG, SCHEMA
+    store = SparkGraphStore(CATALOG, SCHEMA)
+    return SecKnowledgeGraph(store)
 
 
 def get_cot_positioning(mapped_asset: str) -> dict:

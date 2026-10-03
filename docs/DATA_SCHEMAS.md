@@ -473,3 +473,24 @@
   feature_snapshot_id                string NOT NULL
   status                             string NOT NULL
   processed_ts                       timestamp NOT NULL
+
+### gold_sec_kg_nodes  (6 cols)
+  node_id                            string NOT NULL
+  node_type                          string NOT NULL
+  label                              string NOT NULL
+  properties_json                    string NOT NULL
+  provenance                         array<struct<accession_number:string,source_chunk_id:string,accepted_ts:timestamp>> NOT NULL
+  build_version                      string NOT NULL
+
+### gold_sec_kg_edges  (11 cols)
+  edge_id                            string NOT NULL
+  src_id                             string NOT NULL
+  edge_type                          string NOT NULL
+  dst_id                             string NOT NULL
+  valid_from                         timestamp NOT NULL
+  accession_number                   string NOT NULL
+  source_chunk_id                    string NOT NULL
+  accepted_ts                        timestamp NOT NULL
+  confidence                         double
+  properties_json                    string NOT NULL
+  build_version                      string NOT NULL

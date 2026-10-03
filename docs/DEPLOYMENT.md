@@ -45,6 +45,8 @@ Grant the **least privilege** that covers the API surface:
 | `gold_ohlcv_features` | `GET /api/market/{symbol}` |
 | `gold_options_features` | `GET /api/market/{symbol}` |
 | `silver_sec_sections` | agent `search_sec_filings` tool |
+| `gold_sec_kg_nodes` | agent `query_sec_facts` tool |
+| `gold_sec_kg_edges` | agent `query_sec_facts` tool |
 
 ```sql
 GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_trading_signals
@@ -54,6 +56,10 @@ GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_ohlcv_features
 GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_options_features
   TO `<app-service-principal>`;
 GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.silver_sec_sections
+  TO `<app-service-principal>`;
+GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_nodes
+  TO `<app-service-principal>`;
+GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_edges
   TO `<app-service-principal>`;
 ```
 
@@ -215,3 +221,48 @@ python -m db.migrate
 
 Forward-only, ordered by filename, re-runnable. Applied versions are recorded in
 `schema_migrations`.
+
+## 10. SEC Knowledge Graph build (manual job)
+
+The SEC knowledge graph (`gold_sec_kg_nodes`, `gold_sec_kg_edges`) is built by
+an **unscheduled** job named `sec_knowledge_graph_build`. It must be triggered
+manually or via CI — it is not part of the scheduled `silver_gold_refresh` chain.
+
+### Running the build
+
+```bash
+# Offline (JSONL output)
+python scripts/build_sec_knowledge_graph.py \
+  --entities evals/data/sec_entities.jsonl \
+  --corpus evals/data/sec_corpus.jsonl \
+  --output-dir /tmp/sec-kg-output \
+  --format jsonl
+
+# Databricks (Delta tables)
+databricks jobs run-now --job-name sec_knowledge_graph_build \
+  --profile <PROFILE>
+```
+
+### Grants for the build job
+
+The build service principal needs `MODIFY` on the target tables:
+
+```sql
+GRANT MODIFY ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_nodes
+  TO `<build-service-principal>`;
+GRANT MODIFY ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_edges
+  TO `<build-service-principal>`;
+```
+
+### Compaction / OPTIMIZE
+
+After significant data growth, run `OPTIMIZE` on the Delta tables:
+
+```sql
+OPTIMIZE bootcamp_students.evangoh_capstone.gold_sec_kg_nodes
+  ZORDER BY (node_type);
+OPTIMIZE bootcamp_students.evangoh_capstone.gold_sec_kg_edges
+  ZORDER BY (edge_type, valid_from);
+```
+
+Do not schedule `OPTIMIZE` in this task — document it for operator use.
