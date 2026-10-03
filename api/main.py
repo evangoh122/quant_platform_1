@@ -210,14 +210,31 @@ def create_app() -> FastAPI:
 
     # ── frontend static serving (production) ──────────────────────────────
     if FRONTEND_DIST.is_dir():
+        _static_root = FRONTEND_DIST.resolve()
+
         application.mount(
             "/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets"
         )
 
         @application.get("/{full_path:path}", include_in_schema=False)
         def _spa(full_path: str) -> FileResponse:
-            candidate = FRONTEND_DIST / full_path
-            if full_path and candidate.is_file():
+            if not full_path:
+                return FileResponse(FRONTEND_DIST / "index.html")
+
+            # Reject any path whose decoded segments contain traversal,
+            # backslash, NUL, or an absolute/drive prefix.
+            decoded = urllib.parse.unquote(full_path)
+            for seg in decoded.split("/"):
+                if seg in ("..", ""):
+                    return FileResponse(FRONTEND_DIST / "index.html")
+                if "\\" in seg or "\x00" in seg:
+                    return FileResponse(FRONTEND_DIST / "index.html")
+            # Drive letter / absolute prefix (e.g. C:\, /etc)
+            if os.path.isabs(decoded):
+                return FileResponse(FRONTEND_DIST / "index.html")
+
+            candidate = (_static_root / decoded).resolve()
+            if candidate.is_file() and candidate.is_relative_to(_static_root):
                 return FileResponse(candidate)
             return FileResponse(FRONTEND_DIST / "index.html")
 
@@ -227,22 +244,38 @@ def create_app() -> FastAPI:
 def _register_demo_middleware(application: FastAPI) -> None:
     """Register security middleware for public-demo mode.
 
+    - Rate limit ALL GET/HEAD per client IP (including static files)
     - Reject non-GET/HEAD/OPTIONS on /api with 405
-    - Rate limit GET/HEAD per client IP
     - Reject oversized bodies (Content-Length or streamed bytes)
     - Request timeout
     - Security headers on every response
     - No CORS in demo
+
+    ``/api/health`` is NOT exempt from rate limiting; Render's health check
+    uses a small number of requests that won't exceed the per-IP limit.
     """
 
     @application.middleware("http")
     async def _demo_guard(request: Request, call_next: Callable) -> Response:
         path = request.url.path
         norm_path = _normalize_api_path(path)
+        method = request.method.upper()
+
+        # ── rate limit ALL GET/HEAD (not only /api) ──────────────────────
+        if method in ("GET", "HEAD"):
+            client_ip = _get_client_ip(request)
+            allowed, retry_after = _limiter.check(client_ip)
+            if not allowed:
+                resp = JSONResponse(
+                    status_code=429,
+                    content={"detail": "rate limit exceeded"},
+                )
+                resp.headers["Retry-After"] = str(retry_after)
+                _apply_security_headers(resp)
+                return resp
 
         # ── reject non-GET/HEAD/OPTIONS on /api ──────────────────────────
         if norm_path.startswith("/api"):
-            method = request.method.upper()
             if method not in ("GET", "HEAD", "OPTIONS"):
                 resp = JSONResponse(
                     status_code=405,
@@ -250,19 +283,6 @@ def _register_demo_middleware(application: FastAPI) -> None:
                 )
                 _apply_security_headers(resp)
                 return resp
-
-            # ── rate limit GET/HEAD ──────────────────────────────────────
-            if method in ("GET", "HEAD"):
-                client_ip = _get_client_ip(request)
-                allowed, retry_after = _limiter.check(client_ip)
-                if not allowed:
-                    resp = JSONResponse(
-                        status_code=429,
-                        content={"detail": "rate limit exceeded"},
-                    )
-                    resp.headers["Retry-After"] = str(retry_after)
-                    _apply_security_headers(resp)
-                    return resp
 
             # ── body size (Content-Length) ────────────────────────────────
             content_length = request.headers.get("content-length")

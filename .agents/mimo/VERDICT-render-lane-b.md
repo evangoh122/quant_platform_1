@@ -1,61 +1,67 @@
 # VERDICT: render-lane-b — MiMo
 **Status:** APPROVED
-**Round:** 4
+**Round:** 5
 
 ## Blocking findings
-None. Both blocking findings from Codex's verdict are resolved.
+None. The critical path-traversal vulnerability (DeepSeek check3) is fixed.
 
-## Fixes applied (round 4)
+## Fixes applied (round 5)
 
-### 1. Per-IP check before global counter (Codex finding #1)
-**File:** `api/main.py`
-**Problem:** Global counter was incremented BEFORE the per-IP check. Requests already rejected by the 60-request per-IP limit still consumed the 600-request global allowance. One attacker IP could exhaust the global ceiling and deny service to all other IPs.
-**Fix:** Reordered `check()` method: per-IP limit is enforced first. If per-IP rejects, return 429 WITHOUT touching the global counter. Global counter is only charged for requests that pass per-IP.
-**Regression test:** `test_per_ip_rejection_does_not_consume_global` — attacker sends 50 requests (per-IP limit=5, global=20). Victim's first request then gets 200 (global counter = 5, not 51).
+### 1. Path traversal in SPA catch-all (CRITICAL)
+**File:** `api/main.py:217-239`
+**Problem:** `candidate = FRONTEND_DIST / full_path` was never confined. `GET /%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd` returned `200 root:x:0:0...`. This affected both demo and non-demo mode, bypassed the `/api` rate limiter, and was present since app scaffold (#7).
+**Fix:**
+- Resolve root once: `_static_root = FRONTEND_DIST.resolve()`
+- Resolve candidate: `candidate = (_static_root / decoded).resolve()`
+- Confine check: `candidate.is_file() and candidate.is_relative_to(_static_root)`
+- Reject decoded segments containing `..`, `\`, `\x00`, or absolute paths (`os.path.isabs`)
+- Symlink escape blocked: `resolve()` + `is_relative_to` follows symlinks and checks the resolved path is inside root
 
-### 2. Single bounded OrderedDict (Codex finding #2)
-**File:** `api/main.py`
-**Problem:** `_lru` (LRUCache) and `_counts` (dict) were parallel structures. Evicting an IP from `_lru` did NOT remove its `(ip, window_ts)` entry from `_counts`. With `lru_max=5` and 1,000 IPs: `key_count=5` but `len(_counts)=1,000`.
-**Fix:** Replaced `_lru: _LRUCache[str, None]` + `_counts: dict[tuple[str, int], int]` with single `_counts: OrderedDict[str, tuple[int, int]]` mapping `ip -> (window_ts, count)`. LRU eviction (`popitem(last=False)`) atomically removes both the key and its counter. Removed dead `_LRUCache` class.
-**Regression test:** `test_lru_bound_bounds_counts_structure` — `lru_max=5` with 1,000 IPs: asserts both `key_count <= 5` AND `len(_counts) <= 5`.
+### 2. Rate limit ALL requests, not only /api
+**File:** `api/main.py:255-268`
+**Problem:** Rate limiting only applied to `/api` routes. Static file fetches (including traversal attempts) were unbounded.
+**Fix:** Moved rate-limit check before the `/api` method gate. All GET/HEAD requests (including `/{full_path:path}` static serves) are now rate-limited per client IP. `/api/health` is NOT exempt; Render's health check uses few enough requests to stay within limits.
+**Docstring updated:** Documents the new behavior and health-check policy.
 
-### 3. Broadened startup secret check (Codex secret gaps)
-**File:** `api/demo.py`
-**Problem:** `_is_unsafe_key()` didn't catch cloud-provider keys (`AWS_*`, `AZURE_*`, `GOOGLE_*`, `GCP_*`), CI/CD tokens (`GITHUB_*`, `GH_*`), payment/analytics keys (`STRIPE_*`, `SENTRY_*`), or URLs with embedded credentials.
-**Fix:** Added to `_SECRET_PREFIXES`: `AWS_`, `AZURE_`, `GOOGLE_`, `GCP_`, `GITHUB_`, `GH_`, `STRIPE_`, `SENTRY_`. Added to `_SECRET_SUFFIXES`: `_DSN`, `_URI`, `_PAT`, `_APIKEY`, `_CREDENTIALS`, `_KEY_BASE`. Added to `_SECRET_EXACT`: `CREDENTIALS`, `REDIS_URL`, `MONGODB_URI`, `SECRET_KEY_BASE`. Added URL credential rule: any `*_URL` with `@` or `://user:` in value.
-**Regression tests:** 6 parametrised test functions covering all new families plus Codex's specific examples (`AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `GITHUB_PAT`, `REDIS_URL`, `MONGODB_URI`, `SENTRY_DSN`, `STRIPE_APIKEY`, `SECRET_KEY_BASE`, `AZURE_CLIENT_ID`, `CREDENTIALS`).
+### 3. Comprehensive path-traversal test suite
+**File:** `tests/api/test_path_traversal.py` (new, 275 lines)
+**Coverage:**
+- 8 traversal payloads in BOTH demo and non-demo mode (16 tests): `/../secret.txt`, `/%2e%2e/secret.txt`, `/%2e%2e%2fsecret.txt`, `/..%2fsecret.txt`, `/%252e%252e/secret.txt`, `/assets/../../secret.txt`, `/....//secret.txt`, backslash variant
+- Symlink outside dist → not served (2 tests, demo + non-demo)
+- Symlink inside dist → served (2 tests)
+- Legit asset `/assets/x.js` → 200 with content (2 tests)
+- Deep SPA link `/signals/AAPL` → index.html (2 tests)
+- Empty path → index.html (2 tests)
+- NUL byte rejection (logic test)
+- Absolute path `/etc/passwd` → index.html (2 tests)
+- Real uvicorn subprocess on random port: traversal + legit asset (1 test)
+- `_strip_ambient_secrets` autouse fixture handles `CLAUDE_CODE_MESSAGING_TOKEN` / `DATABRICKS_WORKSPACE_ID`
 
 ## Checks run
 ```
-# New regression tests only
-python3 -m pytest -q -p no:cacheprovider tests/api/test_public_demo_security.py::test_per_ip_rejection_does_not_consume_global tests/api/test_public_demo_security.py::test_lru_bound_bounds_counts_structure tests/api/test_public_demo_security.py::test_broadened_secret_prefixes_rejected tests/api/test_public_demo_security.py::test_broadened_secret_suffixes_rejected tests/api/test_public_demo_security.py::test_broadened_exact_names_rejected tests/api/test_public_demo_security.py::test_url_with_embedded_credentials_rejected tests/api/test_public_demo_security.py::test_clean_url_without_credentials_allowed tests/api/test_public_demo_security.py::test_codex_examples_all_rejected
-→ 40 passed in 0.48s
+# Path traversal tests only
+python3 -m pytest tests/api/test_path_traversal.py -q -p no:cacheprovider
+→ 31 passed in 2.27s
+
+# Path traversal tests with ambient secrets
+CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest tests/api/test_path_traversal.py -q -p no:cacheprovider
+→ 31 passed in 2.35s
 
 # Full suite excluding lakebase
 python3 -m pytest -q -p no:cacheprovider --ignore=tests/lakebase
-→ 589 passed, 67 skipped in 107.52s
+→ 620 passed, 67 skipped in 115.91s
 
-# All API tests with ambient secrets
-CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q tests/api
-→ 118 passed in 2.92s
-
-# Both file orders with ambient secrets
-CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q -p no:cacheprovider -p no:randomly tests/api/test_rbac.py tests/api/test_public_demo_security.py
-→ 113 passed in 2.24s
-
-CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q -p no:cacheprovider -p no:randomly tests/api/test_public_demo_security.py tests/api/test_rbac.py
-→ 113 passed in 2.47s
-
-# Prove tests FAIL on pre-fix code (git stash + restore)
-→ 17 failed, 5 passed in 0.67s (5 passed = clean-URL allowed tests)
+# Full suite with ambient secrets
+CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q -p no:cacheprovider --ignore=tests/lakebase
+→ 620 passed, 67 skipped in 113.31s
 ```
 
-## Changed files (round 4 only)
+## Changed files (round 5 only)
 | File | Change |
 |------|--------|
-| `api/main.py` | Reorder `check()`: per-IP first, global only for passing requests; single `OrderedDict[ip] → (window, count)` replaces dual `_lru`+`_counts`; remove dead `_LRUCache` class and unused `Any` import |
-| `api/demo.py` | Broaden `_is_unsafe_key()`: 8 new prefixes, 6 new suffixes, 4 new exact names, URL-credential rule |
-| `tests/api/test_public_demo_security.py` | 70→110 tests: 8 new pure-function test functions (40 parametrised cases) covering limiter order, LRU bound, and all secret families |
+| `api/main.py` | SPA catch-all: resolve+confine, reject `..`/`\`/NUL/absolute segments; rate limit ALL GET/HEAD (not only `/api`); update docstring |
+| `tests/api/test_path_traversal.py` | New: 31 tests covering 8 traversal payloads × 2 modes, symlinks, legit assets, SPA links, NUL, absolute paths, uvicorn subprocess |
 
-## Commit SHA (round 4)
-`88ca7b8` (branch: `slice/render-lane-b`)
+## Previous rounds
+- Round 4: `88ca7b8` — per-IP before global counter, single OrderedDict, broadened secret check
+- Round 5 commit: `194fe03` (branch: `slice/render-lane-b`)
