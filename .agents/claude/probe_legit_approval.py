@@ -4,7 +4,10 @@ import subprocess
 import sys
 import uuid
 
-sys.path.insert(0, "/home/jianj/code/quant_platform_1")
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 from agent.tools_write import ApprovalContext, create_order_intent, record_approval  # noqa: E402
 from db.lakebase import get_lakebase  # noqa: E402
 
@@ -24,7 +27,7 @@ create_order_intent("MSFT", "BUY", 1, notional=200.0, user_id=bob,
 
 g = subprocess.run([sys.executable, "scripts/grant_approver.py", alice],
                    capture_output=True, text=True,
-                   cwd="/home/jianj/code/quant_platform_1")
+                   cwd=str(REPO_ROOT))
 print("grant_approver exit:", g.returncode, (g.stdout or g.stderr).strip()[:120])
 
 r_own = record_approval(oa, ApprovalContext(approver_id=alice))
