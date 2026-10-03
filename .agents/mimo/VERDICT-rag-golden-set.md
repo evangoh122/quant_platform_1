@@ -74,4 +74,4 @@ b1d269a51fe4778c12a4b147cc2db56fd3f7296029690235593b4aa363a11551
 
 ## Commit
 
-(to be filled after commit)
+`93f22f7` on `slice/rag-eval-golden`
