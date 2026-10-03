@@ -10,42 +10,49 @@ These tests prove that the public-demo mode:
 """
 from __future__ import annotations
 
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from api.demo import _is_unsafe_key
+
 
 @pytest.fixture(autouse=True)
-def _isolate_modules():
-    """Ensure api.* and agent.tools_write modules are cleared after each test.
+def _strip_ambient_secrets(monkeypatch):
+    """Remove ambient env vars that ``api.demo._is_unsafe_key`` would reject.
 
-    This prevents demo-mode app instances from leaking into subsequent tests
-    that use the ``client`` fixture (which imports ``app`` from ``api.main``).
+    Any CI runner or developer shell may carry ``CLAUDE_CODE_MESSAGING_TOKEN``,
+    ``DATABRICKS_WORKSPACE_ID``, or similar variables.  This fixture strips
+    them before each test so the demo-mode validation is deterministic.
+    It reuses the predicate from ``api/demo.py`` so the two cannot drift.
     """
+    for key in list(os.environ):
+        if key == "PUBLIC_DEMO":
+            continue
+        if _is_unsafe_key(key, os.environ.get(key, "")):
+            monkeypatch.delenv(key, raising=False)
     yield
-    for key in list(sys.modules):
-        if key.startswith("api.") or key == "agent.tools_write":
-            del sys.modules[key]
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _make_demo_app(monkeypatch, extra_env: dict[str, str] | None = None):
-    """Build a fresh app under PUBLIC_DEMO=1 with a clean environment."""
-    for key in list(sys.modules):
-        if key.startswith("api.") or key.startswith("agent.tools_write"):
-            del sys.modules[key]
+    """Build a fresh app under PUBLIC_DEMO=1 with a clean environment.
 
+    Uses the application factory (``create_app()``) directly without touching
+    ``sys.modules``, so the conftest ``client`` fixture's ``app`` reference
+    (from the original ``api.main`` import) is never invalidated.
+    """
     monkeypatch.setenv("PUBLIC_DEMO", "1")
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
     for k, v in (extra_env or {}).items():
         monkeypatch.setenv(k, v)
 
-    import api.main as main_mod
+    from api.main import create_app
 
-    app = main_mod.create_app()
-    return app
+    return create_app()
 
 
 def _client(app):
@@ -85,16 +92,19 @@ def test_spoofed_identity_equivalence(monkeypatch):
 
 def test_no_lakebase_import_in_demo(monkeypatch):
     """After app construction and an anonymous request, db.lakebase is not imported."""
-    # Clear db.lakebase if it was imported by fixtures
-    for key in list(sys.modules):
-        if key.startswith("db.lakebase"):
-            del sys.modules[key]
+    saved = {
+        key: sys.modules.pop(key)
+        for key in list(sys.modules)
+        if key.startswith("db.lakebase")
+    }
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
     client.get("/api/analytics")
 
     assert "db.lakebase" not in sys.modules
+
+    sys.modules.update(saved)
 
 
 # ── test 4: demo routes are GET/HEAD/OPTIONS only, prohibited paths absent ────
@@ -138,10 +148,6 @@ def test_demo_routes_methods_and_prohibited_paths(monkeypatch):
 ])
 def test_unsafe_variable_rejected_at_construction(monkeypatch, key):
     """Each unsafe variable family rejects at app construction without leaking values."""
-    for k in list(sys.modules):
-        if k.startswith("api."):
-            del sys.modules[k]
-
     monkeypatch.setenv("PUBLIC_DEMO", "1")
     monkeypatch.setenv(key, "super-secret-value-12345")
 
@@ -159,10 +165,6 @@ def test_unsafe_variable_rejected_at_construction(monkeypatch, key):
 
 def test_safe_empty_environment_starts(monkeypatch):
     """With PUBLIC_DEMO=1 and no unsafe vars, create_app() succeeds."""
-    for k in list(sys.modules):
-        if k.startswith("api."):
-            del sys.modules[k]
-
     monkeypatch.setenv("PUBLIC_DEMO", "1")
     for key in (
         "LAKEBASE_HOST", "LAKEBASE_PORT", "LAKEBASE_DB",

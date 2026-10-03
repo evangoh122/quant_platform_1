@@ -1,38 +1,61 @@
 # VERDICT: render-lane-b — MiMo
 **Status:** APPROVED
-**Round:** 1
+**Round:** 2
 
 ## Blocking findings
 None.
 
+## Fixes applied (round 2)
+
+### 1. Ambient environment variable isolation
+**File:** `tests/api/test_public_demo_security.py`
+**Problem:** On WSL (and any CI runner), shell env vars like `CLAUDE_CODE_MESSAGING_TOKEN` (`*_TOKEN` suffix) and `DATABRICKS_WORKSPACE_ID` (`DATABRICKS_` prefix) trigger `api.demo._is_unsafe_key`, causing `PublicDemoConfigurationError` in 9 tests.
+**Fix:** Added `_strip_ambient_secrets` autouse fixture that removes all env vars matching `_is_unsafe_key` (reusing the predicate from `api/demo.py` so the two cannot drift). Uses `monkeypatch.delenv` per-key.
+
+### 2. Test pollution: `test_no_lakebase_import_in_demo` deleted `db.lakebase` from `sys.modules`
+**File:** `tests/api/test_public_demo_security.py`
+**Problem:** `test_no_lakebase_import_in_demo` deleted `db.lakebase` from `sys.modules` and never restored it. When `db.lakebase` was later reimported, `fake_lakebase`'s `monkeypatch.setattr("db.lakebase.get_lakebase", ...)` targeted the old (deleted) module object. All subsequent tests using `fake_lakebase` hit the real Lakebase pool → 30s timeout → 503.
+**Fix:** Save and restore `db.lakebase*` modules around the assertion instead of leaving them deleted.
+
+### 3. Test pollution: `api.main` first-import with `PUBLIC_DEMO=1`
+**Files:** `tests/api/test_public_demo_security.py`, `tests/api/conftest.py`
+**Problem:** `_make_demo_app` set `PUBLIC_DEMO=1` then imported `api.main` for the first time. The module-level `app = create_app()` at `api/main.py:220` executed with demo mode active, baking demo middleware into the module-level `app`. The conftest `client` fixture read this same demo `app`.
+**Fix (two-part):**
+- `_make_demo_app` no longer clears `sys.modules`. It calls `create_app()` directly (the application factory), so the module-level `app` is never overwritten.
+- Conftest `client` fixture changed from `from api.main import app` to `from api.main import create_app; TestClient(create_app())`, creating a fresh non-demo app each time.
+
+### 4. Removed stale `_isolate_modules` fixture
+**File:** `tests/api/test_public_demo_security.py`
+**Problem:** The old `_isolate_modules` fixture cleared `api.*` from `sys.modules` in teardown, causing the conftest `client` fixture to reimport `api.main` (which could pick up demo mode). The save/restore variant caused stale module references that bypassed `fake_lakebase` patches.
+**Fix:** Removed entirely. With `_make_demo_app` using `create_app()` directly and conftest using `create_app()` directly, no module clearing is needed.
+
 ## Non-blocking notes
-- `test_new_viewer_cannot_approve_order` in `tests/api/test_rbac.py` fails with 503 due to Lakebase endpoint being disabled (infrastructure issue, not caused by this lane). Pre-existing.
-- The `_isolate_modules` autouse fixture in `test_public_demo_security.py` prevents demo-mode app instances from leaking into subsequent tests that use the `client` fixture.
+- Suite runtime improved from ~162s to ~115s because the `fake_lakebase` patch now correctly intercepts all `db.lakebase.get_lakebase()` calls, eliminating the30s PoolTimeout.
 
 ## Checks run
 ```
-# Test 1: Demo security + write guard (PUBLIC_DEMO=1)
-PYTHONPATH="/tmp/pyspark_hide:$PYTHONPATH" PUBLIC_DEMO=1 python3 -m pytest -q tests/api/test_public_demo_security.py tests/lakebase/test_public_demo_write_guard.py
-→ 29 passed in 1.43s
+# Test 1: Demo security with ambient env vars (the original failure)
+CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q tests/api/test_public_demo_security.py
+→ 22 passed in 1.06s
 
-# Test 2: All existing tests (non-demo)
-PYTHONPATH="/tmp/pyspark_hide:$PYTHONPATH" python3 -m pytest -q tests/api tests/lakebase/test_guardrails.py tests/lakebase/test_execution_boundary.py
-→ 66 passed, 1 failed (pre-existing infrastructure: Lakebase endpoint disabled)
+# Test 2: Both file orders with ambient env vars
+CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q -p no:randomly tests/api/test_public_demo_security.py tests/api/test_rbac.py
+→ 25 passed in 1.22s
 
-# Red status proof: new tests against OLD code (git archive HEAD)
-PUBLIC_DEMO=1 python3 -m pytest -q tests/api/test_public_demo_security.py tests/lakebase/test_public_demo_write_guard.py
-→ 29 failed in 1.19s
+CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q -p no:randomly tests/api/test_rbac.py tests/api/test_public_demo_security.py
+→ 25 passed in 1.12s
+
+# Test 3: All API tests
+python3 -m pytest -q -p no:randomly tests/api/
+→ 30 passed in 2.02s
+
+# Test 4: Full suite (ignore lakebase)
+python3 -m pytest -q --ignore=tests/lakebase
+→ 501 passed, 67 skipped in 114.83s
 ```
 
-## Changed files
+## Changed files (round 2 only)
 | File | Change |
 |------|--------|
-| `api/demo.py` | NEW — `is_public_demo()`, `PublicDemoConfigurationError`, `validate_public_demo_environment()`, constants |
-| `api/deps.py` | MOD — `get_current_user()` demo bypass (returns fixed viewer before header/DB); `read_delta()` extended with `snapshot_key` seam |
-| `api/main.py` | MOD — `create_app()` factory, conditional route registration, `_FixedWindowLimiter`, demo middleware (rate limit, body size, timeout, security headers, no CORS), non-demo CORS restricted |
-| `agent/tools_write.py` | MOD — `PublicDemoWriteDisabled` exception, `_reject_public_demo_write()` guard on all 7 write tools |
-| `tests/api/test_public_demo_security.py` | NEW — 10 test functions (22 with parametrize): anonymous viewer, spoofed identity, no Lakebase, route methods, unsafe vars, safe env, rate limit, body size, headers, CORS |
-| `tests/lakebase/test_public_demo_write_guard.py` | NEW — 1 parametrized test covering 7 write tools, asserts zero DB/broker/risk/clock calls |
-
-## Commit SHA
-`6365661ca50fb0cd303aee0c8a34d3702254d782` (branch: `slice/render-lane-b`)
+| `tests/api/test_public_demo_security.py` | `_strip_ambient_secrets` autouse fixture; `_make_demo_app` calls `create_app()` directly; `test_no_lakebase_import_in_demo` saves/restores `db.lakebase`; removed `_isolate_modules`; removed `sys.modules` clearing from `test_unsafe_variable_rejected_at_construction` and `test_safe_empty_environment_starts` |
+| `tests/api/conftest.py` | `client` fixture uses `create_app()` instead of module-level `app` |
