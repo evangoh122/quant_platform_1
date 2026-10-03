@@ -33,7 +33,18 @@ def screen_universe(
     symbol's membership on ``trade_date`` uses only bars with
     ``event_date < trade_date``.
     """
+    # Build the full market calendar (union of all dates present in the panel).
+    # Reindex each symbol onto this calendar so that missing sessions are NaN
+    # rows in the rolling window — matching the SQL dense-grid semantics where
+    # a missing session is a NULL row, not an absent row.
+    all_dates = pd.DatetimeIndex(sorted(panel["event_date"].unique()))
+
     df = panel.sort_values(["symbol", "event_date"]).reset_index(drop=True)
+    wide = df.pivot(index="event_date", columns="symbol", values="dollar_volume")
+    wide = wide.reindex(all_dates)
+    df = wide.melt(ignore_index=False, value_name="dollar_volume").reset_index()
+    df = df.rename(columns={"index": "event_date", "variable": "symbol"})
+
     g = df.groupby("symbol", sort=False)["dollar_volume"]
 
     med = g.transform(

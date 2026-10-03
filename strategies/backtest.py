@@ -209,11 +209,16 @@ def compute_costs(
             if notional <= 0:
                 continue
             a = float(adv_t[s]) if pd.notna(adv_t[s]) else 0.0
-            capped_notional, _ = scale_order_to_adv_cap(notional, a, params)
-            if capped_notional <= 0:
-                continue
-            bps = cost_per_trade(capped_notional, a, params)
-            cost_dollars += capped_notional * bps / 1e4
+            # Charge on the ACTUAL executed notional, never re-capped.
+            # The ADV cap in cap_weight_changes_by_adv already decided what
+            # executes; costs must reflect the true trade size.
+            participation = notional / a if a > 0 else 1.0
+            bps = (
+                params.commission_bps
+                + 0.5 * params.spread_bps
+                + params.slippage_bps * (participation / params.adv_participation_cap)
+            )
+            cost_dollars += notional * bps / 1e4
         turnover_cost.loc[date] = cost_dollars / book_capital
 
         borrow_dollars = 0.0

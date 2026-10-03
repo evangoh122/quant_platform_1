@@ -471,3 +471,68 @@ def test_adv_cap_property_invariants():
                         )
 
     assert not violations, "Property test violations:\n" + "\n".join(violations[:20])
+
+
+# ── Cost-on-executed-notional tests (round 8) ────────────────────────────────
+
+def test_exit_costs_charged_on_full_executed_notional():
+    """A large exit (executed notional = 5% of ADV) must be charged on the
+    full executed notional, not the 1%-of-ADV cap.
+
+    Before the fix, compute_costs re-capped through scale_order_to_adv_cap,
+    charging costs on at most 1% of ADV even for a $5M exit on a $10M ADV name.
+    """
+    dates = pd.date_range("2024-01-01", periods=5, freq="B")
+    symbols = ["A", "B"]
+
+    # A goes from 0.5 to 0 (exit). Executed notional = 0.5 * $10M = $5M.
+    weights = pd.DataFrame(0.0, index=dates, columns=symbols)
+    weights.loc[dates[0], "A"] = 0.5
+    weights.loc[dates[1], "A"] = 0.0
+
+    book_capital = 10_000_000.0
+    # ADV = $10M → 1% cap = $100k. Executed $5M = 50x the cap.
+    adv = pd.DataFrame(10_000_000.0, index=dates, columns=symbols)
+    params = CostParams()
+
+    costs = compute_costs(weights, adv, book_capital, params)
+
+    # Cost on day 1 (the exit bar) with the fix:
+    #   notional = $5M, participation = 5M/10M = 0.5
+    #   bps = 0.5 + 0.5*3 + 2*(0.5/0.01) = 102
+    #   cost_dollars = 5M * 102 / 1e4 = $51,000
+    #   cost_frac = 51,000 / 10M = 0.0051
+    exit_cost = costs["turnover_cost"].loc[dates[1]]
+    expected = 5_000_000.0 * (0.5 + 0.5 * 3.0 + 2.0 * (0.5 / 0.01)) / 1e4 / book_capital
+
+    assert exit_cost == pytest.approx(expected), (
+        f"Exit cost should be charged on $5M notional (expected {expected:.6f}), "
+        f"got {exit_cost:.6f}"
+    )
+
+
+def test_costs_never_below_minimum_bps_times_executed_notional():
+    """Costs are never below (commission + 0.5*spread) bps * executed notional.
+
+    The slippage term is participation-dependent and >= 0, so the floor is
+    the fixed component only.
+    """
+    dates = pd.date_range("2024-01-01", periods=5, freq="B")
+    symbols = ["A", "B"]
+
+    weights = pd.DataFrame(0.0, index=dates, columns=symbols)
+    weights.loc[dates[1], "A"] = 0.5  # entry
+
+    book_capital = 10_000_000.0
+    adv = pd.DataFrame(1e8, index=dates, columns=symbols)
+    params = CostParams()
+
+    costs = compute_costs(weights, adv, book_capital, params)
+    entry_cost = costs["turnover_cost"].loc[dates[1]]
+
+    executed_notional = 0.5 * book_capital
+    min_cost_frac = executed_notional * (params.commission_bps + 0.5 * params.spread_bps) / 1e4 / book_capital
+
+    assert entry_cost >= min_cost_frac - 1e-15, (
+        f"Entry cost {entry_cost:.8f} < minimum {min_cost_frac:.8f}"
+    )
