@@ -542,7 +542,7 @@ def vector_search(
     # Verify the active embedding model matches the stored model
     if _stored_embedding_model is not None:
         from api.config import config as _cfg
-        provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        provider = _cfg.EMBEDDING_PROVIDER
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             active_model = _cfg.ST_EMBEDDING_MODEL
         else:
@@ -630,6 +630,8 @@ class HybridRetriever:
 
         Returns:
             Fused and optionally reranked list of Documents.
+            If the dense embedder fails at runtime, falls back to BM25-only
+            with _warning="dense_unavailable" metadata on each result.
         """
         as_of = _normalize_as_of(as_of)
         effective_top_k = top_k or self.top_k
@@ -642,29 +644,47 @@ class HybridRetriever:
             ticker_boost=self.ticker_boost,
             as_of=as_of,
         )
-        vec_docs = vector_search(
-            query,
-            top_k=effective_top_k * 2,
-            ticker=effective_ticker,
-            as_of=as_of,
-        )
+
+        try:
+            vec_docs = vector_search(
+                query,
+                top_k=effective_top_k * 2,
+                ticker=effective_ticker,
+                as_of=as_of,
+            )
+        except CorpusUnavailableError:
+            # Dimension/model mismatch — configuration error, propagate
+            raise
+        except Exception as e:
+            # Transient embedder failure (network, auth, runtime) — degrade to BM25-only
+            logger.warning("Dense embedding failed ({}: {}), falling back to BM25-only", type(e).__name__, e)
+            vec_docs = []
+
+        bm25_only = not vec_docs
 
         if not bm25_docs and not vec_docs:
             return []
         if not bm25_docs:
             return vec_docs[:effective_top_k]
         if not vec_docs:
-            return bm25_docs[:effective_top_k]
+            results = bm25_docs[:effective_top_k]
+        else:
+            fused = rrf_fuse(
+                [vec_docs, bm25_docs],
+                k=self.rrf_k,
+                boost_ticker=effective_ticker,
+                ticker_boost=self.ticker_boost,
+            )
+            logger.debug(
+                "Hybrid RRF: {} vector + {} BM25 -> {} fused (top_k={}, ticker={}, boost={}x)",
+                len(vec_docs), len(bm25_docs), len(fused),
+                effective_top_k, effective_ticker, self.ticker_boost,
+            )
+            results = fused[:effective_top_k]
 
-        fused = rrf_fuse(
-            [vec_docs, bm25_docs],
-            k=self.rrf_k,
-            boost_ticker=effective_ticker,
-            ticker_boost=self.ticker_boost,
-        )
-        logger.debug(
-            "Hybrid RRF: {} vector + {} BM25 -> {} fused (top_k={}, ticker={}, boost={}x)",
-            len(vec_docs), len(bm25_docs), len(fused),
-            effective_top_k, effective_ticker, self.ticker_boost,
-        )
-        return fused[:effective_top_k]
+        if bm25_only:
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "bm25_only"
+                doc.metadata["_warning"] = "dense_unavailable"
+
+        return results

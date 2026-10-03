@@ -175,6 +175,14 @@ def get_embeddings():
 
         if EMBEDDING_PROVIDER == "huggingface":
             model_name = config.HF_EMBEDDING_MODEL
+            hf_token = os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
+            if not hf_token:
+                logger.error(
+                    "EMBEDDING_PROVIDER is 'huggingface' but neither HF_TOKEN nor "
+                    "HUGGINGFACEHUB_API_TOKEN is set. Switch to 'sentence-transformers' "
+                    "or provide a HuggingFace API token."
+                )
+                return None
             try:
                 _embeddings = HFInferenceEmbeddings(model_name)
                 return _embeddings

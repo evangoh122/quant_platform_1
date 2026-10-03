@@ -171,7 +171,7 @@ class Config:
     # Embedding Settings
     @property
     def EMBEDDING_PROVIDER(self) -> str:
-        return os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        return os.getenv("EMBEDDING_PROVIDER", "sentence-transformers").lower()
 
     @property
     def HF_EMBEDDING_MODEL(self) -> str:
@@ -188,7 +188,7 @@ class Config:
         """The embedding model actually in use, per the configured provider.
         Use this for display/telemetry instead of reading provider-specific
         env vars directly."""
-        provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        provider = self.EMBEDDING_PROVIDER
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             return self.ST_EMBEDDING_MODEL
         return self.HF_EMBEDDING_MODEL
@@ -203,7 +203,7 @@ class Config:
         explicit = os.getenv("EMBEDDING_DIM")
         if explicit:
             return int(explicit)
-        provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        provider = self.EMBEDDING_PROVIDER
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             return 384  # BAAI/bge-small-en-v1.5
         if provider == "huggingface":
