@@ -58,3 +58,21 @@ the metric's line item. If not, those must be filing-level. Also check:
 - `query_sec_facts` returns `citation_level` + `source_url`.
 
 Write `.agents/deepseek/VERDICT-rag-kg-check2.md`.
+
+## Re-check after round 3 (this run)
+Claude rebuilt offline:
+- 63,520 nodes, 136,786 edges;
+- `citation_level`: filing 43,722, chunk 0;
+- manifest: input rows by entity_type, `rejected_rows` 0, reasons {}.
+
+Verify:
+1. The arbitrary-chunk fallback is gone. Is chunk=0 genuinely correct, or is the matcher too strict?
+   For facts whose accession IS in the corpus (128 filings), sample 20 and search the chunks of that
+   filing for the value in any common format. If some clearly contain it and the matcher missed them,
+   report the precision/recall of the matcher. Note it as non-blocking unless the matcher is wrong.
+2. The Spark reader and writer use one schema. The fake-Row test mirrors the writer schema constant,
+   and `get_fact` returns results through `SparkGraphStore` with pyspark hidden.
+3. Rejection stats are exact, and an unknown-reason rejection fails the build.
+
+Re-run the earlier checks (PIT, restatements, IDs, `query_sec_facts` security, ontology alignment).
+Write `.agents/deepseek/VERDICT-rag-kg-check3.md`.
