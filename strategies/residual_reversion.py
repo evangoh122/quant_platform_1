@@ -116,27 +116,43 @@ def _rolling_residuals_one_symbol(
     m: np.ndarray,
     f: np.ndarray,
     window: int,
+    min_obs: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     """OLS residual of ``y`` on ``[1, m, f]`` with a lagged rolling window.
 
     Betas for day ``t`` are estimated on days ``[t-window, t-1]``. Returns
     ``alpha``, ``beta_mkt``, ``beta_ind``, ``residual`` and ``sigma`` arrays.
+
+    Rows where any of ``y``, ``m``, ``f`` is non-finite are excluded from the
+    cross-product sums (zeroed) and from the effective observation count.  The
+    OLS output is NaN when the number of valid rows in the window is below
+    ``min_obs`` (default ``ceil(0.8 * window)``).
     """
     y = np.asarray(y, dtype=float)
     m = np.asarray(m, dtype=float)
     f = np.asarray(f, dtype=float)
     t = len(y)
-    n = float(window)
+    if min_obs is None:
+        min_obs = int(np.ceil(0.8 * window))
 
-    # Rolling (lagged) sums of the design-matrix cross-products.
-    s1y = _rolling_lagged_sum(y, window)
-    smy = _rolling_lagged_sum(m * y, window)
-    sfy = _rolling_lagged_sum(f * y, window)
-    s1m = _rolling_lagged_sum(m, window)
-    s1f = _rolling_lagged_sum(f, window)
-    smm = _rolling_lagged_sum(m * m, window)
-    sff = _rolling_lagged_sum(f * f, window)
-    smf = _rolling_lagged_sum(m * f, window)
+    # Per-row validity mask: all three inputs must be finite.
+    valid = np.isfinite(y) & np.isfinite(m) & np.isfinite(f)
+    # Zero invalid rows so cross-products use the same set of rows.
+    y_z = np.where(valid, y, 0.0)
+    m_z = np.where(valid, m, 0.0)
+    f_z = np.where(valid, f, 0.0)
+
+    # Rolling (lagged) sums of the design-matrix cross-products on zeroed inputs.
+    s1y = _rolling_lagged_sum(y_z, window)
+    smy = _rolling_lagged_sum(m_z * y_z, window)
+    sfy = _rolling_lagged_sum(f_z * y_z, window)
+    s1m = _rolling_lagged_sum(m_z, window)
+    s1f = _rolling_lagged_sum(f_z, window)
+    smm = _rolling_lagged_sum(m_z * m_z, window)
+    sff = _rolling_lagged_sum(f_z * f_z, window)
+    smf = _rolling_lagged_sum(m_z * f_z, window)
+    # Effective observation count per window (lagged).
+    n_valid = _rolling_lagged_sum(valid.astype(float), window)
 
     alpha = np.full(t, np.nan)
     beta_mkt = np.full(t, np.nan)
@@ -144,8 +160,11 @@ def _rolling_residuals_one_symbol(
     residual = np.full(t, np.nan)
 
     for i in range(window, t):
+        ni = n_valid[i]
+        if ni < min_obs:
+            continue  # insufficient valid observations
         g = np.array([
-            [n, s1m[i], s1f[i]],
+            [ni, s1m[i], s1f[i]],
             [s1m[i], smm[i], smf[i]],
             [s1f[i], smf[i], sff[i]],
         ])
@@ -176,6 +195,7 @@ def compute_residuals(
     industry_factor: Optional[pd.DataFrame] = None,
     window: int = 60,
     lookback: int = 5,
+    min_obs: Optional[int] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Compute per-symbol rolling residuals and s-scores.
 
@@ -188,6 +208,8 @@ def compute_residuals(
             is used as the systematic factor.
         window: rolling estimation window (default 60).
         lookback: cumulative-residual window for the s-score (default 5).
+        min_obs: minimum valid observations per window; rows with fewer are NaN.
+            Default ``ceil(0.8 * window)``.
 
     Returns a dict of wide frames aligned to ``returns``: ``alpha``,
     ``beta_mkt``, ``beta_ind``, ``residual``, ``sigma`` and ``s_score``.
@@ -212,7 +234,8 @@ def compute_residuals(
     residual = pd.DataFrame(np.nan, index=returns.index, columns=symbols)
 
     for j, sym in enumerate(symbols):
-        res = _rolling_residuals_one_symbol(y_all[:, j], market, f_all[:, j], window)
+        res = _rolling_residuals_one_symbol(y_all[:, j], market, f_all[:, j],
+                                            window, min_obs=min_obs)
         alpha[sym] = res["alpha"]
         beta_mkt[sym] = res["beta_mkt"]
         beta_ind[sym] = res["beta_ind"]

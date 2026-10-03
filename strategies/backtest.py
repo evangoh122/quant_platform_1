@@ -69,8 +69,14 @@ def cap_weight_changes_by_adv(
     """Cap each daily weight *change* at ``adv_participation_cap`` of ADV.
 
     The capped change is accumulated into the running position, so oversized
-    orders are spread across multiple days.  Zero-ADV names can never be traded
-    (``scale_order_to_adv_cap`` returns 0 when ``adv <= 0``).
+    orders are spread across multiple days.
+
+    *Reductions toward zero are never capped* — a position that needs to exit
+    (e.g. after a name leaves the universe) must be allowed to liquidate even
+    when ADV is zero or unknown.  Increases are still capped: zero-ADV names
+    cannot accumulate new positions.  ADV is forward-filled per symbol so that
+    the last known ADV is used for names whose ADV becomes NaN (e.g. after
+    leaving the universe).
 
     Must be called *after* ``filter_to_universe`` and *before* cost computation.
     """
@@ -79,17 +85,22 @@ def cap_weight_changes_by_adv(
     cap_frac = params.adv_participation_cap  # e.g. 0.01
     out = weights.copy().to_numpy(dtype=float)
     prev = np.zeros(out.shape[1])
-    adv_np = adv.reindex(index=weights.index, columns=weights.columns).fillna(0.0).to_numpy(dtype=float)
+    # Forward-fill ADV per symbol so the last known ADV is used for names
+    # whose ADV becomes NaN after leaving the universe.
+    adv_ff = adv.reindex(index=weights.index, columns=weights.columns).ffill()
+    adv_np = adv_ff.fillna(0.0).to_numpy(dtype=float)
     for i in range(out.shape[0]):
         cur = out[i]
         dw = cur - prev
-        nonzero = dw != 0.0
-        if nonzero.any():
-            notional = np.abs(dw[nonzero]) * book_capital
-            caps = cap_frac * adv_np[i, nonzero]
+        # Only cap increases in absolute position size; reductions toward 0
+        # are never blocked (a position must always be allowed to shrink).
+        increasing = np.abs(cur) > np.abs(prev) + 1e-15
+        if increasing.any():
+            notional = np.abs(dw[increasing]) * book_capital
+            caps = cap_frac * adv_np[i, increasing]
             over = notional > caps
             if over.any():
-                idx = np.where(nonzero)[0][over]
+                idx = np.where(increasing)[0][over]
                 for j_idx, cap_val in zip(idx, caps[over]):
                     out[i, j_idx] = prev[j_idx] + np.sign(dw[j_idx]) * cap_val / book_capital
         prev = out[i]

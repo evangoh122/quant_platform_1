@@ -146,3 +146,58 @@ def test_appending_future_symbol_does_not_change_earlier_factors():
         factor_base.loc[dates[:20], ["A", "B", "C", "D"]],
         factor_e.loc[dates[:20], ["A", "B", "C", "D"]],
     )
+
+
+def test_nan_returns_not_counted_as_zeros():
+    """A symbol with gaps in its return series must be regressed on only the
+    valid rows, not treat the gaps as zero-return days.
+
+    CodeRabbit finding #1: _rolling_lagged_sum uses np.nan_to_num and
+    _rolling_residuals_one_symbol uses n = float(window), so a window with
+    30 valid + 30 NaN days is fitted as 60 days with 30 zeros.
+    """
+    from strategies.residual_reversion import compute_industry_factor
+
+    window = 60
+    n_days = 120
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+    rng = np.random.default_rng(123)
+    market = pd.Series(rng.normal(0.0, 0.01, n_days), index=dates)
+
+    # Two symbols in same industry so industry factor is non-zero.
+    y_raw_a = 1.1 * market.to_numpy() + rng.normal(0.0, 0.01, n_days)
+    y_raw_b = 0.9 * market.to_numpy() + rng.normal(0.0, 0.01, n_days)
+    y_a = y_raw_a.copy()
+    y_a[30:60] = np.nan  # 30-day gap in A
+
+    returns = pd.DataFrame({"A": y_a, "B": y_raw_b}, index=dates)
+    industry_map = {"A": "tech", "B": "tech"}
+    ind = compute_industry_factor(returns, industry_map)
+
+    # Use min_obs=25 so 30 valid rows in the window passes the gate.
+    result = compute_residuals(returns, market, ind, window=window,
+                               lookback=5, min_obs=25)
+    alpha_cur = result["alpha"]["A"].to_numpy()
+    beta_cur = result["beta_mkt"]["A"].to_numpy()
+
+    # Reference: OLS on valid rows only for day 80 (window [20, 79]).
+    t_idx = 80
+    y_win = y_a[t_idx - window:t_idx]
+    m_win = market.to_numpy()[t_idx - window:t_idx]
+    f_win = ind["A"].to_numpy()[t_idx - window:t_idx]
+    valid = np.isfinite(y_win) & np.isfinite(m_win) & np.isfinite(f_win)
+    n_valid = valid.sum()
+    assert n_valid == 30, f"expected 30 valid rows, got {n_valid}"
+
+    X = np.column_stack([np.ones(n_valid), m_win[valid], f_win[valid]])
+    coef_ref, _, _, _ = np.linalg.lstsq(X, y_win[valid], rcond=None)
+
+    # The OLS must match the reference on valid rows only.
+    assert alpha_cur[t_idx] == pytest.approx(coef_ref[0], abs=1e-8)
+    assert beta_cur[t_idx] == pytest.approx(coef_ref[1], abs=1e-8)
+
+    # Default min_obs (ceil(0.8*60)=48) must reject the 30-row window.
+    result2 = compute_residuals(returns, market, ind, window=window, lookback=5)
+    assert np.isnan(result2["alpha"]["A"].to_numpy()[t_idx]), (
+        "default min_obs=48 should reject a window with only 30 valid rows"
+    )

@@ -68,10 +68,17 @@ USING (
     SELECT
       symbol,
       event_date,
-      PERCENTILE(dollar_volume, 0.5) OVER (
+      -- Partial-window guard: only compute the median when the full 60-row
+      -- window has non-NULL dollar_volume (matches pandas min_periods=60).
+      CASE WHEN COUNT(dollar_volume) OVER (
         PARTITION BY symbol ORDER BY event_date
         ROWS BETWEEN 60 PRECEDING AND 1 PRECEDING
-      ) AS med_adv_60d,
+      ) = 60 THEN
+        PERCENTILE(dollar_volume, 0.5) OVER (
+          PARTITION BY symbol ORDER BY event_date
+          ROWS BETWEEN 60 PRECEDING AND 1 PRECEDING
+        )
+      END AS med_adv_60d,
       COUNT(dollar_volume) OVER (
         PARTITION BY symbol ORDER BY event_date
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING

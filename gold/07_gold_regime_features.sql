@@ -67,9 +67,15 @@ USING (
       trade_date,
       spy, rsp, qqq,
       rsp_spy_ratio,
-      AVG(rsp_spy_ratio) OVER (
+      -- Partial-window guard: SMA50 is NULL unless the full 50-row window
+      -- has non-NULL rsp_spy_ratio values (matches pandas min_periods=50).
+      CASE WHEN COUNT(rsp_spy_ratio) OVER (
         ORDER BY trade_date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW
-      ) AS rsp_spy_ratio_sma50,
+      ) >= 50 THEN
+        AVG(rsp_spy_ratio) OVER (
+          ORDER BY trade_date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW
+        )
+      END AS rsp_spy_ratio_sma50,
       rsp_spy_ratio / NULLIF(
         LAG(rsp_spy_ratio, 20) OVER (ORDER BY trade_date), 0
       ) - 1 AS rsp_spy_ratio_slope_20d,

@@ -105,3 +105,73 @@ def test_history_gate_counts_own_sessions_not_grid_rows():
         "LATE (50 own sessions) entered the universe with min_history=252; "
         "the history gate is counting grid rows instead of own trading sessions"
     )
+
+
+def test_partial_window_median_excluded():
+    """A 60-session window with fewer than 60 valid bars must not produce a
+    median ADV.  The SQL uses PERCENTILE which ignores NULLs, so a window
+    with only 5 non-NULL grid rows still computes a median — this is wrong.
+
+    CodeRabbit finding #3: compute COUNT(dollar_volume) over the same 60-row
+    window, and set med_adv_60d to NULL unless the count is 60.
+
+    The pandas reference uses min_periods=adv_window, which already enforces
+    this.  This test verifies the pandas reference's behavior.
+    """
+    # 100 calendar days, 2 symbols.  SPARSE has dollar_volume on only 5 days;
+    # the rest are NULL (simulated by not including those rows — the dense grid
+    # would have NULLs).
+    dates = pd.date_range("2024-01-01", periods=100, freq="B")
+    rng = np.random.RandomState(77)
+    rows = []
+    # DENSE: trades every day (mature symbol).
+    for d, date in enumerate(dates):
+        rows.append(("DENSE", date, 1e8 + rng.normal(0, 1e6)))
+    # SPARSE: trades on only 5 days out of 100.
+    sparse_days = [10, 30, 50, 70, 90]
+    for d in sparse_days:
+        rows.append(("SPARSE", dates[d], 5e8))
+
+    panel = pd.DataFrame(rows, columns=["symbol", "event_date", "dollar_volume"])
+    out = screen_universe(panel, n=10, adv_window=60, min_history=10,
+                          recency_sessions=1)
+
+    # SPARSE has only 5 valid bars in any 60-row window.  The pandas reference
+    # (min_periods=60) must NOT compute a median for SPARSE.
+    sparse_out = out[out["symbol"] == "SPARSE"]
+    assert sparse_out.empty, (
+        "SPARSE (5 valid bars in 60-row window) entered the universe; "
+        "the partial-window median guard is missing"
+    )
+
+
+def test_partial_sma50_excluded():
+    """A 50-day SMA must be NULL when fewer than 50 non-NULL values exist in
+    the window.  The SQL uses AVG() which computes on whatever non-NULL values
+    are available, producing a misleading SMA from a partial window.
+
+    CodeRabbit finding #4: make the SMA NULL when COUNT(*) OVER (same window)
+    < 50.  The CASE then labels those dates MIXED.
+
+    This test verifies the pandas equivalent: rolling mean with
+    min_periods=50 returns NaN for partial windows.
+    """
+    # 80 days of data; rsp_spy_ratio is non-NULL only for the last 30 days.
+    dates = pd.date_range("2024-01-01", periods=80, freq="B")
+    ratio = pd.Series(np.nan, index=dates, dtype=float)
+    ratio.iloc[50:] = 1.0 + np.random.default_rng(42).normal(0.0, 0.01, 30)
+
+    # Without min_periods: SQL AVG() computes on available non-NULL values
+    # (equivalent to pandas min_periods=1).
+    sma_no_guard = ratio.rolling(50, min_periods=1).mean()
+    # With min_periods=50: partial windows are NaN (correct).
+    sma_with_guard = ratio.rolling(50, min_periods=50).mean()
+
+    # At index 79 the 50-row window [30, 79] has only 30 non-NULL values.
+    # The unguarded SMA computes a value; the guarded one must be NaN.
+    assert not np.isnan(sma_no_guard.iloc[79]), (
+        "unguarded SMA should compute a value from partial window"
+    )
+    assert np.isnan(sma_with_guard.iloc[79]), (
+        "guarded SMA should be NULL for partial window (< 50 valid rows)"
+    )

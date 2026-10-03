@@ -159,3 +159,39 @@ def test_adv_cap_constrains_execution(dates, symbols):
     # P&L should be computed on the capped positions (not on the desired 1.0).
     # With tiny ADV on all names, the resulting book is minuscule.
     assert res["gross"].abs().max() < 0.001
+
+
+def test_position_liquidates_when_adv_becomes_nan(dates, symbols):
+    """A held position must liquidate when the name leaves the universe, even
+    when ADV becomes NaN.  The cap must never block a reduction toward 0.
+
+    CodeRabbit finding #2: ADV is pivoted only for universe members then
+    fillna(0).  When a held name leaves the universe, its target becomes 0 but
+    cap = 0.01 * 0 = 0, so the exit is capped to zero change and the position
+    is held forever.
+    """
+    returns = pd.DataFrame(0.001, index=dates, columns=symbols)
+    # Signal: hold long A from day 1 through the end (never exits on its own).
+    desired = pd.DataFrame(0.0, index=dates, columns=symbols)
+    desired.loc[dates[1]:, "A"] = 1.0
+
+    # A is in the universe for days 0-9, then drops out.
+    universe = pd.DataFrame(
+        [(d, "A") for d in dates[:10]],
+        columns=["trade_date", "symbol"],
+    )
+
+    # ADV is 1e8 for A in-universe, NaN after it drops out.
+    adv = pd.DataFrame(1e8, index=dates, columns=symbols)
+    adv.loc[dates[10]:, "A"] = np.nan
+
+    res = run_backtest(desired, returns, universe, adv, target_gross=1.0)
+    weights = res["weights"]
+
+    # After A drops out of universe on day 10, its weight should go to 0
+    # within a bounded number of days (not frozen forever).
+    last_day = dates[-1]
+    assert weights.loc[last_day, "A"] == 0.0, (
+        f"A's weight is {weights.loc[last_day, 'A']} on last day — should be 0 "
+        f"(position frozen due to NaN ADV)"
+    )
