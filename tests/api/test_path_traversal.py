@@ -71,10 +71,10 @@ def _make_app(monkeypatch, tmp_dist, *, demo: bool):
     return api.main.create_app()
 
 
-def _client(app):
+def _client(app, *, raise_server_exceptions=True):
     from fastapi.testclient import TestClient
 
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 # ── traversal payloads ────────────────────────────────────────────────────────
@@ -271,6 +271,170 @@ def test_traversal_via_real_uvicorn(monkeypatch, tmp_dist):
         resp = urllib.request.urlopen(url, timeout=5)
         body = resp.read().decode("utf-8", errors="replace")
         assert "console.log" in body
+
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+# ── over-long path tests (round 6) ──────────────────────────────────────────
+
+
+def test_256_segment_returns_index(monkeypatch, tmp_dist, mode):
+    """A path segment of 256 bytes must not 500 — returns index.html."""
+    app = _make_app(monkeypatch, tmp_dist, demo=(mode == "demo"))
+    client = _client(app)
+
+    resp = client.get("/" + "A" * 256)
+    assert resp.status_code == 200
+    assert "SPA" in resp.text
+
+
+def test_10000_segment_returns_index(monkeypatch, tmp_dist, mode):
+    """A path segment of 10,000 bytes must not 500 — returns index.html."""
+    app = _make_app(monkeypatch, tmp_dist, demo=(mode == "demo"))
+    client = _client(app)
+
+    resp = client.get("/" + "A" * 10000)
+    assert resp.status_code == 200
+    assert "SPA" in resp.text
+
+
+def test_long_path_security_headers(monkeypatch, tmp_dist, mode):
+    """A long-path response must carry all security headers in demo mode."""
+    app = _make_app(monkeypatch, tmp_dist, demo=(mode == "demo"))
+    client = _client(app)
+
+    resp = client.get("/" + "A" * 256)
+    if mode == "demo":
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("Referrer-Policy") == "no-referrer"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+        assert "Content-Security-Policy" in resp.headers
+    else:
+        # Non-demo mode does not add security headers to SPA responses.
+        assert resp.status_code == 200
+
+
+# ── symlink loop test (round 6) ──────────────────────────────────────────────
+
+
+def test_symlink_loop_returns_index(monkeypatch, tmp_dist, mode):
+    """A symlink loop inside dist must not crash — returns index.html."""
+    dist, _ = tmp_dist
+    loop = dist / "loop"
+    try:
+        loop.symlink_to(dist / "loop")
+    except OSError:
+        pytest.skip("symlinks not supported on this platform")
+
+    app = _make_app(monkeypatch, tmp_dist, demo=(mode == "demo"))
+    client = _client(app)
+
+    resp = client.get("/loop")
+    assert resp.status_code == 200
+    assert "SPA" in resp.text
+
+
+# ── global exception handler test (round 6) ─────────────────────────────────
+
+
+def test_unhandled_exception_returns_500_with_security_headers(monkeypatch, tmp_dist, mode):
+    """An unhandled exception → 500 with every security header and no traceback.
+
+    Uses a test-only middleware that raises when X-Test-Boom header is set,
+    to verify the global exception handler catches it and returns a safe 500.
+    """
+    dist, _ = tmp_dist
+    app = _make_app(monkeypatch, tmp_dist, demo=(mode == "demo"))
+
+    @app.middleware("http")
+    async def _boom_middleware(request, call_next):
+        if request.headers.get("x-test-boom"):
+            raise RuntimeError("secret-internal-detail-12345")
+        return await call_next(request)
+
+    client = _client(app, raise_server_exceptions=False)
+    resp = client.get("/api/analytics", headers={"x-test-boom": "1"})
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body == {"detail": "internal error"}
+    assert "secret-internal-detail-12345" not in resp.text
+    assert "RuntimeError" not in resp.text
+    assert "Traceback" not in resp.text
+    assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+    assert resp.headers.get("Referrer-Policy") == "no-referrer"
+    assert resp.headers.get("X-Frame-Options") == "DENY"
+    assert "Content-Security-Policy" in resp.headers
+    assert "frame-ancestors" in resp.headers["Content-Security-Policy"]
+
+
+# ── real uvicorn long-path test (round 6) ────────────────────────────────────
+
+
+def test_long_path_via_real_uvicorn(monkeypatch, tmp_dist):
+    """Run a long-path check against a real uvicorn subprocess on a random port."""
+    dist, _ = tmp_dist
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    runner = dist.parent / "run_app.py"
+    runner.write_text(
+        textwrap.dedent(f"""\
+            import sys, os
+            sys.path.insert(0, {os.getcwd()!r})
+            os.environ["FRONTEND_DIST_OVERRIDE"] = {str(dist)!r}
+            from pathlib import Path
+            import api.deps
+            api.deps.FRONTEND_DIST = Path({str(dist)!r})
+            from api.main import create_app
+            import uvicorn
+            app = create_app()
+            uvicorn.run(app, host="127.0.0.1", port={port}, log_level="error")
+        """),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, str(runner)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        for _ in range(30):
+            try:
+                import urllib.request
+
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            pytest.skip("uvicorn did not start in time")
+
+        import urllib.request
+
+        # 256-char segment should return 200 index.html, not 500
+        url = f"http://127.0.0.1:{port}/{'A' * 256}"
+        resp = urllib.request.urlopen(url, timeout=5)
+        body = resp.read().decode("utf-8", errors="replace")
+        assert resp.status == 200
+        assert "SPA" in body
+
+        # 10000-char segment should return 200 index.html, not 500
+        url = f"http://127.0.0.1:{port}/{'A' * 10000}"
+        try:
+            resp = urllib.request.urlopen(url, timeout=5)
+            body = resp.read().decode("utf-8", errors="replace")
+            assert resp.status == 200
+            assert "SPA" in body
+        except urllib.error.HTTPError as e:
+            # Some servers may reject the URL before it reaches the app.
+            # As long as it's not a 500, it's acceptable.
+            assert e.code != 500, f"Long path returned 500 via real uvicorn"
 
     finally:
         proc.terminate()

@@ -194,6 +194,21 @@ def create_app() -> FastAPI:
     else:
         _register_standard_middleware(application)
 
+    # ── global exception handler ────────────────────────────────────────────
+    # Catches any unhandled exception (including those raised outside the
+    # demo middleware) and returns a generic 500 with all security headers.
+    # Prevents Starlette's ServerErrorMiddleware from leaking stack traces
+    # or returning responses without security headers.
+
+    @application.exception_handler(Exception)
+    async def _global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        resp = JSONResponse(
+            status_code=500,
+            content={"detail": "internal error"},
+        )
+        _apply_security_headers(resp)
+        return resp
+
     # Read-only routers (always registered).
     application.include_router(health.router, prefix="/api/health", tags=["health"])
     application.include_router(signals.router, prefix="/api/signals", tags=["signals"])
@@ -229,13 +244,27 @@ def create_app() -> FastAPI:
                     return FileResponse(FRONTEND_DIST / "index.html")
                 if "\\" in seg or "\x00" in seg:
                     return FileResponse(FRONTEND_DIST / "index.html")
+                # Reject over-long segments (>255 bytes) before resolve()
+                # to avoid ENAMETOOLONG OSError from Path.resolve().
+                if len(seg.encode("utf-8")) > 255:
+                    return FileResponse(FRONTEND_DIST / "index.html")
+            # Reject over-long total path (>2048 bytes).
+            if len(decoded.encode("utf-8")) > 2048:
+                return FileResponse(FRONTEND_DIST / "index.html")
             # Drive letter / absolute prefix (e.g. C:\, /etc)
             if os.path.isabs(decoded):
                 return FileResponse(FRONTEND_DIST / "index.html")
 
-            candidate = (_static_root / decoded).resolve()
-            if candidate.is_file() and candidate.is_relative_to(_static_root):
-                return FileResponse(candidate)
+            try:
+                candidate = (_static_root / decoded).resolve()
+                if candidate.is_file() and candidate.is_relative_to(_static_root):
+                    return FileResponse(candidate)
+            except (OSError, RuntimeError, ValueError):
+                # OSError: ENAMETOOLONG (segment >255 bytes slipped past
+                #   the length check above, or OS-specific limits).
+                # RuntimeError: symlink loop inside dist.
+                # ValueError: malformed path on some platforms.
+                return FileResponse(FRONTEND_DIST / "index.html")
             return FileResponse(FRONTEND_DIST / "index.html")
 
     return application
