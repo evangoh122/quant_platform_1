@@ -190,25 +190,30 @@ insecure default where an absent `PUBLIC_DEMO` silently enables the full
 write surface. Set `PUBLIC_DEMO=1` explicitly in the Render service
 environment.
 
-### Rate limiter — IP extraction
+### Rate limiter — IP extraction (`CLIENT_IP_SOURCE`)
 
-When `RENDER` is set, the rate limiter extracts the client IP using the
-first match in this priority order:
+The source of the client IP for rate limiting is controlled by the
+`CLIENT_IP_SOURCE` environment variable:
 
-1. `CF-Connecting-IP` — set by Cloudflare, which Render uses as its edge.
-   Validated as a real IPv4/IPv6 address; invalid values are skipped.
-2. `True-Client-IP` — also set by Cloudflare/CDN. Validated likewise.
-3. The **leftmost** `X-Forwarded-For` entry — Render's documented position
-   for the real client IP (Render prepends the real client IP to the
-   beginning of the list). Validated as a real IP address.
-4. `request.client.host` — final fallback.
+| Value | Default on | Behaviour |
+|-------|-----------|-----------|
+| `xff_leftmost` | **Render** | Leftmost `X-Forwarded-For` entry if valid; otherwise `request.client.host`. **Never reads** `CF-Connecting-IP` or `True-Client-IP`. |
+| `cf_connecting_ip` | — | `CF-Connecting-IP` only (valid IP); otherwise `request.client.host`. Opt-in for verified Cloudflare setups. |
+| `peer` | **non-Render** | `request.client.host` only; all headers ignored. |
 
-We intentionally do **not** use the rightmost `X-Forwarded-For` entry,
-because client-supplied XFF values are not stripped by Render and a client
-can rotate the rightmost value to evade per-IP limits.
+An unrecognised value raises `PublicDemoConfigurationError` at startup.
 
-Outside Render (no `RENDER` env var), only `request.client.host` is used
-and all headers are ignored.
+**Why `xff_leftmost` is the default on Render:**
+
+Render's documentation states: *"we set the first IP in the list to the real
+client IP"* ([source](https://render.com/docs/forwarding-and-proxying)).
+The `CF-Connecting-IP` and `True-Client-IP` headers are **not** rewritten
+by Render — a client can set them to arbitrary values. DeepSeek's check6
+proved that trusting `CF-Connecting-IP` first is spoofable: rotating the
+header 200x gives 200/200 accepted, then a real client gets 429.
+
+Outside Render (no `RENDER` env var), the default is `peer` and all headers
+are ignored regardless of `CLIENT_IP_SOURCE`.
 
 We avoid using `--forwarded-allow-ips='*'` because that would make
 `request.client.host` read from the (spoofable) `X-Forwarded-For` header.
@@ -232,14 +237,31 @@ rate-limiting purposes only.
 
 ### Post-deploy verification
 
-After deploying, verify that per-IP rate limiting works independently for
-distinct clients:
+After deploying, run these checks before going public:
 
 ```bash
-# From two different machines, send 70 requests each with rotating
-# spoofed XFF values. Each machine should be limited independently
-# (429 on the 61st request from each machine).
+# (a) Confirm which IP the limiter keys on.
+# Send X-Forwarded-For from one machine; check the log (first two octets only).
+curl -H "X-Forwarded-For: 1.2.3.4" https://YOUR_APP.onrender.com/api/health
+
+# (b) Confirm per-IP limiting with spoofed headers.
+# From one machine, send 70 requests with rotating spoofed XFF,
+# CF-Connecting-IP, and True-Client-IP headers.
+# Request 61 should get 429 (one bucket, spoofed headers ignored).
+for i in $(seq 1 70); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -H "X-Forwarded-For: 10.0.$(( RANDOM % 256 )).1" \
+    -H "CF-Connecting-IP: $(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 ))" \
+    -H "True-Client-IP: $(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 ))" \
+    https://YOUR_APP.onrender.com/api/health
+done | sort | uniq -c
+
+# (c) If (b) fails (no 429s), switch CLIENT_IP_SOURCE.
 ```
+
+If verification shows that spoofed headers bypass the limiter, set
+`CLIENT_IP_SOURCE=peer` as an immediate mitigation and investigate the
+proxy configuration.
 
 ## Lakebase agent tools — approver authority and migrations
 

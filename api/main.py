@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import os
 import time
 import urllib.parse
@@ -29,6 +30,8 @@ from api.routes import analytics, health, market, signals
 
 APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
 
+_log = logging.getLogger(__name__)
+
 # ── public-demo rate limiter ──────────────────────────────────────────────────
 
 _RATE_LIMIT_READS = int(os.getenv("RATE_LIMIT_READS", "60"))
@@ -37,6 +40,31 @@ _MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(1024 * 102
 _REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 _LRU_MAX_KEYS = int(os.getenv("RATE_LIMIT_LRU_MAX", "10000"))
 _IS_RENDER = bool(os.environ.get("RENDER", "").strip())
+
+_VALID_CLIENT_IP_SOURCES = frozenset({"xff_leftmost", "cf_connecting_ip", "peer"})
+
+
+def _resolve_client_ip_source() -> str:
+    """Return the active ``CLIENT_IP_SOURCE`` value.
+
+    On Render the default is ``xff_leftmost``; outside Render the default is
+    ``peer``.  An unrecognised value raises :class:`PublicDemoConfigurationError`
+    at startup so a misconfiguration never silently falls through.
+    """
+    from api.demo import PublicDemoConfigurationError
+
+    raw = os.environ.get("CLIENT_IP_SOURCE", "").strip().lower()
+    if not raw:
+        return "xff_leftmost" if _IS_RENDER else "peer"
+    if raw not in _VALID_CLIENT_IP_SOURCES:
+        raise PublicDemoConfigurationError(
+            f"CLIENT_IP_SOURCE has unrecognised value {raw!r}; "
+            f"expected one of: {', '.join(sorted(_VALID_CLIENT_IP_SOURCES))}"
+        )
+    return raw
+
+
+_CLIENT_IP_SOURCE = _resolve_client_ip_source()
 
 
 def _apply_security_headers(response: Response, *, cache_control: bool = True) -> Response:
@@ -191,35 +219,43 @@ def _parse_ip(value: str) -> str | None:
 def _get_client_ip(request: Request) -> str:
     """Extract the client IP for rate limiting.
 
-    On Render (``RENDER`` is set), use the first match in this order:
+    Source is controlled by ``CLIENT_IP_SOURCE`` (resolved at startup):
 
-    1. ``CF-Connecting-IP`` — set by Cloudflare, overwrites client values.
-    2. ``True-Client-IP`` — set by Cloudflare/CDN, overwrites client values.
-    3. The **leftmost** ``X-Forwarded-For`` entry — Render's documented
-       position for the real client IP.
-    4. ``request.client.host`` — fallback.
-
-    Outside Render, always use ``request.client.host`` and ignore every header.
+    - ``xff_leftmost`` (default on Render): the leftmost ``X-Forwarded-For``
+      entry if it is a valid IP; otherwise ``request.client.host``.  The
+      ``CF-Connecting-IP`` and ``True-Client-IP`` headers are **never** read
+      in this mode, so a client cannot spoof them.
+    - ``cf_connecting_ip`` (opt-in): only ``CF-Connecting-IP`` (valid IP);
+      otherwise ``request.client.host``.  Use when Cloudflare is verified in
+      front of the service.
+    - ``peer`` (default outside Render): ``request.client.host`` only; all
+      headers are ignored.
 
     Each candidate is validated as a real IPv4/IPv6 address; invalid values
-    are silently skipped and the next source is tried.
+    fall through to ``request.client.host``.
     """
-    if _IS_RENDER:
-        for header in ("cf-connecting-ip", "true-client-ip"):
-            val = request.headers.get(header, "")
-            if val:
-                parsed = _parse_ip(val)
-                if parsed is not None:
-                    return parsed
+    peer = request.client.host if request.client else "unknown"
 
-        xff = request.headers.get("x-forwarded-for", "")
-        if xff:
-            first = xff.split(",")[0].strip()
-            parsed = _parse_ip(first)
-            if parsed is not None:
-                return parsed
+    if not _IS_RENDER:
+        return peer
 
-    return request.client.host if request.client else "unknown"
+    if _CLIENT_IP_SOURCE == "peer":
+        return peer
+
+    if _CLIENT_IP_SOURCE == "cf_connecting_ip":
+        val = request.headers.get("cf-connecting-ip", "")
+        parsed = _parse_ip(val) if val else None
+        return parsed if parsed is not None else peer
+
+    # xff_leftmost
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        first = xff.split(",")[0].strip()
+        parsed = _parse_ip(first)
+        if parsed is not None:
+            return parsed
+
+    return peer
 
 
 def create_app() -> FastAPI:
@@ -238,6 +274,8 @@ def create_app() -> FastAPI:
     )
 
     validate_render_environment()
+
+    _log.info("client_ip_source=%s (render=%s)", _CLIENT_IP_SOURCE, _IS_RENDER)
 
     demo = is_public_demo()
 

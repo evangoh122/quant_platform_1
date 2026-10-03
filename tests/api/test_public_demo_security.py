@@ -544,6 +544,7 @@ def test_spoofed_rightmost_xff_does_not_evade(monkeypatch):
 
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
@@ -576,6 +577,7 @@ def test_different_leftmost_ips_get_separate_buckets(monkeypatch):
 
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
@@ -866,47 +868,49 @@ def test_global_rate_ceiling(monkeypatch):
     main_mod._limiter = main_mod._FixedWindowLimiter()
 
 
-# ── test 28: CF-Connecting-IP takes priority over XFF when RENDER is set ──────
+# ── test 28: default (xff_leftmost) ignores CF-Connecting-IP ──────────────────
 
-def test_cf_connecting_ip_takes_priority_over_xff(monkeypatch):
-    """When RENDER is set and CF-Connecting-IP is present, it is used
-    instead of X-Forwarded-For — regardless of XFF values."""
+def test_default_xff_leftmost_ignores_cf_connecting_ip(monkeypatch):
+    """Default on Render (xff_leftmost): CF-Connecting-IP is never read.
+    Rotating CF-Connecting-IP with a fixed leftmost XFF → ONE key,
+    and request 61 gets 429."""
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
 
-    # Exhaust the limit using CF-Connecting-IP.
-    for _ in range(60):
+    # Exhaust the limit using leftmost XFF, rotating CF-Connecting-IP.
+    for i in range(60):
         resp = client.get(
             "/api/analytics",
             headers={
-                "CF-Connecting-IP": "3.3.3.3",
-                "X-Forwarded-For": "9.9.9.9, 10.0.0.1",
+                "CF-Connecting-IP": f"10.0.{i}.1",
+                "X-Forwarded-For": "3.3.3.3, 9.9.9.9",
             },
         )
         assert resp.status_code == 200
 
-    # Rotating XFF values should NOT evade — CF-Connecting-IP key is exhausted.
-    resp = client.get(
-        "/api/analytics",
-        headers={
-            "CF-Connecting-IP": "3.3.3.3",
-            "X-Forwarded-For": "8.8.8.8, 7.7.7.7",
-        },
-    )
-    assert resp.status_code == 429
-
-    # A different CF-Connecting-IP should still work.
+    # Rotating CF-Connecting-IP does NOT evade — XFF leftmost key is exhausted.
     resp = client.get(
         "/api/analytics",
         headers={
             "CF-Connecting-IP": "4.4.4.4",
-            "X-Forwarded-For": "9.9.9.9, 10.0.0.1",
+            "X-Forwarded-For": "3.3.3.3, 8.8.8.8",
+        },
+    )
+    assert resp.status_code == 429
+
+    # A different leftmost XFF should still work.
+    resp = client.get(
+        "/api/analytics",
+        headers={
+            "CF-Connecting-IP": "4.4.4.4",
+            "X-Forwarded-For": "5.5.5.5, 8.8.8.8",
         },
     )
     assert resp.status_code == 200
@@ -917,12 +921,13 @@ def test_cf_connecting_ip_takes_priority_over_xff(monkeypatch):
 # ── test 29: no CF header → leftmost XFF is used ─────────────────────────────
 
 def test_no_cf_header_leftmost_xff_used(monkeypatch):
-    """When RENDER is set and no CF-Connecting-IP or True-Client-IP is present,
+    """When RENDER is set and CLIENT_IP_SOURCE is xff_leftmost (default),
     the leftmost X-Forwarded-For entry is used as the client IP."""
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
@@ -946,46 +951,47 @@ def test_no_cf_header_leftmost_xff_used(monkeypatch):
     main_mod._limiter.reset()
 
 
-# ── test 30: invalid CF header falls back to next source ──────────────────────
+# ── test 30: invalid leftmost XFF falls back to client.host ───────────────────
 
-def test_invalid_cf_header_falls_back(monkeypatch):
-    """A spoofed invalid CF-Connecting-IP (not a valid IP) is skipped,
-    falling back to True-Client-IP, then XFF, then client.host."""
+def test_invalid_xff_leftmost_falls_back_to_client_host(monkeypatch):
+    """In xff_leftmost mode, an invalid leftmost XFF entry is skipped,
+    falling back to request.client.host. CF/True-Client-IP headers are
+    never read."""
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
-    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
-    client = _client(app)
-
-    # Invalid CF-Connecting-IP should fall back to True-Client-IP.
+    # Invalid leftmost XFF with valid CF header → falls back to client.host
+    # (CF header is never read in xff_leftmost mode).
     ip = main_mod._get_client_ip(
         MagicMock(
             headers={
-                "cf-connecting-ip": "not-an-ip",
+                "cf-connecting-ip": "7.7.7.7",
                 "true-client-ip": "5.5.5.5",
+                "x-forwarded-for": "not-an-ip, 6.6.6.6",
             },
-            client=None,
+            client=MagicMock(host="8.8.8.8"),
         )
     )
-    assert ip == "5.5.5.5"
+    assert ip == "8.8.8.8"
 
-    # Both CF headers invalid → falls back to leftmost XFF.
+    # Valid leftmost XFF → used, CF headers ignored.
     ip = main_mod._get_client_ip(
         MagicMock(
             headers={
-                "cf-connecting-ip": "abc",
-                "true-client-ip": "",
+                "cf-connecting-ip": "7.7.7.7",
+                "true-client-ip": "5.5.5.5",
                 "x-forwarded-for": "6.6.6.6, 7.7.7.7",
             },
-            client=None,
+            client=MagicMock(host="8.8.8.8"),
         )
     )
     assert ip == "6.6.6.6"
 
-    # All headers invalid → falls back to request.client.host.
+    # All headers invalid → falls back to client.host.
     ip = main_mod._get_client_ip(
         MagicMock(
             headers={
@@ -1009,6 +1015,7 @@ def test_outside_render_headers_ignored(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setattr(main_mod, "_IS_RENDER", False)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
     main_mod._limiter.reset()
 
     app = _make_demo_app(monkeypatch)
@@ -1067,15 +1074,17 @@ def test_token_bucket_self_recovers(monkeypatch):
     assert allowed is True
 
 
-# ── test 33: RENDER with CF-Connecting-IP — 61st request gives 429 ────────────
+# ── test 33: xff_leftmost — fixed XFF key, rotating CF ignored — 61st 429 ─────
 
-def test_render_cf_connecting_ip_61st_request_gives_429(monkeypatch):
-    """RENDER set, CF-Connecting-IP: 1.1.1.1 with rotating XFF values —
-    every request uses one key, so the 61st request gets 429."""
+def test_xff_leftmost_fixed_xff_rotating_cf_61st_gives_429(monkeypatch):
+    """RENDER set, CLIENT_IP_SOURCE=xff_leftmost (default). Fixed leftmost
+    XFF: 1.1.1.1 with rotating CF-Connecting-IP values — every request uses
+    one key, so the 61st request gets 429."""
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
@@ -1085,8 +1094,8 @@ def test_render_cf_connecting_ip_61st_request_gives_429(monkeypatch):
         resp = client.get(
             "/api/analytics",
             headers={
-                "CF-Connecting-IP": "1.1.1.1",
-                "X-Forwarded-For": f"10.0.{i}.1, 10.0.{i}.2",
+                "CF-Connecting-IP": f"10.0.{i}.1",
+                "X-Forwarded-For": "1.1.1.1, 10.0.0.2",
             },
         )
         assert resp.status_code == 200, f"request {i+1} failed"
@@ -1095,8 +1104,8 @@ def test_render_cf_connecting_ip_61st_request_gives_429(monkeypatch):
     resp = client.get(
         "/api/analytics",
         headers={
-            "CF-Connecting-IP": "1.1.1.1",
-            "X-Forwarded-For": "10.0.99.1, 10.0.99.2",
+            "CF-Connecting-IP": "99.99.99.99",
+            "X-Forwarded-For": "1.1.1.1, 10.0.99.2",
         },
     )
     assert resp.status_code == 429
@@ -1146,3 +1155,177 @@ def test_connection_string_suffix_rejected(monkeypatch, key):
 
     assert key in str(exc_info.value)
     assert "secret-value" not in str(exc_info.value)
+
+
+# ── test 36: cf_connecting_ip mode — uses CF-Connecting-IP ────────────────────
+
+def test_cf_connecting_ip_mode_uses_cf(monkeypatch):
+    """CLIENT_IP_SOURCE=cf_connecting_ip: uses CF-Connecting-IP, ignores XFF."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "cf_connecting_ip")
+    main_mod._limiter.reset()
+
+    # CF-Connecting-IP is used.
+    ip = main_mod._get_client_ip(
+        MagicMock(
+            headers={
+                "cf-connecting-ip": "7.7.7.7",
+                "x-forwarded-for": "8.8.8.8",
+            },
+            client=MagicMock(host="1.2.3.4"),
+        )
+    )
+    assert ip == "7.7.7.7"
+
+    # Invalid CF-Connecting-IP → falls back to client.host.
+    ip = main_mod._get_client_ip(
+        MagicMock(
+            headers={
+                "cf-connecting-ip": "not-an-ip",
+                "x-forwarded-for": "8.8.8.8",
+            },
+            client=MagicMock(host="1.2.3.4"),
+        )
+    )
+    assert ip == "1.2.3.4"
+
+    # No CF header → client.host.
+    ip = main_mod._get_client_ip(
+        MagicMock(
+            headers={"x-forwarded-for": "8.8.8.8"},
+            client=MagicMock(host="1.2.3.4"),
+        )
+    )
+    assert ip == "1.2.3.4"
+
+    main_mod._limiter.reset()
+
+
+# ── test 37: cf_connecting_ip mode — 61st request gives 429 ──────────────────
+
+def test_cf_connecting_ip_mode_61st_gives_429(monkeypatch):
+    """CLIENT_IP_SOURCE=cf_connecting_ip: rotating XFF with fixed CF → ONE key,
+    request 61 gets 429."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "cf_connecting_ip")
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    for i in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={
+                "CF-Connecting-IP": "3.3.3.3",
+                "X-Forwarded-For": f"10.0.{i}.1, 10.0.{i}.2",
+            },
+        )
+        assert resp.status_code == 200, f"request {i+1} failed"
+
+    resp = client.get(
+        "/api/analytics",
+        headers={
+            "CF-Connecting-IP": "3.3.3.3",
+            "X-Forwarded-For": "10.0.99.1, 10.0.99.2",
+        },
+    )
+    assert resp.status_code == 429
+
+    main_mod._limiter.reset()
+
+
+# ── test 38: peer mode — ignores every header ────────────────────────────────
+
+def test_peer_mode_ignores_all_headers(monkeypatch):
+    """CLIENT_IP_SOURCE=peer: ignores CF-Connecting-IP, True-Client-IP, and XFF."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
+    main_mod._limiter.reset()
+
+    ip = main_mod._get_client_ip(
+        MagicMock(
+            headers={
+                "cf-connecting-ip": "7.7.7.7",
+                "true-client-ip": "8.8.8.8",
+                "x-forwarded-for": "9.9.9.9",
+            },
+            client=MagicMock(host="1.2.3.4"),
+        )
+    )
+    assert ip == "1.2.3.4"
+
+    main_mod._limiter.reset()
+
+
+# ── test 39: peer mode — all requests from same client.host share one bucket ─
+
+def test_peer_mode_single_bucket(monkeypatch):
+    """CLIENT_IP_SOURCE=peer: all headers ignored, client.host is the key."""
+    import api.main as main_mod
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
+    main_mod._limiter.reset()
+
+    app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
+    client = _client(app)
+
+    for _ in range(60):
+        resp = client.get(
+            "/api/analytics",
+            headers={
+                "CF-Connecting-IP": "1.1.1.1",
+                "True-Client-IP": "2.2.2.2",
+                "X-Forwarded-For": "3.3.3.3",
+            },
+        )
+        assert resp.status_code == 200
+
+    # 61st → 429 regardless of header rotation.
+    resp = client.get(
+        "/api/analytics",
+        headers={
+            "CF-Connecting-IP": "9.9.9.9",
+            "True-Client-IP": "8.8.8.8",
+            "X-Forwarded-For": "7.7.7.7",
+        },
+    )
+    assert resp.status_code == 429
+
+    main_mod._limiter.reset()
+
+
+# ── test 40: unknown CLIENT_IP_SOURCE → startup error ────────────────────────
+
+def test_unknown_client_ip_source_raises(monkeypatch):
+    """An unrecognised CLIENT_IP_SOURCE value raises PublicDemoConfigurationError."""
+    from api.demo import PublicDemoConfigurationError
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv("CLIENT_IP_SOURCE", "bogus")
+
+    with pytest.raises(PublicDemoConfigurationError, match="CLIENT_IP_SOURCE"):
+        import api.main as main_mod
+        import importlib
+        importlib.reload(main_mod)
+
+
+# ── test 41: CLIENT_IP_SOURCE in Render allow-list ────────────────────────────
+
+def test_client_ip_source_in_render_allow_list():
+    """CLIENT_IP_SOURCE is in the Render allow-list so it is not rejected
+    as a secret in demo mode."""
+    from api.demo import _RENDER_ALLOW_LIST
+    assert "CLIENT_IP_SOURCE" in _RENDER_ALLOW_LIST
