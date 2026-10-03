@@ -88,6 +88,7 @@ def search_sec_filings(
 
     try:
         from api.services.hybrid_retriever import HybridRetriever
+        from api.services.hybrid_retriever import NoCoverageError, TickerRequiredError
         from api.services.reranker import rerank
 
         retriever = HybridRetriever(top_k=top_k)
@@ -119,6 +120,12 @@ def search_sec_filings(
             }
             for d in docs
         ]
+    except (NoCoverageError, TickerRequiredError) as e:
+        import logging
+        logging.warning("SEC filing lookup: %s", e)
+        if isinstance(e, NoCoverageError):
+            return [{"error": "no_coverage", "ticker": symbol}]
+        return [{"error": "ticker_required"}]
     except EmbeddingConfigError as e:
         import logging
         logging.error("Embedding config error: %s", e)

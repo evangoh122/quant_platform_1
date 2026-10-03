@@ -80,3 +80,25 @@ def fake_pyspark(monkeypatch):
 
     pyspark_sql.SparkSession = MagicMock(name="SparkSession")
     pyspark_sql.DataFrame = MagicMock(name="DataFrame")
+
+
+@pytest.fixture(autouse=True)
+def _clear_ticker_lru_cache():
+    """Clear the per-ticker LRU cache between tests to prevent state leakage."""
+    try:
+        from api.services import hybrid_retriever as hr
+        with hr._ticker_cache_lock:
+            hr._ticker_cache.clear()
+        with hr._inflight_lock:
+            hr._inflight.clear()
+    except (ImportError, AttributeError):
+        pass
+    yield
+    try:
+        from api.services import hybrid_retriever as hr
+        with hr._ticker_cache_lock:
+            hr._ticker_cache.clear()
+        with hr._inflight_lock:
+            hr._inflight.clear()
+    except (ImportError, AttributeError):
+        pass

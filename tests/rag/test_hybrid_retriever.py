@@ -295,12 +295,13 @@ class TestPITFilter:
         result = _pit_filter([doc], as_of=None)
         assert len(result) == 1  # Should include since 2020 < now
 
-    def test_missing_accepted_ts_included_defensively(self):
+    def test_missing_accepted_ts_excluded(self):
+        """Missing/null accepted_ts chunks are EXCLUDED per spec."""
         from api.services.hybrid_retriever import _pit_filter
 
         doc = _make_doc("No timestamp", accepted_ts="")
         result = _pit_filter([doc], as_of=datetime(2025, 1, 1, tzinfo=timezone.utc))
-        assert len(result) == 1
+        assert len(result) == 0
 
     def test_pit_filter_applied_before_scoring(self):
         """A future chunk that is the best lexical match must not appear."""
