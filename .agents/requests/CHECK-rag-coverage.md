@@ -7,7 +7,7 @@ MiMo committed 4 stages:
 - (c–e) incremental embeddings, anti-join, coverage table.
 
 The test count went 370 → 455. `tests/rag` runs in about 7 s, so the hang is fixed. Read-only;
-scratch work in /tmp. Write `.agents/deepseek/VERDICT-rag-coverage.md` (===VERDICT START/END===,
+scratch work in /tmp. Write `.agents/deepseek/VERDICT-rag-coverage-check2.md` (===VERDICT START/END===,
 Status).
 
 Check, with proofs:
@@ -39,3 +39,18 @@ Check, with proofs:
 
 Run `python3 -m pytest -q -p no:cacheprovider tests/rag`, and the full suite with
 `--ignore=tests/lakebase`, both with pyspark and databricks.connect hidden too.
+
+## Re-check after round 3 (this run)
+MiMo did 3 staged commits (3A, 3B, 3C, plus a 3C test fix) for your 9 findings. `tests/rag` passes
+397. Re-verify ALL 9 findings with proofs. Focus on:
+- the live `retrieve()` raising `ticker_required` / `no_coverage` (NOT mocked);
+- no all-corpus `collect()` anywhere in the request path;
+- `silver/05`/`06` taking tickers from `gold_tradable_universe`;
+- `chunk_index` parity on existing rows;
+- embeddings streaming in bounded batches with real workers;
+- the accession-ownership conflict;
+- one production ingestion definition with no placeholder User-Agent;
+- the docs.
+
+Also confirm that 3C's "test mocks" commit didn't weaken any test to make it pass. Write
+`.agents/deepseek/VERDICT-rag-coverage-check2.md`.
