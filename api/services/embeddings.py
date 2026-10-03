@@ -17,12 +17,14 @@ from typing import List, Optional
 import numpy as np
 from loguru import logger
 
-# ── Config (env-var driven, no secrets) ───────────────────────────────────────
+from api.config import config
 
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "sentence-transformers").lower()
-ST_EMBEDDING_MODEL = os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
-EMBEDDING_QUERY_PREFIX = os.getenv("EMBEDDING_QUERY_PREFIX", "")
+# ── Config (single source of truth: api.config) ──────────────────────────────
+
+EMBEDDING_PROVIDER = config.EMBEDDING_PROVIDER
+ST_EMBEDDING_MODEL = config.ST_EMBEDDING_MODEL
+EMBEDDING_DIM = config.EMBEDDING_DIM
+EMBEDDING_QUERY_PREFIX = config.EMBEDDING_QUERY_PREFIX
 EMBEDDING_MAX_SEQ_LEN = int(os.getenv("EMBEDDING_MAX_SEQ_LEN", "512"))
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "4"))
 
@@ -172,7 +174,7 @@ def get_embeddings():
                 return None
 
         if EMBEDDING_PROVIDER == "huggingface":
-            model_name = os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+            model_name = config.HF_EMBEDDING_MODEL
             try:
                 _embeddings = HFInferenceEmbeddings(model_name)
                 return _embeddings

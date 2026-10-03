@@ -175,7 +175,7 @@ class Config:
 
     @property
     def HF_EMBEDDING_MODEL(self) -> str:
-        return os.getenv("HF_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
+        return os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
     @property
     def ST_EMBEDDING_MODEL(self) -> str:
@@ -208,8 +208,8 @@ class Config:
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             return 1024  # Qwen/Qwen3-Embedding-0.6B
         if provider == "huggingface":
-            return 4096  # Qwen/Qwen3-Embedding-8B
-        return 4096
+            return 384  # BAAI/bge-small-en-v1.5
+        return 384
 
     def get_provider_config(self):
         providers = {
