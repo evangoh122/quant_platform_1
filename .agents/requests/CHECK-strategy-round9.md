@@ -2,7 +2,7 @@
 
 Commit "fix(strategy): round 9" fixes CI and CodeRabbit's findings on #16 (see
 `.agents/requests/BUILD-strategy-round9.md`). Read-only. Write
-`.agents/deepseek/VERDICT-strategy-check7.md` (===VERDICT START/END===, Status).
+`.agents/deepseek/VERDICT-strategy-check8.md` (===VERDICT START/END===, Status).
 
 Claude's checks:
 - Under pandas 3.0.6, the pre-round-9 code fails 10 tests and round 9 passes all 47.
@@ -18,3 +18,16 @@ Verify:
 4. The test-path fixes work from any cwd.
 
 Run `python3 -m pytest -q tests/strategies tests/ml`, and the same suite with pyspark hidden.
+
+## Re-check after round 10 (this run)
+Round 10 builds one forward-filled ADV frame for both the cap and the costs. Claude reran live:
+r9 net −0.363 (r8 −0.382), OOS −0.623 (r8 −0.636). So the fix changed the results, as expected.
+
+Verify:
+- your check7 finding is fixed;
+- no remaining zero-fill of ADV before costs (`backtest.py` ~339–353 now ffills twice, so check the
+  reindex/ffill order can't introduce look-ahead — ffill is past-only);
+- the end-to-end exit-cost test asserts exact bps;
+- the r9 report is consistent.
+
+Write `.agents/deepseek/VERDICT-strategy-check8.md`.
