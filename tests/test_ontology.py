@@ -8,6 +8,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 ONTOLOGY = ROOT / "ontology"
 SQL_DIRS = (ROOT / "silver", ROOT / "gold")
+FED_REFRESH = ROOT / "notebooks" / "refresh_bronze_fed.py"
 
 # These transforms are not present on this branch, but their checked schema is
 # part of the ontology contract. Keep this small: SQL-backed tables are parsed.
@@ -209,3 +210,21 @@ def test_external_schema_contracts_guard_missing_transforms():
     for name, spec in documents["filters.yaml"]["filters"].items():
         for table in set(spec.get("tables", [])) & EXTERNAL_SCHEMA_CONTRACTS.keys():
             assert _filter_columns(spec.get("sql", "")) <= EXTERNAL_SCHEMA_CONTRACTS[table], name
+
+
+def test_bronze_fed_series_keys_match_notebook_ddl_vintage_grain():
+    """The FRED table is append-only revision history, not one row per observation."""
+    source = FED_REFRESH.read_text(encoding="utf-8")
+    ddl = re.search(
+        r"CREATE\s+TABLE\s+\{fqn\}\s*\((.*?)\)\s*USING\s+DELTA",
+        source,
+        re.I | re.S,
+    )
+    assert ddl, "bronze_fed_series CREATE TABLE DDL not found in refresh notebook"
+    ddl_columns = {
+        column.lower()
+        for column in re.findall(r"^\s*([A-Za-z_]\w*)\s+[A-Z]", ddl.group(1), re.M)
+    }
+    keys = set(_documents()["table_semantics.yaml"]["tables"]["bronze_fed_series"]["keys"])
+    assert keys <= ddl_columns
+    assert keys == {"series_id", "observation_date", "vintage_date"}

@@ -15,10 +15,11 @@ tables:
     pit_column: ingest_ts
     freshness: "Daily after the US session close"
   bronze_fed_series:
-    grain: "One observation per (series_id, observation_date)"
-    keys: [series_id, observation_date]
+    grain: "One observation vintage per (series_id, observation_date, vintage_date); changed values are appended as new vintages"
+    keys: [series_id, observation_date, vintage_date]
     pit_column: information_available_ts
-    freshness: "Per source release calendar; never infer availability from observation_date"
+    freshness: "Market rates use the source release calendar; revised macro vintages become available at ingest_ts. Never infer availability from observation_date."
+    latest_as_of_rule: "For each (series_id, observation_date), latest value as of t is the row with maximum vintage_date among rows where information_available_ts <= t."
   bronze_cftc_fut:
     grain: "One CFTC TFF futures-only report row per (report_date, CFTC_Contract_Market_Code)"
     keys: [report_date, CFTC_Contract_Market_Code]
@@ -77,8 +78,8 @@ tables:
     pit_column: accepted_ts
     freshness: "Event-driven; information_available_ts equals accepted_ts"
   silver_sec_entities:
-    grain: "One extracted entity per (accession_number, entity_type, entity_key, period_start, period_end, source_chunk_id)"
-    keys: [accession_number, entity_type, entity_key, period_start, period_end, source_chunk_id]
+    grain: "One merged entity per (accession_number, entity_type, entity_key, entity_value, period_end)"
+    keys: [accession_number, entity_type, entity_key, entity_value, period_end]
     pit_column: accepted_ts
     freshness: "Event-driven; available no earlier than accepted_ts"
     entity_types: [xbrl_fact, company, event, risk_factor]
@@ -130,4 +131,4 @@ tables:
     keys: [signal_id]
     pit_column: prediction_ts
     freshness: "On inference; currently empty"
-    status_enum: [ACTIVE, EXPIRED, CONSUMED]
+    status_note: "The live operational schema defaults status to ACTIVE but does not constrain its allowed values."

@@ -34,6 +34,7 @@ metrics:
   put_call_ratio:
     formula: "SUM(put volume) / NULLIF(SUM(call volume), 0) by underlying and session"
     source_table: gold_options_features
+    note: "The current gold SQL compares uppercase PUT/CALL, while bronze ingestion emits lowercase call/put; normalize case before relying on the computed metric."
   cot_crowding_score:
     formula: "(lev_money_zscore_52w + asset_mgr_zscore_52w) / 2"
     source_table: gold_cot_features

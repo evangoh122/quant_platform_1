@@ -35,3 +35,6 @@ filters:
   cot_forward_fill:
     tables: [silver_cot_positions, gold_cot_features]
     rule: "Forward-fill from release_ts only until the next release; never backward-fill."
+  fed_latest_vintage_as_of:
+    tables: [bronze_fed_series]
+    rule: "Latest value as of t is the row with maximum vintage_date per (series_id, observation_date) among rows where information_available_ts <= t."

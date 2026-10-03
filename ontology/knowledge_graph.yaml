@@ -1,6 +1,7 @@
 knowledge_graph:
-  deterministic_counts: {node_types: 9, edge_types: 10}
-  pit_rule: "Every node and edge is visible only when information_available_ts <= query_as_of_ts. Edge availability is the maximum availability timestamp of its evidence and endpoint nodes."
+  deterministic_counts: {node_types: 9, edge_types: 9}
+  optional_llm_counts: {node_types: 3, edge_types: 6}
+  pit_rule: "Every node and edge is visible only when information_available_ts <= query_as_of_ts. Edge availability is the maximum availability timestamp of its evidence and endpoint nodes. XBRL restatements are separate facts: the graph does not model supersession or valid-to semantics, so consumers must resolve restatements explicitly."
   node_types:
     Company: {key: cik, source_table: silver_sec_entities}
     Filing: {key: accession_number, source_table: silver_sec_sections}
@@ -19,7 +20,6 @@ knowledge_graph:
     FILING_HAS_SECTION: {from: Filing, to: Section, evidence_table: silver_sec_sections, pit: accepted_ts}
     SECTION_HAS_CHUNK: {from: Section, to: Chunk, evidence_table: silver_sec_sections, pit: accepted_ts}
     CHUNK_MENTIONS_COMPANY: {from: Chunk, to: Company, evidence_table: silver_sec_entities, pit: accepted_ts}
-    CHUNK_SUPPORTS_FACT: {from: Chunk, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts}
     FILING_REPORTS_FACT: {from: Filing, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts}
     FACT_MEASURES_METRIC: {from: XbrlFact, to: Metric, evidence_table: silver_sec_entities, pit: accepted_ts}
     FACT_FOR_PERIOD: {from: XbrlFact, to: Period, evidence_table: silver_sec_entities, pit: accepted_ts}
