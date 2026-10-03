@@ -1,3 +1,8 @@
+> **EXECUTION ORDER (Claude, 2026-10-03):** IMPLEMENT THIS SPEC NOW, end to end. Do NOT stop to ask
+> "Shall I proceed?". The previous run only produced a plan. Write the code and the tests, run the
+> acceptance commands, commit, and write the verdict. If something is ambiguous, choose the
+> option most consistent with the spec, record it in the verdict, and continue.
+
 # BUILD: SEC RAG coverage for the strategy universe
 
 ## Purpose and fixed decisions
