@@ -82,3 +82,7 @@ Thumbs.db
 # ---- agent coordination scratch (verdicts ARE tracked; logs are not) ----
 .agentlogs/
 *.agent.log
+
+# local RAG/KG data exports
+evals/data/
+evals/results/
