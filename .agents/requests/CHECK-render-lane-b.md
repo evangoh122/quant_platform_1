@@ -47,4 +47,17 @@ MiMo round 3 (commit 5282117) addresses your blocking findings 1–2 and the REQ
 - The route-enumeration test is no longer vacuous (mutation: register a POST route in demo → the
   test fails).
 
-Also look for anything NEW the round-3 changes broke. Write `.agents/deepseek/VERDICT-render-lane-b-check2.md`.
+Also look for anything NEW the round-3 changes broke. Write `.agents/deepseek/
+
+## Re-check after round 4 (this run)
+Codex's review (`.agents/codex/VERDICT-render-lane-b.md`) found 2 limiter defects. MiMo round 4
+(commit 88ca7b8) claims to fix them and broadens the secret check. Re-verify:
+- **Per-IP is checked before global.** One IP sending 10× the global ceiling must not block another
+  IP's first request.
+- **One bounded structure.** `lru_max=5` with 1,000 IPs → every internal structure holds ≤ 5 entries.
+- **New secret families** (AWS_/AZURE_/GOOGLE_/GITHUB_/STRIPE_/SENTRY_, `_DSN`, `_URI`, `_PAT`,
+  `_APIKEY`, `_CREDENTIALS`, `*_URL` with credentials). Did any harmless Render default get caught?
+  A false positive would stop the app from starting on Render.
+
+Re-run your earlier attacks to confirm nothing regressed. Write
+`.agents/deepseek/VERDICT-render-lane-b-check3.md`.
