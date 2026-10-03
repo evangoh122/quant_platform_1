@@ -1,66 +1,79 @@
 # VERDICT: render-lane-b — MiMo
 **Status:** APPROVED
-**Round:** 6
+**Round:** 7
 
 ## Blocking findings
-None. The round-5 regression (ENAMETOOLONG on over-long path segments) and the symlink-loop crash are both fixed.
+None. The CRITICAL XFF finding from Codex re-review is fixed.
 
-## Fixes applied (round 6)
+## Fixes applied (round 7)
 
-### 1. Over-long path segment ENAMETOOLONG regression (CRITICAL)
-**File:** `api/main.py:247-253`
-**Problem:** `candidate = (_static_root / decoded).resolve()` at line 236 (now 259) raised `OSError [Errno 36] File name too long` for any URL path segment >255 bytes. The exception escaped `_spa` uncaught, producing a 500 without security headers (Starlette's `ServerErrorMiddleware` runs outside the demo guard). Round 4 returned `index.html` for the same input — this was a round-5 regression.
-**Fix:**
-- Pre-reject decoded segments >255 bytes (UTF-8 encoded length) before `resolve()`
-- Pre-reject total decoded path >2048 bytes before `resolve()`
-- Wrap `resolve()` + `is_file()` + `is_relative_to()` in `try/except (OSError, RuntimeError, ValueError)` → serve `index.html`
+### 1. Client-IP extraction — CF-Connecting-IP priority (CRITICAL)
+**File:** `api/main.py:148-184`
+**Problem:** `_get_client_ip` used the rightmost `X-Forwarded-For` entry when `RENDER` is set. Render prepends the real client IP to the leftmost position; client-supplied XFF values remain to the right. An attacker could rotate the rightmost value to evade per-IP limits, churn the LRU, and exhaust the global ceiling.
+**Fix:** New priority order when `RENDER` is set:
+1. `CF-Connecting-IP` (Cloudflare, validated as real IP)
+2. `True-Client-IP` (Cloudflare/CDN, validated)
+3. Leftmost `X-Forwarded-For` entry (Render's documented position, validated)
+4. `request.client.host` (fallback)
 
-### 2. Symlink loop inside dist → RuntimeError
-**File:** `api/main.py:258-267`
-**Problem:** A symlink loop inside dist (e.g., `dist/loop -> dist/loop`) made `Path.resolve()` raise `RuntimeError("Symlink loop …")`, also escaping `_spa` uncaught. Not attacker-reachable (requires writing a symlink into deployed dist), but the same `try/except` fixes it.
-**Fix:** `RuntimeError` is caught by the same `except (OSError, RuntimeError, ValueError)` block.
+Each candidate is parsed via `ipaddress.ip_address()`; invalid values are silently skipped. Outside Render, only `request.client.host` is used and all headers are ignored.
 
-### 3. Global exception handler with security headers
-**File:** `api/main.py:197-210`
-**Problem:** Any unhandled exception outside the demo middleware (e.g., in a route handler) would be caught by Starlette's `ServerErrorMiddleware`, which returns a bare 500 without security headers and may leak stack traces.
-**Fix:** Registered `@app.exception_handler(Exception)` that returns `{"detail":"internal error"}` 500 with all security headers (`X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Content-Security-Policy`). Works in both demo and non-demo mode.
+### 2. Token bucket replaces hard global ceiling
+**File:** `api/main.py:67-107`
+**Problem:** The fixed-window global ceiling (600 req/min) caused a hard minute-long outage once exhausted — all clients blocked until the window reset.
+**Fix:** Replaced with a `_TokenBucket` (capacity=600, refill_rate=10 tokens/sec). Aggregate load now causes brief 429s that self-recover within seconds. Per-IP rejection still happens first (unchanged), so a single attacker cannot drain the bucket alone.
 
-### 4. Tests for round-6 fixes
-**File:** `tests/api/test_path_traversal.py` (extended, +111 lines)
-**New tests (11 total, each in demo + non-demo = 11 test points):**
-- `test_256_segment_returns_index` — 256-char segment → 200 index.html, no 500
-- `test_10000_segment_returns_index` — 10,000-char segment → 200 index.html, no 500
-- `test_long_path_security_headers` — 256-char segment → security headers in demo mode
-- `test_symlink_loop_returns_index` — symlink loop in dist → 200 index.html, no crash
-- `test_unhandled_exception_returns_500_with_security_headers` — middleware raises → 500 with all security headers, no traceback text
-- `test_long_path_via_real_uvicorn` — 256-char and 10,000-char segments via real uvicorn subprocess → 200, not 500
+### 3. Generic secret names in startup check
+**File:** `api/demo.py:74-77, 62`
+**Problem:** Codex flagged that bare names `TOKEN`, `SECRET`, `PASSWORD`, `DOCKER_AUTH_CONFIG`, and suffix `_CONNECTION_STRING` were not rejected by the demo-mode secret check.
+**Fix:** Added `TOKEN`, `SECRET`, `PASSWORD`, `DOCKER_AUTH_CONFIG` to `_SECRET_EXACT`; added `_CONNECTION_STRING` to `_SECRET_SUFFIXES`.
+
+### 4. Documentation corrected
+**File:** `docs/DEPLOYMENT.md:181-232`
+**Problem:** Docs claimed the rightmost XFF entry "cannot be spoofed by the client" — false on Render, which does not strip client-supplied XFF values.
+**Fix:** Replaced with accurate documentation of the new header priority order, token bucket behavior, and post-deploy verification steps.
+
+### 5. Tests — 8 new functions (round 7)
+**File:** `tests/api/test_public_demo_security.py`
+
+| Test | What it proves |
+|------|---------------|
+| `test_cf_connecting_ip_takes_priority_over_xff` | CF-Connecting-IP used over XFF; rotating XFF doesn't evade |
+| `test_no_cf_header_leftmost_xff_used` | Without CF header, leftmost XFF is the key; rotating rightmost doesn't evade |
+| `test_invalid_cf_header_falls_back` | Invalid CF → True-Client-IP → XFF → client.host |
+| `test_outside_render_headers_ignored` | No RENDER env → headers ignored, only client.host used |
+| `test_token_bucket_self_recovers` | Bucket recovers after refill interval; no minute-long outage |
+| `test_render_cf_connecting_ip_61st_request_gives_429` | RENDER + CF-Connecting-IP + rotating XFF → 61st gets 429 |
+| `test_generic_secret_names_rejected` | TOKEN, SECRET, PASSWORD, DOCKER_AUTH_CONFIG rejected in demo |
+| `test_connection_string_suffix_rejected` | *_CONNECTION_STRING rejected in demo |
+
+Existing tests 16/17 updated to match leftmost-XFF behavior.
 
 ## Checks run
 ```
-# Path traversal tests only
-python3 -m pytest tests/api/test_path_traversal.py -q -p no:cacheprovider
-→ 42 passed in 3.05s
-
-# Path traversal tests with ambient secrets
-CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest tests/api/test_path_traversal.py -q -p no:cacheprovider
-→ 42 passed in 2.84s
+# Public-demo security tests only
+python3 -m pytest tests/api/test_public_demo_security.py -q -p no:cacheprovider -x
+→ 122 passed in 3.55s
 
 # Full suite excluding lakebase
 python3 -m pytest -q -p no:cacheprovider --ignore=tests/lakebase
-→ 631 passed, 67 skipped in 105.47s
+→ 643 passed, 67 skipped in 115.49s
 
 # Full suite with ambient secrets
 CLAUDE_CODE_MESSAGING_TOKEN=x DATABRICKS_WORKSPACE_ID=y python3 -m pytest -q -p no:cacheprovider --ignore=tests/lakebase
-→ 631 passed, 67 skipped in 107.01s
+→ 643 passed, 67 skipped in 114.77s
 ```
 
-## Changed files (round 6 only)
+## Changed files (round 7 only)
 | File | Change |
 |------|--------|
-| `api/main.py` | SPA catch-all: pre-reject segments >255 bytes and total >2048 bytes; wrap resolve in try/except (OSError, RuntimeError, ValueError); add global exception handler with security headers |
-| `tests/api/test_path_traversal.py` | Extended: 6 new test functions (11 test points) covering over-long paths, symlink loops, exception handler security headers, real uvicorn long-path check |
+| `api/main.py` | Added `ipaddress` import; new `_parse_ip` helper; rewrote `_get_client_ip` with CF-Connecting-IP > True-Client-IP > leftmost XFF priority; new `_TokenBucket` class; `_FixedWindowLimiter` uses token bucket instead of global counter |
+| `api/demo.py` | Added TOKEN, SECRET, PASSWORD, DOCKER_AUTH_CONFIG to `_SECRET_EXACT`; added `_CONNECTION_STRING` to `_SECRET_SUFFIXES` |
+| `docs/DEPLOYMENT.md` | Replaced rightmost-XFF claim with accurate header priority docs; documented token bucket and post-deploy check |
+| `tests/api/test_public_demo_security.py` | 8 new test functions; updated tests 16/17 for leftmost-XFF; updated docstring |
 
 ## Previous rounds
 - Round 4: `88ca7b8` — per-IP before global counter, single OrderedDict, broadened secret check
 - Round 5: `194fe03` — path traversal fix, rate limit all GET/HEAD, 31 traversal tests
-- Round 6 commit: `774efae` (branch: `slice/render-lane-b`)
+- Round 6: `774efae` — over-long path ENAMETOOLONG + symlink loop + global exception handler
+- Round 7 commit: `6213f24` (branch: `slice/render-lane-b`)
