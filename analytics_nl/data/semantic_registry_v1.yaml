@@ -11,13 +11,14 @@ approved_views:
   - serve_daily_equity_metrics_v1
   - serve_relative_performance_v1
   - serve_options_metrics_v1
+  - serve_bounded_daily_bars_v1
 
 entries:
   # ── price × operations ──────────────────────────────────────────────
   price.trend:
-    layer: gold
-    serving_view: serve_daily_prices_v1
-    description: "Daily adjusted close price over time for one or more tickers"
+    layer: silver
+    serving_view: serve_bounded_daily_bars_v1
+    description: "Daily adjusted close price over time for up to 10 named tickers (Silver bounded drill-down)"
     input_columns: [symbol, trade_date, adj_close]
     aggregation: none
     required_slots: [entities, date_range]
@@ -25,14 +26,14 @@ entries:
     allowed_ordering:
       - [trade_date, asc]
     parameters:
-      entity_count: {type: integer, min: 1, max: 50, default: 1}
+      entity_count: {type: integer, min: 1, max: 10, default: 1}
     output_fields:
       - {name: symbol, type: string, nullable: false}
       - {name: trade_date, type: date, nullable: false}
       - {name: adj_close, type: number, nullable: false}
     chart_families: [line, table]
-    max_entities: 50
-    row_limit: 5000
+    max_entities: 10
+    row_limit: 10000
     entry_version: "1.0.0"
 
   price.compare:
@@ -189,9 +190,9 @@ entries:
 
   # ── volume × operations ─────────────────────────────────────────────
   volume.trend:
-    layer: gold
-    serving_view: serve_daily_prices_v1
-    description: "Daily volume over time"
+    layer: silver
+    serving_view: serve_bounded_daily_bars_v1
+    description: "Daily volume over time for up to 10 named tickers (Silver bounded drill-down)"
     input_columns: [symbol, trade_date, volume]
     aggregation: none
     required_slots: [entities, date_range]
@@ -199,14 +200,14 @@ entries:
     allowed_ordering:
       - [trade_date, asc]
     parameters:
-      entity_count: {type: integer, min: 1, max: 50, default: 1}
+      entity_count: {type: integer, min: 1, max: 10, default: 1}
     output_fields:
       - {name: symbol, type: string, nullable: false}
       - {name: trade_date, type: date, nullable: false}
       - {name: volume, type: number, nullable: false}
     chart_families: [line, table]
-    max_entities: 50
-    row_limit: 5000
+    max_entities: 10
+    row_limit: 10000
     entry_version: "1.0.0"
 
   volume.compare:

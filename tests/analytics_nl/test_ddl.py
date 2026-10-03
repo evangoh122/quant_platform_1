@@ -43,20 +43,41 @@ class TestDDLNoSelectStar:
     """DDL must not contain SELECT *."""
 
     def test_no_select_star(self, ddl_content):
-        # Remove the "No SELECT *" instruction text
+        """Detect SELECT * and table.* patterns in SQL blocks.
+
+        Normalises SQL by stripping comments and collapsing all whitespace
+        (including newlines) before matching, so multi-line SELECT / * splits
+        are caught.  The old OR-of-negations test was vacuous because it only
+        failed when a single line contained both tokens.
+        """
+        _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+        _LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+        _SELECT_STAR_RE = re.compile(r"\bSELECT\s+\*")
+        _TABLE_DOT_STAR_RE = re.compile(r"\.\*")
+
         lines = ddl_content.splitlines()
         in_sql_block = False
+        sql_fragments: list[str] = []
         for line in lines:
             if line.strip() == "```sql":
                 in_sql_block = True
+                sql_fragments = []
                 continue
             if line.strip() == "```":
                 in_sql_block = False
+                raw_sql = " ".join(sql_fragments)
+                cleaned = _BLOCK_COMMENT_RE.sub("", raw_sql)
+                cleaned = _LINE_COMMENT_RE.sub("", cleaned)
+                cleaned = re.sub(r"\s+", " ", cleaned).strip()
+                assert not _SELECT_STAR_RE.search(cleaned), (
+                    f"SELECT * found in SQL block: {cleaned[:200]}"
+                )
+                assert not _TABLE_DOT_STAR_RE.search(cleaned), (
+                    f"table.* found in SQL block: {cleaned[:200]}"
+                )
                 continue
             if in_sql_block:
-                assert "SELECT *" not in line.upper() or "SELECT * FROM" not in line.upper(), (
-                    f"SELECT * found in SQL block: {line}"
-                )
+                sql_fragments.append(line)
 
 
 class TestDDLAdminWarning:

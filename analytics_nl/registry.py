@@ -227,7 +227,7 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
         if re_max > 10000:
             errors.append(f"Entry {pair_key}: row_limit {re_max} exceeds policy bound 10000")
 
-    # Coverage: check all 8 metrics × 4 operations
+    # Coverage: check all 9 metrics × 4 operations
     from analytics_nl.contracts import Metric, Operation
 
     for m in Metric:

@@ -128,6 +128,7 @@ class TestExpensiveClassification:
 
     def test_many_tickers_long_range(self, registry, bounds):
         intent = _make_intent(
+            metric=Metric.return_,
             entities=[TickerEntity(canonical_id=t) for t in ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA"]],
             start=date(2020, 1, 1),
             end=date(2024, 12, 31),
@@ -155,9 +156,11 @@ class TestRejectCases:
         assert PolicyReasonCode.DATE_RANGE_EXCEEDED in result.reason_codes
 
     def test_gold_10_year_boundary(self, registry, bounds):
-        """Exactly 10 years should pass; 10 years + 1 day should fail."""
+        """Exactly 10 years should pass; 10 years + 1 day should fail.
+        Uses return.trend (Gold layer, date_bound_years=10)."""
         # Exactly 10 years: start = end - 10 years
         intent_ok = _make_intent(
+            metric=Metric.return_,
             start=date(2014, 12, 31),
             end=date(2024, 12, 31),
         )
@@ -166,6 +169,7 @@ class TestRejectCases:
 
         # 10 years + 1 day: start = end - 10 years - 1 day
         intent_bad = _make_intent(
+            metric=Metric.return_,
             start=date(2014, 12, 30),
             end=date(2024, 12, 31),
         )
@@ -206,10 +210,17 @@ class TestRejectCases:
 
     def test_row_limit_exceeded(self, registry, bounds):
         """CanonicalIntent enforces le=10000 at contract level.
-        Policy checks against entry.row_limit and layer_bounds.row_bound."""
-        # Use a limit that's valid for the contract but exceeds entry row_limit
-        # price.trend has row_limit=5000
-        intent = _make_intent(limit=5001)
+        Policy checks against entry.row_limit and layer_bounds.row_bound.
+        Uses volume.compare (Gold, row_limit=5000)."""
+        intent = _make_intent(
+            metric=Metric.volume,
+            operation=Operation.compare,
+            entities=[
+                TickerEntity(canonical_id="AAPL"),
+                TickerEntity(canonical_id="MSFT"),
+            ],
+            limit=5001,
+        )
         result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
         assert PolicyReasonCode.ROW_LIMIT_EXCEEDED in result.reason_codes
 
@@ -272,19 +283,171 @@ class TestGroupingValidation:
 
 
 class TestSilverBounds:
-    """Silver layer: 2 years, 10 tickers, 10000 rows."""
+    """Silver layer: 2 years, 10 tickers, 10000 rows.
 
-    def test_silver_two_year_boundary(self, registry, bounds):
-        """Test with a silver-layer pair."""
-        # relative_performance uses serve_relative_performance_v1 which is gold layer
-        # Let's test with a gold entry but verify the bounds logic
+    price.trend and volume.trend are registered as Silver entries with
+    layer-specific hard bounds enforced by classify_intent.
+    """
+
+    @pytest.fixture
+    def silver_intent(self):
+        """Base Silver intent: price.trend, 1 ticker, 1 month, limit 100."""
+        return _make_intent(
+            metric=Metric.price,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            grouping=Grouping.day,
+            limit=100,
+        )
+
+    # --- 2-year boundary ---
+
+    def test_silver_two_years_exactly_accepts(self, registry, bounds, silver_intent):
+        """Exactly 2 years: start = end - 2 years → must ACCEPT."""
         intent = _make_intent(
-            start=date(2022, 1, 1),
+            metric=Metric.price,
+            operation=Operation.trend,
+            start=date(2022, 12, 31),
             end=date(2024, 12, 31),
+            limit=100,
         )
         result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
-        # This is gold layer (3 years), should be EXPENSIVE but not rejected
-        assert result.cost_class in (CostClass.EXPENSIVE, CostClass.NORMAL, CostClass.CHEAP)
+        assert result.cost_class != CostClass.REJECT
+        assert PolicyReasonCode.DATE_RANGE_EXCEEDED not in result.reason_codes
+
+    def test_silver_two_years_one_day_over_rejects(self, registry, bounds, silver_intent):
+        """2 years + 1 day → must REJECT with DATE_RANGE_EXCEEDED."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.trend,
+            start=date(2022, 12, 30),
+            end=date(2024, 12, 31),
+            limit=100,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.DATE_RANGE_EXCEEDED in result.reason_codes
+
+    # --- 10-ticker boundary ---
+
+    def test_silver_ten_tickers_exactly_accepts(self, registry, bounds):
+        """Exactly 10 tickers → must ACCEPT."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id=t) for t in [
+                "AAPL", "MSFT", "GOOGL", "AMZN", "META",
+                "NVDA", "TSLA", "AMD", "JPM", "XOM",
+            ]],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            limit=100,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert PolicyReasonCode.TICKER_LIMIT_EXCEEDED not in result.reason_codes
+
+    def test_silver_eleven_tickers_rejects(self, registry, bounds):
+        """11 tickers → must REJECT with TICKER_LIMIT_EXCEEDED."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id=t) for t in [
+                "AAPL", "MSFT", "GOOGL", "AMZN", "META",
+                "NVDA", "TSLA", "AMD", "JPM", "XOM", "SPY",
+            ]],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            limit=100,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.TICKER_LIMIT_EXCEEDED in result.reason_codes
+
+    # --- 10,000-row boundary ---
+
+    def test_silver_ten_thousand_rows_exactly_accepts(self, registry, bounds):
+        """Exactly 10,000 rows → must ACCEPT."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.trend,
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            limit=10000,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert PolicyReasonCode.ROW_LIMIT_EXCEEDED not in result.reason_codes
+
+    def test_silver_ten_thousand_one_rows_not_constructible(self, registry, bounds):
+        """10,001 rows → contract rejects (CanonicalIntent limit ≤ 10000).
+
+        The contract is the first line of defense; the policy never sees
+        a limit above 10000.
+        """
+        with pytest.raises(Exception):
+            _make_intent(
+                metric=Metric.price,
+                operation=Operation.trend,
+                start=date(2024, 1, 1),
+                end=date(2024, 1, 31),
+                limit=10001,
+            )
+
+    # --- Missing scope ---
+
+    def test_silver_missing_entity_scope_not_constructible(self, registry, bounds):
+        """No entities → contract rejects (CanonicalIntent requires ≥ 1 entity).
+
+        The contract enforces entity presence; the policy MISSING_REQUIRED_SLOT
+        check is a defensive fallback that can never trigger for valid intents.
+        """
+        with pytest.raises(Exception):
+            CanonicalIntent(
+                semantic_model_version=SEMANTIC_MODEL_VERSION,
+                operation=Operation.trend,
+                metric=Metric.price,
+                entities=[],
+                date_range=DateRange(start=date(2024, 1, 1), end=date(2024, 1, 31)),
+                grouping=Grouping.day,
+                limit=100,
+            )
+
+    # --- REJECT emits no SQL ---
+
+    def test_silver_reject_exposes_no_sql(self, registry, bounds):
+        """REJECT outcome must not contain SQL or compilation artifacts."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.trend,
+            start=date(2022, 12, 30),
+            end=date(2024, 12, 31),
+            limit=100,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert result.allows_compilation is False
+        assert not hasattr(result, "sql")
+        assert "sql" not in PolicyOutcome.model_fields
+        assert "sanitized_sql" not in PolicyOutcome.model_fields
+
+    # --- Volume.trend also Silver ---
+
+    def test_volume_trend_silver_accepts(self, registry, bounds):
+        """volume.trend is also Silver with same bounds."""
+        intent = _make_intent(
+            metric=Metric.volume,
+            operation=Operation.trend,
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            limit=100,
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        entry = registry.entries["volume.trend"]
+        assert entry.layer == "silver"
+        assert result.cost_class != CostClass.REJECT
 
 
 class TestPutCallRatioPolicy:

@@ -98,7 +98,11 @@ with_returns AS (
 ),
 with_vol AS (
     SELECT
-        *,
+        symbol,
+        trade_date,
+        adj_close,
+        information_available_ts,
+        return_1d,
         STDDEV_SAMP(return_1d) OVER (
             PARTITION BY symbol
             ORDER BY trade_date
@@ -108,7 +112,12 @@ with_vol AS (
 ),
 with_drawdown AS (
     SELECT
-        *,
+        symbol,
+        trade_date,
+        adj_close,
+        information_available_ts,
+        return_1d,
+        realized_vol_20d,
         (adj_close - MAX(adj_close) OVER (
             PARTITION BY symbol
             ORDER BY trade_date
@@ -205,6 +214,56 @@ WHERE rn = 1;
 
 ---
 
+## serve_bounded_daily_bars_v1
+
+Bounded Silver daily bars for price/volume drill-downs on ≤10 named tickers over ≤2 years.
+
+```sql
+CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_bounded_daily_bars_v1 AS
+SELECT
+    symbol,
+    trade_date,
+    open AS open_price,
+    high AS high_price,
+    low AS low_price,
+    close AS close_price,
+    adj_close,
+    volume,
+    information_available_ts
+FROM (
+    SELECT
+        symbol,
+        trade_date,
+        open,
+        high,
+        low,
+        close,
+        adj_close,
+        volume,
+        information_available_ts,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol, trade_date
+            ORDER BY information_available_ts DESC
+        ) AS rn
+    FROM ${catalog}.${schema}.bronze_ohlcv_day
+) deduped
+WHERE rn = 1;
+```
+
+**Source:** `bronze_ohlcv_day` (daily grain). Silver constraints: ≤10 tickers, ≤2 years, ≤10,000 rows.
+
+---
+
+## Silver vs Gold routing
+
+| Metric × Operation | Layer | Served from | Constraints |
+|---|---|---|---|
+| `price.trend` | silver | `serve_bounded_daily_bars_v1` | ≤10 tickers, ≤2 years, ≤10k rows |
+| `volume.trend` | silver | `serve_bounded_daily_bars_v1` | ≤10 tickers, ≤2 years, ≤10k rows |
+| All other pairs | gold | Gold serving views | ≤10 years, ≤5k rows |
+
+---
+
 ## Identifier correspondence
 
 All view and column identifiers match the registry YAML `approved_views` list:
@@ -215,3 +274,4 @@ All view and column identifiers match the registry YAML `approved_views` list:
 | `serve_daily_equity_metrics_v1` | `${catalog}.${schema}.serve_daily_equity_metrics_v1` |
 | `serve_relative_performance_v1` | `${catalog}.${schema}.serve_relative_performance_v1` |
 | `serve_options_metrics_v1` | `${catalog}.${schema}.serve_options_metrics_v1` |
+| `serve_bounded_daily_bars_v1` | `${catalog}.${schema}.serve_bounded_daily_bars_v1` |
