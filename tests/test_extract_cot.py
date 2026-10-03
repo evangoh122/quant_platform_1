@@ -3,10 +3,25 @@ tests/test_extract_cot.py
 Tests for the COT ETL extractor.
 """
 import pytest
-import requests
-from unittest.mock import MagicMock, patch
-from etl.extract_cot import run_cot_etl, _to_int
-from db.database import get_connection
+from etl.extract_cot import _to_int
+
+try:
+    from etl.extract_cot import run_cot_etl
+    import requests
+    from unittest.mock import MagicMock, patch
+    from db.database import get_connection
+    _HAS_DB = True
+except ImportError:
+    _HAS_DB = False
+
+
+def test_to_int():
+    assert _to_int("1,234") == 1234
+    assert _to_int("1234.56") == 1234
+    assert _to_int(None) is None
+    assert _to_int("") is None
+    assert _to_int("abc") is None
+
 
 @pytest.fixture
 def mock_cftc_response():
@@ -25,13 +40,10 @@ def mock_cftc_response():
         }
     ]
 
-def test_to_int():
-    assert _to_int("1,234") == 1234
-    assert _to_int("1234.56") == 1234
-    assert _to_int(None) is None
-    assert _to_int("") is None
-    assert _to_int("abc") is None
+requires_db = pytest.mark.skipif(not _HAS_DB, reason="db.database (DuckDB) removed; Delta is the store")
 
+
+@requires_db
 def test_run_cot_etl_success(tmp_db, mock_cftc_response):
     with patch("requests.get") as mock_get:
         mock_get.return_value.status_code = 200
@@ -48,6 +60,7 @@ def test_run_cot_etl_success(tmp_db, mock_cftc_response):
         assert res[3] == 200704
         assert res[10] == 353489
 
+@requires_db
 def test_run_cot_etl_empty(tmp_db):
     with patch("requests.get") as mock_get:
         mock_get.return_value.status_code = 200
@@ -56,6 +69,7 @@ def test_run_cot_etl_empty(tmp_db):
         count = run_cot_etl()
         assert count == 0
 
+@requires_db
 def test_run_cot_etl_error(tmp_db):
     with patch("requests.get") as mock_get:
         mock_get.side_effect = Exception("API error")

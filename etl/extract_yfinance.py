@@ -15,8 +15,33 @@ import pandas as pd
 import yfinance as yf
 from loguru import logger
 
-from db.database import get_connection
-from etl.bulk_load_massive import TICKERS as SEMI_TICKERS
+# Default universe when no tickers are passed. Previously imported from
+# etl.bulk_load_massive, an IBKR_workbench module that was never carried into this
+# repo (so this module could not be imported). Inlined unchanged from
+# github.com/evangoh122/IBKR_workbench etl/bulk_load_massive.py @ b5b7b5a (35 tickers).
+# Not the 32-ticker stub in quant_platform_1 commit afc56c0: that was an unmerged,
+# reconstructed-from-memory draft (it lists IIVI, renamed to COHR in 2022).
+_DEFAULT_TICKERS = {
+    # Mag 7
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
+    # Semiconductors
+    "AMD", "INTC", "QCOM", "AVGO", "TXN", "MRVL", "MU", "SNDK",
+    "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ON", "MPWR",
+    "NXPI", "ADI", "MCHP", "SWKS", "QRVO", "ENTG", "CRUS",
+    "WOLF", "ONTO", "ACLS", "SLAB", "STM",
+}
+SEMI_TICKERS = _DEFAULT_TICKERS
+
+
+def _get_connection():
+    try:
+        from db.database import get_connection
+    except ImportError:
+        raise RuntimeError(
+            "DuckDB local store was retired; production ingestion writes Delta "
+            "via notebooks/01_ingest_market_data.py"
+        )
+    return get_connection()
 
 
 _RATE_DELAY = 0.5
@@ -122,7 +147,7 @@ def run_yf_bars_etl(tickers: Optional[Iterable[str]] = None) -> int:
     tickers = list(tickers) if tickers is not None else sorted(SEMI_TICKERS)
     logger.info(f"yf-bars: {len(tickers)} tickers")
     total = 0
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for sym in tickers:
             df = _fetch_one(sym)
             if df is None:
@@ -262,7 +287,7 @@ def run_yf_indices_etl(symbols: Optional[Iterable[str]] = None) -> int:
     symbols = list(symbols) if symbols is not None else list(INDICES)
     logger.info(f"yf-indices: {len(symbols)} real symbols + {len(DERIVED_SPREADS)} derived")
     raw_total = 0
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for sym in symbols:
             df = _fetch_one(sym)
             if df is None:

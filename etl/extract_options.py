@@ -10,8 +10,18 @@ from typing import List
 
 from loguru import logger
 
-from db.database import get_connection
 from etl.ibkr_client import IBKRClient
+
+
+def _get_connection():
+    try:
+        from db.database import get_connection
+    except ImportError:
+        raise RuntimeError(
+            "DuckDB local store was retired; production ingestion writes Delta "
+            "via notebooks/01_ingest_market_data.py"
+        )
+    return get_connection()
 from config.tickers import get_expiry_cycles
 from etl.utils import utcnow as _utcnow
 
@@ -29,7 +39,7 @@ def refresh_option_chains(client: IBKRClient, tickers: List[dict]) -> int:
     Returns total contracts stored.
     """
     total = 0
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for t_def in tickers:
             ticker = t_def.get("symbol")
             
@@ -76,7 +86,7 @@ def run_option_etl(client: IBKRClient, tickers: List[dict],
     # Gather contracts to quote
     contracts_to_quote = []   # (ticker, expiry, strike, right)
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         for t_def in tickers:
             ticker = t_def.get("symbol")
             if t_def.get("secType") in ("CASH",):
@@ -176,7 +186,7 @@ def run_option_etl(client: IBKRClient, tickers: List[dict],
         logger.warning("No option quote data received")
         return 0
 
-    with get_connection() as conn:
+    with _get_connection() as conn:
         conn.executemany("""
             INSERT INTO option_quotes
                 (ticker, expiry, strike, "right", ts, bid, ask, last,

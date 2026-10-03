@@ -2,6 +2,8 @@
 tests/bronze/test_bronze_yfinance_bars.py
 Bronze layer: yfinance daily bars ingestion into staging_yf_bars.
 """
+import pytest
+pytest.importorskip("db.database", reason="db.database (DuckDB) removed; Delta is the store")
 from db.database import get_connection
 
 

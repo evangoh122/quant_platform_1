@@ -290,6 +290,13 @@ class TestShadowRunner:
 # review_queue DB layer
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(
+    reason=(
+        "api.db.review_queue is Rag_workbench's DuckDB-backed review queue; it was not "
+        "carried into quant_platform_1, which retired DuckDB in favour of Delta/Lakebase. "
+        "Port these tests if a review queue is rebuilt on Lakebase."
+    )
+)
 class TestReviewQueueDB:
     @pytest.fixture
     def conn(self):

@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
-import duckdb
 import pytest
+pytest.importorskip("rag_engine", reason="rag_engine (DuckDB vector retriever) removed; Delta is the store")
+import duckdb
 import pandas as pd
 from rag_engine import DuckDBVectorRetriever
 from query import stock_history, latest_option_quotes

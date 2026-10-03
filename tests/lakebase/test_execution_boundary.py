@@ -1,10 +1,18 @@
 """Execution-boundary tests — offline (no live Lakebase, no network).
 
-These prove the boundary the LLM cannot bypass: for every risk check, the *real*
-placement path (`agent.tools_write._approve_and_place_paper_order`) is driven
-with a mocked broker bridge and asserted that ``submit_order`` is never called.
-The public tool signature is also proven (by inspection) to expose no trusted
-risk state.
+These prove that each public placement invocation fails closed for the covered
+stored-state and risk conditions: the *real* public placement path
+(``agent.tools_write.approve_and_place_paper_order``) is driven with a mocked
+broker bridge and asserted that ``submit_order`` is never called whenever a risk
+or stored-state check blocks the order. No trusted risk state is passed into the
+function — the DB acquisition, risk engine construction, market clock, and
+broker construction are patched at their construction sites, exactly as the
+public entry point acquires them.
+
+These tests do **not** prove a boundary the LLM — or any same-process caller —
+cannot bypass: the private test seams (``_approve_and_place_paper_order``,
+``_cancel_paper_order``) remain directly importable by any Python caller in this
+process.
 
 The DB is a small in-memory fake keyed on query substrings; it only needs to
 return the handful of rows the placement path reads.
@@ -13,13 +21,12 @@ from __future__ import annotations
 
 import inspect
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 import agent.tools_write as tw
-from agent.guardrails import RiskEngine
 
 
 class _FakeCursor:
@@ -88,8 +95,6 @@ def _rows_for(state, query, params):
         return [(state["position_notional"],)]
     if "SELECT order_id, symbol, side, status FROM orders" in q:
         return state["open_orders"]
-    if "idempotency_key = %s AND order_id <> %s" in q:
-        return [(1,)] if state["idempotency_seen"] else []
     if "FROM signals" in q:
         return [state["signal"]] if state["signal"] is not None else []
     return []
@@ -102,7 +107,6 @@ def _make_state(**overrides):
         "account": (100000.0,),
         "position_notional": 0.0,
         "open_orders": [],
-        "idempotency_seen": False,
         "signal": None,
         "executed": [],
     }
@@ -111,15 +115,14 @@ def _make_state(**overrides):
     return state
 
 
-def _run(state, *, engine=None, market_session_open=True, now=None, bridge=None):
-    return tw._approve_and_place_paper_order(
-        "ord_1",
-        db=FakeLakebase(state),
-        bridge=bridge or MagicMock(),
-        engine=engine or RiskEngine(allowed_symbols={"AAPL"}),
-        market_session_open=market_session_open,
-        now=now,
-    )
+def _run(state, *, market_session_open=True, bridge=None, monkeypatch):
+    bridge = bridge or MagicMock()
+    # Patch the construction sites the public entry point uses, never the
+    # function arguments — the public signature cannot accept these at all.
+    monkeypatch.setattr(tw, "get_lakebase", lambda: FakeLakebase(state))
+    monkeypatch.setattr(tw, "is_market_session_open", lambda: market_session_open)
+    monkeypatch.setattr(tw, "IBKRBridge", lambda: bridge)
+    return tw.approve_and_place_paper_order("ord_1")
 
 
 def _order(**fields):
@@ -134,120 +137,143 @@ def _order(**fields):
     return tuple(row)
 
 
+def _not_allowlisted_symbol():
+    """Return a symbol guaranteed absent from the production allow-list."""
+    from config.tickers import get_all_ticker_symbols
+
+    allowlist = set(get_all_ticker_symbols())
+    for candidate in ("ZZZZZ", "ZZZZZZ", "ZZZZZZZ", "ZZZZZZZZ", "ZZZZZZZZZ",
+                      "ZZZZZZZZZZ"):
+        if candidate not in allowlist:
+            return candidate
+    raise AssertionError("all synthetic symbols unexpectedly allow-listed")
+
+
 # ── one no-broker-call test per risk check ────────────────────────────────────
-def test_no_broker_call_symbol_not_allowed():
+def test_no_broker_call_symbol_not_allowed(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(), engine=RiskEngine(allowed_symbols={"MSFT"}), bridge=bridge)
+    res = _run(_make_state(order=_order(symbol=_not_allowlisted_symbol())),
+               bridge=bridge, monkeypatch=monkeypatch)
     assert res["ok"] is False
     assert res["status"] == "REJECTED"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_not_paper_mode():
+def test_no_broker_call_not_paper_mode(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(order=_order(broker="LIVE")), bridge=bridge)
+    res = _run(_make_state(order=_order(broker="LIVE")), bridge=bridge,
+               monkeypatch=monkeypatch)
     assert res["ok"] is False
     assert res["risk"]["violations"][0]["code"] == "NOT_PAPER_MODE"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_non_positive_quantity():
+def test_no_broker_call_non_positive_quantity(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(order=_order(quantity=0)), bridge=bridge)
+    res = _run(_make_state(order=_order(quantity=0)), bridge=bridge,
+               monkeypatch=monkeypatch)
     assert res["risk"]["violations"][0]["code"] == "NON_POSITIVE_QUANTITY"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_non_positive_notional():
+def test_no_broker_call_non_positive_notional(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(order=_order(notional=0)), bridge=bridge)
+    res = _run(_make_state(order=_order(notional=0)), bridge=bridge,
+               monkeypatch=monkeypatch)
     assert res["risk"]["violations"][0]["code"] == "NON_POSITIVE_NOTIONAL"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_notional_exceeds_max():
+def test_no_broker_call_notional_exceeds_max(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(order=_order(notional=30000)), bridge=bridge)
+    res = _run(_make_state(order=_order(notional=30000)), bridge=bridge,
+               monkeypatch=monkeypatch)
     assert res["risk"]["violations"][0]["code"] == "NOTIONAL_EXCEEDS_MAX"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_concentration_exceeds_max():
+def test_no_broker_call_concentration_exceeds_max(monkeypatch):
     bridge = MagicMock()
     res = _run(
         _make_state(order=_order(notional=25000), position_notional=30000.0),
-        bridge=bridge,
+        bridge=bridge, monkeypatch=monkeypatch,
     )
     assert res["risk"]["violations"][0]["code"] == "CONCENTRATION_EXCEEDS_MAX"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_insufficient_buying_power():
+def test_no_broker_call_insufficient_buying_power(monkeypatch):
     bridge = MagicMock()
     res = _run(
         _make_state(order=_order(notional=2000), account=(1500.0,)),
-        bridge=bridge,
+        bridge=bridge, monkeypatch=monkeypatch,
     )
     assert res["risk"]["violations"][0]["code"] == "INSUFFICIENT_BUYING_POWER"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_duplicate_open_order_opposite_side():
+def test_no_broker_call_duplicate_open_order_opposite_side(monkeypatch):
     bridge = MagicMock()
     open_orders = [("ord_2", "AAPL", "SELL", "PENDING_APPROVAL")]
-    res = _run(_make_state(open_orders=open_orders), bridge=bridge)
+    res = _run(_make_state(open_orders=open_orders), bridge=bridge,
+               monkeypatch=monkeypatch)
     assert res["risk"]["violations"][0]["code"] == "DUPLICATE_OPEN_ORDER"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_market_closed():
+def test_no_broker_call_market_closed(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(), market_session_open=False, bridge=bridge)
+    res = _run(_make_state(), market_session_open=False, bridge=bridge,
+               monkeypatch=monkeypatch)
     assert res["risk"]["violations"][0]["code"] == "MARKET_CLOSED"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_stale_signal():
+def test_no_broker_call_stale_signal(monkeypatch):
     bridge = MagicMock()
-    now = datetime(2026, 10, 2, 14, 0, tzinfo=timezone.utc)
-    old = now - timedelta(minutes=30)
+    old = datetime(2000, 1, 1, tzinfo=timezone.utc)
     res = _run(
         _make_state(order=_order(signal_id="sig_1"), signal=(old,)),
-        now=now, bridge=bridge,
+        bridge=bridge, monkeypatch=monkeypatch,
     )
     assert res["risk"]["violations"][0]["code"] == "STALE_SIGNAL"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_duplicate_idempotency_key():
-    bridge = MagicMock()
-    res = _run(_make_state(idempotency_seen=True), bridge=bridge)
-    assert res["risk"]["violations"][0]["code"] == "DUPLICATE_IDEMPOTENCY_KEY"
-    bridge.submit_order.assert_not_called()
-
-
 # ── fail-closed service-level checks ──────────────────────────────────────────
-def test_no_broker_call_signal_not_found():
+def test_no_broker_call_signal_not_found(monkeypatch):
     bridge = MagicMock()
     res = _run(
         _make_state(order=_order(signal_id="missing_sig"), signal=None),
-        bridge=bridge,
+        bridge=bridge, monkeypatch=monkeypatch,
     )
     assert res["risk"]["violations"][0]["code"] == "SIGNAL_NOT_FOUND"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_account_not_found():
+def test_no_broker_call_account_not_found(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(account=None), bridge=bridge)
+    res = _run(_make_state(account=None), bridge=bridge, monkeypatch=monkeypatch)
     assert res["risk"]["violations"][0]["code"] == "ACCOUNT_NOT_FOUND"
     bridge.submit_order.assert_not_called()
 
 
-def test_no_broker_call_missing_approval_record():
+def test_no_broker_call_missing_approval_record(monkeypatch):
     bridge = MagicMock()
-    res = _run(_make_state(approval=None), bridge=bridge)
+    res = _run(_make_state(approval=None), bridge=bridge, monkeypatch=monkeypatch)
     assert res["risk"]["violations"][0]["code"] == "MISSING_APPROVAL"
+    bridge.submit_order.assert_not_called()
+
+
+# ── idempotent replay never re-calls the broker ───────────────────────────────
+def test_no_broker_call_already_submitted_replay(monkeypatch):
+    bridge = MagicMock()
+    res = _run(
+        _make_state(order=_order(status="SUBMITTED", broker_order_id="PAPER-9")),
+        bridge=bridge, monkeypatch=monkeypatch,
+    )
+    assert res["ok"] is True
+    assert res.get("replay") is True
     bridge.submit_order.assert_not_called()
 
 
@@ -256,10 +282,44 @@ def test_public_signature_cannot_override_risk_state():
     sig = inspect.signature(tw.approve_and_place_paper_order)
     params = set(sig.parameters)
     for forbidden in ("engine", "bridge", "market_session_open",
-                      "human_approved", "approved_by"):
+                      "human_approved", "approved_by", "db"):
         assert forbidden not in params
 
 
 def test_public_cancel_signature_has_no_bridge():
     sig = inspect.signature(tw.cancel_paper_order)
     assert "bridge" not in sig.parameters
+
+
+def test_private_seam_excluded_from_star_import_only():
+    # ``__all__`` governs ``from agent.tools_write import *``. It is not an
+    # enforcement boundary: the private seams remain directly reachable by a
+    # same-process caller. Assert both halves so the test does not overclaim.
+    assert "approve_and_place_paper_order" in tw.__all__
+    assert "record_approval" in tw.__all__
+    assert "ApprovalContext" in tw.__all__
+    assert "_approve_and_place_paper_order" not in tw.__all__
+    assert "_cancel_paper_order" not in tw.__all__
+    assert hasattr(tw, "_approve_and_place_paper_order")
+    assert hasattr(tw, "_cancel_paper_order")
+
+
+def test_record_approval_signature_requires_context_object():
+    # Signature-only assertion: the parameter is named ``approver``, not
+    # ``approver_id``. This does not (and cannot) enforce the annotation at
+    # runtime — see the next test for the actual runtime type check.
+    sig = inspect.signature(tw.record_approval)
+    assert "approver_id" not in sig.parameters
+    assert "approver" in sig.parameters
+
+
+def test_record_approval_rejects_non_context_object():
+    # record_approval used to duck-type ``approver.approver_id``, so any object
+    # carrying that attribute was accepted. It must reject anything that is not
+    # an actual ApprovalContext, before any database work.
+    class _NotApprovalContext:
+        approver_id = "alice"
+
+    res = tw.record_approval("ord_1", _NotApprovalContext())
+    assert res["ok"] is False
+    assert res["reason"] == "INVALID_APPROVAL_CONTEXT"
