@@ -256,3 +256,109 @@ Suggested sequence: S1–S7 and precomputed S11 first; S8 in parallel with mocks
 ## Launch gate
 
 Do not deploy until S1–S7, precomputed S11, and S12 pass; the r4 provenance question is resolved; public route enumeration proves that orders/approvals/cancels/Lakebase writes are unreachable; and the page works with the API and all secrets absent. S9–S10 are required only for automated fresh snapshots/live SQL, not for a reviewed snapshot-only preview.
+
+## 7. Claude review addendum (2026-10-03): findings on main and the revised approach
+
+This section **supersedes §1–§2 where they differ**. It keeps FastAPI as one Render web service
+in `PUBLIC_DEMO=1` mode, serving reviewed snapshot JSON, instead of a static-only site, because the
+frontend already calls `/api/*` same-origin and the change is smaller. Package manager: **keep pip**.
+Revisit uv only once a `uv.lock` exists.
+
+### Observed on a Render-like environment (no Databricks CLI, no proxy)
+
+| Check | Result |
+|---|---|
+| `pip install -r requirements.txt` | **Fails**: `ibapi>=10.19` is not on PyPI (latest 9.81.1) |
+| `requirements-app.txt` + `loguru` only, then `import api.main` | OK, 12 routes |
+| `GET /api/health` | 200 `degraded` in 0.6 s (Lakebase `FileNotFoundError: databricks`, no pyspark). Usable as the health check |
+| `GET /api/signals`, no header | **401**, so every public page breaks |
+| `GET /api/signals` with `x-forwarded-email: anyone@evil.com` | **Accepted as that identity**. It failed with 503 only because Lakebase was unreachable |
+
+### Blockers, ranked
+
+1. **Critical: the identity header can be spoofed off-Databricks.** `api/deps.py` trusts
+   `x-forwarded-email`. Only the Databricks Apps proxy strips a client-sent copy, and Render has no
+   such proxy. With Lakebase credentials on Render, a visitor could claim the trader identity and
+   approve orders. **Never configure Lakebase or Databricks credentials on the public service.**
+2. **Reads need identity and write to Lakebase.** `get_current_user` returns 401 without the
+   header. With it, `_ensure_user` runs `INSERT INTO users` on every request.
+3. **All data comes from Spark** (`read_delta`). On Render every page would show `unavailable`.
+4. **Write surface is registered:**
+   - `POST /api/orders/intents`, `/{id}/approve`, `/{id}/cancel`;
+   - `POST /api/watchlists`;
+   - `POST /api/agent/chat`, which calls `add_to_watchlist` and `save_research_note`.
+5. **Dependencies.** `requirements.txt` can't be installed and is heavy (langchain, mlflow, ibapi).
+6. **Frontend build needs Node** in the Python build environment (`npm ci && npm run build`, i.e.
+   `tsc && vite build`). Verify on the first build; fall back to a Docker runtime.
+7. **Port.** Bind `0.0.0.0:$PORT` in the start command. No code change is needed.
+8. **Lakebase token minting shells out to the `databricks` CLI.** This is moot once demo mode never
+   touches Lakebase.
+
+### Decisions
+
+- **Package manager: pip.** Add a pinned `requirements-render.txt` with only fastapi,
+  uvicorn[standard], pydantic and loguru. Exclude pyspark, psycopg, langchain, mlflow and ibapi.
+- **Build:** `pip install -r requirements-render.txt && cd frontend && npm ci && npm run build`
+- **Start:** `uvicorn api.main:app --host 0.0.0.0 --port $PORT --proxy-headers`
+- **Data:** the owner runs a script locally to export reviewed, allow-listed JSON into `demo_data/`:
+  - signals, market snapshot, analytics, r4 results, freshness;
+  - pre-run RAG Q&A examples with `as_of`.
+
+  Commit it through a PR. In demo mode `read_delta` serves it. Live Databricks access through the
+  service principal is a later, read-only phase.
+
+### `render.yaml` (supersedes §2)
+
+```yaml
+services:
+  - type: web
+    name: qp1-showcase
+    runtime: python
+    plan: starter            # free sleeps after 15 min (~50 s cold start)
+    buildCommand: pip install -r requirements-render.txt && cd frontend && npm ci && npm run build
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /api/health
+    autoDeploy: false        # deploy manually after review
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: PUBLIC_DEMO
+        value: "1"
+      - key: APP_ENV
+        value: demo
+```
+
+There are deliberately **no secrets**.
+
+### Build lanes (MiMo builds → DeepSeek checks → Claude/Codex validates → PR + CodeRabbit)
+
+| ID | Task | Acceptance (each test must fail on current main) |
+|---|---|---|
+| R1 | `requirements-render.txt`, pinned, minimal | A clean venv from that file alone imports `api.main`. No pyspark, psycopg, langchain, mlflow or ibapi installed |
+| R2 | Demo access in `api/deps.py` / `api/main.py`: with `PUBLIC_DEMO=1`, `get_current_user` returns a fixed anonymous viewer, ignores every identity header and never imports `db.lakebase` | A spoofed `x-forwarded-email: owner` gives the same response as no header. A mocked `get_lakebase` is never called |
+| R3 | Remove the write surface in demo mode: don't register `orders`, the `watchlists` POST or `agent/chat`; every `agent.tools_write` function raises when `PUBLIC_DEMO=1` | The route list has only GET/HEAD/OPTIONS under `/api`. A direct call to each write tool raises before any DB or broker mock is touched |
+| R4 | Startup check: refuse to start if `PUBLIC_DEMO=1` and any `LAKEBASE_*`, `DATABRICKS_*` or broker secret is set | App startup raises with a clear message. A test covers each variable family |
+| R5 | Snapshot reader: in demo mode `read_delta` serves `demo_data/*.json` with schema validation; corrupt or missing data → `unavailable`, never a crash | Every GET route returns well-formed data from fixtures. Corrupt JSON → `unavailable` |
+| R6 | Snapshot exporter `scripts/export_demo_data.py`, run by the owner from WSL: allow-listed columns, row caps, a scan for emails, order IDs and secrets | The export fails on a disallowed field. The r4 results carry "no demonstrated edge" and DSR 0; the ML ablation is labelled synthetic |
+| R7 | Basic abuse controls: GET-only rate limit, request size/time limits, security headers, CORS stays off | The 61st request per minute → 429. Headers present |
+| R8 | `render.yaml` as above; `docs/DEPLOYMENT.md` gains a Render section | Clean `npm ci && npm run build`. A deep link returns `index.html`. A repo scan finds no secret values |
+
+### Verification before going public
+
+1. `PUBLIC_DEMO=1` with an empty environment: every page renders from `demo_data/`.
+2. Route list: only GET/HEAD/OPTIONS under `/api`. Every `tools_write` function raises.
+3. A spoofed identity header behaves exactly like no header.
+4. Any Lakebase/Databricks variable together with `PUBLIC_DEMO=1` → the app refuses to start.
+5. Clean install from `requirements-render.txt`, plus the frontend build, plus SPA deep links.
+6. After the manual Render deploy: health check, a browser pass on desktop and mobile, and the
+   route list check repeated against the live URL.
+
+### Security risks
+
+- **Demo mode turned off by mistake** on Render brings back the header-spoofing hole. R4 is the
+  guard.
+- **Snapshot leakage** (emails, order IDs, paper positions). R6's allow-list and scan are the
+  guard.
+- **Misleading results.** Show r4 with its caveats. Never show synthetic ablation numbers as real.
