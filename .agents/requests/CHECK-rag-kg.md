@@ -38,3 +38,23 @@ Check, with proofs:
 
 Run `python3 -m pytest -q -p no:cacheprovider tests/rag`, and the full suite with
 `--ignore=tests/lakebase`.
+
+## Re-check after round 2 (this run)
+MiMo round 2 (commit "fix(rag-kg): round 2") addresses your 2 blocking findings. Claude rebuilt
+offline:
+- 63,507 nodes, 141,904 edges;
+- XbrlFact 43,722 (duration 32,143 + instant 11,579);
+- `citation_level`: chunk 5,118 / filing 38,604;
+- SOURCED_FROM edges: 6,575.
+
+**Key question:** in round 1, 0 fact `source_chunk_id`s resolved, yet 5,118 facts are now
+chunk-level. Are those from an accession→"some chunk of the same filing" fallback? A chunk-level
+citation must mean the chunk actually CONTAINS the fact. Sample 20 chunk-level facts and check that
+the chunk text contains the value (allowing for scale/format, e.g. 274,300,000 vs 274.3 million) or
+the metric's line item. If not, those must be filing-level. Also check:
+- `rejected_row_count` is still "approximate" per MiMo; the spec required exact counts and a FAIL
+  on undocumented rejects;
+- instant vs duration IDs never collide;
+- `query_sec_facts` returns `citation_level` + `source_url`.
+
+Write `.agents/deepseek/VERDICT-rag-kg-check2.md`.
