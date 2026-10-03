@@ -3,7 +3,7 @@
 Branch `slice/nl-contracts`. Spec: `.agents/requests/BUILD-nl1-contracts.md` plus the amendment
 `BUILD-nl1-amendment-put-call.md`. Plan: `docs/PUBLIC_NL_ANALYTICS_V1_PLAN.md`. MiMo built
 `analytics_nl/` (contracts, registry, aliases, policy, schemas, data YAML) with 167 tests. Read-only.
-Write `.agents/deepseek/VERDICT-nl1-contracts.md` (===VERDICT START/END===, Status).
+Write `.agents/deepseek/VERDICT-nl1-contracts-check2.md` (===VERDICT START/END===, Status).
 
 Check, adversarially:
 1. **The LLM output schema cannot express SQL, table or column names, code, or URLs.**
@@ -29,3 +29,18 @@ Check, adversarially:
 7. The tests fail on the pre-change code.
 
 Run `python3 -m pytest -q tests/analytics_nl`, and the full suite with `--ignore=tests/lakebase`.
+
+## Re-check after round 3 (this run)
+MiMo round 3 addresses your 4 findings:
+- explicit DDL columns;
+- a whitespace/newline-insensitive `SELECT *` and `table.*` guard;
+- 2 Silver registry entries;
+- Silver boundary tests (exactly at / one over, for 2 years, 10 tickers and 10,000 rows, plus
+  missing scope).
+
+175 tests pass. Verify each finding with proofs:
+- the new guard FAILS on the round-2 DDL (mutation);
+- the Silver entries are real and served by a bounded, PIT-filtered view with explicit columns;
+- each just-over case REJECTs with no SQL.
+
+Write `.agents/deepseek/VERDICT-nl1-contracts-check2.md`.
