@@ -104,3 +104,17 @@ MiMo round 6 claims to fix all three. Verify with proofs:
 
 Re-run the full pass on the report quantities. Write
 `.agents/deepseek/VERDICT-strategy-robustness-check6.md`.
+
+## Re-check after round 7 (this run)
+MiMo round 7 (commit 459eb4d) fixes your check6 PCA column misalignment, surfaces drop-top-3
+failures, and corrects the docstring. Claude's independent probe: on a 14-symbol panel with a NaN in
+S00 inside the window, S00's residual at t=100 is NaN, and the residuals are invariant to permuting
+the column order.
+
+Verify with your own probe:
+- per-symbol alignment against an independent projection;
+- audit every positional write in the PCA path;
+- drop3 failure surfacing;
+- the PCA fit-tolerance choice is documented.
+
+Full pass on the report quantities. Write `.agents/deepseek/VERDICT-strategy-robustness-check7.md`.
