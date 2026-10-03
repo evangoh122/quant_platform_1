@@ -518,3 +518,150 @@ class TestPutCallRatioPolicy:
         agg_param = entry.parameters["agg_function"]
         assert agg_param.enum == ["mean"]
         assert "sum" not in agg_param.enum
+
+
+class TestCorporateActionRejection:
+    """Metrics using unadjusted prices must reject over known splits."""
+
+    @pytest.fixture
+    def bounds_with_splits(self, bounds):
+        """Create bounds with a known split for NVDA on 2024-06-10."""
+        from analytics_nl.policy import PolicyBounds
+        return PolicyBounds(
+            policy_version=bounds.policy_version,
+            semantic_model_version=bounds.semantic_model_version,
+            gold=bounds.gold,
+            silver=bounds.silver,
+            cheap=bounds.cheap,
+            normal=bounds.normal,
+            known_splits=(("NVDA", date(2024, 6, 10), 10.0),),
+        )
+
+    @pytest.fixture
+    def bounds_no_splits(self, bounds):
+        """Bounds with empty known_splits."""
+        return bounds
+
+    def test_return_rejected_over_known_split(self, registry, bounds_with_splits):
+        """return.trend over a window containing a known split → REJECT."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION in result.reason_codes
+
+    def test_realized_vol_rejected_over_known_split(self, registry, bounds_with_splits):
+        """realized_volatility.trend over a window containing a known split → REJECT."""
+        intent = _make_intent(
+            metric=Metric.realized_volatility,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION in result.reason_codes
+
+    def test_drawdown_rejected_over_known_split(self, registry, bounds_with_splits):
+        """drawdown.trend over a window containing a known split → REJECT."""
+        intent = _make_intent(
+            metric=Metric.drawdown,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION in result.reason_codes
+
+    def test_momentum_rejected_over_known_split(self, registry, bounds_with_splits):
+        """momentum.trend over a window containing a known split → REJECT."""
+        intent = _make_intent(
+            metric=Metric.momentum,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION in result.reason_codes
+
+    def test_relative_perf_rejected_over_known_split(self, registry, bounds_with_splits):
+        """relative_performance.trend over a window containing a known split → REJECT."""
+        intent = _make_intent(
+            metric=Metric.relative_performance,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION in result.reason_codes
+
+    def test_price_trend_not_rejected_over_known_split(self, registry, bounds_with_splits):
+        """price.trend uses raw close — not rejected over known splits."""
+        intent = _make_intent(
+            metric=Metric.price,
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_volume_not_rejected_over_known_split(self, registry, bounds_with_splits):
+        """volume.trend uses raw volume — not rejected over known splits."""
+        intent = _make_intent(
+            metric=Metric.volume,
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_iv_not_rejected_over_known_split(self, registry, bounds_with_splits):
+        """implied_volatility uses options data — not rejected over known splits."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_empty_splits_no_rejection(self, registry, bounds_no_splits):
+        """With empty known_splits, no corporate-action rejection occurs."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_no_splits, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_split_outside_window_no_rejection(self, registry, bounds_with_splits):
+        """Split date outside the requested window → no rejection."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            start=date(2024, 1, 1),
+            end=date(2024, 5, 31),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_different_symbol_no_rejection(self, registry, bounds_with_splits):
+        """Split for NVDA but requesting AAPL → no rejection."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes

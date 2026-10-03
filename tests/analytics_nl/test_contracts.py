@@ -383,6 +383,19 @@ class TestPolicyOutcome:
         assert not hasattr(po, "sql")
         assert "sql" not in PolicyOutcome.model_fields
 
+    def test_unadjusted_corporate_action_reason_code(self):
+        """UNADJUSTED_CORPORATE_ACTION reason code must be valid."""
+        po = PolicyOutcome(
+            semantic_model_version=SEMANTIC_MODEL_VERSION,
+            policy_version="1.0.0",
+            cost_class=CostClass.REJECT,
+            reason_codes=[PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION],
+            detail="Rejected: unadjusted corporate action in window",
+            allows_compilation=False,
+        )
+        assert po.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION in po.reason_codes
+
 
 class TestProvenanceEnvelope:
     """Provenance envelope validation."""
@@ -446,9 +459,9 @@ class TestChartEnvelope:
         ce = ChartEnvelope(
             semantic_model_version=SEMANTIC_MODEL_VERSION,
             chart_config=LineChartConfig(
-                x_axis=ChartAxis(field_name="trade_date", display_label="Date", data_type=DataType.date),
-                y_axes=[ChartAxis(field_name="adj_close", display_label="Price", data_type=DataType.number)],
-                series=[ChartSeries(field_name="adj_close", display_label="AAPL", data_type=DataType.number)],
+                x_axis=ChartAxis(field_name="event_date", display_label="Date", data_type=DataType.date),
+                y_axes=[ChartAxis(field_name="close", display_label="Price", data_type=DataType.number)],
+                series=[ChartSeries(field_name="close", display_label="AAPL", data_type=DataType.number)],
             ),
         )
         assert ce.chart_config.chart_type == ChartType.line
@@ -458,8 +471,8 @@ class TestChartEnvelope:
             semantic_model_version=SEMANTIC_MODEL_VERSION,
             chart_config=BarChartConfig(
                 x_axis=ChartAxis(field_name="symbol", display_label="Symbol", data_type=DataType.string),
-                y_axes=[ChartAxis(field_name="adj_close", display_label="Price", data_type=DataType.number)],
-                series=[ChartSeries(field_name="adj_close", display_label="Price", data_type=DataType.number)],
+                y_axes=[ChartAxis(field_name="close", display_label="Price", data_type=DataType.number)],
+                series=[ChartSeries(field_name="close", display_label="Price", data_type=DataType.number)],
             ),
         )
         assert ce.chart_config.chart_type == ChartType.bar
@@ -470,7 +483,7 @@ class TestChartEnvelope:
             chart_config=TableConfig(
                 columns=[
                     TableColumn(field_name="symbol", display_label="Symbol", data_type=DataType.string),
-                    TableColumn(field_name="adj_close", display_label="Price", data_type=DataType.number),
+                    TableColumn(field_name="close", display_label="Price", data_type=DataType.number),
                 ],
             ),
         )

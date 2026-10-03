@@ -27,7 +27,8 @@
         "PAIR_NOT_REGISTERED",
         "ENTITY_NOT_ALLOWED",
         "FUTURE_DATE",
-        "END_BEFORE_START"
+        "END_BEFORE_START",
+        "UNADJUSTED_CORPORATE_ACTION"
       ],
       "title": "PolicyReasonCode",
       "type": "string"

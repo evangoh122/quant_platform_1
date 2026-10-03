@@ -27,3 +27,8 @@ soft_thresholds:
     max_entities: 5
     max_rows: 2500
   # Anything above normal thresholds but within hard bounds = EXPENSIVE
+
+# Known stock splits for corporate-action safety.
+# Empty by default — to be populated by owner/admin.
+# Format: {symbol: "NVDA", ex_date: "2024-06-10", ratio: 10.0}
+known_splits: []

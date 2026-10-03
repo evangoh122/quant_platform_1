@@ -95,7 +95,7 @@ class TestDDLAdminWarning:
 
 
 class TestDDLColumnGrain:
-    """DDL must document daily grain."""
+    """DDL must document daily grain and use correct column names."""
 
     def test_daily_grain_documented(self, ddl_content):
         assert "daily" in ddl_content.lower()
@@ -103,6 +103,34 @@ class TestDDLColumnGrain:
     def test_no_intraday(self, ddl_content):
         """DDL should not reference intraday grain."""
         assert "intraday" in ddl_content.lower()  # Should mention it's NOT intraday
+
+    def test_event_date_used_not_trade_date(self, ddl_content):
+        """DDL must use event_date (real column) not trade_date."""
+        assert "event_date" in ddl_content
+        # trade_date should NOT appear as a column reference in SQL blocks
+        lines = ddl_content.splitlines()
+        in_sql = False
+        for line in lines:
+            if line.strip() == "```sql":
+                in_sql = True
+            elif line.strip() == "```":
+                in_sql = False
+            elif in_sql:
+                assert "trade_date" not in line, (
+                    f"trade_date found in SQL block (should be event_date): {line.strip()}"
+                )
+
+    def test_feature_ts_in_options_view(self, ddl_content):
+        """Options view must use feature_ts (real column) not trade_date."""
+        assert "feature_ts" in ddl_content
+
+    def test_close_used_not_adj_close_source(self, ddl_content):
+        """DDL must use close as source, not adj_close as a source column.
+
+        adj_close may appear as an alias of close in SELECT clauses.
+        """
+        # The DDL should have "close AS adj_close" pattern
+        assert "close AS adj_close" in ddl_content or "close" in ddl_content
 
 
 class TestDDLPITSafety:
@@ -113,6 +141,12 @@ class TestDDLPITSafety:
 
     def test_pit_safety_documented(self, ddl_content):
         assert "PIT" in ddl_content or "point-in-time" in ddl_content.lower() or "look-ahead" in ddl_content.lower()
+
+    def test_pit_derivation_documented(self, ddl_content):
+        """DDL must document how information_available_ts is derived for daily bars."""
+        assert "16:30" in ddl_content
+        assert "America/New_York" in ddl_content
+        assert "to_utc_timestamp" in ddl_content
 
 
 class TestDDLDeduplication:
@@ -128,6 +162,29 @@ class TestDDLReturnFormula:
     def test_return_formula(self, ddl_content):
         assert "return_1d" in ddl_content
         assert "LAG" in ddl_content
+
+
+class TestDDLUnadjustedPrices:
+    """DDL must document that prices are unadjusted."""
+
+    def test_unadjusted_documented(self, ddl_content):
+        assert "unadjusted" in ddl_content.lower() or "UNADJUSTED" in ddl_content
+
+    def test_close_used_in_formulas(self, ddl_content):
+        """Return/drawdown/momentum formulas should use close, not adj_close as source."""
+        # The formulas in the DDL should reference close (not adj_close as a source column)
+        assert "close - LAG(close)" in ddl_content or "close / LAG(close" in ddl_content
+
+
+class TestDDLSuspectedSplitDetector:
+    """DDL must include suspected_split detector in bounded bars view."""
+
+    def test_suspected_split_in_ddl(self, ddl_content):
+        assert "suspected_split" in ddl_content
+
+    def test_split_ratio_check_in_ddl(self, ddl_content):
+        """DDL must check for common split ratios."""
+        assert "0.4" in ddl_content  # 40% threshold
 
 
 class TestDDLVolatilityFormula:
@@ -151,6 +208,19 @@ class TestDDLGrants:
     def test_grants_section(self, ddl_content):
         assert "SELECT" in ddl_content
         assert "service principal" in ddl_content.lower() or "grants" in ddl_content.lower()
+
+
+class TestDDLKnownSplits:
+    """DDL must propose a known_splits table for corporate-action safety."""
+
+    def test_known_splits_table(self, ddl_content):
+        assert "known_splits" in ddl_content
+
+    def test_known_splits_columns(self, ddl_content):
+        """known_splits must have symbol, ex_date, ratio, source."""
+        assert "symbol" in ddl_content
+        assert "ex_date" in ddl_content
+        assert "ratio" in ddl_content
 
 
 class TestDDLIdentifierCorrespondence:

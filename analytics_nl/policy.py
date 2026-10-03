@@ -14,6 +14,7 @@ from analytics_nl.contracts import (
     CanonicalIntent,
     CostClass,
     Grouping,
+    Metric,
     Operation,
     PolicyOutcome,
     PolicyReasonCode,
@@ -22,6 +23,15 @@ from analytics_nl.contracts import (
 from analytics_nl.registry import RegistryData, RegistryEntry
 
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+# Metrics that use unadjusted prices — corporate-action sensitive
+_UNADJUSTED_PRICE_METRICS = frozenset({
+    Metric.return_,
+    Metric.realized_volatility,
+    Metric.drawdown,
+    Metric.momentum,
+    Metric.relative_performance,
+})
 
 
 class PolicyValidationError(Exception):
@@ -54,6 +64,7 @@ class PolicyBounds:
     silver: HardBounds
     cheap: SoftThresholds
     normal: SoftThresholds
+    known_splits: tuple[tuple[str, date, float], ...] = ()
 
 
 def load_policy_bounds() -> PolicyBounds:
@@ -101,6 +112,16 @@ def load_policy_bounds() -> PolicyBounds:
     if errors:
         raise PolicyValidationError(errors)
 
+    # Load known splits (optional — empty list if not present)
+    known_splits_raw = raw.get("known_splits", [])
+    known_splits: list[tuple[str, date, float]] = []
+    for split in known_splits_raw:
+        sym = split.get("symbol", "")
+        ex = split.get("ex_date")
+        ratio = split.get("ratio", 0.0)
+        if sym and ex and ratio > 0:
+            known_splits.append((sym, ex, ratio))
+
     return PolicyBounds(
         policy_version=pv,
         semantic_model_version=smv,
@@ -108,6 +129,7 @@ def load_policy_bounds() -> PolicyBounds:
         silver=silver,
         cheap=cheap,
         normal=normal,
+        known_splits=tuple(known_splits),
     )
 
 
@@ -135,6 +157,14 @@ def classify_intent(
     # 2. Validate entity types against registry
     allowed_entity_types = {e.entity_type for e in intent.entities}
     # All entities must be valid types (already enforced by contract)
+
+    # 2b. Corporate-action safety: reject unadjusted-price metrics over known splits
+    if intent.metric in _UNADJUSTED_PRICE_METRICS and bounds.known_splits:
+        requested_symbols = {e.canonical_id for e in intent.entities}
+        for sym, ex_date, _ratio in bounds.known_splits:
+            if sym in requested_symbols and intent.date_range.start <= ex_date <= intent.date_range.end:
+                reasons.append(PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION)
+                return _reject(intent, bounds, reasons)
 
     # 3. Check entity count against entry limit
     entity_count = len(intent.entities)

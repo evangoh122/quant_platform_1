@@ -1,0 +1,102 @@
+# NL1 Source Schema Truth v1
+# Authoritative column lists for source tables referenced by serving views.
+# Used by test_source_schema.py to verify all DDL/registry column references exist.
+
+source_schemas_version: "1.0.0"
+
+tables:
+  bronze_ohlcv_day:
+    columns:
+      - symbol
+      - event_ts
+      - event_date
+      - event_year
+      - open
+      - high
+      - low
+      - close
+      - volume
+      - vwap
+      - trade_count
+      - timespan
+      - source
+      - source_file
+      - ingest_ts
+
+  gold_options_features:
+    columns:
+      - symbol
+      - feature_ts
+      - information_available_ts
+      - put_volume
+      - call_volume
+      - put_call_ratio
+      - iv_atm
+      - iv_25d_put
+      - iv_25d_call
+      - iv_skew
+      - iv_term_slope
+      - avg_spread_pct
+      - volume_anomaly_zscore
+      - oi_concentration
+      - net_delta_exposure
+      - processed_ts
+
+# Columns defined by serving views (derived or aliased).
+# These are not in source tables but are produced by view stages.
+derived_columns:
+  serve_daily_prices_v1:
+    input_from: bronze_ohlcv_day
+    derived:
+      - event_date          # from bronze_ohlcv_day.event_date
+      - open_price          # alias of open
+      - high_price          # alias of high
+      - low_price           # alias of low
+      - close_price         # alias of close
+      - adj_close           # alias of close (unadjusted)
+      - volume              # from bronze_ohlcv_day.volume
+      - information_available_ts  # derived: to_utc_timestamp(concat(event_date,' 16:30:00'),'America/New_York')
+
+  serve_daily_equity_metrics_v1:
+    input_from: serve_daily_prices_v1
+    derived:
+      - symbol
+      - event_date
+      - close
+      - return_1d           # computed: (close - LAG(close)) / LAG(close)
+      - realized_vol_20d    # computed: STDDEV_SAMP(return_1d) * SQRT(252)
+      - drawdown            # computed: (close - MAX(close)) / MAX(close)
+      - momentum_20d        # computed: (close / LAG(close, 20)) - 1
+      - information_available_ts
+
+  serve_relative_performance_v1:
+    input_from: serve_daily_equity_metrics_v1
+    derived:
+      - symbol
+      - event_date
+      - return_1d
+      - rel_perf            # computed: entity return - benchmark return
+      - benchmark           # hardcoded 'SPY'
+      - information_available_ts
+
+  serve_options_metrics_v1:
+    input_from: gold_options_features
+    derived:
+      - symbol
+      - feature_ts          # from gold_options_features.feature_ts
+      - iv_atm
+      - put_call_ratio
+      - information_available_ts
+
+  serve_bounded_daily_bars_v1:
+    input_from: bronze_ohlcv_day
+    derived:
+      - event_date
+      - open_price          # alias of open
+      - high_price          # alias of high
+      - low_price           # alias of low
+      - close_price         # alias of close
+      - adj_close           # alias of close (unadjusted)
+      - volume
+      - information_available_ts  # derived: to_utc_timestamp(concat(event_date,' 16:30:00'),'America/New_York')
+      - suspected_split     # computed: overnight |close/prev_close - 1| >= 0.4 AND ratio near 1/k or k
