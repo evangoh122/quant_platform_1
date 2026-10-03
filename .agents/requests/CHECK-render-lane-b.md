@@ -119,3 +119,21 @@ Attack it:
 - Re-run all earlier attacks.
 
 Write `.agents/deepseek/VERDICT-render-lane-b-check6.md`.
+
+## Re-check after round 8 (this run)
+Your check6 proved that trusting CF/True-Client-IP first is spoofable. MiMo round 8 (commit eb37097)
+adds `CLIENT_IP_SOURCE`, with values `xff_leftmost` (the default on Render), `cf_connecting_ip` and
+`peer`. Outside Render the default is `peer`.
+
+Claude's probe with `RENDER=true`:
+- CF 1.1.1.1 + XFF 9.9.9.9,8.8.8.8 → 9.9.9.9;
+- True-Client 5.5.5.5 + XFF 2.2.2.2 → 2.2.2.2;
+- XFF "junk, 7.7.7.7" → peer;
+- no headers → peer.
+
+Re-verify your check6 attack:
+- rotating CF/True-Client headers with a fixed leftmost XFF → one key, and request 61 → 429;
+- an unknown mode raises at startup;
+- the docs carry the post-deploy verification steps.
+
+Re-run all earlier attacks. Write `.agents/deepseek/VERDICT-render-lane-b-check7.md`.
