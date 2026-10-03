@@ -1,7 +1,7 @@
 # CHECK: ontology update (DeepSeek)
 
 At the owner's request, Codex updated `ontology/` directly (commit "feat(ontology): align with live
-tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update-check3.md` (===VERDICT START/END===,
+tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update-check4.md` (===VERDICT START/END===,
 Status). Your job is FACTUAL CORRECTNESS against the code: the ontology will drive the NL-analytics
 semantic registry and the knowledge graph, so an error here propagates.
 
@@ -46,3 +46,13 @@ Check whether those entries are accurate against `sec_kg/` on that branch
 (`git show origin/slice/rag-kg:sec_kg/model.py`), so Codex can add them next.
 
 Write `.agents/deepseek/VERDICT-ontology-update-check3.md`.
+
+## Re-check after Codex round 4 (this run)
+Codex fixed:
+- the bronze_ohlcv_day / bronze_options_day keys;
+- added the KG table semantics;
+- corrected the KG join hints (`chunk_id` vs `source_chunk_id`);
+- the test now parses the notebook key constants. Mutation: `event_date` as a bronze key → 2 fail.
+
+Re-verify each of your check3 findings, and do a FINAL full pass. If nothing blocking remains, say
+APPROVED. Write `.agents/deepseek/VERDICT-ontology-update-check4.md`.
