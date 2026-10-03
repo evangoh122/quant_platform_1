@@ -40,6 +40,18 @@ lineage:
     right_table: gold_cot_features
     keys: [mapped_asset, report_date]
     temporal_rule: "information_available_ts equals release_ts"
+  silver_sec_sources_to_gold_sec_kg_nodes:
+    left_table: silver_sec_entities
+    right_table: silver_sec_sections
+    keys: [source_chunk_id, chunk_id]
+    temporal_rule: "Join within the same accession_number; node provenance is visible from accepted_ts"
+    transform: "Deterministic node ID generation and provenance aggregation"
+  silver_sec_sources_to_gold_sec_kg_edges:
+    left_table: silver_sec_entities
+    right_table: silver_sec_sections
+    keys: [source_chunk_id, chunk_id]
+    temporal_rule: "Join within the same accession_number; edge valid_from equals accepted_ts"
+    transform: "Deterministic edge creation, including SUPERSEDES relationships for restatements"
 
 joins:
   latest_feature_asof_prediction:

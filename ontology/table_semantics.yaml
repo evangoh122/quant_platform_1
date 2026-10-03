@@ -5,13 +5,13 @@ tables:
     pit_column: ingest_ts
     freshness: "Intraday; reject data older than 2 minutes for live decisions"
   bronze_ohlcv_day:
-    grain: "One daily bar per (symbol, event_date)"
-    keys: [symbol, event_date]
+    grain: "One provider daily bar per (symbol, event_ts, timespan); event_date is derived"
+    keys: [symbol, event_ts, timespan]
     pit_column: ingest_ts
     freshness: "Daily after the US session close"
   bronze_options_day:
-    grain: "One daily option-contract bar per (contract_symbol, event_date)"
-    keys: [contract_symbol, event_date]
+    grain: "One provider daily option-contract bar per (contract_symbol, event_ts, timespan); event_date is derived"
+    keys: [contract_symbol, event_ts, timespan]
     pit_column: ingest_ts
     freshness: "Daily after the US session close"
   bronze_fed_series:
@@ -21,8 +21,8 @@ tables:
     freshness: "Market rates use the source release calendar; revised macro vintages become available at ingest_ts. Never infer availability from observation_date."
     latest_as_of_rule: "For each (series_id, observation_date), latest value as of t is the row with maximum vintage_date among rows where information_available_ts <= t."
   bronze_cftc_fut:
-    grain: "One CFTC TFF futures-only report row per (report_date, CFTC_Contract_Market_Code)"
-    keys: [report_date, CFTC_Contract_Market_Code]
+    grain: "One CFTC TFF futures-only report row per (source_dataset, CFTC_Contract_Market_Code, report_date)"
+    keys: [source_dataset, CFTC_Contract_Market_Code, report_date]
     pit_column: release_ts
     freshness: "Weekly CFTC release, normally Friday"
   bronze_cot:
@@ -119,6 +119,18 @@ tables:
     keys: [chunk_id, embedding_model]
     pit_column: accepted_ts
     freshness: "Batch after the source chunk is accepted; embedded_ts is processing lineage"
+  gold_sec_kg_nodes:
+    grain: "One row per node_id"
+    keys: [node_id]
+    partition: node_type
+    pit_rule: "Filter node provenance to entries with accepted_ts <= query_as_of_ts"
+    schema_ref: "sec_kg/model.py is canonical for node types, IDs, and provenance"
+  gold_sec_kg_edges:
+    grain: "One row per edge_id (evidence/version relationship)"
+    keys: [edge_id]
+    partition: edge_type
+    pit_rule: "Filter valid_from <= query_as_of_ts before traversal; valid_from equals accepted_ts"
+    schema_ref: "sec_kg/model.py is canonical for edge types and IDs"
   gold_model_features:
     grain: "One point-in-time model snapshot per (symbol, prediction_ts)"
     keys: [symbol, prediction_ts]

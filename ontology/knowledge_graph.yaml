@@ -1,7 +1,7 @@
 knowledge_graph:
   deterministic_counts: {node_types: 9, edge_types: 9}
   optional_llm_counts: {node_types: 3, edge_types: 6}
-  pit_rule: "Every node and edge is visible only when information_available_ts <= query_as_of_ts. Edge availability is the maximum availability timestamp of its evidence and endpoint nodes. XBRL restatements are separate facts: the graph does not model supersession or valid-to semantics, so consumers must resolve restatements explicitly."
+  pit_rule: "Every node and edge is visible only when its provenance accepted_ts (nodes) or valid_from (edges) is <= query_as_of_ts. Edge valid_from equals accepted_ts. XBRL restatements remain separate facts linked by SUPERSEDES edges; no valid-to field is stored, so consumers must follow those edges when resolving the fact current as of a timestamp."
   node_types:
     Company: {key: cik, source_table: silver_sec_entities}
     Filing: {key: accession_number, source_table: silver_sec_sections}

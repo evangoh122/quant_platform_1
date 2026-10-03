@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 import re
 
@@ -9,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ONTOLOGY = ROOT / "ontology"
 SQL_DIRS = (ROOT / "silver", ROOT / "gold")
 FED_REFRESH = ROOT / "notebooks" / "refresh_bronze_fed.py"
+EQUITIES_REFRESH = ROOT / "notebooks" / "refresh_bronze_equities.py"
+OPTIONS_REFRESH = ROOT / "notebooks" / "refresh_bronze_options.py"
 
 # These transforms are not present on this branch, but their checked schema is
 # part of the ontology contract. Keep this small: SQL-backed tables are parsed.
@@ -128,6 +131,35 @@ def _assert_columns(table, columns, context, schemas):
     assert not missing, f"{context}: {table} has no columns {sorted(missing)}"
 
 
+def _python_list_constant(path, name):
+    """Read a literal list assignment without importing notebook dependencies."""
+    module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for statement in module.body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in statement.targets
+        ):
+            value = ast.literal_eval(statement.value)
+            assert isinstance(value, list) and all(isinstance(item, str) for item in value)
+            return value
+    raise AssertionError(f"{name} not found in {path.relative_to(ROOT)}")
+
+
+def _create_table_columns(path):
+    """Parse the literal Delta DDL issued by a notebook's table creator."""
+    source = path.read_text(encoding="utf-8")
+    ddl = re.search(
+        r"def\s+_create_table_if_absent\b.*?CREATE\s+TABLE\s+\{fqn\}\s*"
+        r"\((.*?)\)\s*USING\s+DELTA",
+        source,
+        re.I | re.S,
+    )
+    assert ddl, f"_create_table_if_absent DDL not found in {path.relative_to(ROOT)}"
+    return {
+        column.lower()
+        for column in re.findall(r"^\s*`?([A-Za-z_]\w*)`?\s+[A-Z]", ddl.group(1), re.M)
+    }
+
+
 def test_every_yaml_parses():
     documents = _documents()
     assert documents
@@ -214,17 +246,22 @@ def test_external_schema_contracts_guard_missing_transforms():
 
 def test_bronze_fed_series_keys_match_notebook_ddl_vintage_grain():
     """The FRED table is append-only revision history, not one row per observation."""
-    source = FED_REFRESH.read_text(encoding="utf-8")
-    ddl = re.search(
-        r"CREATE\s+TABLE\s+\{fqn\}\s*\((.*?)\)\s*USING\s+DELTA",
-        source,
-        re.I | re.S,
-    )
-    assert ddl, "bronze_fed_series CREATE TABLE DDL not found in refresh notebook"
-    ddl_columns = {
-        column.lower()
-        for column in re.findall(r"^\s*([A-Za-z_]\w*)\s+[A-Z]", ddl.group(1), re.M)
-    }
+    ddl_columns = _create_table_columns(FED_REFRESH)
     keys = set(_documents()["table_semantics.yaml"]["tables"]["bronze_fed_series"]["keys"])
     assert keys <= ddl_columns
     assert keys == {"series_id", "observation_date", "vintage_date"}
+
+
+@pytest.mark.parametrize(
+    ("table", "path", "constant"),
+    [
+        ("bronze_ohlcv_day", EQUITIES_REFRESH, "KEY_COLUMNS"),
+        ("bronze_options_day", OPTIONS_REFRESH, "DAY_KEY_COLUMNS"),
+    ],
+)
+def test_bronze_market_keys_match_notebook_constants(table, path, constant):
+    """Bronze market keys are executable ingestion contracts, not SQL-DDL skips."""
+    notebook_keys = _python_list_constant(path, constant)
+    ontology_keys = _documents()["table_semantics.yaml"]["tables"][table]["keys"]
+    assert ontology_keys == notebook_keys
+    assert "event_date" not in ontology_keys
