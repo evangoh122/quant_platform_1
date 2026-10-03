@@ -80,6 +80,11 @@ def validate_residual_config(config: Mapping) -> None:
     missing = _RESIDUAL_VALID_KEYS - set(rr.keys())
     if missing:
         raise ValueError(f"missing residual_reversion keys: {sorted(missing)}")
+    pca = rr.get("pca_components")
+    if pca is not None and not (10 <= int(pca) <= 15):
+        raise ValueError(
+            f"pca_components must be in [10, 15], got {pca}"
+        )
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
 SCHEMA = os.getenv("SCHEMA", "evangoh_capstone")
@@ -507,16 +512,8 @@ def main() -> None:
         from strategies.robustness import (
             build_variant_registry,
             render_robustness_report,
-            run_cost_stress,
-            run_universe_stress,
-            run_parameter_stress,
             remove_top_pnl_contributors,
-            compute_fold_metrics,
-            compute_exposures,
-            compute_capacity,
-            compute_margin_bps,
             compute_rank_ic,
-            evaluate_gates,
         )
         robustness_cfg = cfg.get("robustness", {})
         gates_cfg = cfg.get("metric_gates", {})
@@ -660,7 +657,7 @@ def main() -> None:
 def _run_variant(variant_spec, closes, universe, adv_wide, industry,
                  book_capital, cost_params, cfg, panel=None):
     """Run a single variant for the robustness suite."""
-    from strategies.robustness import VariantSpec, build_variant_registry, remove_top_pnl_contributors
+    from strategies.robustness import build_variant_registry, remove_top_pnl_contributors
     from strategies.universe import screen_universe
     vs = variant_spec
     vc = copy.deepcopy(cfg["residual_reversion"])

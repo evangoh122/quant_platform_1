@@ -57,7 +57,7 @@ def test_subprocess_acceptance():
                 # Run a small synthetic OLS robustness test.
                 dates = pd.date_range("2024-01-01", periods=120, freq="B")
                 rng = np.random.default_rng(42)
-                n_sym = 5
+                n_sym = 20
                 symbols = [f"S{i:02d}" for i in range(n_sym)]
                 market = pd.Series(rng.normal(0, 0.01, 120), index=dates)
                 data = {}
@@ -73,7 +73,7 @@ def test_subprocess_acceptance():
 
                 # Run PCA.
                 pca_res = compute_pca_residuals(returns, window=60, lookback=5,
-                                                n_components=3)
+                                                n_components=10)
                 pca_pos = generate_signals(pca_res["s_score"], entry=2.5,
                                            exit_thresh=0.5, max_hold=5)
 

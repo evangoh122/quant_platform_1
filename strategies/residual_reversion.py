@@ -288,6 +288,11 @@ def compute_pca_residuals(
     """
     from sklearn.covariance import LedoitWolf
 
+    if not (10 <= n_components <= 15):
+        raise ValueError(
+            f"n_components must be in [10, 15], got {n_components}"
+        )
+
     if min_obs is None:
         min_obs = int(np.ceil(0.8 * window))
 
@@ -306,8 +311,9 @@ def compute_pca_residuals(
         # Day t values (for applying frozen loadings).
         day_t = returns.iloc[t]
 
-        # Identify symbols with finite returns in the training slice.
-        valid_mask = train_slice.notna().all(axis=0) & day_t.notna()
+        # Identify symbols with finite returns in the training slice ONLY.
+        # Day-t availability must not influence which symbols are fitted.
+        valid_mask = train_slice.notna().all(axis=0)
         valid_syms = [s for s in symbols if valid_mask[s]]
         n_valid = len(valid_syms)
 
@@ -354,9 +360,24 @@ def compute_pca_residuals(
         day_t_std = (day_t_sym - means) / scales
 
         # For each stock, fit on lagged data and apply to day t.
-        # Project day-t standardized returns onto eigenvectors to get factor scores.
-        day_t_factors = day_t_std @ V  # (K,)
+        # Project day-t standardized returns onto eigenvectors to get factor
+        # scores.  NaN day-t returns are zeroed after standardisation so they
+        # do not contaminate the projection.
+        day_t_std_clean = np.where(np.isfinite(day_t_std), day_t_std, 0.0)
+        day_t_factors = day_t_std_clean @ V  # (K,)
         for j, sym in enumerate(valid_syms):
+            # A symbol with NaN on day t gets no residual (already NaN).
+            if not np.isfinite(day_t_sym[j]):
+                # Still record loadings for inspection.
+                y_train = train_std[:, j]  # (window,)
+                try:
+                    coef, _, _, _ = np.linalg.lstsq(X_design, y_train, rcond=None)
+                except np.linalg.LinAlgError:
+                    continue
+                for k in range(K):
+                    loading_rows.append((dates[t], sym, k, float(coef[1 + k])))
+                continue
+
             y_train = train_std[:, j]  # (window,)
             try:
                 coef, _, _, _ = np.linalg.lstsq(X_design, y_train, rcond=None)
