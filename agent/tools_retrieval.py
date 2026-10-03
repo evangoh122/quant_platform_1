@@ -122,10 +122,13 @@ def search_sec_filings(
     except EmbeddingConfigError as e:
         import logging
         logging.error("Embedding config error: %s", e)
-        safe_msg = (
-            "Embedding configuration error — check EMBEDDING_PROVIDER, "
-            "HF_TOKEN, or HUGGINGFACEHUB_API_TOKEN settings."
-        )
+        if getattr(e, "user_safe", False):
+            safe_msg = str(e)
+        else:
+            safe_msg = (
+                "Embedding configuration error — check EMBEDDING_PROVIDER, "
+                "HF_TOKEN, or HUGGINGFACEHUB_API_TOKEN settings."
+            )
         return [{
             "error": "retrieval_unavailable",
             "reason": "embedding_config",

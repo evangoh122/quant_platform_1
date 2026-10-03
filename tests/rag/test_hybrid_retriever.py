@@ -1786,7 +1786,7 @@ class TestEmbeddingDimCheck:
 
         monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
 
-        with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
+        with pytest.raises(CorpusUnavailableError, match="dim .* != stored"):
             vector_search("test query")
 
     def test_correct_dim_works(self, fake_pyspark, monkeypatch):
@@ -1893,7 +1893,7 @@ class TestStoredIndexDimensionGuard:
 
         monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
 
-        with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
+        with pytest.raises(CorpusUnavailableError, match="dim .* != stored"):
             hr.vector_search("test query")
 
     def test_mixed_stored_dimensions_unavailable(self, fake_pyspark, monkeypatch):
@@ -2242,7 +2242,7 @@ class TestEmbedderFailureDegradesToBM25Only:
 
         monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
 
-        with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
+        with pytest.raises(CorpusUnavailableError, match="dim .* != stored"):
             vector_search("test query")
 
 
@@ -2353,16 +2353,18 @@ class TestEmbeddingE2EThroughSearchSecFilings:
         assert secret_value not in msg, f"Secret token value leaked into message: {msg}"
 
     def test_dimension_mismatch_returns_retrieval_unavailable(self, monkeypatch):
-        """Dimension mismatch → CorpusUnavailableError → retrieval_unavailable."""
+        """Dimension mismatch → EmbeddingConfigError → retrieval_unavailable with reason."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
         from agent.tools_retrieval import search_sec_filings
-        from api.services.hybrid_retriever import CorpusUnavailableError
+        from api.services.exceptions import EmbeddingConfigError
 
         def fake_retrieve(*args, **kwargs):
-            raise CorpusUnavailableError(
-                "Query embedding dimension mismatch: got 1024, stored index is 384-d."
+            raise EmbeddingConfigError(
+                "query embedding dim 1024 != stored index dim 384; "
+                "check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
+                user_safe=True,
             )
 
         mock_retriever = MagicMock()
@@ -2374,20 +2376,25 @@ class TestEmbeddingE2EThroughSearchSecFilings:
 
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["reason"] == "embedding_config"
         assert result[0]["ticker"] == "NVDA"
+        msg = result[0].get("message", "")
+        assert "EMBEDDING_PROVIDER" in msg, f"Setting name missing from message: {msg}"
+        assert "Delta" not in msg, f"'Delta' should not appear in config error: {msg}"
 
     def test_model_mismatch_returns_retrieval_unavailable(self, monkeypatch):
-        """Model mismatch → CorpusUnavailableError → retrieval_unavailable."""
+        """Model mismatch → EmbeddingConfigError → retrieval_unavailable with reason."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
         from agent.tools_retrieval import search_sec_filings
-        from api.services.hybrid_retriever import CorpusUnavailableError
+        from api.services.exceptions import EmbeddingConfigError
 
         def fake_retrieve(*args, **kwargs):
-            raise CorpusUnavailableError(
-                "Embedding model mismatch: active model 'BAAI/bge-large-en-v1.5' "
-                "does not match stored index model 'BAAI/bge-small-en-v1.5'."
+            raise EmbeddingConfigError(
+                "embedding model mismatch: active 'BAAI/bge-large-en-v1.5' != stored 'BAAI/bge-small-en-v1.5'; "
+                "check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
+                user_safe=True,
             )
 
         mock_retriever = MagicMock()
@@ -2399,7 +2406,11 @@ class TestEmbeddingE2EThroughSearchSecFilings:
 
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["reason"] == "embedding_config"
         assert result[0]["ticker"] == "NVDA"
+        msg = result[0].get("message", "")
+        assert "ST_EMBEDDING_MODEL" in msg, f"Setting name missing from message: {msg}"
+        assert "Delta" not in msg, f"'Delta' should not appear in config error: {msg}"
 
     def test_transient_raise_returns_bm25_only_with_nvda_hit(self, monkeypatch):
         """Transient embedder failure → bm25_only with expected NVDA hit."""

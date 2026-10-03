@@ -525,9 +525,10 @@ def vector_search(
 
     # Verify query vector dimension matches the STORED index dimension
     if _stored_index_dim is not None and len(qvec) != _stored_index_dim:
-        raise CorpusUnavailableError(
-            f"Query embedding dimension mismatch: got {len(qvec)}, stored index is {_stored_index_dim}-d. "
-            f"The embedding model may not match the index."
+        raise EmbeddingConfigError(
+            f"query embedding dim {len(qvec)} != stored index dim {_stored_index_dim}; "
+            f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
+            user_safe=True,
         )
 
     # Verify the active embedding model matches the stored model
@@ -539,9 +540,10 @@ def vector_search(
         else:
             active_model = _cfg.HF_EMBEDDING_MODEL
         if active_model and active_model != _stored_embedding_model:
-            raise CorpusUnavailableError(
-                f"Embedding model mismatch: active model '{active_model}' "
-                f"does not match stored index model '{_stored_embedding_model}'."
+            raise EmbeddingConfigError(
+                f"embedding model mismatch: active '{active_model}' != stored '{_stored_embedding_model}'; "
+                f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
+                user_safe=True,
             )
 
     # Build candidate docs from corpus entries that have embeddings
