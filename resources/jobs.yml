@@ -1,0 +1,29 @@
+resources:
+  jobs:
+    silver_gold_refresh:
+      name: quant-platform-silver-gold-refresh-${bundle.target}
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: refresh_silver_gold
+          spark_python_task:
+            python_file: ../pipelines/run_silver_gold.py
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+
+    ml_ablation:
+      name: quant-platform-ml-ablation-${bundle.target}
+      tasks:
+        - task_key: run_ablation
+          spark_python_task:
+            python_file: ../ml/run_ablation.py
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"

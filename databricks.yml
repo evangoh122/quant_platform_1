@@ -1,0 +1,41 @@
+bundle:
+  name: quant-platform
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog used by the application and batch jobs.
+    default: bootcamp_students
+  schema:
+    description: Unity Catalog schema used by the application and batch jobs.
+    default: evangoh_capstone
+
+sync:
+  exclude:
+    - frontend/node_modules
+    - .agents
+    - .agentlogs
+    - .pytest_cache
+    - .mypy_cache
+    - .ruff_cache
+    - "**/__pycache__"
+    - notebooks/archive
+    - bundles/streaming
+
+targets:
+  dev:
+    default: true
+    mode: development
+    variables:
+      schema: evangoh_capstone
+
+  prod:
+    mode: production
+    workspace:
+      # Not /Workspace/Shared: in this shared bootcamp workspace that path is writable by
+      # every user, so another user could alter production code that runs as this app.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      schema: evangoh_capstone_prod

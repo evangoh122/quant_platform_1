@@ -1,0 +1,35 @@
+# Always ask CodeRabbit to review a pull request.
+#
+# CodeRabbit is installed on this repo, but it does not auto-review repositories
+# with fewer than 10 stars: it only posts a placeholder. A comment of
+# "@coderabbitai review" starts a review manually, so this workflow posts that
+# comment on every PR, whoever opened it (people, Claude, Codex, or bots).
+#
+# Triggers on open/reopen/ready-for-review only, not on every push: CodeRabbit
+# reviews new commits incrementally once a review exists, and re-commenting on
+# every push would trip its rate limit.
+
+name: coderabbit-trigger
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  request-review:
+    # Skip drafts; ready_for_review fires when they are un-drafted.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment @coderabbitai review
+        # No checkout: this job never runs code from the PR, so using
+        # pull_request_target (needed for write access on PRs from forks/bots)
+        # is safe.
+        env:
+          GH_TOKEN: ${{ secrets.CODERABBIT_TRIGGER_TOKEN || github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr comment "$PR" --repo "$REPO" --body "@coderabbitai review"
