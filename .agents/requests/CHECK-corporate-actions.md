@@ -38,3 +38,12 @@ Check, with proofs:
 
 Run `python3 -m pytest -q -p no:cacheprovider` and the full suite with `--ignore=tests/lakebase`,
 both with pyspark hidden too.
+
+## Re-check after round 2 (this run)
+Round 2 fixes your 3 findings: `to_utc_timestamp` at 16:30, explicit MERGE insert columns, and
+argparse with a widget fallback. Re-verify each with proofs:
+- the DST pair 2022-06-06 → 20:30 UTC, 2022-12-05 → 21:30 UTC;
+- every MERGE INSERT lists every target column exactly once;
+- `--mode write` → write; default dry-run; an unknown flag raises.
+
+Re-run your round-1 checks too. Write `.agents/deepseek/VERDICT-corporate-actions-check2.md`.
