@@ -41,4 +41,17 @@ Verify:
 - no secret values in any message;
 - the end-to-end tests.
 
-Write `.agents/deepseek/VERDICT-post-merge-round5.md`.
+Write `.agents/deepseek/
+
+## Re-check after round 6 (this run)
+Commit df1deaf surfaces config errors with `reason: "embedding_config"`. Claude's live run, with
+huggingface and no token:
+`{'error': 'retrieval_unavailable', 'reason': 'embedding_config', 'message': 'Embedding
+configuration error — check EMBEDDING_PROVIDER, HF_TOKEN, or HUGGINGFACEHUB_API_TOKEN settings.'}`
+
+Verify:
+- both of your round-5 findings, including that the tests no longer pass via an `or` clause;
+- a token's value never appears in the message;
+- real Delta failures keep the corpus message.
+
+Write `.agents/deepseek/VERDICT-post-merge-round6.md`.
