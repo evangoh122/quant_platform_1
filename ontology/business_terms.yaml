@@ -2,7 +2,8 @@ terms:
   ticker:
     definition: "Canonical uppercase exchange symbol used by market tables. Resolve aliases before filtering or joining."
     aliases: [symbol, stock symbol, underlying, mapped asset]
-    examples: {BRK.B: BRK-B, GOOGLE: GOOGL}
+    examples: {BRK.B: BRK-B}
+    note: "GOOG (Class C) and GOOGL (Class A) are distinct securities, not ticker aliases."
   cik:
     definition: "SEC Central Index Key, normalized as a zero-padded 10-character string."
     aliases: [SEC issuer id, company CIK]

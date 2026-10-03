@@ -1,18 +1,19 @@
 knowledge_graph:
+  deterministic_counts: {node_types: 9, edge_types: 10}
   pit_rule: "Every node and edge is visible only when information_available_ts <= query_as_of_ts. Edge availability is the maximum availability timestamp of its evidence and endpoint nodes."
   node_types:
     Company: {key: cik, source_table: silver_sec_entities}
     Filing: {key: accession_number, source_table: silver_sec_sections}
     Section: {key: [accession_number, filing_section], source_table: silver_sec_sections}
     Chunk: {key: chunk_id, source_table: silver_sec_sections}
-    XbrlFact: {key: [accession_number, entity_key, period_start, period_end], source_table: silver_sec_entities}
+    XbrlFact: {key: [accession_number, entity_key, entity_unit, period_start, period_end], source_table: silver_sec_entities}
     Metric: {key: entity_key, source_table: silver_sec_entities}
     Period: {key: [period_start, period_end], source_table: silver_sec_entities}
     RiskFactor: {key: [accession_number, entity_key], source_table: silver_sec_entities}
     Event: {key: [accession_number, entity_key], source_table: silver_sec_entities}
-    Segment: {key: [cik, entity_value], source_table: silver_sec_entities}
-    Product: {key: [cik, entity_value], source_table: silver_sec_entities}
-    Customer: {key: [cik, entity_value], source_table: silver_sec_entities}
+    Segment: {key: [cik, entity_value], source_table: silver_sec_entities, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    Product: {key: [cik, entity_value], source_table: silver_sec_entities, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    Customer: {key: [cik, entity_value], source_table: silver_sec_entities, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
   edge_types:
     COMPANY_FILED_FILING: {from: Company, to: Filing, evidence_table: silver_sec_sections, pit: accepted_ts}
     FILING_HAS_SECTION: {from: Filing, to: Section, evidence_table: silver_sec_sections, pit: accepted_ts}
@@ -24,9 +25,9 @@ knowledge_graph:
     FACT_FOR_PERIOD: {from: XbrlFact, to: Period, evidence_table: silver_sec_entities, pit: accepted_ts}
     FILING_DISCLOSES_RISK: {from: Filing, to: RiskFactor, evidence_table: silver_sec_entities, pit: accepted_ts}
     FILING_REPORTS_EVENT: {from: Filing, to: Event, evidence_table: silver_sec_entities, pit: accepted_ts}
-    COMPANY_HAS_SEGMENT: {from: Company, to: Segment, evidence_table: silver_sec_entities, pit: accepted_ts}
-    COMPANY_OFFERS_PRODUCT: {from: Company, to: Product, evidence_table: silver_sec_entities, pit: accepted_ts}
-    COMPANY_HAS_CUSTOMER: {from: Company, to: Customer, evidence_table: silver_sec_entities, pit: accepted_ts}
-    SEGMENT_REPORTS_FACT: {from: Segment, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts}
-    PRODUCT_REPORTS_FACT: {from: Product, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts}
-    CUSTOMER_RELATED_TO_EVENT: {from: Customer, to: Event, evidence_table: silver_sec_entities, pit: accepted_ts}
+    COMPANY_HAS_SEGMENT: {from: Company, to: Segment, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    COMPANY_OFFERS_PRODUCT: {from: Company, to: Product, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    COMPANY_HAS_CUSTOMER: {from: Company, to: Customer, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    SEGMENT_REPORTS_FACT: {from: Segment, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    PRODUCT_REPORTS_FACT: {from: Product, to: XbrlFact, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
+    CUSTOMER_RELATED_TO_EVENT: {from: Customer, to: Event, evidence_table: silver_sec_entities, pit: accepted_ts, populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}

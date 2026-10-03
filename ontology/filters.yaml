@@ -1,6 +1,6 @@
 filters:
   point_in_time_universe:
-    sql: "EXISTS (SELECT 1 FROM gold_tradable_universe u WHERE u.symbol = source.symbol AND u.as_of_date <= :as_of_date AND u.information_available_ts <= :as_of_ts)"
+    sql: "EXISTS (SELECT 1 FROM gold_tradable_universe u WHERE u.symbol = source.symbol AND u.trade_date <= :as_of_date AND u.information_available_ts <= :as_of_ts)"
     tables: [gold_tradable_universe]
     rule: "Use the latest eligible universe snapshot; never use today's membership for historical queries."
   liquidity_rank:

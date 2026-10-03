@@ -1,7 +1,7 @@
 metrics:
   return_N:
     formula: "close[t] / NULLIF(close[t-N], 0) - 1"
-    variants: [return_1m, return_5m, return_15m, return_30m, return_20d]
+    variants: [return_1m, return_5m, return_15m, return_30m]
     source_table: gold_ohlcv_features
   rolling_realized_volatility:
     formula: "STDDEV_SAMP(return_1m) over the trailing N bars"
@@ -9,11 +9,11 @@ metrics:
     source_table: gold_ohlcv_features
   drawdown:
     formula: "equity[t] / MAX(equity[0:t]) - 1"
-    source_table: gold_trading_signals
-    note: "Maximum drawdown is the absolute value of the minimum drawdown over the evaluation period."
+    computed_in: "ml/evaluate.py:build_backtest"
+    note: "Maximum drawdown is the minimum (non-positive) drawdown over the evaluation period."
   momentum_N:
     formula: "close[t] / NULLIF(close[t-N], 0) - 1"
-    variants: [momentum_5m, momentum_15m, momentum_20d, momentum_12m_ex_1m]
+    variants: [momentum_5m, momentum_15m]
     source_table: gold_ohlcv_features
   med_adv_60d:
     formula: "MEDIAN(close * volume) over the 60 completed trading days strictly before the as_of_date"
@@ -24,9 +24,13 @@ metrics:
   breadth_regime:
     formula: "BROAD if rsp_spy_ratio > SMA_50(rsp_spy_ratio) and rsp_spy_ratio / rsp_spy_ratio[t-20] - 1 > 0; NARROW if both comparisons reverse; otherwise MIXED"
     source_table: gold_regime_features
+  rsp_spy_ratio_zscore_252:
+    formula: "(rsp_spy_ratio - trailing 252-session mean) / trailing 252-session sample standard deviation"
+    source_table: gold_regime_features
   implied_volatility:
-    formula: "Provider implied_volatility for the option nearest ATM; iv_atm selects minimum ABS(strike / underlying_price - 1), with deterministic expiry/contract tie-breaks"
+    formula: "iv_atm is provider implied_volatility from the quote with maximum open_interest per (symbol, date), ordered by open_interest DESC NULLS LAST then strike ASC"
     source_table: gold_options_features
+    notes: "The name says ATM, but the implementation selects maximum open interest; no underlying_price participates in the calculation."
   put_call_ratio:
     formula: "SUM(put volume) / NULLIF(SUM(call volume), 0) by underlying and session"
     source_table: gold_options_features
@@ -36,12 +40,12 @@ metrics:
     note: "Requires a complete trailing 52-report window; do not backfill before release_ts."
   residual:
     formula: "epsilon[i,t] = return[i,t] - alpha[i] - SUM_k(beta[i,k] * factor_return[k,t])"
-    source_table: gold_model_features
+    computed_in: "strategies/residual_reversion.py:compute_residuals"
   s_score:
-    formula: "SUM(epsilon[i,t-L:t]) / NULLIF(STDDEV_SAMP(epsilon[i,t-L:t]), 0)"
-    source_table: gold_model_features
-    note: "Betas and residual scale must be fitted using observations strictly before the signal timestamp."
+    formula: "s_cum / sigma, where s_cum is the rolling sum of residuals over L=5 observations and sigma is the trailing sample standard deviation of residuals over the 60-day estimation window"
+    computed_in: "strategies/residual_reversion.py:compute_residuals"
+    note: "s_cum requires all L observations; sigma uses min_obs observations, default ceil(0.8 * 60)=48. Betas are fitted strictly before the signal timestamp."
   deflated_sharpe_ratio:
     formula: "Phi((SR - Phi^-1(1 - 1/max(n_trials,2))) * SQRT(T-1) / SQRT(1 - skew*SR + ((kurtosis-1)/4)*SR^2))"
-    source_table: gold_trading_signals
+    computed_in: "ml/evaluate.py:deflated_sharpe_ratio"
     note: "SR is annualized; n_trials is the actual number of tested configurations."

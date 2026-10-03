@@ -57,13 +57,13 @@ tables:
     pit_column: ingest_ts
     freshness: "Same batch as silver_ohlcv"
   silver_options_quotes:
-    grain: "One cleaned quote per (option_symbol, participant_ts, sequence_id)"
-    keys: [option_symbol, participant_ts, sequence_id]
+    grain: "One cleaned quote per dedup_hash, derived from option_symbol, participant_ts, and source sequence_id"
+    keys: [dedup_hash]
     pit_column: participant_ts
     freshness: "Snapshot/intraday when quote ingestion runs"
   silver_options_trades:
-    grain: "One cleaned trade per (option_symbol, participant_ts, sequence_id)"
-    keys: [option_symbol, participant_ts, sequence_id]
+    grain: "One cleaned trade per dedup_hash, derived from option_symbol, participant_ts, and source sequence_id"
+    keys: [dedup_hash]
     pit_column: participant_ts
     freshness: "Intraday when trade ingestion runs"
   silver_cot_positions:
@@ -94,15 +94,15 @@ tables:
     pit_column: information_available_ts
     freshness: "Daily at 16:00 America/New_York plus the publication buffer"
   gold_regime_features:
-    grain: "One daily market-regime row per session_date"
-    keys: [session_date]
+    grain: "One daily market-regime row per trade_date"
+    keys: [trade_date]
     pit_column: information_available_ts
     freshness: "Daily after all contributing ETF bars are available"
   gold_tradable_universe:
-    grain: "One eligibility row per (symbol, as_of_date)"
-    keys: [symbol, as_of_date]
+    grain: "One eligibility row per (symbol, trade_date)"
+    keys: [symbol, trade_date]
     pit_column: information_available_ts
-    freshness: "Daily; computed only from trailing data available by as_of_date"
+    freshness: "Daily; computed only from trailing data available by trade_date"
   gold_cot_features:
     grain: "One COT feature row per (mapped_asset, report_date)"
     keys: [mapped_asset, report_date]

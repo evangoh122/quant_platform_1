@@ -3,16 +3,16 @@ lineage:
     left_table: bronze_ohlcv
     right_table: silver_ohlcv
     keys: [symbol, event_ts, timespan]
-  bronze_cot_to_silver_cot_positions:
-    left_table: bronze_cot
+  bronze_cftc_fut_to_silver_cot_positions:
+    left_table: bronze_cftc_fut
     right_table: silver_cot_positions
     keys: [report_date, market_code]
-  bronze_sec_filings_to_silver_sec_sections:
-    left_table: bronze_sec_filings
+  bronze_sec_filings_v2_to_silver_sec_sections:
+    left_table: bronze_sec_filings_v2
     right_table: silver_sec_sections
     keys: [accession_number, chunk_id]
-  bronze_sec_filings_to_silver_sec_entities:
-    left_table: bronze_sec_filings
+  bronze_sec_filings_v2_to_silver_sec_entities:
+    left_table: bronze_sec_filings_v2
     right_table: silver_sec_entities
     keys: [accession_number]
   silver_ohlcv_to_gold_ohlcv_features:
