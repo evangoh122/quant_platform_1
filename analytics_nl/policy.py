@@ -65,6 +65,7 @@ class PolicyBounds:
     cheap: SoftThresholds
     normal: SoftThresholds
     known_splits: tuple[tuple[str, date, float], ...] = ()
+    adjusted_source_available: bool = False
 
 
 def load_policy_bounds() -> PolicyBounds:
@@ -122,6 +123,9 @@ def load_policy_bounds() -> PolicyBounds:
         if sym and ex and ratio > 0:
             known_splits.append((sym, ex, ratio))
 
+    # Load adjusted source availability flag (optional — default false)
+    adjusted_source_available = raw.get("adjusted_source_available", False)
+
     return PolicyBounds(
         policy_version=pv,
         semantic_model_version=smv,
@@ -130,6 +134,7 @@ def load_policy_bounds() -> PolicyBounds:
         cheap=cheap,
         normal=normal,
         known_splits=tuple(known_splits),
+        adjusted_source_available=bool(adjusted_source_available),
     )
 
 
@@ -159,7 +164,12 @@ def classify_intent(
     # All entities must be valid types (already enforced by contract)
 
     # 2b. Corporate-action safety: reject unadjusted-price metrics over known splits
-    if intent.metric in _UNADJUSTED_PRICE_METRICS and bounds.known_splits:
+    # When adjusted source is available, skip rejection — adjusted returns are safe.
+    if (
+        intent.metric in _UNADJUSTED_PRICE_METRICS
+        and bounds.known_splits
+        and not bounds.adjusted_source_available
+    ):
         requested_symbols = {e.canonical_id for e in intent.entities}
         for sym, ex_date, _ratio in bounds.known_splits:
             if sym in requested_symbols and intent.date_range.start <= ex_date <= intent.date_range.end:

@@ -665,3 +665,122 @@ class TestCorporateActionRejection:
         )
         result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
         assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+
+class TestAdjustedSourceFallback:
+    """When adjusted_source_available is true, split-safety rejection is skipped."""
+
+    @pytest.fixture
+    def bounds_adjusted_available(self, bounds):
+        """Bounds with adjusted_source_available=True and a known split."""
+        from analytics_nl.policy import PolicyBounds
+        return PolicyBounds(
+            policy_version=bounds.policy_version,
+            semantic_model_version=bounds.semantic_model_version,
+            gold=bounds.gold,
+            silver=bounds.silver,
+            cheap=bounds.cheap,
+            normal=bounds.normal,
+            known_splits=(("NVDA", date(2024, 6, 10), 10.0),),
+            adjusted_source_available=True,
+        )
+
+    @pytest.fixture
+    def bounds_adjusted_unavailable(self, bounds):
+        """Bounds with adjusted_source_available=False (default) and a known split."""
+        from analytics_nl.policy import PolicyBounds
+        return PolicyBounds(
+            policy_version=bounds.policy_version,
+            semantic_model_version=bounds.semantic_model_version,
+            gold=bounds.gold,
+            silver=bounds.silver,
+            cheap=bounds.cheap,
+            normal=bounds.normal,
+            known_splits=(("NVDA", date(2024, 6, 10), 10.0),),
+            adjusted_source_available=False,
+        )
+
+    def test_adjusted_available_no_split_rejection(self, registry, bounds_adjusted_available):
+        """With adjusted source available, return over known split → no rejection."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_adjusted_available, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+        assert result.cost_class != CostClass.REJECT
+
+    def test_adjusted_unavailable_rejects_split(self, registry, bounds_adjusted_unavailable):
+        """Without adjusted source, return over known split → REJECT."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_adjusted_unavailable, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION in result.reason_codes
+
+    def test_adjusted_available_allows_volatility(self, registry, bounds_adjusted_available):
+        """With adjusted source, realized_volatility over known split → no rejection."""
+        intent = _make_intent(
+            metric=Metric.realized_volatility,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_adjusted_available, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_adjusted_available_allows_drawdown(self, registry, bounds_adjusted_available):
+        """With adjusted source, drawdown over known split → no rejection."""
+        intent = _make_intent(
+            metric=Metric.drawdown,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_adjusted_available, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_adjusted_available_allows_momentum(self, registry, bounds_adjusted_available):
+        """With adjusted source, momentum over known split → no rejection."""
+        intent = _make_intent(
+            metric=Metric.momentum,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_adjusted_available, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_adjusted_available_allows_relative_perf(self, registry, bounds_adjusted_available):
+        """With adjusted source, relative_performance over known split → no rejection."""
+        intent = _make_intent(
+            metric=Metric.relative_performance,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2024, 6, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_adjusted_available, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
+
+    def test_adjusted_available_still_rejects_other_violations(self, registry, bounds_adjusted_available):
+        """Adjusted source skips split rejection but not other hard violations."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            entities=[TickerEntity(canonical_id="NVDA")],
+            start=date(2000, 1, 1),
+            end=date(2024, 6, 30),
+        )
+        result = classify_intent(intent, registry, bounds_adjusted_available, as_of=date(2024, 12, 31))
+        # Should still reject for date range exceeded
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.DATE_RANGE_EXCEEDED in result.reason_codes
+
+    def test_default_flag_is_false(self, bounds):
+        """Default adjusted_source_available must be False."""
+        assert bounds.adjusted_source_available is False

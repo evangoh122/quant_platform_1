@@ -125,12 +125,15 @@ class TestDDLColumnGrain:
         assert "feature_ts" in ddl_content
 
     def test_close_used_not_adj_close_source(self, ddl_content):
-        """DDL must use close as source, not adj_close as a source column.
+        """DDL must NOT alias unadjusted close as adj_close.
 
-        adj_close may appear as an alias of close in SELECT clauses.
+        adj_close comes from silver_ohlcv_day_adjusted (the governed adjusted source),
+        not from aliasing bronze_ohlcv_day.close.
         """
-        # The DDL should have "close AS adj_close" pattern
-        assert "close AS adj_close" in ddl_content or "close" in ddl_content
+        # The DDL must NOT have "close AS adj_close" — that was the round 4/5 confusion
+        assert "close AS adj_close" not in ddl_content, (
+            "DDL contains 'close AS adj_close' which aliases unadjusted close as adjusted"
+        )
 
 
 class TestDDLPITSafety:
@@ -221,6 +224,39 @@ class TestDDLKnownSplits:
         assert "symbol" in ddl_content
         assert "ex_date" in ddl_content
         assert "ratio" in ddl_content
+
+
+class TestDDLAdjustedSource:
+    """DDL must document adjusted source and fallback modes."""
+
+    def test_adjusted_source_in_ddl(self, ddl_content):
+        """DDL must reference silver_ohlcv_day_adjusted."""
+        assert "silver_ohlcv_day_adjusted" in ddl_content
+
+    def test_fallback_mode_documented(self, ddl_content):
+        """DDL must document fallback to bronze_ohlcv_day."""
+        assert "fallback" in ddl_content.lower() or "Fallback" in ddl_content
+
+    def test_adjusted_source_available_flag_documented(self, ddl_content):
+        """DDL must reference the adjusted_source_available flag."""
+        assert "adjusted_source_available" in ddl_content
+
+    def test_both_modes_in_daily_prices(self, ddl_content):
+        """serve_daily_prices_v1 must have both primary and fallback DDL."""
+        # Find the serve_daily_prices_v1 section
+        section_start = ddl_content.find("## serve_daily_prices_v1")
+        section_end = ddl_content.find("## serve_daily_equity_metrics_v1")
+        section = ddl_content[section_start:section_end]
+        assert "silver_ohlcv_day_adjusted" in section
+        assert "bronze_ohlcv_day" in section
+
+    def test_both_modes_in_bounded_bars(self, ddl_content):
+        """serve_bounded_daily_bars_v1 must have both primary and fallback DDL."""
+        section_start = ddl_content.find("## serve_bounded_daily_bars_v1")
+        section_end = ddl_content.find("## known_splits")
+        section = ddl_content[section_start:section_end]
+        assert "silver_ohlcv_day_adjusted" in section
+        assert "bronze_ohlcv_day" in section
 
 
 class TestDDLIdentifierCorrespondence:

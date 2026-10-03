@@ -40,14 +40,20 @@ class TestSourceSchemaColumns:
             view_derived = derived.get(view, {})
             derived_cols = set(view_derived.get("derived", []))
 
-            # Get source table columns
+            # Get source table columns — check primary and fallback input_from
             input_from = view_derived.get("input_from", "")
+            fallback_from = view_derived.get("fallback_input_from", "")
             source_cols = set()
             if input_from in tables:
                 source_cols = set(tables[input_from]["columns"])
             elif input_from in derived:
                 # Chained view — its derived columns are our source
                 source_cols = set(derived[input_from]["derived"])
+            # Also check fallback source
+            if fallback_from in tables:
+                source_cols |= set(tables[fallback_from]["columns"])
+            elif fallback_from in derived:
+                source_cols |= set(derived[fallback_from]["derived"])
 
             all_available = source_cols | derived_cols
 
@@ -152,11 +158,57 @@ class TestReintroduceAdjCloseFails:
         bronze_cols = source_schemas["tables"]["bronze_ohlcv_day"]["columns"]
         assert "adj_close" not in bronze_cols
 
-    def test_adj_close_is_derived_alias(self, source_schemas):
-        """adj_close exists only as a derived alias in serve_daily_prices_v1."""
-        derived = source_schemas["derived_columns"]
-        prices_derived = set(derived["serve_daily_prices_v1"]["derived"])
-        assert "adj_close" in prices_derived, "adj_close should be in derived columns"
-        # But it's not in the source table
-        source_cols = set(source_schemas["tables"]["bronze_ohlcv_day"]["columns"])
-        assert "adj_close" not in source_cols
+    def test_adj_close_in_silver_ohlcv_day_adjusted(self, source_schemas):
+        """adj_close IS in silver_ohlcv_day_adjusted (the governed adjusted source)."""
+        adjusted_cols = set(source_schemas["tables"]["silver_ohlcv_day_adjusted"]["columns"])
+        assert "adj_close" in adjusted_cols
+        assert "adj_volume" in adjusted_cols
+        assert "return_1d" in adjusted_cols
+
+    def test_adjusted_source_has_required_columns(self, source_schemas):
+        """silver_ohlcv_day_adjusted must have all columns from the corporate-actions spec."""
+        adjusted_cols = set(source_schemas["tables"]["silver_ohlcv_day_adjusted"]["columns"])
+        required = {
+            "symbol", "event_date", "event_ts",
+            "open", "high", "low", "close", "volume", "vwap", "trade_count",
+            "cumulative_split_ratio", "price_adjustment_factor",
+            "adj_open", "adj_high", "adj_low", "adj_close", "adj_vwap", "adj_volume",
+            "raw_overnight_return", "adjusted_return_1d_unmasked",
+            "return_1d", "is_data_quality_break",
+            "information_available_ts", "processed_ts",
+        }
+        assert required.issubset(adjusted_cols), (
+            f"Missing columns: {required - adjusted_cols}"
+        )
+
+    def test_adjusted_source_marked_pending(self, source_schemas):
+        """silver_ohlcv_day_adjusted must be marked as pending corporate-actions lane."""
+        table_def = source_schemas["tables"]["silver_ohlcv_day_adjusted"]
+        assert table_def.get("status") == "pending_corporate_actions_lane"
+
+    def test_no_adj_close_alias_in_daily_prices_derived(self, source_schemas):
+        """adj_close must NOT be a derived alias in serve_daily_prices_v1."""
+        derived = source_schemas["derived_columns"]["serve_daily_prices_v1"]["derived"]
+        derived_names = [d.split("#")[0].strip() for d in derived]
+        assert "adj_close" not in derived_names, (
+            "adj_close should not be a derived alias — it comes from silver_ohlcv_day_adjusted"
+        )
+
+    def test_no_adj_close_alias_in_bounded_bars_derived(self, source_schemas):
+        """adj_close must NOT be a derived alias in serve_bounded_daily_bars_v1."""
+        derived = source_schemas["derived_columns"]["serve_bounded_daily_bars_v1"]["derived"]
+        derived_names = [d.split("#")[0].strip() for d in derived]
+        assert "adj_close" not in derived_names, (
+            "adj_close should not be a derived alias — it comes from silver_ohlcv_day_adjusted"
+        )
+
+    def test_mutation_reintroduce_adj_close_alias_fails(self, ddl_content):
+        """Mutation test: reintroducing 'close AS adj_close' in the DDL must fail.
+
+        This proves the schema-truth test catches the exact confusion round 4 was meant to remove.
+        """
+        # The DDL should NOT contain "close AS adj_close" anywhere
+        assert "close AS adj_close" not in ddl_content, (
+            "DDL contains 'close AS adj_close' — this aliases unadjusted close as adjusted, "
+            "which is the exact confusion round 4/5 was meant to remove."
+        )

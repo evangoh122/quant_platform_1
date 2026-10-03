@@ -9,9 +9,10 @@ This document proposes `CREATE VIEW` DDL for every approved serving view named b
 - **Date grain:** All views are daily grain. No intraday data.
 - **PIT safety:** Every view includes `information_available_ts` for point-in-time correctness. Queries must filter on `information_available_ts <= :query_timestamp` to avoid look-ahead bias.
 - **Deduplication:** Source tables may contain multiple rows per (symbol, event_date). Views use `ROW_NUMBER() OVER (PARTITION BY symbol, event_date ORDER BY information_available_ts DESC) = 1` for as-of deduplication.
-- **Adjustment:** Prices are UNADJUSTED. The `close` column is used directly; there is no `adj_close`. Price `price_adjustment` is `unadjusted`. Volume is unadjusted.
-- **Null rules:** Nulls in numeric fields indicate missing data; nulls are never interpolated.
-- **Return formula:** `return_1d = (close - LAG(close) OVER (PARTITION BY symbol ORDER BY event_date)) / LAG(close) OVER (PARTITION BY symbol ORDER BY event_date)` — NOTE: this uses unadjusted prices; see corporate-action safety below.
+- **Adjustment:** When `silver_ohlcv_day_adjusted` is available (registry flag `adjusted_source_available: true`), views use `adj_close`, `adj_volume`, etc. from the adjusted source. `adj_*` levels are current-scale back-adjusted and approved for RETURNS. Price LEVELS shown historically are display values (disclose this). When the adjusted source is unavailable (default), views fall back to `bronze_ohlcv_day` with unadjusted prices and split-safety rejection.
+- **Null rules:** Nulls in numeric fields indicate missing data; nulls are never interpolated. A `return_1d` that is NULL from the adjusted source indicates a data-quality break; such days are excluded from aggregates and disclosed.
+- **Return formula (adjusted):** `return_1d` comes directly from `silver_ohlcv_day_adjusted.return_1d`. NULL values indicate data-quality breaks and are excluded from aggregates.
+- **Return formula (unadjusted fallback):** `return_1d = (close - LAG(close) OVER (PARTITION BY symbol ORDER BY event_date)) / LAG(close) OVER (PARTITION BY symbol ORDER BY event_date)` — NOTE: this uses unadjusted prices; split-safety rejection applies.
 - **Realized volatility:** 20-day rolling standard deviation of daily returns, annualized by `* SQRT(252)`.
 - **Drawdown:** Running drawdown from peak: `(close - MAX(close) OVER (PARTITION BY symbol ORDER BY event_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)) / MAX(close) OVER (PARTITION BY symbol ORDER BY event_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`
 - **Momentum:** 20-day price momentum: `(close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1`
@@ -34,7 +35,41 @@ The future service principal receives:
 
 ## serve_daily_prices_v1
 
-Daily unadjusted close, OHLC, and volume.
+Daily adjusted (or unadjusted fallback) close, OHLC, and volume.
+
+### Primary DDL — adjusted source (`adjusted_source_available: true`)
+
+```sql
+CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_daily_prices_v1 AS
+SELECT
+    symbol,
+    event_date,
+    adj_open AS open_price,
+    adj_high AS high_price,
+    adj_low AS low_price,
+    adj_close AS close_price,
+    adj_volume AS volume,
+    information_available_ts
+FROM (
+    SELECT
+        symbol,
+        event_date,
+        adj_open,
+        adj_high,
+        adj_low,
+        adj_close,
+        adj_volume,
+        information_available_ts,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol, event_date
+            ORDER BY processed_ts DESC
+        ) AS rn
+    FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
+) deduped
+WHERE rn = 1;
+```
+
+### Fallback DDL — unadjusted source (`adjusted_source_available: false`)
 
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_daily_prices_v1 AS
@@ -45,7 +80,6 @@ SELECT
     high AS high_price,
     low AS low_price,
     close AS close_price,
-    close AS adj_close,
     volume,
     information_available_ts
 FROM (
@@ -68,12 +102,13 @@ FROM (
 WHERE rn = 1;
 ```
 
-**Source:** `bronze_ohlcv_day` (daily grain, 238M+ rows across all bronze tables).
+**Source:** `silver_ohlcv_day_adjusted` (primary) or `bronze_ohlcv_day` (fallback).
 
 **Column notes:**
 - `event_date` is the daily grain column (not `trade_date`).
-- `close` is the unadjusted close price. The view aliases it as `adj_close` for backward compatibility with downstream consumers; the registry marks `price_adjustment: unadjusted`.
-- `information_available_ts` is derived as 16:30 America/New_York on `event_date`, converted to UTC.
+- In the primary (adjusted) path, `close_price` maps to `adj_close` (current-scale back-adjusted). Historical price levels are display values, not model features.
+- In the fallback (unadjusted) path, `close_price` maps to raw `close`. The registry marks `price_adjustment: unadjusted`.
+- `information_available_ts` is sourced directly from the adjusted table, or derived as 16:30 America/New_York on `event_date` in the fallback.
 
 ---
 
@@ -81,13 +116,93 @@ WHERE rn = 1;
 
 Daily derived equity metrics: return, realized volatility, drawdown, momentum.
 
+### Primary DDL — adjusted source (`adjusted_source_available: true`)
+
+When the adjusted source is available, `return_1d` comes from `silver_ohlcv_day_adjusted` (via the daily prices view). NULL `return_1d` values indicate data-quality breaks and are excluded from aggregates.
+
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_daily_equity_metrics_v1 AS
 WITH daily_prices AS (
     SELECT
         symbol,
         event_date,
+        close_price AS close,
+        volume,
+        information_available_ts
+    FROM ${catalog}.${schema}.serve_daily_prices_v1
+),
+-- return_1d comes from the adjusted source; NULL = data-quality break
+-- For views that need return_1d, join back to the adjusted source
+returns_from_source AS (
+    SELECT
+        dp.symbol,
+        dp.event_date,
+        dp.close,
+        dp.information_available_ts,
+        adj.return_1d
+    FROM daily_prices dp
+    LEFT JOIN (
+        SELECT symbol, event_date, return_1d,
+               ROW_NUMBER() OVER (PARTITION BY symbol, event_date ORDER BY processed_ts DESC) AS rn
+        FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
+    ) adj ON dp.symbol = adj.symbol AND dp.event_date = adj.event_date AND adj.rn = 1
+),
+with_vol AS (
+    SELECT
+        symbol,
+        event_date,
         close,
+        information_available_ts,
+        return_1d,
+        STDDEV_SAMP(return_1d) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) * SQRT(252) AS realized_vol_20d
+    FROM returns_from_source
+    WHERE return_1d IS NOT NULL  -- exclude data-quality breaks
+),
+with_drawdown AS (
+    SELECT
+        symbol,
+        event_date,
+        close,
+        information_available_ts,
+        return_1d,
+        realized_vol_20d,
+        (close - MAX(close) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )) / MAX(close) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS drawdown
+    FROM with_vol
+)
+SELECT
+    symbol,
+    event_date,
+    close,
+    return_1d,
+    realized_vol_20d,
+    drawdown,
+    (close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1
+        AS momentum_20d,
+    information_available_ts
+FROM with_drawdown;
+```
+
+### Fallback DDL — unadjusted source (`adjusted_source_available: false`)
+
+```sql
+CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_daily_equity_metrics_v1 AS
+WITH daily_prices AS (
+    SELECT
+        symbol,
+        event_date,
+        close_price AS close,
         information_available_ts
     FROM ${catalog}.${schema}.serve_daily_prices_v1
 ),
@@ -149,6 +264,10 @@ FROM with_drawdown;
 ```
 
 **Source:** Derived from `serve_daily_prices_v1`.
+
+**Column notes:**
+- In adjusted mode, `return_1d` is sourced from `silver_ohlcv_day_adjusted.return_1d`. NULL values (data-quality breaks) are excluded from the CTE before volatility/drawdown computation.
+- In fallback mode, `return_1d` is computed from unadjusted `close` prices. Split-safety rejection (policy layer) prevents queries over known/suspected splits.
 
 ---
 
@@ -228,6 +347,41 @@ WHERE rn = 1;
 
 Bounded Silver daily bars for price/volume drill-downs on ≤10 named tickers over ≤2 years.
 
+### Primary DDL — adjusted source (`adjusted_source_available: true`)
+
+```sql
+CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_bounded_daily_bars_v1 AS
+SELECT
+    symbol,
+    event_date,
+    adj_open AS open_price,
+    adj_high AS high_price,
+    adj_low AS low_price,
+    adj_close AS close_price,
+    adj_volume AS volume,
+    information_available_ts,
+    FALSE AS suspected_split
+FROM (
+    SELECT
+        symbol,
+        event_date,
+        adj_open,
+        adj_high,
+        adj_low,
+        adj_close,
+        adj_volume,
+        information_available_ts,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol, event_date
+            ORDER BY processed_ts DESC
+        ) AS rn
+    FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
+) deduped
+WHERE rn = 1;
+```
+
+### Fallback DDL — unadjusted source (`adjusted_source_available: false`)
+
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_bounded_daily_bars_v1 AS
 SELECT
@@ -237,7 +391,6 @@ SELECT
     high AS high_price,
     low AS low_price,
     close AS close_price,
-    close AS adj_close,
     volume,
     information_available_ts,
     suspected_split
@@ -281,13 +434,13 @@ FROM (
 WHERE rn = 1;
 ```
 
-**Source:** `bronze_ohlcv_day` (daily grain). Silver constraints: ≤10 tickers, ≤2 years, ≤10,000 rows.
+**Source:** `silver_ohlcv_day_adjusted` (primary) or `bronze_ohlcv_day` (fallback). Silver constraints: ≤10 tickers, ≤2 years, ≤10,000 rows.
 
 **Column notes:**
 - `event_date` is the daily grain column (not `trade_date`).
-- `close` is the unadjusted close price, aliased as `adj_close` for backward compatibility.
-- `information_available_ts` is derived as 16:30 America/New_York on `event_date`.
-- `suspected_split` is a boolean detector that flags rows where the overnight price change is ≥ 40% and the ratio is within 3% of a common split ratio (1/k or k for k ∈ {2, 3, 4, 5, 10, 20}). Queries over return/volatility/drawdown windows should check for `suspected_split = TRUE` and reject if found.
+- In the primary (adjusted) path, `close_price` maps to `adj_close` (current-scale back-adjusted). `suspected_split` is always FALSE because the adjusted source has already handled corporate actions.
+- In the fallback (unadjusted) path, `close_price` maps to raw `close`. `suspected_split` detects potential splits.
+- `information_available_ts` is sourced directly from the adjusted table, or derived as 16:30 America/New_York on `event_date` in the fallback.
 
 ---
 
@@ -311,7 +464,20 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true');
 
 ## Corporate-action safety policy
 
-Prices in `bronze_ohlcv_day` are **unadjusted**. Stock splits create fake returns (e.g. NVDA 10:1 in June 2024 → approximately −90% overnight). Until a governed split source exists:
+Prices in `bronze_ohlcv_day` are **unadjusted**. Stock splits create fake returns (e.g. NVDA 10:1 in June 2024 → approximately −90% overnight). The system has two modes controlled by the registry flag `adjusted_source_available`:
+
+### Adjusted mode (`adjusted_source_available: true`)
+
+When `silver_ohlcv_day_adjusted` is available, views use adjusted prices and returns:
+
+1. **Adjusted returns:** `return_1d` comes from `silver_ohlcv_day_adjusted.return_1d`. These are split-adjusted and safe for return/volatility/drawdown/momentum/relative_performance calculations.
+2. **Data-quality breaks:** A `return_1d` that is NULL indicates a data-quality break. Such days are excluded from aggregates (volatility, drawdown) and disclosed to the user.
+3. **Price levels:** `adj_close` levels are current-scale back-adjusted. Historical price levels are display values — they are not model features. Disclose this assumption.
+4. **No split rejection needed:** The adjusted source has already handled corporate actions, so split-safety rejection is not applied.
+
+### Fallback mode (`adjusted_source_available: false`, default)
+
+When `silver_ohlcv_day_adjusted` is not available, the system falls back to unadjusted prices with split-safety rejection:
 
 1. **Known splits rejection:** NL1 policy rejects any intent using `return`, `realized_volatility`, `drawdown`, `momentum`, or `relative_performance` over a date range that contains a row in `known_splits` for any requested symbol. Reason code: `unadjusted_corporate_action`. No SQL is emitted.
 
@@ -329,7 +495,7 @@ Prices in `bronze_ohlcv_day` are **unadjusted**. Stock splits create fake return
 |---|---|---|---|
 | `price.trend` | silver | `serve_bounded_daily_bars_v1` | ≤10 tickers, ≤2 years, ≤10k rows |
 | `volume.trend` | silver | `serve_bounded_daily_bars_v1` | ≤10 tickers, ≤2 years, ≤10k rows |
-| All other pairs | gold | Gold serving views | ≤10 years, ≤5k rows |
+| All other pairs | gold | Gold serving views (`silver_ohlcv_day_adjusted` primary, `bronze_ohlcv_day` fallback) | ≤10 years, ≤5k rows |
 
 ---
 

@@ -32,3 +32,9 @@ soft_thresholds:
 # Empty by default — to be populated by owner/admin.
 # Format: {symbol: "NVDA", ex_date: "2024-06-10", ratio: 10.0}
 known_splits: []
+
+# Adjusted source availability flag.
+# When true, serving views use silver_ohlcv_day_adjusted for adjusted returns.
+# When false (default), views fall back to bronze_ohlcv_day with split-safety rejection.
+# Set to true after the corporate-actions lane (slice/corporate-actions) merges.
+adjusted_source_available: false

@@ -23,6 +23,34 @@ tables:
       - source_file
       - ingest_ts
 
+  silver_ohlcv_day_adjusted:
+    status: pending_corporate_actions_lane
+    columns:
+      - symbol
+      - event_date
+      - event_ts
+      - open
+      - high
+      - low
+      - close
+      - volume
+      - vwap
+      - trade_count
+      - cumulative_split_ratio
+      - price_adjustment_factor
+      - adj_open
+      - adj_high
+      - adj_low
+      - adj_close
+      - adj_vwap
+      - adj_volume
+      - raw_overnight_return
+      - adjusted_return_1d_unmasked
+      - return_1d
+      - is_data_quality_break
+      - information_available_ts
+      - processed_ts
+
   gold_options_features:
     columns:
       - symbol
@@ -46,16 +74,16 @@ tables:
 # These are not in source tables but are produced by view stages.
 derived_columns:
   serve_daily_prices_v1:
-    input_from: bronze_ohlcv_day
+    input_from: silver_ohlcv_day_adjusted
+    fallback_input_from: bronze_ohlcv_day
     derived:
-      - event_date          # from bronze_ohlcv_day.event_date
-      - open_price          # alias of open
-      - high_price          # alias of high
-      - low_price           # alias of low
-      - close_price         # alias of close
-      - adj_close           # alias of close (unadjusted)
-      - volume              # from bronze_ohlcv_day.volume
-      - information_available_ts  # derived: to_utc_timestamp(concat(event_date,' 16:30:00'),'America/New_York')
+      - event_date          # from source.event_date
+      - open_price          # alias of open (or adj_open when adjusted)
+      - high_price          # alias of high (or adj_high when adjusted)
+      - low_price           # alias of low (or adj_low when adjusted)
+      - close_price         # alias of adj_close (adjusted) or close (unadjusted fallback)
+      - volume              # from source.adj_volume (adjusted) or volume (unadjusted fallback)
+      - information_available_ts  # from source (adjusted) or derived: to_utc_timestamp(concat(event_date,' 16:30:00'),'America/New_York')
 
   serve_daily_equity_metrics_v1:
     input_from: serve_daily_prices_v1
@@ -63,8 +91,8 @@ derived_columns:
       - symbol
       - event_date
       - close
-      - return_1d           # computed: (close - LAG(close)) / LAG(close)
-      - realized_vol_20d    # computed: STDDEV_SAMP(return_1d) * SQRT(252)
+      - return_1d           # from silver_ohlcv_day_adjusted.return_1d (NULL on data-quality break) or computed: (close - LAG(close)) / LAG(close)
+      - realized_vol_20d    # computed: STDDEV_SAMP(return_1d) * SQRT(252), excludes NULL return_1d
       - drawdown            # computed: (close - MAX(close)) / MAX(close)
       - momentum_20d        # computed: (close / LAG(close, 20)) - 1
       - information_available_ts
@@ -89,14 +117,14 @@ derived_columns:
       - information_available_ts
 
   serve_bounded_daily_bars_v1:
-    input_from: bronze_ohlcv_day
+    input_from: silver_ohlcv_day_adjusted
+    fallback_input_from: bronze_ohlcv_day
     derived:
       - event_date
-      - open_price          # alias of open
-      - high_price          # alias of high
-      - low_price           # alias of low
-      - close_price         # alias of close
-      - adj_close           # alias of close (unadjusted)
-      - volume
-      - information_available_ts  # derived: to_utc_timestamp(concat(event_date,' 16:30:00'),'America/New_York')
-      - suspected_split     # computed: overnight |close/prev_close - 1| >= 0.4 AND ratio near 1/k or k
+      - open_price          # alias of open (or adj_open when adjusted)
+      - high_price          # alias of high (or adj_high when adjusted)
+      - low_price           # alias of low (or adj_low when adjusted)
+      - close_price         # alias of adj_close (adjusted) or close (unadjusted fallback)
+      - volume              # from source.adj_volume (adjusted) or volume (unadjusted fallback)
+      - information_available_ts  # from source (adjusted) or derived: to_utc_timestamp(concat(event_date,' 16:30:00'),'America/New_York')
+      - suspected_split     # computed: overnight |close/prev_close - 1| >= 0.4 AND ratio near 1/k or k (unadjusted fallback only)
