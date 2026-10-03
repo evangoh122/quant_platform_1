@@ -99,7 +99,7 @@ _ticker_cache_lock = threading.RLock()
 
 # In-flight load futures for coalescing concurrent requests
 _inflight: Dict[str, Future] = {}
-_inflight_lock = threading.Lock()
+_inflight_lock = threading.RLock()
 
 
 # -- Global corpus state (backward compatibility for existing tests) --
@@ -320,7 +320,9 @@ def get_ticker_corpus(ticker: str) -> TickerCorpus:
     """Get or load the corpus for a ticker, with LRU caching and coalesced loads.
 
     Thread-safe. Concurrent requests for the same ticker coalesce to one load.
-    Falls back to global corpus state if available (backward compatibility).
+    No all-corpus fallback — raises NoCoverageError if ticker has no data.
+
+    Raises NoCoverageError if the ticker has no chunks.
     """
     ticker = ticker.upper().strip()
 
@@ -329,47 +331,6 @@ def get_ticker_corpus(ticker: str) -> TickerCorpus:
         if ticker in _ticker_cache:
             _ticker_cache.move_to_end(ticker)
             return _ticker_cache[ticker]
-
-    # Fallback: if global corpus is loaded and contains this ticker, build a
-    # TickerCorpus from the global state (backward compatibility for tests
-    # that monkeypatch _corpus/_bm25_docs directly).
-    if _corpus_loaded and _corpus:
-        ticker_docs = [d for d in (_bm25_docs or []) if d.metadata.get("ticker") == ticker]
-        if ticker_docs:
-            ticker_tokenised = [tokenize(d.page_content) for d in ticker_docs]
-            ticker_bm25 = BM25Okapi(ticker_tokenised) if ticker_tokenised else None
-            ticker_embeddings = {
-                cid: vec for cid, vec in _embeddings_map.items()
-                if _corpus.get(cid, (None,))[1] == ticker
-            }
-            corpus = TickerCorpus(
-                ticker=ticker,
-                docs=ticker_docs,
-                tokenised=ticker_tokenised,
-                bm25_index=ticker_bm25,
-                embeddings_map=ticker_embeddings,
-                stored_model=_stored_embedding_model,
-                stored_dim=_stored_index_dim,
-                load_ts=time.monotonic(),
-                approx_bytes=_approx_corpus_bytes(ticker_docs, ticker_embeddings),
-            )
-            _insert_ticker_corpus(ticker, corpus)
-            return corpus
-        # Global corpus loaded but ticker not found -- return empty corpus
-        # instead of falling through to Spark
-        empty = TickerCorpus(
-            ticker=ticker,
-            docs=[],
-            tokenised=[],
-            bm25_index=None,
-            embeddings_map={},
-            stored_model=None,
-            stored_dim=None,
-            load_ts=time.monotonic(),
-            approx_bytes=0,
-        )
-        _insert_ticker_corpus(ticker, empty)
-        return empty
 
     # Check if a load is already in-flight
     with _inflight_lock:
@@ -382,8 +343,15 @@ def get_ticker_corpus(ticker: str) -> TickerCorpus:
             # We are the loader
             try:
                 corpus = _load_ticker_corpus(ticker)
+                if not corpus.docs:
+                    raise NoCoverageError(ticker)
                 _insert_ticker_corpus(ticker, corpus)
                 future.set_result(corpus)
+            except NoCoverageError:
+                future.set_exception(NoCoverageError(ticker))
+                with _inflight_lock:
+                    _inflight.pop(ticker, None)
+                raise
             except Exception as e:
                 future.set_exception(e)
                 # Remove in-flight marker so later requests can retry
@@ -788,49 +756,37 @@ def bm25_search(
 ) -> list[Document]:
     """Run BM25 keyword search over the corpus.
 
-    When ticker is provided, uses per-ticker corpus from LRU cache.
-    Otherwise falls back to global corpus for backward compatibility.
+    Requires a ticker. Raises TickerRequiredError if ticker is empty.
+    No all-corpus fallback — per-ticker LRU only.
 
     Raises CorpusUnavailableError if the corpus cannot be loaded.
+    Raises TickerRequiredError if ticker is empty.
     """
     as_of = _normalize_as_of(as_of)
 
-    if ticker:
-        # Per-ticker path
-        try:
-            corpus = get_ticker_corpus(ticker)
-        except Exception as e:
-            raise CorpusUnavailableError(f"Failed to load corpus for {ticker}: {e}") from e
+    if not ticker:
+        raise TickerRequiredError("BM25 search requires a ticker")
 
-        if corpus.bm25_index is None or not corpus.docs:
-            return []
+    try:
+        corpus = get_ticker_corpus(ticker)
+    except NoCoverageError:
+        raise
+    except Exception as e:
+        raise CorpusUnavailableError(f"Failed to load corpus for {ticker}: {e}") from e
 
-        docs = _pit_filter(corpus.docs, as_of)
-        if not docs:
-            return []
+    if corpus.bm25_index is None or not corpus.docs:
+        return []
 
-        tokenised = [tokenize(d.page_content) for d in docs]
-        bm25 = BM25Okapi(tokenised)
-        query_tokens = tokenize(query)
-        raw_scores = bm25.get_scores(query_tokens)
-        scored = sorted(enumerate(raw_scores), key=lambda x: x[1], reverse=True)
-        return [docs[idx] for idx, _ in scored[:top_k]]
-    else:
-        # Global path (backward compatibility)
-        _load_corpus()
-        if _bm25_index is None or _bm25_docs is None:
-            return []
+    docs = _pit_filter(corpus.docs, as_of)
+    if not docs:
+        return []
 
-        docs = _pit_filter(_bm25_docs, as_of)
-        if not docs:
-            return []
-
-        tokenised = [tokenize(d.page_content) for d in docs]
-        bm25 = BM25Okapi(tokenised)
-        query_tokens = tokenize(query)
-        raw_scores = bm25.get_scores(query_tokens)
-        scored = sorted(enumerate(raw_scores), key=lambda x: x[1], reverse=True)
-        return [docs[idx] for idx, _ in scored[:top_k]]
+    tokenised = [tokenize(d.page_content) for d in docs]
+    bm25 = BM25Okapi(tokenised)
+    query_tokens = tokenize(query)
+    raw_scores = bm25.get_scores(query_tokens)
+    scored = sorted(enumerate(raw_scores), key=lambda x: x[1], reverse=True)
+    return [docs[idx] for idx, _ in scored[:top_k]]
 
 
 # -- Dense vector search --
@@ -848,138 +804,78 @@ def vector_search(
 ) -> list[Document]:
     """Run brute-force cosine similarity search over the embeddings corpus.
 
-    When ticker is provided, uses per-ticker corpus from LRU cache.
-    Otherwise falls back to global corpus for backward compatibility.
+    Requires a ticker. Raises TickerRequiredError if ticker is empty.
+    No all-corpus fallback — per-ticker LRU only.
 
     Raises CorpusUnavailableError if the corpus cannot be loaded.
+    Raises TickerRequiredError if ticker is empty.
     """
     as_of = _normalize_as_of(as_of)
 
-    if ticker:
-        # Per-ticker path
-        try:
-            corpus = get_ticker_corpus(ticker)
-        except Exception as e:
-            raise CorpusUnavailableError(f"Failed to load corpus for {ticker}: {e}") from e
+    if not ticker:
+        raise TickerRequiredError("Vector search requires a ticker")
 
-        if not corpus.embeddings_map:
-            return []
+    try:
+        corpus = get_ticker_corpus(ticker)
+    except NoCoverageError:
+        raise
+    except Exception as e:
+        raise CorpusUnavailableError(f"Failed to load corpus for {ticker}: {e}") from e
 
-        embeddings = get_embeddings()
-        qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
+    if not corpus.embeddings_map:
+        return []
 
-        if corpus.stored_dim is not None and len(qvec) != corpus.stored_dim:
+    embeddings = get_embeddings()
+    qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
+
+    if corpus.stored_dim is not None and len(qvec) != corpus.stored_dim:
+        raise EmbeddingConfigError(
+            f"query embedding dim {len(qvec)} != stored index dim {corpus.stored_dim}; "
+            f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
+            user_safe=True,
+        )
+
+    if corpus.stored_model is not None:
+        from api.config import config as _cfg
+        provider = _cfg.EMBEDDING_PROVIDER
+        if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
+            active_model = _cfg.ST_EMBEDDING_MODEL
+        else:
+            active_model = _cfg.HF_EMBEDDING_MODEL
+        if active_model and active_model != corpus.stored_model:
             raise EmbeddingConfigError(
-                f"query embedding dim {len(qvec)} != stored index dim {corpus.stored_dim}; "
-                f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
+                f"embedding model mismatch: active '{active_model}' != stored '{corpus.stored_model}'; "
+                f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
                 user_safe=True,
             )
 
-        if corpus.stored_model is not None:
-            from api.config import config as _cfg
-            provider = _cfg.EMBEDDING_PROVIDER
-            if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
-                active_model = _cfg.ST_EMBEDDING_MODEL
-            else:
-                active_model = _cfg.HF_EMBEDDING_MODEL
-            if active_model and active_model != corpus.stored_model:
-                raise EmbeddingConfigError(
-                    f"embedding model mismatch: active '{active_model}' != stored '{corpus.stored_model}'; "
-                    f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
-                    user_safe=True,
-                )
+    candidates: List[Tuple[float, Document]] = []
+    for cid, vec in corpus.embeddings_map.items():
+        doc = None
+        for d in corpus.docs:
+            if d.metadata.get("chunk_id") == cid:
+                doc = d
+                break
+        if doc is None:
+            continue
 
-        candidates: List[Tuple[float, Document]] = []
-        for cid, vec in corpus.embeddings_map.items():
-            doc = None
-            for d in corpus.docs:
-                if d.metadata.get("chunk_id") == cid:
-                    doc = d
-                    break
-            if doc is None:
-                continue
+        accepted_dt = _parse_ts(doc.metadata.get("accepted_ts", ""))
+        if accepted_dt is not None and accepted_dt > as_of:
+            continue
 
-            accepted_dt = _parse_ts(doc.metadata.get("accepted_ts", ""))
-            if accepted_dt is not None and accepted_dt > as_of:
-                continue
+        sim = _cosine_similarity(qvec, vec)
+        result_doc = Document(
+            page_content=doc.page_content,
+            metadata={
+                **doc.metadata,
+                "distance": 1.0 - sim,
+                "similarity": sim,
+            },
+        )
+        candidates.append((sim, result_doc))
 
-            sim = _cosine_similarity(qvec, vec)
-            result_doc = Document(
-                page_content=doc.page_content,
-                metadata={
-                    **doc.metadata,
-                    "distance": 1.0 - sim,
-                    "similarity": sim,
-                },
-            )
-            candidates.append((sim, result_doc))
-
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in candidates[:top_k]]
-    else:
-        # Global path (backward compatibility)
-        _load_corpus()
-        if not _embeddings_map:
-            return []
-
-        embeddings = get_embeddings()
-        qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
-
-        if _stored_index_dim is not None and len(qvec) != _stored_index_dim:
-            raise EmbeddingConfigError(
-                f"query embedding dim {len(qvec)} != stored index dim {_stored_index_dim}; "
-                f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
-                user_safe=True,
-            )
-
-        if _stored_embedding_model is not None:
-            from api.config import config as _cfg
-            provider = _cfg.EMBEDDING_PROVIDER
-            if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
-                active_model = _cfg.ST_EMBEDDING_MODEL
-            else:
-                active_model = _cfg.HF_EMBEDDING_MODEL
-            if active_model and active_model != _stored_embedding_model:
-                raise EmbeddingConfigError(
-                    f"embedding model mismatch: active '{active_model}' != stored '{_stored_embedding_model}'; "
-                    f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
-                    user_safe=True,
-                )
-
-        candidates: List[Tuple[float, Document]] = []
-        for cid, vec in _embeddings_map.items():
-            entry = _corpus.get(cid)
-            if entry is None:
-                continue
-            text, ticker_val, accession, accepted_ts, form_type, section_id, chunk_index, source_url = entry
-
-            accepted_dt = _parse_ts(accepted_ts)
-            if accepted_dt is not None and accepted_dt > as_of:
-                continue
-
-            if ticker and ticker_val != ticker:
-                continue
-
-            sim = _cosine_similarity(qvec, vec)
-            doc = Document(
-                page_content=text,
-                metadata={
-                    "chunk_id": cid,
-                    "ticker": ticker_val,
-                    "accession": accession,
-                    "accepted_ts": accepted_ts,
-                    "form_type": form_type,
-                    "section_id": section_id,
-                    "chunk_index": chunk_index,
-                    "source_url": source_url,
-                    "distance": 1.0 - sim,
-                    "similarity": sim,
-                },
-            )
-            candidates.append((sim, doc))
-
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in candidates[:top_k]]
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return [doc for _, doc in candidates[:top_k]]
 
 
 # -- Hybrid Retriever --
@@ -1022,10 +918,19 @@ class HybridRetriever:
             Fused and optionally reranked list of Documents.
             If the dense embedder fails at runtime, falls back to BM25-only
             with _warning="dense_unavailable" metadata on each result.
+
+        Raises:
+            TickerRequiredError: If no ticker could be resolved.
+            NoCoverageError: If the ticker has zero SEC chunks.
         """
         as_of = _normalize_as_of(as_of)
         effective_top_k = top_k or self.top_k
         effective_ticker = resolve_ticker_from_query(query, ticker)
+
+        if not effective_ticker:
+            raise TickerRequiredError("No ticker could be resolved from query or argument")
+
+        check_ticker_coverage(effective_ticker)
 
         bm25_docs = bm25_search(
             query,

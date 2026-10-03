@@ -105,3 +105,16 @@ def _clear_ticker_lru_cache():
             hr._inflight.clear()
     except (ImportError, AttributeError):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _mock_check_ticker_coverage(monkeypatch):
+    """Mock check_ticker_coverage to avoid Spark calls in unit tests.
+
+    Tests that need to test the real coverage check can override this mock.
+    """
+    try:
+        from api.services import hybrid_retriever as hr
+        monkeypatch.setattr(hr, "check_ticker_coverage", lambda ticker: (1, None))
+    except (ImportError, AttributeError):
+        pass
