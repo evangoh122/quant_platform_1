@@ -1776,6 +1776,8 @@ class TestEmbeddingDimCheck:
             "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
         })
         monkeypatch.setattr(hr, "_embeddings_map", {"c1": np.zeros(384, dtype=np.float32)})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
 
         class WrongDimEmbeddings:
             def embed_query(self, text):
@@ -1799,6 +1801,8 @@ class TestEmbeddingDimCheck:
         vec = np.zeros(384, dtype=np.float32)
         vec[0] = 1.0
         monkeypatch.setattr(hr, "_embeddings_map", {"c1": vec})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
 
         class CorrectDimEmbeddings:
             def embed_query(self, text):
@@ -1850,3 +1854,132 @@ class TestBuildEmbeddingsReadError:
 
         # Must not have written anything
         mock_spark.createDataFrame.assert_not_called()
+
+
+# ── Fix #5: Stored-index dimension guard + model-name check (round 3) ────────
+
+class TestStoredIndexDimensionGuard:
+    """Verify vector_search validates against the STORED index dimension, not the configured EMBEDDING_DIM.
+
+    DeepSeek round-2 finding: the old guard compared len(qvec) with the
+    CONFIGURED EMBEDDING_DIM.  Switching EMBEDDING_PROVIDER=sentence_transformers
+    (1024-d) against a stored 384-d index passed the guard, then np.dot raised,
+    and the search silently fell back to substring search.
+    """
+
+    def test_1024d_query_against_384d_index_returns_unavailable(self, monkeypatch):
+        """A 1024-d query vector against a 384-d stored index must raise CorpusUnavailableError.
+
+        search_sec_filings must surface retrieval_unavailable, not substring_fallback.
+        """
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Setup corpus with 384-d stored embeddings
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+        vec384 = np.zeros(384, dtype=np.float32)
+        vec384[0] = 1.0
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": vec384})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
+
+        class WrongDimEmbeddings:
+            def embed_query(self, text):
+                return [0.1] * 1024  # 1024-d query, but stored index is 384-d
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
+
+        with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
+            hr.vector_search("test query")
+
+    def test_mixed_stored_dimensions_unavailable(self, fake_pyspark, monkeypatch):
+        """If stored embeddings have mixed dimensions, corpus load must raise CorpusUnavailableError."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Reset module state
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+        monkeypatch.setattr(hr, "_stored_index_dim", None)
+        monkeypatch.setattr(hr, "_stored_embedding_model", None)
+
+        # Mock Spark to return embeddings with mixed dimensions
+        mock_spark = MagicMock()
+
+        mock_chunk_row = MagicMock()
+        mock_chunk_row.__getitem__ = lambda self, k: {
+            "chunk_id": "c1", "ticker": "NVDA", "chunk_text": "text",
+            "accession_number": "ACC", "accepted_epoch": 1735689600,
+            "form_type": "10-K", "filing_section": "s1",
+            "chunk_index": 0, "source_url": "",
+        }.get(k)
+
+        mock_chunks_df = MagicMock()
+        mock_chunks_df.select.return_value = mock_chunks_df
+        mock_chunks_df.collect.return_value = [mock_chunk_row]
+
+        # Two embeddings: one 384-d, one 1024-d
+        mock_embed_row1 = MagicMock()
+        mock_embed_row1.__getitem__ = lambda self, k: {
+            "chunk_id": "c1", "embedding": [0.1] * 384, "embedding_model": "BAAI/bge-small-en-v1.5",
+        }.get(k)
+        mock_embed_row2 = MagicMock()
+        mock_embed_row2.__getitem__ = lambda self, k: {
+            "chunk_id": "c2", "embedding": [0.1] * 1024, "embedding_model": "BAAI/bge-small-en-v1.5",
+        }.get(k)
+
+        mock_embed_df = MagicMock()
+        mock_embed_df.select.return_value = mock_embed_df
+        mock_embed_df.collect.return_value = [mock_embed_row1, mock_embed_row2]
+
+        def table_side(name):
+            if "embeddings" in name:
+                return mock_embed_df
+            return mock_chunks_df
+
+        mock_spark.table.side_effect = table_side
+        monkeypatch.setattr(hr, "_get_spark", lambda: mock_spark)
+
+        mock_f = MagicMock()
+        mock_f.unix_timestamp.return_value = mock_f
+        mock_f.col.return_value = mock_f
+        mock_f.alias.return_value = mock_f
+
+        with patch("pyspark.sql.functions", mock_f):
+            with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
+                hr._load_corpus()
+
+    def test_model_name_mismatch_unavailable(self, fake_pyspark, monkeypatch):
+        """If stored embedding_model does not match active model, corpus load raises CorpusUnavailableError."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError, vector_search
+
+        # Setup corpus with a stored model name
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+        vec = np.zeros(384, dtype=np.float32)
+        vec[0] = 1.0
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": vec})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "old-model-name")
+
+        class MatchingDimEmbeddings:
+            def embed_query(self, text):
+                v = np.zeros(384, dtype=np.float32)
+                v[0] = 1.0
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: MatchingDimEmbeddings())
+
+        # The active model (via config) is "BAAI/bge-small-en-v1.5", not "old-model-name"
+        with pytest.raises(CorpusUnavailableError, match="model mismatch"):
+            vector_search("test query")

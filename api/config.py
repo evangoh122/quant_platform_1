@@ -180,9 +180,8 @@ class Config:
     @property
     def ST_EMBEDDING_MODEL(self) -> str:
         # Local sentence-transformers model (runs in-process, no inference API).
-        # Qwen3-Embedding-0.6B is 1024-dim — strong retrieval quality, ~1.2GB,
-        # small enough to run in-process on the Space (the 8B variant OOMs).
-        return os.getenv("ST_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+        # BAAI/bge-small-en-v1.5 is 384-dim — matches the shipped index.
+        return os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
     @property
     def ACTIVE_EMBEDDING_MODEL(self) -> str:
@@ -206,7 +205,7 @@ class Config:
             return int(explicit)
         provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
-            return 1024  # Qwen/Qwen3-Embedding-0.6B
+            return 384  # BAAI/bge-small-en-v1.5
         if provider == "huggingface":
             return 384  # BAAI/bge-small-en-v1.5
         return 384

@@ -33,7 +33,7 @@ from langchain_core.documents import Document
 from loguru import logger
 from rank_bm25 import BM25Okapi
 
-from api.services.embeddings import EMBEDDING_DIM, get_embeddings
+from api.services.embeddings import get_embeddings
 
 
 def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
@@ -221,6 +221,10 @@ _bm25_index: Optional[BM25Okapi] = None
 # For dense: chunk_id -> embedding vector (numpy float32)
 _embeddings_map: Dict[str, np.ndarray] = {}
 
+# Stored index metadata (recorded at corpus load time)
+_stored_index_dim: Optional[int] = None
+_stored_embedding_model: Optional[str] = None
+
 
 def _get_spark():
     """Get a Spark session, using DatabricksSession outside a Databricks runtime.
@@ -244,6 +248,7 @@ def _load_corpus() -> bool:
     a structured error instead of silently returning empty results.
     """
     global _corpus_loaded, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
+    global _stored_index_dim, _stored_embedding_model
 
     if _corpus_loaded:
         if not _corpus:
@@ -275,16 +280,39 @@ def _load_corpus() -> bool:
 
             # Load embeddings
             embed_df = spark.table(EMBEDDINGS_TABLE).select(
-                "chunk_id", "embedding",
+                "chunk_id", "embedding", "embedding_model",
             )
             embed_rows = embed_df.collect()
 
-            # Build embedding map
+            # Build embedding map + record stored index metadata
+            seen_dims: set[int] = set()
+            seen_models: set[str] = set()
             for row in embed_rows:
                 cid = row["chunk_id"]
                 vec = row["embedding"]
                 if vec is not None:
-                    _embeddings_map[cid] = np.array(vec, dtype=np.float32)
+                    arr = np.array(vec, dtype=np.float32)
+                    _embeddings_map[cid] = arr
+                    seen_dims.add(len(arr))
+                model_name = row["embedding_model"]
+                if model_name:
+                    seen_models.add(model_name)
+
+            # Validate stored dimensions are uniform
+            if seen_dims and len(seen_dims) > 1:
+                raise CorpusUnavailableError(
+                    f"Embedding dimension mismatch in stored index: found {sorted(seen_dims)}. "
+                    f"The index is corrupted — rebuild embeddings."
+                )
+            _stored_index_dim = next(iter(seen_dims), None)
+
+            # Store the model name (prefer the single model; error if mixed)
+            if len(seen_models) > 1:
+                raise CorpusUnavailableError(
+                    f"Multiple embedding models in stored index: {sorted(seen_models)}. "
+                    f"Rebuild embeddings with a single model."
+                )
+            _stored_embedding_model = next(iter(seen_models), None)
 
             # Build corpus map + BM25 lists
             docs: List[Document] = []
@@ -347,6 +375,8 @@ def _load_corpus() -> bool:
             _bm25_docs = None
             _bm25_tokenised = None
             _bm25_index = None
+            _stored_index_dim = None
+            _stored_embedding_model = None
             raise
         except Exception as e:
             logger.error("Failed to load corpus: {}", e)
@@ -357,6 +387,8 @@ def _load_corpus() -> bool:
             _bm25_docs = None
             _bm25_tokenised = None
             _bm25_index = None
+            _stored_index_dim = None
+            _stored_embedding_model = None
             raise CorpusUnavailableError(f"Failed to load corpus: {e}") from e
 
 
@@ -366,6 +398,7 @@ def reload_corpus() -> bool:
     Raises CorpusUnavailableError if the reload fails.
     """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
+    global _stored_index_dim, _stored_embedding_model
     with _corpus_lock:
         _corpus_loaded = False
         _corpus = {}
@@ -373,6 +406,8 @@ def reload_corpus() -> bool:
         _bm25_tokenised = None
         _bm25_index = None
         _embeddings_map = {}
+        _stored_index_dim = None
+        _stored_embedding_model = None
     return _load_corpus()
 
 
@@ -497,12 +532,26 @@ def vector_search(
 
     qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
 
-    # Verify query vector dimension matches the expected embedding dim
-    if len(qvec) != EMBEDDING_DIM:
+    # Verify query vector dimension matches the STORED index dimension
+    if _stored_index_dim is not None and len(qvec) != _stored_index_dim:
         raise CorpusUnavailableError(
-            f"Query embedding dimension mismatch: got {len(qvec)}, expected {EMBEDDING_DIM}. "
+            f"Query embedding dimension mismatch: got {len(qvec)}, stored index is {_stored_index_dim}-d. "
             f"The embedding model may not match the index."
         )
+
+    # Verify the active embedding model matches the stored model
+    if _stored_embedding_model is not None:
+        from api.config import config as _cfg
+        provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
+            active_model = _cfg.ST_EMBEDDING_MODEL
+        else:
+            active_model = _cfg.HF_EMBEDDING_MODEL
+        if active_model and active_model != _stored_embedding_model:
+            raise CorpusUnavailableError(
+                f"Embedding model mismatch: active model '{active_model}' "
+                f"does not match stored index model '{_stored_embedding_model}'."
+            )
 
     # Build candidate docs from corpus entries that have embeddings
     candidates: List[Tuple[float, Document]] = []
