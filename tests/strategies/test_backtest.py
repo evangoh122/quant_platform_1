@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from strategies.backtest import (
+    cap_weight_changes_by_adv,
     compute_costs,
     enforce_execution_lag,
     filter_to_universe,
@@ -195,3 +196,135 @@ def test_position_liquidates_when_adv_becomes_nan(dates, symbols):
         f"A's weight is {weights.loc[last_day, 'A']} on last day — should be 0 "
         f"(position frozen due to NaN ADV)"
     )
+
+
+# ── Sign-flip ADV cap tests ──────────────────────────────────────────────────
+
+def _make_cap_inputs(n_days, symbols, target_series, adv_val, book_capital, cap_frac):
+    """Helper: build weight/adv frames for cap_weight_changes_by_adv tests."""
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+    weights = pd.DataFrame(0.0, index=dates, columns=symbols)
+    for i, w in enumerate(target_series):
+        weights.iloc[i, 0] = w  # only first symbol gets the target
+    adv = pd.DataFrame(adv_val, index=dates, columns=symbols)
+    params = CostParams(adv_participation_cap=cap_frac)
+    return dates, weights, adv, params
+
+
+def test_sign_flip_equal_magnitude_capped():
+    """+0.4 → -0.4 with cap 0.02/day: the new short leg must be capped.
+
+    Day 0: target +0.4, prev=0 → open +0.4, capped to +0.02.
+    Day 1: target -0.4, prev=+0.02 → close +0.02 (free), open -0.4 (capped to -0.02).
+    So day 1 weight = +0.02 + (-0.02) + (-0.02) = -0.02.
+    Day 2: target -0.4, prev=-0.02 → same-side increase, open -0.38, capped to -0.02.
+    So day 2 weight = -0.02 + 0 + (-0.02) = -0.04. Converges toward -0.4.
+    """
+    n_days = 10
+    symbols = ["A", "B"]
+    target = [0.4] + [-0.4] * (n_days - 1)
+    book_capital = 1e6
+    cap_frac = 0.01
+    adv_val = 0.02 * book_capital / cap_frac  # cap weight = 0.02
+
+    dates, weights, adv, params = _make_cap_inputs(
+        n_days, symbols, target, adv_val, book_capital, cap_frac,
+    )
+    result = cap_weight_changes_by_adv(weights, adv, book_capital, params)
+    a = result["A"].to_numpy()
+
+    # Day 0: prev=0, target=+0.4 → open +0.4, capped to +0.02
+    assert a[0] == pytest.approx(0.02), f"day 0: expected +0.02, got {a[0]}"
+
+    # Day 1: prev=+0.02, target=-0.4 (sign flip)
+    # close = -0.02 (free, toward 0); open = -0.4 (capped to -0.02)
+    # new = +0.02 + (-0.02) + (-0.02) = -0.02
+    assert a[1] == pytest.approx(-0.02), f"day 1: expected -0.02, got {a[1]}"
+
+    # Day 2: prev=-0.02, target=-0.4 (same-side increase)
+    # close = 0; open = -0.38, capped to -0.02
+    # new = -0.02 + 0 + (-0.02) = -0.04
+    assert a[2] == pytest.approx(-0.04), f"day 2: expected -0.04, got {a[2]}"
+
+    # Convergence: each day adds another -0.02.
+    assert a[3] == pytest.approx(-0.06)
+    assert a[4] == pytest.approx(-0.08)
+
+
+def test_sign_flip_close_out_not_capped():
+    """+0.06 → -0.4 with cap 0.02/day: the long is fully closed on the flip day.
+
+    Day 0: target +0.06, prev=0 → open +0.06, capped to +0.02.
+    Day 1: target +0.06, prev=+0.02 → open +0.04, capped to +0.02. Weight=+0.04.
+    Day 2: target +0.06, prev=+0.04 → open +0.02, capped to +0.02. Weight=+0.06.
+    Day 3: target -0.4, prev=+0.06 → close -0.06 (free), open -0.4 (capped to -0.02).
+    Weight = +0.06 + (-0.06) + (-0.02) = -0.02.
+    The long IS fully closed on the flip day (close leg = -0.06 is not capped).
+    """
+    n_days = 6
+    symbols = ["A", "B"]
+    target = [0.06, 0.06, 0.06, -0.4, -0.4, -0.4]
+    book_capital = 1e6
+    cap_frac = 0.01
+    adv_val = 0.02 * book_capital / cap_frac  # cap weight = 0.02
+
+    dates, weights, adv, params = _make_cap_inputs(
+        n_days, symbols, target, adv_val, book_capital, cap_frac,
+    )
+    result = cap_weight_changes_by_adv(weights, adv, book_capital, params)
+    a = result["A"].to_numpy()
+
+    # Day 0: prev=0, target=+0.06 → open +0.06, capped to +0.02
+    assert a[0] == pytest.approx(0.02), f"day 0: expected +0.02, got {a[0]}"
+    # Day 1: prev=+0.02, target=+0.06 → same-side increase, open +0.04, capped to +0.02 → +0.04
+    assert a[1] == pytest.approx(0.04), f"day 1: expected +0.04, got {a[1]}"
+    # Day 2: prev=+0.04, target=+0.06 → same-side increase, open +0.02, capped to +0.02 → +0.06
+    assert a[2] == pytest.approx(0.06), f"day 2: expected +0.06, got {a[2]}"
+    # Day 3: prev=+0.06, target=-0.4 → close -0.06 (free), open -0.4 (capped to -0.02)
+    # new = +0.06 + (-0.06) + (-0.02) = -0.02
+    assert a[3] == pytest.approx(-0.02), f"day 3: expected -0.02, got {a[3]}"
+
+
+def test_existing_dropped_name_exits():
+    """Dropped name (target=0) still exits uncapped — the close leg is free."""
+    n_days = 5
+    symbols = ["A", "B"]
+    target = [0.3, 0.3, 0.0, 0.0, 0.0]  # A drops out at day 2
+    book_capital = 1e6
+    cap_frac = 0.01
+    adv_val = 0.02 * book_capital / cap_frac
+
+    dates, weights, adv, params = _make_cap_inputs(
+        n_days, symbols, target, adv_val, book_capital, cap_frac,
+    )
+    result = cap_weight_changes_by_adv(weights, adv, book_capital, params)
+    a = result["A"].to_numpy()
+
+    # Day 2: prev=+0.06, target=0 → close=-0.06 (free), open=0 → weight=0
+    assert a[2] == pytest.approx(0.0), f"day 2: expected 0.0, got {a[2]}"
+    assert a[3] == pytest.approx(0.0), f"day 3: expected 0.0, got {a[3]}"
+
+
+def test_existing_same_side_increase_capped():
+    """Same-side increase: open leg only, capped at +0.02/day."""
+    n_days = 4
+    symbols = ["A", "B"]
+    target = [0.1, 0.3, 0.5, 0.5]
+    book_capital = 1e6
+    cap_frac = 0.01
+    adv_val = 0.02 * book_capital / cap_frac  # cap weight = 0.02
+
+    dates, weights, adv, params = _make_cap_inputs(
+        n_days, symbols, target, adv_val, book_capital, cap_frac,
+    )
+    result = cap_weight_changes_by_adv(weights, adv, book_capital, params)
+    a = result["A"].to_numpy()
+
+    # Day 0: prev=0, target=+0.1 → open +0.1, capped to +0.02
+    assert a[0] == pytest.approx(0.02)
+    # Day 1: prev=+0.02, target=+0.3 → same-side increase, open +0.28, capped to +0.02 → +0.04
+    assert a[1] == pytest.approx(0.04)
+    # Day 2: prev=+0.04, target=+0.5 → same-side increase, open +0.46, capped to +0.02 → +0.06
+    assert a[2] == pytest.approx(0.06)
+    # Day 3: prev=+0.06, target=+0.5 → same-side increase, open +0.44, capped to +0.02 → +0.08
+    assert a[3] == pytest.approx(0.08)

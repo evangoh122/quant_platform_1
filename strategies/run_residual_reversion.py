@@ -235,6 +235,18 @@ CHANGELOG = {
             "rationale": "The first 49 dates are labelled MIXED instead of BROAD/NARROW from a partial average",
         },
     ],
+    5: [
+        {
+            "fix": "Sign-flip ADV cap decomposes close leg (free) and open leg (capped)",
+            "files": "`strategies/backtest.py`",
+            "rationale": "Old `abs(cur) > abs(prev)` conflated net magnitude with new-leg opening; equal-magnitude flips were uncapped and reductions were wrongly capped. Now each day's change is decomposed: close toward 0 is always free, opening beyond 0 is ADV-capped",
+        },
+        {
+            "fix": "Sigma uses same min_periods as beta regression",
+            "files": "`strategies/residual_reversion.py`",
+            "rationale": "`_trailing_std` used `min_periods=window` (60) while beta used `min_obs=ceil(0.8*window)` (48); one gap killed sigma for 60 days. Now sigma uses `min_periods=min_obs` for consistent gap tolerance",
+        },
+    ],
 }
 
 

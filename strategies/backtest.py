@@ -86,23 +86,40 @@ def cap_weight_changes_by_adv(
     out = weights.copy().to_numpy(dtype=float)
     prev = np.zeros(out.shape[1])
     # Forward-fill ADV per symbol so the last known ADV is used for names
-    # whose ADV becomes NaN after leaving the universe.
+    # whose ADV becomes NaN (e.g. after leaving the universe).
     adv_ff = adv.reindex(index=weights.index, columns=weights.columns).ffill()
     adv_np = adv_ff.fillna(0.0).to_numpy(dtype=float)
     for i in range(out.shape[0]):
         cur = out[i]
         dw = cur - prev
-        # Only cap increases in absolute position size; reductions toward 0
-        # are never blocked (a position must always be allowed to shrink).
-        increasing = np.abs(cur) > np.abs(prev) + 1e-15
-        if increasing.any():
-            notional = np.abs(dw[increasing]) * book_capital
-            caps = cap_frac * adv_np[i, increasing]
-            over = notional > caps
-            if over.any():
-                idx = np.where(increasing)[0][over]
-                for j_idx, cap_val in zip(idx, caps[over]):
-                    out[i, j_idx] = prev[j_idx] + np.sign(dw[j_idx]) * cap_val / book_capital
+        # Decompose each name's change into a close leg (toward 0, always
+        # free) and an open leg (extension past 0 or away from 0 on the
+        # same side, capped).  This correctly handles sign flips:
+        # the full close to 0 is free; only the new-side opening is capped.
+        #
+        # close_leg: the portion of dw that moves prev toward 0, capped at
+        # reaching 0 (never overshoots).  It is never capped by ADV.
+        # open_leg: the remainder — movement beyond 0 (sign flip) or
+        # further away from 0 on the same side.  This is ADV-capped.
+        same_side = (np.sign(prev) * np.sign(cur)) > 0
+        at_zero = (prev == 0.0)
+        close_raw = np.where(at_zero, 0.0, np.where(same_side, 0.0, -prev))
+        close_leg = close_raw
+        open_leg = dw - close_leg
+
+        # Cap only the open leg at cap_frac * ADV / book_capital.
+        open_notional = np.abs(open_leg) * book_capital
+        caps = cap_frac * adv_np[i]
+        over_cap = open_notional > caps
+        if over_cap.any():
+            open_leg_capped = np.where(
+                caps > 0,
+                np.sign(open_leg) * caps / book_capital,
+                0.0,
+            )
+            open_leg = np.where(over_cap, open_leg_capped, open_leg)
+
+        out[i] = prev + close_leg + open_leg
         prev = out[i]
     return pd.DataFrame(out, index=weights.index, columns=weights.columns)
 

@@ -182,11 +182,18 @@ def _rolling_residuals_one_symbol(
             "residual": residual}
 
 
-def _trailing_std(x: np.ndarray, window: int) -> np.ndarray:
-    """Trailing (inclusive) standard deviation with min_periods == window."""
+def _trailing_std(x: np.ndarray, window: int, min_periods: Optional[int] = None) -> np.ndarray:
+    """Trailing (inclusive) standard deviation.
+
+    ``min_periods`` defaults to ``window`` (the old behaviour) but callers
+    should pass ``min_obs`` so that sigma uses the same gap tolerance as the
+    beta regression.
+    """
     x = np.asarray(x, dtype=float)
     s = pd.Series(x)
-    return s.rolling(window, min_periods=window).std().to_numpy()
+    if min_periods is None:
+        min_periods = window
+    return s.rolling(window, min_periods=min_periods).std().to_numpy()
 
 
 def compute_residuals(
@@ -241,7 +248,9 @@ def compute_residuals(
         beta_ind[sym] = res["beta_ind"]
         residual[sym] = res["residual"]
 
-    sigma = residual.apply(lambda c: _trailing_std(c.to_numpy(), window))
+    if min_obs is None:
+        min_obs = int(np.ceil(0.8 * window))
+    sigma = residual.apply(lambda c: _trailing_std(c.to_numpy(), window, min_periods=min_obs))
     sigma.index = returns.index
     # s-score = cumulative residual over `lookback` / residual sigma (spec §1).
     s_cum = residual.rolling(lookback, min_periods=lookback).sum()

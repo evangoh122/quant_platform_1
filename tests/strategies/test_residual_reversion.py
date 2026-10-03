@@ -201,3 +201,76 @@ def test_nan_returns_not_counted_as_zeros():
     assert np.isnan(result2["alpha"]["A"].to_numpy()[t_idx]), (
         "default min_obs=48 should reject a window with only 30 valid rows"
     )
+
+
+def test_sigma_uses_min_obs_not_full_window():
+    """A series with 10% gaps gets a non-NaN s_score once the window has
+    >= min_obs valid residuals, not only when it has a full window of them.
+
+    The beta uses min_obs = ceil(0.8 * window) = 48 for window=60, but
+    _trailing_std was using min_periods=window (60), so one gap in the
+    trailing window killed sigma for 60 days. After the fix, sigma uses
+    the same min_obs.
+    """
+    window = 60
+    n_days = 200
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+    rng = np.random.default_rng(456)
+    market = pd.Series(rng.normal(0.0, 0.01, n_days), index=dates)
+
+    # Two symbols in same industry.
+    y_a = 1.1 * market.to_numpy() + rng.normal(0.0, 0.01, n_days)
+    y_b = 0.9 * market.to_numpy() + rng.normal(0.0, 0.01, n_days)
+
+    # Inject ~10% gaps (every 10th day) in A's returns.
+    y_a_gapped = y_a.copy()
+    gap_indices = list(range(10, n_days, 10))
+    y_a_gapped[gap_indices] = np.nan
+
+    returns = pd.DataFrame({"A": y_a_gapped, "B": y_b}, index=dates)
+    industry_map = {"A": "tech", "B": "tech"}
+    ind = compute_industry_factor(returns, industry_map)
+
+    min_obs = int(np.ceil(0.8 * window))  # 48
+    result = compute_residuals(returns, market, ind, window=window,
+                               lookback=5, min_obs=min_obs)
+
+    s_score = result["s_score"]["A"].to_numpy()
+    sigma = result["sigma"]["A"].to_numpy()
+
+    # After warm-up (day >= window + lookback), there should be days where
+    # beta is non-NaN and sigma is also non-NaN. With the old code
+    # (min_periods=window for sigma), any gap in the trailing 60-day window
+    # makes sigma NaN even though beta tolerates 48/60 valid rows.
+    # Find a day well past warm-up where beta is non-NaN.
+    beta = result["beta_mkt"]["A"].to_numpy()
+
+    # The residual is NaN for the first `window` days (beta warm-up), so
+    # the trailing sigma window for days just past warm-up still contains
+    # many NaN residuals from the warm-up period.  We need to check far
+    # enough past warm-up that the trailing window contains only data-day
+    # residuals (with at most ~6 gap-day NaNs per 60-day window).
+    # With ~10% gaps (every 10th day), a 60-day window has ~6 gaps → 54
+    # valid residuals, which is above min_obs=48.  But if the window also
+    # overlaps the warm-up, valid count drops further.  Start checking at
+    # day 2*window so the trailing window is entirely post-warm-up.
+    check_start = 2 * window  # day 120
+
+    # Count days where beta is non-NaN but sigma is NaN (the starvation problem).
+    beta_nonnan_sigma_nan = 0
+    sigma_nonnan = 0
+    for i in range(check_start, n_days):
+        if np.isfinite(beta[i]):
+            if np.isnan(sigma[i]):
+                beta_nonnan_sigma_nan += 1
+            else:
+                sigma_nonnan += 1
+
+    # After the fix, sigma should be non-NaN whenever beta is non-NaN and the
+    # trailing window has >= min_obs valid residuals. The starvation count
+    # should be 0 (not 38 as with the old code using min_periods=window).
+    assert beta_nonnan_sigma_nan == 0, (
+        f"sigma starvation: {beta_nonnan_sigma_nan} days where beta is non-NaN "
+        f"but sigma is NaN — _trailing_std should use min_periods={min_obs}, not {window}"
+    )
+    assert sigma_nonnan > 0, "sigma should be non-NaN on at least some days"
