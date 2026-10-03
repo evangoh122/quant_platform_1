@@ -315,6 +315,13 @@ CHANGELOG = {
             "rationale": "`_trailing_std` used `min_periods=window` (60) while beta used `min_obs=ceil(0.8*window)` (48); one gap killed sigma for 60 days. Now sigma uses `min_periods=min_obs` for consistent gap tolerance",
         },
     ],
+    6: [
+        {
+            "fix": "Same-side reductions are never ADV-capped",
+            "files": "`strategies/backtest.py`",
+            "rationale": "Round 6 routed same-side partial reductions (e.g. +0.4 to +0.2) into the capped open leg. Any move toward zero is now free and only moves away from zero are capped; a seeded 500-sequence property test enforces the invariants",
+        },
+    ],
 }
 
 

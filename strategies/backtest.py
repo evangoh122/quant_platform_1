@@ -93,18 +93,22 @@ def cap_weight_changes_by_adv(
         cur = out[i]
         dw = cur - prev
         # Decompose each name's change into a close leg (toward 0, always
-        # free) and an open leg (extension past 0 or away from 0 on the
-        # same side, capped).  This correctly handles sign flips:
-        # the full close to 0 is free; only the new-side opening is capped.
-        #
-        # close_leg: the portion of dw that moves prev toward 0, capped at
-        # reaching 0 (never overshoots).  It is never capped by ADV.
-        # open_leg: the remainder — movement beyond 0 (sign flip) or
-        # further away from 0 on the same side.  This is ADV-capped.
-        same_side = (np.sign(prev) * np.sign(cur)) > 0
-        at_zero = (prev == 0.0)
-        close_raw = np.where(at_zero, 0.0, np.where(same_side, 0.0, -prev))
-        close_leg = close_raw
+        # free) and an open leg (away from 0, capped).  Defined by direction
+        # relative to zero per name:
+        #   close_leg: part that moves prev toward 0, ending at 0 at most.
+        #   open_leg:  part that moves away from 0.  ADV-capped.
+        # Same-side reduction (|cur|<|prev|): close_leg = dw, no open leg.
+        # Same-side increase (|cur|>|prev|): no close, open_leg = dw.
+        # Sign flip or exit: close_leg = -prev (free), open_leg = cur (capped).
+        close_leg = np.where(
+            prev == 0.0,
+            0.0,
+            np.where(
+                (np.sign(prev) * np.sign(cur)) > 0,
+                np.where(np.abs(cur) < np.abs(prev), dw, 0.0),
+                -prev,
+            ),
+        )
         open_leg = dw - close_leg
 
         # Cap only the open leg at cap_frac * ADV / book_capital.
