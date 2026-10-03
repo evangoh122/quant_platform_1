@@ -1,7 +1,7 @@
 # CHECK: ontology update (DeepSeek)
 
 At the owner's request, Codex updated `ontology/` directly (commit "feat(ontology): align with live
-tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update-check4.md` (===VERDICT START/END===,
+tables..."). Read-only. Write `.agents/deepseek/VERDICT-ontology-update-check5.md` (===VERDICT START/END===,
 Status). Your job is FACTUAL CORRECTNESS against the code: the ontology will drive the NL-analytics
 semantic registry and the knowledge graph, so an error here propagates.
 
@@ -56,3 +56,10 @@ Codex fixed:
 
 Re-verify each of your check3 findings, and do a FINAL full pass. If nothing blocking remains, say
 APPROVED. Write `.agents/deepseek/VERDICT-ontology-update-check4.md`.
+
+## Re-check after Codex round 5 (this run)
+Codex's own review found that the KG edge names didn't match the canonical
+`origin/slice/rag-kg:sec_kg/model.py` enums. Round 5 aligns the node and edge names, adds
+`SOURCED_FROM`/`SUPERSEDES` and the filing-level citation semantics, and adds an enum-sync test with
+a snapshot fixture. Verify that the names equal the enums exactly, that the snapshot matches
+model.py, and that the mutation test works. Write `.agents/deepseek/VERDICT-ontology-update-check5.md`.
