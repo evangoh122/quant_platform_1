@@ -168,6 +168,19 @@ def _scale_params(params: CostParams, mult: float) -> CostParams:
     )
 
 
+def _borrow_bps_daily_vec(
+    adv_np: np.ndarray,
+    params: CostParams,
+) -> np.ndarray:
+    """Vectorized daily borrow bps for an array of ADV values."""
+    t0, t1 = params.borrow_bucket_thresholds
+    rates = params.borrow_bps_daily
+    return np.where(
+        adv_np >= t0, rates["liquid"],
+        np.where(adv_np >= t1, rates["medium"], rates["illiquid"]),
+    )
+
+
 def compute_costs(
     weights: pd.DataFrame,
     adv: pd.DataFrame,
@@ -192,44 +205,37 @@ def compute_costs(
     params = _scale_params(params, cost_multiplier)
 
     dw = weights.diff()
-    dw.iloc[0] = weights.iloc[0]  # entering the initial book is a trade
+    dw.iloc[0] = weights.iloc[0]
     traded = dw.abs()
 
-    turnover_cost = pd.Series(0.0, index=weights.index)
-    borrow_cost = pd.Series(0.0, index=weights.index)
+    traded_np = traded.to_numpy(dtype=float)
+    weights_np = weights.to_numpy(dtype=float)
+    adv_np = adv.reindex(index=weights.index, columns=weights.columns).to_numpy(
+        dtype=float)
 
-    for date in weights.index:
-        w = weights.loc[date]
-        tr = traded.loc[date]
-        adv_t = adv.loc[date] if date in adv.index else pd.Series(
-            0.0, index=weights.columns)
+    # Turnover cost: commission + half-spread + slippage × (participation / cap).
+    # Unknown ADV (NaN or 0) → 100 % participation (conservative).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        participation = np.where(adv_np > 0,
+                                 traded_np * book_capital / adv_np, 1.0)
+    bps = (
+        params.commission_bps
+        + 0.5 * params.spread_bps
+        + params.slippage_bps * (participation / params.adv_participation_cap)
+    )
+    turnover_cost_np = (traded_np * book_capital * bps / 1e4).sum(axis=1) / book_capital
 
-        cost_dollars = 0.0
-        for s in w.index:
-            notional = abs(tr[s]) * book_capital
-            if notional <= 0:
-                continue
-            a = float(adv_t[s]) if pd.notna(adv_t[s]) else 0.0
-            # Charge on the ACTUAL executed notional, never re-capped.
-            # The ADV cap in cap_weight_changes_by_adv already decided what
-            # executes; costs must reflect the true trade size.
-            participation = notional / a if a > 0 else 1.0
-            bps = (
-                params.commission_bps
-                + 0.5 * params.spread_bps
-                + params.slippage_bps * (participation / params.adv_participation_cap)
-            )
-            cost_dollars += notional * bps / 1e4
-        turnover_cost.loc[date] = cost_dollars / book_capital
+    # Borrow cost: only on short positions, bucketed by ADV.
+    is_short = weights_np < 0
+    borrow_rates = _borrow_bps_daily_vec(np.nan_to_num(adv_np, nan=0.0), params)
+    borrow_cost_np = np.where(
+        is_short,
+        np.abs(weights_np) * book_capital * borrow_rates / 1e4,
+        0.0,
+    ).sum(axis=1) / book_capital
 
-        borrow_dollars = 0.0
-        for s in w.index:
-            if w[s] >= 0:
-                continue
-            a = float(adv_t[s]) if pd.notna(adv_t[s]) else 0.0
-            borrow_dollars += abs(w[s]) * book_capital * borrow_bps_daily(a, params) / 1e4
-        borrow_cost.loc[date] = borrow_dollars / book_capital
-
+    turnover_cost = pd.Series(turnover_cost_np, index=weights.index)
+    borrow_cost = pd.Series(borrow_cost_np, index=weights.index)
     total = turnover_cost + borrow_cost
     return {"turnover_cost": turnover_cost, "borrow_cost": borrow_cost,
             "total": total}
