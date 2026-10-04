@@ -78,7 +78,14 @@ class TestGoldCoverageSql:
         assert "sec_cik_mapping_log" in self.sql
         # The latest_mapping CTE should NOT reference bronze_sec_filings_v2
         # for CIK (it's ok for filing_agg to reference bronze for n_filings)
-        mapping_section = self.sql[self.sql.index("latest_mapping"):]
+        # Check only the latest_mapping CTE block, not everything after it
+        idx = self.sql.index("latest_mapping")
+        # Find the next CTE or SELECT at the same indent level
+        rest = self.sql[idx:]
+        # Extract just the latest_mapping CTE (up to the next top-level keyword)
+        import re
+        m = re.search(r'\n(?:SELECT|universe_resolved|filing_agg|chunk_agg)\b', rest[20:])
+        mapping_section = rest[:20 + m.start()] if m else rest
         assert "bronze_sec_filings_v2" not in mapping_section, (
             "latest_mapping CTE must use sec_cik_mapping_log, not bronze_sec_filings_v2"
         )
@@ -189,12 +196,12 @@ class TestGoldCoverageDuckDB:
         Fixtures:
         - AAPL: 2 mapped CIK entries (newer wins → 0000320193), 2 filings, 3 chunks
         - MSFT: 1 mapped CIK entry (0000789019), 0 filings, 0 chunks
-        - GOOG: mapped CIK, 1 filing, 2 chunks — but NOT in universe → excluded
+        - GOOG: mapped CIK, 1 filing, 2 chunks — included via silver UNION
         """
         sql = _load_coverage_sql()
         rows = _run_coverage_sql(sql)
 
-        assert len(rows) == 2, f"Expected 2 rows (AAPL, MSFT), got {len(rows)}: {rows}"
+        assert len(rows) == 3, f"Expected 3 rows (AAPL, GOOG, MSFT), got {len(rows)}: {rows}"
 
         aapl = rows[0]
         assert aapl["ticker"] == "AAPL"
@@ -205,7 +212,12 @@ class TestGoldCoverageDuckDB:
         assert aapl["last_filed"] is not None
         assert aapl["last_ingest_ts"] is not None
 
-        msft = rows[1]
+        goog = rows[1]
+        assert goog["ticker"] == "GOOG"
+        assert goog["n_filings"] == 1
+        assert goog["n_chunks"] == 2
+
+        msft = rows[2]
         assert msft["ticker"] == "MSFT"
         assert msft["cik"] == "0000789019"
         assert msft["n_filings"] == 0
@@ -214,12 +226,12 @@ class TestGoldCoverageDuckDB:
         assert msft["last_filed"] is None
         assert msft["last_ingest_ts"] is None
 
-    def test_out_of_universe_excluded(self):
-        """GOOG (not in gold_tradable_universe) must not appear in output."""
+    def test_silver_only_ticker_included(self):
+        """GOOG (not in gold_tradable_universe but has silver chunks) must appear."""
         sql = _load_coverage_sql()
         rows = _run_coverage_sql(sql)
         tickers = [r["ticker"] for r in rows]
-        assert "GOOG" not in tickers, "Out-of-universe ticker GOOG must be excluded"
+        assert "GOOG" in tickers, "GOOG (silver-only) must be included via UNION"
 
     def test_row_number_picks_latest_mapped(self):
         """Mutation: if ROW_NUMBER ORDER BY mapped_ts is flipped to ASC,

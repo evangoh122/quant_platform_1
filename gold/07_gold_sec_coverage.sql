@@ -23,27 +23,39 @@ WITH universe AS (
   FROM {catalog}.{schema}.silver_sec_sections
   WHERE ticker IS NOT NULL
 ),
--- Canonical ticker per CIK: first alphabetically
-canonical AS (
+latest_mapping AS (
+  -- Latest CIK per ticker (by mapped_ts)
   SELECT
     upper(ticker) AS ticker,
-    cik,
-    first_value(upper(ticker)) OVER (PARTITION BY cik ORDER BY upper(ticker)) AS canonical_ticker
+    cik
   FROM (
-    SELECT upper(ticker) AS ticker, cik
+    SELECT
+      upper(ticker) AS ticker,
+      cik,
+      ROW_NUMBER() OVER (PARTITION BY upper(ticker) ORDER BY mapped_ts DESC) AS rn
     FROM {catalog}.{schema}.sec_cik_mapping_log
-    WHERE cik IS NOT NULL AND status = 'mapped'
-    GROUP BY upper(ticker), cik
+    WHERE cik IS NOT NULL
+      AND status = 'mapped'
   )
+  WHERE rn = 1
+),
+-- Canonical ticker per CIK: first alphabetically among all tickers sharing that CIK
+canonical_per_cik AS (
+  SELECT
+    cik,
+    min(ticker) AS canonical_ticker
+  FROM latest_mapping
+  GROUP BY cik
 ),
 -- Universe tickers resolved to their canonical ticker for data joins
 universe_resolved AS (
   SELECT
     u.ticker,
-    coalesce(c.canonical_ticker, u.ticker) AS canonical_ticker,
-    coalesce(c.cik, '') AS cik
+    coalesce(cpc.canonical_ticker, u.ticker) AS canonical_ticker,
+    coalesce(lm.cik, '') AS cik
   FROM universe u
-  LEFT JOIN canonical c ON u.ticker = c.ticker
+  LEFT JOIN latest_mapping lm ON u.ticker = lm.ticker
+  LEFT JOIN canonical_per_cik cpc ON lm.cik = cpc.cik
 ),
 filing_agg AS (
   SELECT
@@ -65,21 +77,6 @@ chunk_agg AS (
     count(*) AS n_chunks
   FROM {catalog}.{schema}.silver_sec_sections
   GROUP BY upper(ticker)
-),
-latest_mapping AS (
-  SELECT
-    upper(ticker) AS ticker,
-    cik
-  FROM (
-    SELECT
-      upper(ticker) AS ticker,
-      cik,
-      ROW_NUMBER() OVER (PARTITION BY upper(ticker) ORDER BY mapped_ts DESC) AS rn
-    FROM {catalog}.{schema}.sec_cik_mapping_log
-    WHERE cik IS NOT NULL
-      AND status = 'mapped'
-  )
-  WHERE rn = 1
 )
 SELECT
   ur.ticker,
@@ -92,4 +89,3 @@ SELECT
 FROM universe_resolved ur
 LEFT JOIN filing_agg f ON ur.canonical_ticker = upper(f.ticker)
 LEFT JOIN chunk_agg c ON ur.canonical_ticker = upper(c.ticker)
-LEFT JOIN latest_mapping lm ON ur.canonical_ticker = upper(lm.ticker)
