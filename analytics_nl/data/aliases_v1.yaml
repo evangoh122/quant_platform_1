@@ -1,0 +1,54 @@
+# NL1 Deterministic Aliases v1
+# Common company names, sector aliases, and index mappings.
+# YAML comments are NOT parsed as data.
+
+version: "1.0.0"
+
+# Index aliases
+indices:
+  SPY: {canonical_id: SPY, description: "S&P 500 ETF"}
+  QQQ: {canonical_id: QQQ, description: "Nasdaq-100 ETF"}
+  RSP: {canonical_id: RSP, description: "S&P 500 Equal Weight ETF"}
+  "S&P 500": {canonical_id: SPY, description: "S&P 500 ETF"}
+  "NASDAQ 100": {canonical_id: QQQ, description: "Nasdaq-100 ETF"}
+  "NASDAQ-100": {canonical_id: QQQ, description: "Nasdaq-100 ETF"}
+
+# Company name → ticker aliases
+companies:
+  apple: {canonical_id: AAPL, entity_type: ticker}
+  microsoft: {canonical_id: MSFT, entity_type: ticker}
+  amazon: {canonical_id: AMZN, entity_type: ticker}
+  meta: {canonical_id: META, entity_type: ticker}
+  "meta platforms": {canonical_id: META, entity_type: ticker}
+  nvidia: {canonical_id: NVDA, entity_type: ticker}
+  alphabet: {canonical_id: GOOGL, entity_type: ticker}
+  google: {canonical_id: GOOGL, entity_type: ticker}
+  tesla: {canonical_id: TSLA, entity_type: ticker}
+  amd: {canonical_id: AMD, entity_type: ticker}
+  jpmorgan: {canonical_id: JPM, entity_type: ticker}
+  "jp morgan": {canonical_id: JPM, entity_type: ticker}
+  exxon: {canonical_id: XOM, entity_type: ticker}
+  "exxon mobil": {canonical_id: XOM, entity_type: ticker}
+
+# Metric name aliases (canonical metric → accepted synonyms)
+metric_aliases:
+  "put/call": {canonical_metric: put_call_ratio}
+  "put call ratio": {canonical_metric: put_call_ratio}
+  "pcr": {canonical_metric: put_call_ratio}
+  "p/c ratio": {canonical_metric: put_call_ratio}
+
+# Sector aliases
+sectors:
+  technology: {canonical_id: technology, entity_type: sector}
+  tech: {canonical_id: technology, entity_type: sector}
+  financials: {canonical_id: financials, entity_type: sector}
+  finance: {canonical_id: financials, entity_type: sector}
+  energy: {canonical_id: energy, entity_type: sector}
+  healthcare: {canonical_id: healthcare, entity_type: sector}
+  "health care": {canonical_id: healthcare, entity_type: sector}
+  consumer_discretionary: {canonical_id: consumer_discretionary, entity_type: sector}
+  industrials: {canonical_id: industrials, entity_type: sector}
+  communication_services: {canonical_id: communication_services, entity_type: sector}
+  utilities: {canonical_id: utilities, entity_type: sector}
+  materials: {canonical_id: materials, entity_type: sector}
+  real_estate: {canonical_id: real_estate, entity_type: sector}
