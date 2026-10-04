@@ -14,7 +14,7 @@ Databricks Apps reverse proxy expects **one** process bound to
 - **Frontend** — the built React SPA in `frontend/dist/`, served as static files
   by the backend when `frontend/dist/` exists.
 
-`app.yaml` starts `uvicorn api.main:app` bound to `0.0.0.0:${DATABRICKS_APP_PORT:-8000}`.
+`app.yaml` starts `uvicorn api.main:app` bound to `0.0.0.0:8000`.
 
 ## 2. Pre-deploy build
 
@@ -36,7 +36,7 @@ the bundle via `sync.include` in `databricks.yml`.
 1. Workspace → **Compute → Apps → Create app** (or `databricks apps init` /
    `databricks apps deploy` for a CLI/DABs workflow — see §7).
 2. Point the source at this repository directory.
-3. Set the `app.yaml` command to `uvicorn api.main:app --host 0.0.0.0 --port ${DATABRICKS_APP_PORT:-8000}`.
+3. Set the `app.yaml` command to `uvicorn api.main:app --host 0.0.0.0 --port 8000`.
 4. Deploy.
 
 ## 4. Required Unity Catalog permissions
