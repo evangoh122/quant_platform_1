@@ -168,11 +168,11 @@ returns_from_source AS (
         dp.symbol,
         dp.event_date,
         dp.close,
-        dp.information_available_ts,
+        GREATEST(dp.information_available_ts, adj.information_available_ts) AS information_available_ts,
         adj.return_1d
     FROM daily_prices dp
     LEFT JOIN (
-        SELECT symbol, event_date, return_1d,
+        SELECT symbol, event_date, return_1d, information_available_ts,
                ROW_NUMBER() OVER (PARTITION BY symbol, event_date ORDER BY processed_ts DESC) AS rn
         FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
         WHERE information_available_ts <= :as_of
@@ -189,7 +189,12 @@ with_vol AS (
             PARTITION BY symbol
             ORDER BY event_date
             ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
-        ) * SQRT(252) AS realized_vol_20d
+        ) * SQRT(252) AS realized_vol_20d,
+        MAX(information_available_ts) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS realized_vol_20d_info_ts
     FROM returns_from_source
     WHERE return_1d IS NOT NULL  -- exclude data-quality breaks
 ),
@@ -201,6 +206,7 @@ with_drawdown AS (
         information_available_ts,
         return_1d,
         realized_vol_20d,
+        realized_vol_20d_info_ts,
         (close - MAX(close) OVER (
             PARTITION BY symbol
             ORDER BY event_date
@@ -209,7 +215,12 @@ with_drawdown AS (
             PARTITION BY symbol
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS drawdown
+        ) AS drawdown,
+        MAX(information_available_ts) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS drawdown_info_ts
     FROM with_vol
 )
 SELECT
@@ -221,7 +232,11 @@ SELECT
     drawdown,
     (close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1
         AS momentum_20d,
-    information_available_ts
+    GREATEST(
+        information_available_ts,
+        realized_vol_20d_info_ts,
+        drawdown_info_ts
+    ) AS information_available_ts
 FROM with_drawdown;
 ```
 
@@ -260,7 +275,12 @@ with_vol AS (
             PARTITION BY symbol
             ORDER BY event_date
             ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
-        ) * SQRT(252) AS realized_vol_20d
+        ) * SQRT(252) AS realized_vol_20d,
+        MAX(information_available_ts) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS realized_vol_20d_info_ts
     FROM with_returns
 ),
 with_drawdown AS (
@@ -271,6 +291,7 @@ with_drawdown AS (
         information_available_ts,
         return_1d,
         realized_vol_20d,
+        realized_vol_20d_info_ts,
         (close - MAX(close) OVER (
             PARTITION BY symbol
             ORDER BY event_date
@@ -279,7 +300,12 @@ with_drawdown AS (
             PARTITION BY symbol
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS drawdown
+        ) AS drawdown,
+        MAX(information_available_ts) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS drawdown_info_ts
     FROM with_vol
 )
 SELECT
@@ -291,7 +317,11 @@ SELECT
     drawdown,
     (close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1
         AS momentum_20d,
-    information_available_ts
+    GREATEST(
+        information_available_ts,
+        realized_vol_20d_info_ts,
+        drawdown_info_ts
+    ) AS information_available_ts
 FROM with_drawdown;
 ```
 
@@ -341,7 +371,12 @@ entity_cumulative AS (
             PARTITION BY symbol
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        )) - 1 AS cumulative_return
+        )) - 1 AS cumulative_return,
+        MAX(information_available_ts) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS entity_info_ts
     FROM entity_returns
     WHERE return_1d IS NOT NULL
 ),
@@ -353,7 +388,11 @@ benchmark_cumulative AS (
         EXP(SUM(LN(GREATEST(1 + bench_return, 1e-10))) OVER (
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        )) - 1 AS bench_cumulative_return
+        )) - 1 AS bench_cumulative_return,
+        MAX(bench_info_ts) OVER (
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS bench_max_info_ts
     FROM benchmark_returns
     WHERE bench_return IS NOT NULL
 )
@@ -363,7 +402,7 @@ SELECT
     e.return_1d,
     e.cumulative_return - b.bench_cumulative_return AS rel_perf,
     :benchmark AS benchmark,
-    GREATEST(e.information_available_ts, b.bench_info_ts) AS information_available_ts
+    GREATEST(e.entity_info_ts, b.bench_max_info_ts) AS information_available_ts
 FROM entity_cumulative e
 JOIN benchmark_cumulative b ON e.event_date = b.event_date;
 ```

@@ -521,3 +521,94 @@ class TestDDLRelativePerformanceSemantics:
         assert "cumulative_return" in section.lower() or "cumulative" in section.lower(), (
             "Relative performance must use cumulative return"
         )
+
+
+class TestDDLAvailabilityContract:
+    """Every output information_available_ts must be a window MAX / GREATEST over all inputs."""
+
+    def _extract_sql_blocks(self, content: str) -> list[str]:
+        """Extract all SQL blocks from markdown."""
+        blocks = []
+        in_sql = False
+        lines = []
+        for line in content.splitlines():
+            if line.strip() == "```sql":
+                in_sql = True
+                lines = []
+            elif line.strip() == "```" and in_sql:
+                in_sql = False
+                blocks.append("\n".join(lines))
+            elif in_sql:
+                lines.append(line)
+        return blocks
+
+    def _parse_sql_ctes_and_final_select(self, sql: str):
+        """Parse SQL into (ctes, final_select) by tracking parenthesis depth.
+
+        ctes: list of (name, body) tuples
+        final_select: the SQL after the last CTE closes
+        """
+        sql_upper = sql.upper()
+        cte_pattern = re.compile(r"(\w+)\s+AS\s*\(")
+        pos = 0
+        ctes = []
+        while pos < len(sql_upper):
+            m = cte_pattern.search(sql_upper, pos)
+            if not m:
+                break
+            name = m.group(1)
+            depth = 0
+            i = m.end() - 1  # points at the '('
+            while i < len(sql_upper):
+                ch = sql_upper[i]
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            body = sql_upper[m.end():i]
+            ctes.append((name, body))
+            pos = i + 1
+            # skip comma and whitespace between CTEs
+            while pos < len(sql_upper) and sql_upper[pos] in ' \t\n,':
+                pos += 1
+        final_select = sql_upper[pos:] if pos < len(sql_upper) else ""
+        return ctes, final_select
+
+    def test_output_availability_is_window_max(self, ddl_content):
+        """Every output information_available_ts must be a window MAX / GREATEST over all inputs."""
+        blocks = self._extract_sql_blocks(ddl_content)
+        for i, sql in enumerate(blocks):
+            ctes, final_select = self._parse_sql_ctes_and_final_select(sql)
+            
+            # Check if final SELECT has information_available_ts
+            if "INFORMATION_AVAILABLE_TS" not in final_select:
+                continue
+            
+            # Check if it uses GREATEST or MAX(...) OVER
+            has_greatest = "GREATEST" in final_select
+            has_max_over = re.search(r"MAX\s*\([^)]+\)\s*OVER", final_select) is not None
+            
+            # For windowed metrics, must use GREATEST or MAX(...) OVER
+            if has_greatest or has_max_over:
+                # Check that GREATEST includes all contributing availability timestamps
+                if has_greatest:
+                    # Find the GREATEST(...) expression
+                    greatest_match = re.search(r"GREATEST\s*\(([^)]+)\)", final_select)
+                    if greatest_match:
+                        args = greatest_match.group(1)
+                        # Must include at least two availability timestamps
+                        # (e.g., entity_info_ts, bench_max_info_ts or information_available_ts, realized_vol_20d_info_ts)
+                        info_ts_count = len(re.findall(r"(?:INFORMATION_AVAILABLE_TS|_INFO_TS|_AVAILABILITY)", args))
+                        assert info_ts_count >= 2, (
+                            f"SQL block {i + 1}: GREATEST must combine at least 2 availability timestamps, "
+                            f"found {info_ts_count} in: {args[:200]}"
+                        )
+                elif has_max_over:
+                    # Check that MAX(...) OVER is applied to information_available_ts
+                    max_over_match = re.search(r"MAX\s*\(\s*INFORMATION_AVAILABLE_TS\s*\)\s*OVER", final_select)
+                    assert max_over_match, (
+                        f"SQL block {i + 1}: MAX(...) OVER must be applied to information_available_ts"
+                    )
