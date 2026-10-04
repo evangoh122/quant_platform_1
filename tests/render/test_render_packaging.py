@@ -109,6 +109,7 @@ def _parse_render_yaml(text: str) -> dict:
 # Test 1: requirements-render.txt is exact and minimal
 # ---------------------------------------------------------------------------
 @pytest.mark.render_install
+@pytest.mark.timeout(900)  # clean-venv install exceeds the 30 s global pytest-timeout
 def test_render_requirements_are_exact_and_minimal(tmp_path):
     """requirements-render.txt must pin exactly 4 packages with == and exclude
     all forbidden distributions.  After installing into a clean venv,
