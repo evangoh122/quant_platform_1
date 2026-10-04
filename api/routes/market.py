@@ -1,11 +1,14 @@
 """api/routes/market.py — GET /api/market/{symbol}.
 
 OHLCV features (``gold_ohlcv_features``) and options features
-(``gold_options_features``) for a symbol. Reads go through the existing
-``agent.tools_retrieval`` contracts (which normalize the symbol and enforce
-PIT/freshness), never through string-built SQL.
+(``gold_options_features``) for a symbol.  Bounded by default: last 252 trading
+days, explicit row LIMIT, single options query.  Reads go through the existing
+``agent.tools_retrieval`` contracts (which normalize the symbol), never through
+string-built SQL.
 """
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
@@ -21,12 +24,16 @@ from api.schemas import (
 
 router = APIRouter()
 
+_DEFAULT_DAYS = 252
+_MAX_DAYS = 1000
+_MAX_ROWS = 5000
+
 
 @router.get("/{symbol}", response_model=MarketSnapshot)
 def market_features(
     symbol: str = Path(..., min_length=1, max_length=10),
-    start_time: str = Query(default="1970-01-01T00:00:00Z"),
-    end_time: str = Query(default="2999-01-01T00:00:00Z"),
+    days: int = Query(default=_DEFAULT_DAYS, ge=1, le=_MAX_DAYS),
+    limit: int = Query(default=_MAX_ROWS, ge=1, le=_MAX_ROWS),
     _user: AppUser = Depends(get_current_user),
 ) -> MarketSnapshot:
     from agent.guardrails import normalize_symbol
@@ -36,15 +43,21 @@ def market_features(
     except ValueError:
         raise HTTPException(status_code=422, detail="invalid symbol") from None
 
+    # Bounded date window: last N trading days
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days)
+    start_time = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_time = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     def _read_ohlcv() -> list[dict]:
         from agent.tools_retrieval import get_market_features
 
-        return get_market_features(symbol, start_time, end_time)
+        return get_market_features(symbol, start_time, end_time, limit=limit)
 
     def _read_options() -> list[dict]:
         from agent.tools_retrieval import get_options_features
 
-        return get_options_features(symbol)
+        return get_options_features(symbol, limit=limit)
 
     ohlcv_rows, ohlcv_state, ohlcv_detail = read_delta(_read_ohlcv)
     opt_rows, opt_state, opt_detail = read_delta(_read_options)

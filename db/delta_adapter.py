@@ -87,10 +87,14 @@ def latest_signals(symbol: Optional[str] = None, limit: int = 20) -> DataFrame:
     if symbol: df = df.where(F.col("symbol") == symbol)
     return df.orderBy(F.col("prediction_ts").desc()).limit(limit)
 
-def market_features(symbol: str, start_ts: str, end_ts: str) -> DataFrame:
+def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 5000) -> DataFrame:
     spark = _spark()
+    ohlcv_cols = ["symbol", "feature_ts", "open", "high", "low", "close", "volume", "vwap"]
+    opts_cols = ["symbol", "feature_ts", "expiry", "atm_iv", "skew", "put_call_ratio", "volume_anomaly"]
     ohlcv = spark.table(_fqn("gold_ohlcv_features")).where(
-        (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts)))
+        (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts))
+    ).select(*ohlcv_cols)
     opts = spark.table(_fqn("gold_options_features")).where(
-        (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts)))
-    return ohlcv.join(opts, ["symbol", "feature_ts"], "left")
+        (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts))
+    ).select(*opts_cols)
+    return ohlcv.join(opts, ["symbol", "feature_ts"], "left").limit(limit)

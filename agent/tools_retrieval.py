@@ -46,22 +46,28 @@ def get_latest_signal(symbol: str) -> dict:
     return rows[0].asDict() if rows else {}
 
 
-def get_market_features(symbol: str, start_time: str, end_time: str) -> list:
+def get_market_features(symbol: str, start_time: str, end_time: str, *, limit: int = 5000) -> list:
     symbol = normalize_symbol(symbol)
     from db.delta_adapter import market_features
 
-    df = market_features(symbol, start_time, end_time)
+    df = market_features(symbol, start_time, end_time, limit=limit)
     return [r.asDict() for r in df.collect()]
 
 
-def get_options_features(symbol: str, expiry: Optional[str] = None) -> list:
+def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: int = 5000) -> list:
     symbol = normalize_symbol(symbol)
     from pyspark.sql import functions as F
 
-    df = _spark().table(_fqn("gold_options_features")).where(F.col("symbol") == symbol)
+    cols = ["symbol", "feature_ts", "expiry", "atm_iv", "skew", "put_call_ratio", "volume_anomaly"]
+    df = (
+        _spark()
+        .table(_fqn("gold_options_features"))
+        .where(F.col("symbol") == symbol)
+        .select(*cols)
+    )
     if expiry:
         df = df.where(F.col("expiry") == expiry)
-    return [r.asDict() for r in df.collect()]
+    return [r.asDict() for r in df.limit(limit).collect()]
 
 
 def search_sec_filings(
