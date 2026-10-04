@@ -488,6 +488,16 @@
   information_available_ts is ex-date 09:30 America/New_York converted to naive UTC.
   A same-key correction with different split_ratio is a conflict and is not silently applied.
 
+  Sources:
+    massive  — Massive REST API (default).  Key via Databricks secret scope
+               evangoh_capstone/massive_s3_secret_key or env var MASSIVE_API_KEY.
+    yfinance — Yahoo Finance via yfinance library.
+
+  Silver precedence: when both sources report a split for the same (symbol, ex_date),
+  massive takes priority.  The resolved-splits CTE picks one row per key using this
+  precedence.  Source disagreements are logged to data_quality_breaks with
+  classification 'SPLIT_SOURCE_MISMATCH'.
+
 ### silver_ohlcv_day_adjusted  (24 cols)
   symbol                             string NOT NULL
   event_date                         date NOT NULL
@@ -545,10 +555,14 @@
 
   Natural key: (symbol, event_date).
   Classification values:
-    SPLIT_EXPLAINED       — same-date split within 3% tolerance; not masked
-    UNEXPLAINED_PENDING   — no matching split or residual > 3%; masked until reviewed
-    CONFIRMED_DATA_BREAK  — human-verified data error (e.g. META ticker reuse); masked
-    ALLOW_REAL_MOVE       — human-verified genuine move; not masked, return restored
+    SPLIT_EXPLAINED        — same-date split within 3% tolerance; not masked
+    UNEXPLAINED_PENDING    — no matching split or residual > 3%; masked until reviewed
+    CONFIRMED_DATA_BREAK   — human-verified data error (e.g. META ticker reuse); masked
+    ALLOW_REAL_MOVE        — human-verified genuine move; not masked, return restored
+    SPLIT_SOURCE_MISMATCH  — same (symbol, ex_date) in both massive and yfinance with
+                             |ratio_m/ratio_y - 1| > 0.001, OR a split present in one
+                             source with no counterpart in the other within ±3 calendar
+                             days; not masked (informational)
   Manual review decisions (reviewed_by IS NOT NULL) are preserved on rerun.
   is_masked = TRUE for UNEXPLAINED_PENDING and CONFIRMED_DATA_BREAK.
   Masking sets return_1d = NULL (never 0) in silver_ohlcv_day_adjusted.

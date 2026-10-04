@@ -17,6 +17,7 @@ import pytest
 from etl.corporate_actions import (
     CorporateActionSplit,
     CorporateActionsSource,
+    MassiveCorporateActionsSource,
     YFinanceCorporateActionsSource,
     information_available_ts_for,
 )
@@ -461,6 +462,7 @@ class TestImportSafety:
         mod = importlib.import_module("etl.corporate_actions")
         assert hasattr(mod, "CorporateActionSplit")
         assert hasattr(mod, "YFinanceCorporateActionsSource")
+        assert hasattr(mod, "MassiveCorporateActionsSource")
         assert hasattr(mod, "information_available_ts_for")
 
     def test_notebook_import_no_side_effects(self):
@@ -494,6 +496,43 @@ class TestImportSafety:
         assert '--delay-seconds' in text, "Notebook must accept --delay-seconds flag"
         assert '--symbol-start' in text, "Notebook must accept --symbol-start flag"
         assert '--symbol-end' in text, "Notebook must accept --symbol-end flag"
+
+    def test_notebook_valid_sources_includes_massive(self):
+        """The notebook must include massive in VALID_SOURCES."""
+        import importlib.util
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        assert "massive" in mod.VALID_SOURCES
+        assert "yfinance" in mod.VALID_SOURCES
+
+    def test_notebook_default_source_is_massive(self):
+        """The notebook default source must be 'massive'."""
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        assert 'source = "massive"' in text
+
+    def test_notebook_source_both_accepted(self):
+        """The notebook must accept 'both' as a source value."""
+        import importlib.util
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # _valid_source should accept "both"
+        assert mod._valid_source("both") == "both"
+
+    def test_notebook_has_secret_scope_reference(self):
+        """The notebook must reference the Databricks secret scope for the API key."""
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        assert "evangoh_capstone" in text
+        assert "massive_s3_secret_key" in text
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +594,16 @@ class TestArgparseCLIFlags:
         args = self._parse_args(["--symbol-start", "AAPL", "--symbol-end", "MSFT"])
         assert args.symbol_start == "AAPL"
         assert args.symbol_end == "MSFT"
+
+    def test_source_massive(self):
+        """--source massive is parsed."""
+        args = self._parse_args(["--source", "massive"])
+        assert args.source == "massive"
+
+    def test_source_both(self):
+        """--source both is parsed."""
+        args = self._parse_args(["--source", "both"])
+        assert args.source == "both"
 
     def test_unknown_flag_does_not_raise(self):
         """Unknown flags cause SystemExit (strict parse_args)."""
@@ -757,3 +806,309 @@ class TestNotebookMode:
         for line in code_lines:
             assert "type: ignore" in line or "globals" in line, \
                 f"Bare 'import dbutils' found: {line}"
+
+
+# ---------------------------------------------------------------------------
+# 10. MassiveCorporateActionsSource — normalization
+# ---------------------------------------------------------------------------
+
+class _FakeResponse:
+    """Minimal requests.Response-like object for testing."""
+
+    def __init__(self, json_data, status_code=200):
+        self._json = json_data
+        self.status_code = status_code
+
+    def json(self):
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeSession:
+    """Injectable HTTP session that returns fixture data."""
+
+    def __init__(self, responses=None):
+        if responses is None:
+            responses = []
+        self._responses = list(responses)
+        self._calls = []
+
+    def get(self, url, timeout=None):
+        self._calls.append(url)
+        if self._responses:
+            return self._responses.pop(0)
+        return _FakeResponse({"status": "OK", "results": []})
+
+
+class TestMassiveNormalization:
+
+    def _make_source(self, session, clock=None, api_key="test-key-123"):
+        return MassiveCorporateActionsSource(
+            api_key=api_key,
+            session=session,
+            clock=clock or _fixed_clock(),
+            sleeper=_NoOpSleeper(),
+            delay_seconds=0.0,
+            max_retries=0,
+        )
+
+    def _load_fixture(self, name):
+        import json
+        from pathlib import Path
+        fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "massive" / name
+        return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    def test_amzn_20to1(self):
+        data = self._load_fixture("amzn_single_page.json")
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("AMZN")
+        assert len(results) == 1
+        assert results[0].split_ratio == 20.0
+        assert results[0].ex_date == dt.date(2022, 6, 6)
+        assert results[0].symbol == "AMZN"
+        assert results[0].source == "massive"
+
+    def test_sqqq_reverse_5to1(self):
+        data = self._load_fixture("sqqq_reverse.json")
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("SQQQ")
+        assert len(results) == 1
+        assert results[0].split_ratio == pytest.approx(0.2)  # 1/5
+        assert results[0].ex_date == dt.date(2025, 11, 20)
+
+    def test_tsla_two_splits(self):
+        data = self._load_fixture("tsla_multi.json")
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("TSLA")
+        assert len(results) == 2
+        ratios = {r.ex_date: r.split_ratio for r in results}
+        assert ratios[dt.date(2022, 8, 25)] == 3.0
+        assert ratios[dt.date(2020, 8, 31)] == 5.0
+
+    def test_pagination_two_pages(self):
+        page1 = self._load_fixture("pagination_page1.json")
+        page2 = self._load_fixture("pagination_page2.json")
+        session = _FakeSession([_FakeResponse(page1), _FakeResponse(page2)])
+        src = self._make_source(session)
+        results = src.fetch_splits("NVDA")
+        assert len(results) == 2
+        ratios = {r.ex_date: r.split_ratio for r in results}
+        assert ratios[dt.date(2024, 6, 10)] == 10.0
+        assert ratios[dt.date(2021, 7, 20)] == 4.0
+        # Verify apiKey was appended to next_url
+        assert len(session._calls) == 2
+        assert "apiKey=test-key-123" in session._calls[1]
+
+    def test_filters_exact_ticker(self):
+        """Results with wrong ticker are silently dropped."""
+        data = {
+            "status": "OK",
+            "results": [
+                {"execution_date": "2022-06-06", "split_from": 1, "split_to": 20, "ticker": "AMZN"},
+                {"execution_date": "2022-06-06", "split_from": 1, "split_to": 3, "ticker": "OTHER"},
+            ]
+        }
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("AMZN")
+        assert len(results) == 1
+        assert results[0].split_ratio == 20.0
+
+    def test_empty_results(self):
+        data = {"status": "OK", "results": []}
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("META")
+        assert results == []
+
+    def test_invalid_ratio_skipped(self):
+        data = {
+            "status": "OK",
+            "results": [
+                {"execution_date": "2022-06-06", "split_from": 0, "split_to": 20, "ticker": "X"},
+                {"execution_date": "2022-06-07", "split_from": 1, "split_to": 1, "ticker": "X"},
+                {"execution_date": "2022-06-08", "split_from": 1, "split_to": 2, "ticker": "X"},
+            ]
+        }
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("X")
+        # split_from=0 and ratio=1.0 are skipped; only 2:1 survives
+        assert len(results) == 1
+        assert results[0].split_ratio == 2.0
+
+    def test_fetched_ts_captured(self):
+        data = self._load_fixture("amzn_single_page.json")
+        session = _FakeSession([_FakeResponse(data)])
+        clock = _fixed_clock(2025, 6, 15, 10, 30, 0)
+        src = self._make_source(session, clock=clock)
+        results = src.fetch_splits("AMZN")
+        assert results[0].fetched_ts == dt.datetime(2025, 6, 15, 10, 30, 0)
+
+    def test_information_available_ts_is_ex_date_0930_et(self):
+        data = self._load_fixture("amzn_single_page.json")
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("AMZN")
+        assert results[0].information_available_ts == dt.datetime(2022, 6, 6, 13, 30, 0)
+
+    def test_source_is_massive(self):
+        data = self._load_fixture("amzn_single_page.json")
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("AMZN")
+        assert results[0].source == "massive"
+
+    def test_symbol_uppercased(self):
+        data = self._load_fixture("amzn_single_page.json")
+        session = _FakeSession([_FakeResponse(data)])
+        src = self._make_source(session)
+        results = src.fetch_splits("amzn")
+        assert results[0].symbol == "AMZN"
+
+
+# ---------------------------------------------------------------------------
+# 11. MassiveCorporateActionsSource — retry / error handling
+# ---------------------------------------------------------------------------
+
+class TestMassiveRetryBehavior:
+
+    def _make_source(self, session, max_retries=3, api_key="test-key"):
+        return MassiveCorporateActionsSource(
+            api_key=api_key,
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+            delay_seconds=0.0,
+            max_retries=max_retries,
+        )
+
+    def test_429_retries(self):
+        data = {"status": "OK", "results": [
+            {"execution_date": "2022-06-06", "split_from": 1, "split_to": 2, "ticker": "X"}
+        ]}
+        session = _FakeSession([
+            _FakeResponse({}, status_code=429),
+            _FakeResponse(data, status_code=200),
+        ])
+        src = self._make_source(session, max_retries=1)
+        results = src.fetch_splits("X")
+        assert len(results) == 1
+        assert len(session._calls) == 2
+
+    def test_500_retries(self):
+        data = {"status": "OK", "results": [
+            {"execution_date": "2022-06-06", "split_from": 1, "split_to": 2, "ticker": "X"}
+        ]}
+        session = _FakeSession([
+            _FakeResponse({}, status_code=500),
+            _FakeResponse(data, status_code=200),
+        ])
+        src = self._make_source(session, max_retries=1)
+        results = src.fetch_splits("X")
+        assert len(results) == 1
+
+    def test_401_raises_permission_error_no_key_in_message(self):
+        session = _FakeSession([_FakeResponse({}, status_code=401)])
+        src = self._make_source(session, api_key="super-secret-key")
+        with pytest.raises(PermissionError, match="HTTP 401") as exc_info:
+            src.fetch_splits("X")
+        assert "super-secret-key" not in str(exc_info.value)
+
+    def test_403_raises_permission_error_no_key_in_message(self):
+        session = _FakeSession([_FakeResponse({}, status_code=403)])
+        src = self._make_source(session, api_key="super-secret-key")
+        with pytest.raises(PermissionError, match="HTTP 403") as exc_info:
+            src.fetch_splits("X")
+        assert "super-secret-key" not in str(exc_info.value)
+
+    def test_max_retries_exhausted_raises(self):
+        session = _FakeSession([
+            _FakeResponse({}, status_code=429),
+            _FakeResponse({}, status_code=429),
+            _FakeResponse({}, status_code=429),
+        ])
+        src = self._make_source(session, max_retries=2)
+        with pytest.raises(RuntimeError, match="HTTP 429"):
+            src.fetch_splits("X")
+
+
+# ---------------------------------------------------------------------------
+# 12. MassiveCorporateActionsSource — key redaction
+# ---------------------------------------------------------------------------
+
+class TestMassiveKeyRedaction:
+
+    def test_redact_api_key_in_url(self):
+        from etl.corporate_actions import _redact_api_key
+        url = "https://api.massive.com/v3/reference/splits?ticker=AMZN&limit=1000&apiKey=super-secret"
+        redacted = _redact_api_key(url)
+        assert "super-secret" not in redacted
+        assert "apiKey=***REDACTED***" in redacted
+
+    def test_redact_preserves_other_params(self):
+        from etl.corporate_actions import _redact_api_key
+        url = "https://api.massive.com/v3/reference/splits?ticker=AMZN&limit=1000&apiKey=abc123&cursor=xyz"
+        redacted = _redact_api_key(url)
+        assert "ticker=AMZN" in redacted
+        assert "limit=1000" in redacted
+        assert "cursor=xyz" in redacted
+        assert "abc123" not in redacted
+
+    def test_no_api_key_in_url_unchanged(self):
+        from etl.corporate_actions import _redact_api_key
+        url = "https://api.massive.com/v3/reference/splits?ticker=AMZN"
+        redacted = _redact_api_key(url)
+        assert redacted == url
+
+
+# ---------------------------------------------------------------------------
+# 13. MassiveCorporateActionsSource — append_api_key
+# ---------------------------------------------------------------------------
+
+class TestMassiveAppendApiKey:
+
+    def test_appends_api_key_to_next_url(self):
+        session = _FakeSession([])
+        src = MassiveCorporateActionsSource(
+            api_key="my-key",
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+        )
+        next_url = "https://api.massive.com/v3/reference/splits?ticker=NVDA&limit=1000&cursor=abc123"
+        result = src._append_api_key(next_url)
+        assert "apiKey=my-key" in result
+        assert "cursor=abc123" in result
+
+
+# ---------------------------------------------------------------------------
+# 14. MassiveCorporateActionsSource — requires API key
+# ---------------------------------------------------------------------------
+
+class TestMassiveRequiresKey:
+
+    def test_no_key_raises(self):
+        import os
+        with pytest.raises(ValueError, match="Massive API key required"):
+            MassiveCorporateActionsSource(
+                api_key="",
+                session=_FakeSession(),
+            )
+
+    def test_protocol_compliance(self):
+        session = _FakeSession([])
+        src = MassiveCorporateActionsSource(
+            api_key="test",
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+        )
+        assert hasattr(src, "fetch_splits")
+        assert callable(src.fetch_splits)

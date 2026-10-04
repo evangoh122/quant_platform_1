@@ -17,6 +17,12 @@
 -- Break detection: a candidate is a consecutive observed bar pair with
 -- abs(close/prev_close - 1) >= 0.40.  A candidate is explained by a
 -- same-date split only if abs((close/prev_close)*split_ratio - 1) <= 0.03.
+--
+-- Source precedence: when both massive and yfinance report a split for the
+-- same (symbol, ex_date), massive takes priority.  The resolved-splits CTE
+-- picks one row per (symbol, ex_date) using this precedence.  Disagreements
+-- between sources are logged to data_quality_breaks with reason
+-- 'split_source_mismatch'.
 
 -- ============================================================
 -- 1. Create data_quality_breaks table if not exists
@@ -120,9 +126,120 @@ UNION SELECT 'QQQ';
 
 
 -- ============================================================
+-- 4b. Resolved splits: one row per (symbol, ex_date)
+--     Precedence: massive > yfinance.
+--     Prevents double-applying when both sources exist.
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _resolved_splits AS
+SELECT
+    symbol,
+    ex_date,
+    split_ratio,
+    source
+FROM (
+    SELECT
+        symbol,
+        ex_date,
+        split_ratio,
+        source,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol, ex_date
+            ORDER BY
+                CASE source
+                    WHEN 'massive'  THEN 1
+                    WHEN 'yfinance' THEN 2
+                    ELSE 3
+                END,
+                fetched_ts DESC
+        ) AS rn
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+) sub
+WHERE rn = 1;
+
+
+-- ============================================================
+-- 4c. Source mismatch detection
+--     Disagreements between massive and yfinance for the same
+--     (symbol, ex_date): |ratio_m/ratio_y - 1| > 0.001,
+--     OR a split in one source with no counterpart in the other
+--     within ±3 calendar days.
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _split_source_mismatches AS
+-- Case 1: same (symbol, ex_date) in both sources with divergent ratios
+SELECT
+    m.symbol,
+    m.ex_date AS event_date,
+    m.split_ratio AS massive_ratio,
+    y.split_ratio AS yfinance_ratio,
+    ABS(m.split_ratio / NULLIF(y.split_ratio, 0) - 1.0) AS ratio_deviation,
+    'split_source_mismatch' AS reason
+FROM (
+    SELECT symbol, ex_date, split_ratio
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    WHERE source = 'massive'
+) m
+JOIN (
+    SELECT symbol, ex_date, split_ratio
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    WHERE source = 'yfinance'
+) y
+    ON m.symbol = y.symbol AND m.ex_date = y.ex_date
+WHERE ABS(m.split_ratio / NULLIF(y.split_ratio, 0) - 1.0) > 0.001
+
+UNION ALL
+
+-- Case 2: split in massive with no yfinance within ±3 days
+SELECT
+    m.symbol,
+    m.ex_date AS event_date,
+    m.split_ratio AS massive_ratio,
+    NULL AS yfinance_ratio,
+    NULL AS ratio_deviation,
+    'split_source_mismatch' AS reason
+FROM (
+    SELECT symbol, ex_date, split_ratio
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    WHERE source = 'massive'
+) m
+LEFT JOIN (
+    SELECT symbol, ex_date
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    WHERE source = 'yfinance'
+) y
+    ON  m.symbol = y.symbol
+    AND y.ex_date BETWEEN m.ex_date - INTERVAL 3 DAYS AND m.ex_date + INTERVAL 3 DAYS
+WHERE y.symbol IS NULL
+
+UNION ALL
+
+-- Case 3: split in yfinance with no massive within ±3 days
+SELECT
+    y.symbol,
+    y.ex_date AS event_date,
+    NULL AS massive_ratio,
+    y.split_ratio AS yfinance_ratio,
+    NULL AS ratio_deviation,
+    'split_source_mismatch' AS reason
+FROM (
+    SELECT symbol, ex_date, split_ratio
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    WHERE source = 'yfinance'
+) y
+LEFT JOIN (
+    SELECT symbol, ex_date
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    WHERE source = 'massive'
+) m
+    ON  y.symbol = m.symbol
+    AND m.ex_date BETWEEN y.ex_date - INTERVAL 3 DAYS AND y.ex_date + INTERVAL 3 DAYS
+WHERE m.symbol IS NULL;
+
+
+-- ============================================================
 -- 5. Cumulative split factors per (symbol, event_date)
 --    cumulative_split_ratio(d) = PRODUCT(split_ratio for splits
 --    where ex_date > d).  Uses log-sum-exp for numerical stability.
+--    Uses _resolved_splits (one row per symbol/ex_date, massive priority).
 -- ============================================================
 CREATE OR REPLACE TEMP VIEW _split_factors AS
 SELECT
@@ -137,7 +254,7 @@ FROM (
     FROM _deduped_daily
     WHERE symbol IN (SELECT symbol FROM _universe)
 ) d
-LEFT JOIN bootcamp_students.evangoh_capstone.bronze_corporate_actions s
+LEFT JOIN _resolved_splits s
     ON  s.symbol = d.symbol
     AND s.ex_date > d.event_date   -- strictly greater: ex-date bar is already on new basis
 GROUP BY d.symbol, d.event_date;
@@ -194,6 +311,7 @@ LEFT JOIN _split_factors sf
 
 -- ============================================================
 -- 7. Break candidates: abs(raw_gross_return - 1) >= 0.40
+--    Uses _resolved_splits for same-day split detection.
 -- ============================================================
 CREATE OR REPLACE TEMP VIEW _break_candidates AS
 SELECT
@@ -216,7 +334,7 @@ LEFT JOIN (
         symbol,
         ex_date,
         EXP(SUM(LN(split_ratio))) AS day_split_ratio
-    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    FROM _resolved_splits
     GROUP BY symbol, ex_date
 ) day_splits
     ON  day_splits.symbol = a.symbol
@@ -259,9 +377,11 @@ FROM _break_candidates bc;
 
 -- ============================================================
 -- 9. Merge data_quality_breaks (preserve reviewed decisions)
+--    Includes both break candidates and source mismatches.
 -- ============================================================
 MERGE INTO bootcamp_students.evangoh_capstone.data_quality_breaks AS tgt
 USING (
+    -- Break candidates from adjustment logic
     SELECT
         cb.symbol,
         cb.event_date,
@@ -278,6 +398,27 @@ USING (
         current_timestamp()    AS detected_ts,
         current_timestamp()    AS processed_ts
     FROM _classified_breaks cb
+
+    UNION ALL
+
+    -- Source mismatches (split present in both sources with divergent ratios,
+    -- or present in one source with no counterpart in the other within ±3 days)
+    SELECT
+        sm.symbol,
+        sm.event_date,
+        NULL                   AS previous_event_date,
+        NULL                   AS previous_close,
+        NULL                   AS close,
+        NULL                   AS raw_overnight_return,
+        COALESCE(sm.massive_ratio, sm.yfinance_ratio) AS matched_split_ratio,
+        NULL                   AS post_split_gross_return,
+        sm.ratio_deviation     AS split_error,
+        'SPLIT_SOURCE_MISMATCH' AS classification,
+        sm.reason,
+        FALSE                  AS is_masked,
+        current_timestamp()    AS detected_ts,
+        current_timestamp()    AS processed_ts
+    FROM _split_source_mismatches sm
 ) AS src
 ON tgt.symbol = src.symbol AND tgt.event_date = src.event_date
 -- Only update UNREVIEWED rows; preserve manual review decisions

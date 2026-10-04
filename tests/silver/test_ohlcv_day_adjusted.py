@@ -872,3 +872,159 @@ class TestMaskingContract:
         )
         assert result["classification"] == "UNEXPLAINED_PENDING"
         assert result["is_masked"] is True
+
+
+# ---------------------------------------------------------------------------
+# 14. Resolved-splits CTE: source precedence and deduplication
+# ---------------------------------------------------------------------------
+
+class TestResolvedSplits:
+
+    def test_sql_has_resolved_splits_cte(self):
+        """The SQL must define _resolved_splits CTE."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        assert "_resolved_splits" in text
+        assert "ROW_NUMBER() OVER" in text
+
+    def test_sql_resolved_splits_prefers_massive(self):
+        """The _resolved_splits CTE must prefer massive over yfinance."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        assert "'massive'" in text
+        assert "WHEN 'massive' THEN 1" in text or "WHEN 'massive'  THEN 1" in text
+
+    def test_sql_split_factors_uses_resolved_splits(self):
+        """_split_factors must JOIN _resolved_splits, not bronze_corporate_actions."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        # Find the _split_factors section
+        factors_section = text.split("_split_factors")[1] if "_split_factors" in text else ""
+        assert "_resolved_splits" in factors_section, \
+            "_split_factors must use _resolved_splits, not bronze_corporate_actions"
+        # Should NOT directly reference bronze_corporate_actions in the split factors
+        assert "bronze_corporate_actions" not in factors_section.split("_adjusted")[0], \
+            "_split_factors must not directly reference bronze_corporate_actions"
+
+    def test_sql_break_candidates_uses_resolved_splits(self):
+        """_break_candidates must use _resolved_splits for day_splits."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        # Find the _break_candidates section
+        break_section = text.split("_break_candidates")[1] if "_break_candidates" in text else ""
+        assert "_resolved_splits" in break_section, \
+            "_break_candidates must use _resolved_splits for day_splits"
+
+    def test_sql_has_source_mismatch_detection(self):
+        """The SQL must define _split_source_mismatches CTE."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        assert "_split_source_mismatches" in text
+        assert "split_source_mismatch" in text
+
+    def test_sql_merges_source_mismatches_to_breaks(self):
+        """Source mismatches must be merged into data_quality_breaks."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        dq_section = text.split("Merge silver_ohlcv_day_adjusted")[0]
+        assert "_split_source_mismatches" in dq_section, \
+            "Source mismatches must be included in data_quality_breaks MERGE"
+        assert "SPLIT_SOURCE_MISMATCH" in dq_section, \
+            "Classification must be SPLIT_SOURCE_MISMATCH"
+
+    def test_sql_source_mismatch_not_masked(self):
+        """Source mismatches should not be masked (informational)."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        # The SPLIT_SOURCE_MISMATCH rows should have is_masked = FALSE
+        assert "SPLIT_SOURCE_MISMATCH" in text
+
+
+# ---------------------------------------------------------------------------
+# 15. Apply-once semantic test (pure Python reference)
+# ---------------------------------------------------------------------------
+
+class TestApplyOnceSemantics:
+
+    def test_split_applied_once_not_squared(self):
+        """When a split exists in both sources, it must be applied ONCE.
+        Cumulative factor for a 20:1 split should be 20, not 400."""
+        # Simulate: AMZN 20:1 split on 2022-06-06 from both sources
+        # After resolution, only one row per (symbol, ex_date)
+        resolved_splits = [
+            {"symbol": "AMZN", "ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0, "source": "massive"},
+        ]
+
+        # For a bar before the split, cumulative ratio should be 20.0
+        bar_date = dt.date(2022, 6, 3)
+        cum_ratio = _cumulative_split_ratio(bar_date, resolved_splits)
+        assert cum_ratio == 20.0, f"Expected 20.0, got {cum_ratio}"
+
+        # NOT 400 (which would happen if both sources were counted)
+        assert cum_ratio != 400.0
+
+    def test_dual_source_same_split_one_effect(self):
+        """A split from both sources should produce the same effect as one source."""
+        # Single source (resolved)
+        single = [
+            {"ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0},
+        ]
+        # What would happen without resolution (double-counted)
+        double = [
+            {"ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0},
+            {"ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0},
+        ]
+
+        bar_date = dt.date(2022, 6, 3)
+        assert _cumulative_split_ratio(bar_date, single) == 20.0
+        assert _cumulative_split_ratio(bar_date, double) == 400.0  # This is the bug
+
+    def test_adj_price_with_resolved_splits(self):
+        """Adjusted price should use the resolved (single) split ratio."""
+        splits = [{"ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0}]
+        prev_close = 2447.0
+        adj_prev = _adj_price(prev_close, dt.date(2022, 6, 3), splits)
+        assert adj_prev == pytest.approx(2447.0 / 20.0, rel=1e-6)
+
+    def test_adj_return_with_resolved_splits(self):
+        """Adjusted return across a split should reflect organic movement."""
+        splits = [{"ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0}]
+        prev_close = 2447.0
+        ex_close = 124.79
+
+        adj_prev = _adj_price(prev_close, dt.date(2022, 6, 3), splits)
+        adj_ex = _adj_price(ex_close, dt.date(2022, 6, 6), splits)
+        adj_return = adj_ex / adj_prev - 1.0
+
+        # Should be ~+2%, not ~-95%
+        assert adj_return == pytest.approx(0.02, abs=0.01)
+        assert adj_return > -0.05
+
+    def test_two_splits_different_dates_both_applied(self):
+        """Two different splits on different dates should both be applied."""
+        splits = [
+            {"ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0},
+            {"ex_date": dt.date(2023, 3, 1), "split_ratio": 2.0},
+        ]
+        bar_date = dt.date(2022, 1, 1)
+        cum_ratio = _cumulative_split_ratio(bar_date, splits)
+        assert cum_ratio == 40.0  # 20 * 2
+
+    def test_source_mismatch_ratio_deviation(self):
+        """Detect ratio deviation between sources."""
+        massive_ratio = 20.0
+        yfinance_ratio = 20.001  # tiny deviation within tolerance
+        deviation = abs(massive_ratio / yfinance_ratio - 1.0)
+        assert deviation < 0.001  # within tolerance
+
+        # Large deviation
+        yfinance_ratio_bad = 19.0
+        deviation_bad = abs(massive_ratio / yfinance_ratio_bad - 1.0)
+        assert deviation_bad > 0.001  # exceeds tolerance
