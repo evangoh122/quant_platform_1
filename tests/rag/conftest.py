@@ -1,9 +1,10 @@
-import ipaddress
 import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
 import pytest
+
+from tests.rag._netguard import _is_loopback
 
 
 def mock_if_missing(module_names):
@@ -72,7 +73,7 @@ def _reset_retriever_singletons():
 
 
 @pytest.fixture(autouse=True)
-def _block_network(monkeypatch):
+def _block_network(monkeypatch, request):
     """Prevent any test from accidentally hitting the network or running slow models.
 
     HuggingFace model downloads, cross-encoder loads, and other network
@@ -85,22 +86,11 @@ def _block_network(monkeypatch):
 
     # Socket-level safety timeout so a broken guard fails fast instead of
     # hanging indefinitely (defense-in-depth alongside pytest-timeout).
+    # Scoped: restore the previous value on teardown so it doesn't leak
+    # to tests outside this module.
+    _prev_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(10)
-
-    def _is_loopback(host):
-        """Check if host is a loopback address.
-
-        Uses ipaddress.ip_address() for numerically correct validation.
-        Only the literal string 'localhost' is accepted as loopback by name;
-        anything else that isn't a valid IP literal is blocked.
-        """
-        if host == "localhost":
-            return True
-        try:
-            return ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            # Not a valid IP literal (e.g. "127.1.evil.com") — block it
-            return False
+    request.addfinalizer(lambda: socket.setdefaulttimeout(_prev_timeout))
 
     _real_create_connection = socket.create_connection
     _real_socket_connect = socket.socket.connect

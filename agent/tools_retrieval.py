@@ -110,6 +110,7 @@ def search_sec_filings(
                 "chunk_index": d.metadata.get("chunk_index", 0),
                 "similarity": d.metadata.get("similarity"),
                 "distance": d.metadata.get("distance"),
+                "rerank_score": d.metadata.get("rerank_score"),
                 "retrieval_mode": d.metadata.get("retrieval_mode", "hybrid"),
                 **({"_warning": d.metadata["_warning"]} if d.metadata.get("_warning") else {}),
             }
