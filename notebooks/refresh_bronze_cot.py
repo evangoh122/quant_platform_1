@@ -71,8 +71,22 @@ HTTP_TIMEOUT = 120
 
 def _build_cot_headers() -> dict:
     """Build CFTC User-Agent headers. Fail closed on missing email."""
+    import re
     email = os.getenv("CFTC_USER_EMAIL", "")
-    if not email or "example" in email.lower():
+    if not email:
+        raise ValueError(
+            "CFTC_USER_EMAIL must be set to a valid contact email. "
+            "Set it from environment or Databricks secret."
+        )
+    # Reject placeholder domains/addresses, not any occurrence of "example"
+    _placeholder_re = re.compile(
+        r"@example\.(com|org|net)\b"
+        r"|^your[-_]email@"
+        r"|^user@"
+        r"|^test@"
+        r"|^example@example"
+    )
+    if _placeholder_re.search(email.lower()):
         raise ValueError(
             "CFTC_USER_EMAIL must be set to a valid contact email. "
             "Set it from environment or Databricks secret."

@@ -155,7 +155,21 @@ def _resolve_user_agent(
 
 def _validate_user_agent(user_agent: str) -> None:
     """Validate user agent is non-empty and not a placeholder."""
-    if not user_agent or "example" in user_agent.lower():
+    if not user_agent:
+        raise ValueError(
+            "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
+            "Set it from environment or Databricks secret."
+        )
+    ua_lower = user_agent.lower()
+    # Reject placeholder domains/addresses, not any occurrence of "example"
+    _placeholder_re = re.compile(
+        r"@example\.(com|org|net)\b"
+        r"|^your[-_]email@"
+        r"|^user@"
+        r"|^test@"
+        r"|^example@example"
+    )
+    if _placeholder_re.search(ua_lower):
         raise ValueError(
             "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
             "Set it from environment or Databricks secret."

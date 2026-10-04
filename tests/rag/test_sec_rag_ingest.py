@@ -3067,14 +3067,21 @@ class TestResolveUserAgent:
                 _resolve_user_agent(secret_scope="evangoh_capstone", secret_key="sec_edgar_user_agent")
 
     def test_placeholder_rejected(self, monkeypatch):
-        """Value containing 'example' is rejected by _validate_user_agent."""
+        """Placeholder addresses are rejected by _validate_user_agent."""
         from pipelines.sec_rag_ingest import _validate_user_agent
 
         with pytest.raises(ValueError, match="descriptive application"):
             _validate_user_agent("example@example.com")
 
         with pytest.raises(ValueError, match="descriptive application"):
-            _validate_user_agent("This is an Example Agent")
+            _validate_user_agent("your-email@example.com")
+
+    def test_valid_address_with_example_accepted(self, monkeypatch):
+        """Valid address containing 'example' (e.g. myexample.org) is accepted."""
+        from pipelines.sec_rag_ingest import _validate_user_agent
+
+        # Should NOT raise — "myexample.org" is a valid domain
+        _validate_user_agent("analyst@myexample.org")
 
     def test_value_never_appears_in_log(self, monkeypatch, caplog):
         """The resolved value must not appear in log output."""
@@ -3415,10 +3422,16 @@ class TestValidateUserAgent:
         with pytest.raises(ValueError, match="descriptive application"):
             _validate_user_agent("example@example.com")
 
-    def test_placeholder_mixed_case_raises(self):
+    def test_placeholder_your_email_raises(self):
         from pipelines.sec_rag_ingest import _validate_user_agent
         with pytest.raises(ValueError, match="descriptive application"):
-            _validate_user_agent("This is an Example User Agent")
+            _validate_user_agent("your-email@example.org")
+
+    def test_valid_user_agent_with_example_accepted(self):
+        """User agent containing 'example' in non-placeholder context is accepted."""
+        from pipelines.sec_rag_ingest import _validate_user_agent
+        # Should NOT raise
+        _validate_user_agent("MyApp analyst@myexample.org")
 
 
 class TestJobsYmlSecretParams:

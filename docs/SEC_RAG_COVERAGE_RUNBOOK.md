@@ -40,7 +40,7 @@ export SEC_EDGAR_USER_AGENT='<your-app-name> your-email@example.com'
 
 # Verify it is set and not a placeholder
 test -n "$SEC_EDGAR_USER_AGENT" && echo "OK: User-Agent set" || echo "ERROR: SEC_EDGAR_USER_AGENT not set"
-echo "$SEC_EDGAR_USER_AGENT" | grep -q "example" && echo "WARNING: Using placeholder" || echo "OK: Looks real"
+echo "$SEC_EDGAR_USER_AGENT" | grep -qE "@example\.(com|org|net)" && echo "WARNING: Using placeholder domain" || echo "OK: Looks real"
 ```
 
 ## Dry Run
