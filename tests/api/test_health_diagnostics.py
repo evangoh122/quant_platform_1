@@ -700,6 +700,50 @@ def test_warehouse_market_features_uses_named_params(monkeypatch):
     }
 
 
+def test_warehouse_daily_query_has_order_by_desc(monkeypatch):
+    """Daily query must ORDER BY event_date DESC before LIMIT.
+
+    MUTATION: remove ORDER BY → latest row is arbitrary, not the most recent.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+
+    conn = _NamedParamValidatingConn()
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: conn)
+
+    rows = adapter.market_features("AAPL", "2024-01-01", "2024-12-31", limit=100)
+    q = conn.cursor_instance.executed_query
+    assert "ORDER BY" in q, f"Missing ORDER BY in daily query: {q}"
+    assert "event_date" in q.split("ORDER BY")[1], f"ORDER BY must include event_date: {q}"
+    assert "DESC" in q.split("ORDER BY")[1].upper(), f"ORDER BY must be DESC: {q}"
+
+
+def test_warehouse_daily_query_order_enables_latest(monkeypatch):
+    """Daily query returns rows in DESC order so row 0 is the latest date."""
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+
+    captured_queries = []
+
+    def _capture_query(query, params=None, **kwargs):
+        captured_queries.append(query)
+        return [
+            {"symbol": "AAPL", "event_date": "2024-03-15", "open": 100.0, "high": 101.0,
+             "low": 99.0, "close": 100.5, "volume": 1000000, "vwap": 100.1, "return_1d": 0.005},
+            {"symbol": "AAPL", "event_date": "2024-03-14", "open": 99.0, "high": 100.0,
+             "low": 98.0, "close": 99.5, "volume": 900000, "vwap": 99.1, "return_1d": -0.005},
+        ]
+
+    monkeypatch.setattr(adapter, "_warehouse_query", _capture_query)
+
+    rows = adapter.market_features("AAPL", "2024-01-01", "2024-12-31", limit=100)
+    assert len(rows) == 2
+    # Row 0 should be the latest (DESC order from warehouse)
+    assert rows[0]["event_date"] == "2024-03-15"
+
+
 def test_warehouse_options_features_uses_named_params(monkeypatch):
     """get_options_features warehouse path uses :symbol only (no expiry column).
 
@@ -720,7 +764,24 @@ def test_warehouse_options_features_uses_named_params(monkeypatch):
     assert conn.cursor_instance.executed_params == {"symbol": "AAPL"}
 
 
-def test_warehouse_cot_uses_named_params(monkeypatch):
+def test_warehouse_options_query_has_order_by_desc(monkeypatch):
+    """Options query must ORDER BY feature_ts DESC before LIMIT.
+
+    MUTATION: remove ORDER BY → latest row is arbitrary, not the most recent.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+
+    conn = _NamedParamValidatingConn()
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: conn)
+
+    from agent.tools_retrieval import get_options_features
+    rows = get_options_features("AAPL", limit=100)
+    q = conn.cursor_instance.executed_query
+    assert "ORDER BY" in q, f"Missing ORDER BY in options query: {q}"
+    assert "feature_ts" in q.split("ORDER BY")[1], f"ORDER BY must include feature_ts: {q}"
+    assert "DESC" in q.split("ORDER BY")[1].upper(), f"ORDER BY must be DESC: {q}"
     """get_cot_positioning warehouse path uses :mapped_asset marker.
 
     MUTATION: put back one %s → FAIL.

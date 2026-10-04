@@ -213,7 +213,8 @@ def validate_actual_queries() -> list[str]:
         f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
         f"return_1d "
         f"FROM {_fqn('silver_ohlcv_day_adjusted')} "
-        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts"
+        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts "
+        f"ORDER BY event_date DESC"
     )
 
     # market_features_intraday query
@@ -244,7 +245,8 @@ def validate_actual_queries() -> list[str]:
     opts_sql = (
         f"SELECT {', '.join(opts_col_list)} "
         f"FROM {_fqn('gold_options_features')} "
-        f"WHERE symbol = :symbol"
+        f"WHERE symbol = :symbol "
+        f"ORDER BY feature_ts DESC"
     )
 
     # get_cot_positioning query

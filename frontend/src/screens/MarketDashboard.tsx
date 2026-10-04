@@ -29,7 +29,10 @@ export function MarketDashboard() {
     [symbol],
   );
 
-  const latest = data?.ohlcv.data[0];
+  const latest = data?.ohlcv.data.reduce((best, r) =>
+    r.event_date > (best?.event_date ?? '') ? r : best,
+    data?.ohlcv.data[0],
+  );
 
   return (
     <div className="space-y-4">

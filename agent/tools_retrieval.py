@@ -90,7 +90,8 @@ def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: in
     query = (
         f"SELECT {cols_sql} "
         f"FROM {_fqn('gold_options_features')} "
-        f"WHERE symbol = :symbol"
+        f"WHERE symbol = :symbol "
+        f"ORDER BY feature_ts DESC"
     )
     params: dict = {"symbol": symbol}
     return _warehouse_query(query, params=params, limit=limit)

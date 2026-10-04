@@ -414,7 +414,8 @@ def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 500
         f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
         f"return_1d "
         f"FROM {_fqn('silver_ohlcv_day_adjusted')} "
-        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts"
+        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts "
+        f"ORDER BY event_date DESC"
     )
     params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
     return _warehouse_query(daily_query, params=params, limit=limit)
