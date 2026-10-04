@@ -631,7 +631,13 @@ class TestCorporateActionRejection:
             start=date(2024, 6, 1),
             end=date(2024, 6, 30),
         )
-        result = classify_intent(intent, registry, bounds_with_splits, as_of=date(2024, 12, 31))
+        # Provide sufficient coverage_stats so IV passes the coverage check
+        coverage_stats = {"implied_volatility.trend": (10000, 19390)}
+        result = classify_intent(
+            intent, registry, bounds_with_splits,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
         assert result.cost_class != CostClass.REJECT
         assert PolicyReasonCode.UNADJUSTED_CORPORATE_ACTION not in result.reason_codes
 
@@ -1031,8 +1037,8 @@ class TestInsufficientData:
         # Rank now triggers coverage check → INSUFFICIENT_DATA
         assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
 
-    def test_no_coverage_stats_skips_check(self, registry, bounds):
-        """Without coverage_stats, no coverage check is performed."""
+    def test_no_coverage_stats_fails_closed(self, registry, bounds):
+        """Without coverage_stats, metrics with coverage metadata fail closed."""
         intent = _make_intent(
             metric=Metric.implied_volatility,
             operation=Operation.aggregate,
@@ -1042,5 +1048,26 @@ class TestInsufficientData:
             end=date(2024, 12, 31),
         )
         result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
-        # No coverage_stats provided → no INSUFFICIENT_DATA check
+        # No coverage_stats provided for a metric with coverage metadata → fail closed
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+        assert result.cost_class == CostClass.REJECT
+
+    def test_coverage_stats_with_sufficient_ratio_accepted(self, registry, bounds):
+        """With sufficient coverage_ratio, IV query is accepted."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.aggregate,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            grouping=Grouping.ticker,
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        # Sufficient coverage: 10000 non-null out of 19390 total → 0.516 > 0.5
+        coverage_stats = {"implied_volatility.aggregate": (10000, 19390)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
         assert PolicyReasonCode.INSUFFICIENT_DATA not in result.reason_codes
+        assert result.cost_class != CostClass.REJECT

@@ -251,17 +251,24 @@ def classify_intent(
         pass
 
     # 11. Coverage check for sparse metrics (all operations)
-    if (
-        entry.coverage is not None
-        and coverage_stats is not None
-    ):
-        stats = coverage_stats.get(pair_key)
-        if stats is not None:
-            sample_count, total_count = stats
-            if total_count > 0:
-                coverage_ratio = sample_count / total_count
-                if coverage_ratio < entry.coverage.min_coverage_ratio:
-                    reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
+    # Fail closed: if a metric has coverage metadata in the registry
+    # (e.g. availability: snapshot_only), but coverage_stats is not provided
+    # or the pair_key is missing from the stats, reject with INSUFFICIENT_DATA.
+    if entry.coverage is not None:
+        if coverage_stats is None:
+            # No stats provided for a metric that requires coverage check
+            reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
+        else:
+            stats = coverage_stats.get(pair_key)
+            if stats is None:
+                # Pair key not found in provided stats
+                reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
+            else:
+                sample_count, total_count = stats
+                if total_count > 0:
+                    coverage_ratio = sample_count / total_count
+                    if coverage_ratio < entry.coverage.min_coverage_ratio:
+                        reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
 
     # If any hard violations, reject
     hard_violations = {

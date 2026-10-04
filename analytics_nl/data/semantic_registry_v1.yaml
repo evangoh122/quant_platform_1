@@ -671,7 +671,7 @@ entries:
     row_limit: 5000
     entry_version: "1.0.0"
     allowed_entity_types: [ticker]
-    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
 
   implied_volatility.compare:
     layer: gold
@@ -699,7 +699,7 @@ entries:
     row_limit: 5000
     entry_version: "1.0.0"
     allowed_entity_types: [ticker]
-    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
 
   implied_volatility.rank:
     layer: gold
@@ -726,7 +726,7 @@ entries:
     row_limit: 1000
     entry_version: "1.0.0"
     allowed_entity_types: [ticker]
-    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
 
   implied_volatility.aggregate:
     layer: gold
@@ -752,7 +752,7 @@ entries:
     row_limit: 1000
     entry_version: "1.0.0"
     allowed_entity_types: [ticker]
-    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
 
   # ── put_call_ratio × operations ─────────────────────────────────────
   put_call_ratio.trend:
