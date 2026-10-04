@@ -1150,6 +1150,98 @@ def run_ingest(
     return result
 
 
+# ── Spark adapters (Databricks production) ───────────────────────────────────
+
+class SparkUniverseReader:
+    """Reads ticker universe from gold_tradable_universe via Spark."""
+
+    def read_universe(
+        self,
+        catalog: str,
+        schema: str,
+        include_historical: bool = False,
+    ) -> List[TickerEntry]:
+        from databricks.connect import DatabricksSession
+        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        sql = UNIVERSE_SQL.format(catalog=catalog, schema=schema)
+        rows = spark.sql(sql).collect()
+        entries = [TickerEntry(ticker=row["ticker"], phase=row["phase"]) for row in rows]
+        if not include_historical:
+            entries = [e for e in entries if e.phase == 1]
+        return entries
+
+
+class SparkAccessionReader:
+    """Reads existing accession numbers from bronze_sec_filings_v2 via Spark."""
+
+    def read_existing_accessions(
+        self,
+        catalog: str,
+        schema: str,
+    ) -> Dict[str, Tuple[str, str]]:
+        from databricks.connect import DatabricksSession
+        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        rows = (
+            spark.table(f"{catalog}.{schema}.bronze_sec_filings_v2")
+            .select("accession_number", "cik", "ticker")
+            .distinct()
+            .collect()
+        )
+        return {row["accession_number"]: (row["cik"], row["ticker"]) for row in rows}
+
+
+class SparkDataWriter:
+    """Appends bronze filing rows to Delta via Spark."""
+
+    def append_bronze_rows(
+        self,
+        catalog: str,
+        schema: str,
+        rows: List[Dict[str, Any]],
+    ) -> int:
+        from databricks.connect import DatabricksSession
+        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        if not rows:
+            return 0
+        df = spark.createDataFrame(rows)
+        df.write.mode("append").saveAsTable(f"{catalog}.{schema}.bronze_sec_filings_v2")
+        return len(rows)
+
+
+class SparkLogWriter:
+    """Writes ingest log entries to sec_ingest_log via Spark."""
+
+    def append_log(
+        self,
+        catalog: str,
+        schema: str,
+        entry: IngestLogEntry,
+    ) -> None:
+        from databricks.connect import DatabricksSession
+        from pyspark.sql import functions as F
+        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        row = {
+            "run_id": entry.run_id,
+            "ticker": entry.ticker,
+            "cik": entry.cik,
+            "accession_number": entry.accession_number,
+            "form_type": entry.form_type,
+            "filing_date": entry.filing_date,
+            "accepted_ts": entry.accepted_ts,
+            "status": entry.status,
+            "rows_appended": entry.rows_appended,
+            "attempt": entry.attempt,
+            "error_code": entry.error_code,
+            "error_message": entry.error_message,
+            "started_ts": entry.started_ts,
+            "completed_ts": entry.completed_ts,
+            "dry_run": entry.dry_run,
+            "logged_ts": datetime.now(timezone.utc).replace(tzinfo=None),
+        }
+        df = spark.createDataFrame([row])
+        df.write.mode("append").saveAsTable(f"{catalog}.{schema}.sec_ingest_log")
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1174,6 +1266,12 @@ def main() -> None:
     if args.tickers:
         tickers = [t.strip() for t in args.tickers.split(",")]
 
+    # Wire real Spark adapters for production use
+    universe_reader = SparkUniverseReader()
+    accession_reader = SparkAccessionReader()
+    data_writer = SparkDataWriter()
+    log_writer = SparkLogWriter()
+
     result = run_ingest(
         catalog=args.catalog,
         schema=args.schema,
@@ -1186,6 +1284,10 @@ def main() -> None:
         refresh_cik_cache=args.refresh_cik_cache,
         max_workers=args.max_workers,
         run_id=args.run_id,
+        universe_reader=universe_reader,
+        accession_reader=accession_reader,
+        data_writer=data_writer,
+        log_writer=log_writer,
     )
 
     if result.failed_count > 0:
