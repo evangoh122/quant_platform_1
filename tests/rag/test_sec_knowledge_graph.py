@@ -4265,6 +4265,12 @@ class TestSparkAsOfBeforeLimit:
                 build_version=edge.build_version,
             ))
 
+        # Put the FUTURE-ONLY node first in table order: build_graph sorts by node_id, which happened to place the eligible
+        # node first, so `.limit(1)` returned it even without the Spark as-of predicate. With the future node first, a
+        # limit applied before the as-of filter returns the wrong (future) row.
+        node_rows.sort(key=lambda r: 0 if all(p.accepted_epoch > 1717200000 for p in r.provenance) else 1)
+        assert all(p.accepted_epoch > 1717200000 for p in node_rows[0].provenance), "fixture must lead with the future-only node"
+
         return T._MockSparkGraphStore("test_cat", "test_sch", node_rows, edge_rows)
 
     def test_spark_limit_1_returns_eligible(self, monkeypatch):
