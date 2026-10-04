@@ -166,6 +166,31 @@ class TestHostileInputRejection:
         assert result.reason_code == "multi_sentence_injection"
 
 
+class TestApostropheConsistency:
+    """Apostrophe names must pass both contract and resolver hostile checks."""
+
+    @pytest.mark.parametrize("name", [
+        "McDonald's", "Lowe's", "Macy's", "Kohl's", "Dick's",
+        "McDonald\u2019s", "Lowe\u2019s", "Macy\u2019s", "Kohl\u2019s", "Dick\u2019s",
+    ])
+    def test_apostrophe_names_pass_resolver(self, resolver, name):
+        result = resolver.resolve(name)
+        assert result.reason_code != "sql_metacharacters", (
+            f"{name!r} rejected as sql_metacharacters by resolver"
+        )
+
+    def test_sql_injection_with_apostrophe_rejected_both(self, resolver):
+        from analytics_nl.aliases import _reject_hostile
+        hostile = "x'; DROP TABLE t; --"
+        # Resolver must reject
+        assert _reject_hostile(hostile) is not None
+        # Contract must reject
+        from pydantic import ValidationError
+        from analytics_nl.contracts import LLMEntityMention
+        with pytest.raises(ValidationError):
+            LLMEntityMention(text=hostile)
+
+
 class TestCollisionBehavior:
     """Alias collisions should be deterministic (but our data has no collisions)."""
 

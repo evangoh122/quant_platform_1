@@ -1,5 +1,6 @@
 """Tests for contract strictness, adversarial inputs, and Pydantic v2 behavior."""
 
+import json
 from datetime import date
 
 import pytest
@@ -1048,7 +1049,11 @@ class TestHostileCorpus:
     ]
 
     def _make_valid_output(self, **overrides) -> dict:
-        """Build a minimal valid LLMIntentOutput dict, with optional field overrides."""
+        """Build a minimal valid LLMIntentOutput dict, with optional field overrides.
+
+        Returns a dict whose values are JSON-serializable (enum strings),
+        suitable for model_validate_json which accepts enum strings in JSON mode.
+        """
         base = {
             "semantic_model_version": SEMANTIC_MODEL_VERSION,
             "operation": "trend",
@@ -1115,6 +1120,11 @@ class TestHostileCorpus:
                     limit=100,
                 )
 
+    def test_hostile_corpus_baseline_validates(self):
+        """The unmodified baseline must validate successfully."""
+        base = self._make_valid_output()
+        LLMIntentOutput.model_validate_json(json.dumps(base))
+
     def test_hostile_corpus_covers_every_string_leaf(self):
         """For every string leaf and every payload, the model must reject.
 
@@ -1126,6 +1136,10 @@ class TestHostileCorpus:
         leaves = get_string_leaves(schema, schema)
         all_leaf_paths = {p for p, _ in leaves}
 
+        # Baseline must validate (proves the test harness is not vacuous)
+        base = self._make_valid_output()
+        LLMIntentOutput.model_validate_json(json.dumps(base))
+
         accepting: list[tuple[str, str]] = []
         tested_paths: set[str] = set()
 
@@ -1136,9 +1150,9 @@ class TestHostileCorpus:
                     continue
                 tested_paths.add(path)
                 try:
-                    LLMIntentOutput(**output_data)
+                    LLMIntentOutput.model_validate_json(json.dumps(output_data))
                     accepting.append((path, payload))
-                except (ValidationError, Exception):
+                except ValidationError:
                     pass  # expected — hostile payload rejected
 
         # Every discovered leaf must have been exercised
@@ -1200,6 +1214,22 @@ class TestHostileCorpus:
         assert text_schema["pattern"] == _ENTITY_MENTION_PATTERN, (
             f"Schema pattern {text_schema['pattern']!r} != "
             f"constant {_ENTITY_MENTION_PATTERN!r}"
+        )
+
+    def test_validator_does_not_mutate_input_dict(self):
+        """The before-validator must not mutate the caller's dict in place."""
+        original = {"text": "McDonald\u2019s"}
+        snapshot = dict(original)
+        LLMEntityMention.model_validate(original)
+        assert original == snapshot, (
+            f"Input dict was mutated: {original!r} != {snapshot!r}"
+        )
+
+    def test_fullwidth_apostrophe_accepted_after_nfkc(self):
+        """U+FF07 (fullwidth apostrophe) normalizes to U+0027 via NFKC and is accepted."""
+        m = LLMEntityMention(text="McDonald\uff07s")
+        assert m.text == "McDonald's", (
+            f"Expected ASCII apostrophe after NFKC, got {m.text!r}"
         )
 
 

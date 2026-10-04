@@ -332,6 +332,7 @@ class LLMEntityMention(FrozenStrictModel):
     def _normalize_text(cls, data: dict) -> dict:
         """Normalize smart apostrophe U+2019 → ASCII apostrophe U+0027 before field validation."""
         if isinstance(data, dict) and "text" in data and isinstance(data["text"], str):
+            data = dict(data)
             data["text"] = unicodedata.normalize("NFKC", data["text"]).replace("\u2019", "'")
         return data
 

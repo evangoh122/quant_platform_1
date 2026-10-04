@@ -22,10 +22,10 @@ from analytics_nl.contracts import (
     SEMANTIC_MODEL_VERSION,
     SectorEntity,
     TickerEntity,
+    _SQL_METACHAR_RE,
 )
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_SQL_METACHAR_RE = re.compile(r"[;'\"]|--|/\*|\*/")
 _MULTI_SENTENCE_RE = re.compile(r"[.!?]\s+[A-Z]")
 
 
