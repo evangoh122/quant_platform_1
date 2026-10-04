@@ -63,7 +63,10 @@ def _reset_retriever_singletons():
                 v = v / norm
             return v.tolist()
 
+        query_calls = 0
+
         def embed_query(self, text: str) -> list[float]:
+            self.query_calls += 1
             return self._vec_for(text)
 
         def embed_documents(self, texts: list[str]) -> list[list[float]]:

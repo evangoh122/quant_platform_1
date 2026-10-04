@@ -337,6 +337,11 @@ class TestRetrieveMatchesRetrieveMode:
         item = _answerable_item(ticker="NVDA")
         as_of = item.as_of_datetime()
 
+        import api.services.embeddings as emb_mod
+        fake = emb_mod._embeddings
+        assert fake is not None and hasattr(fake, "query_calls"), "fake embedding provider not installed"
+        calls_before = fake.query_calls
+
         with install_offline_corpus(offline_adapter):
             retriever = HybridRetriever(top_k=5, rrf_k=60)
 
@@ -360,6 +365,10 @@ class TestRetrieveMatchesRetrieveMode:
         # Ordered (chunk_id, component_score) comparison
         prod_seq = [(d.metadata.get("chunk_id", ""), d.metadata.get("component_score")) for d in docs_prod]
         eval_seq = [(d.metadata.get("chunk_id", ""), d.metadata.get("component_score")) for d in docs_eval]
+        # Both paths must have used the dense leg (the fake provider), not a silent BM25-only fallback.
+        assert fake.query_calls - calls_before >= 2, (
+            f"dense leg not exercised: fake embed_query called {fake.query_calls - calls_before} times"
+        )
         assert prod_seq == eval_seq, (
             f"retrieve() and retrieve_mode('hybrid_rrf') ordered results differ.\n"
             f"  prod: {prod_seq}\n"
