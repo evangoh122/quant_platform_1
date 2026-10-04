@@ -1,6 +1,6 @@
 """api/routes/market.py — GET /api/market/{symbol}.
 
-OHLCV features (``gold_ohlcv_features``) and options features
+OHLCV features (``silver_ohlcv_day_adjusted``) and options features
 (``gold_options_features``) for a symbol.  Bounded by default: last 252 trading
 days, explicit row LIMIT, single options query.  Reads go through the existing
 ``agent.tools_retrieval`` contracts (which normalize the symbol), never through
@@ -61,7 +61,7 @@ def market_features(
 
     from api.diagnostics import stage
 
-    with stage("delta_read", table="gold_ohlcv_features", symbol=symbol):
+    with stage("delta_read", table="silver_ohlcv_day_adjusted", symbol=symbol):
         ohlcv_rows, ohlcv_state, ohlcv_detail = read_delta(_read_ohlcv)
     with stage("delta_read", table="gold_options_features", symbol=symbol):
         opt_rows, opt_state, opt_detail = read_delta(_read_options)
@@ -83,8 +83,8 @@ def market_features(
         ],
         count=len(ohlcv_rows),
         empty=not ohlcv_rows,
-        source="gold_ohlcv_features",
-        freshness=Freshness(state=ohlcv_state, table="gold_ohlcv_features", detail=ohlcv_detail),
+        source="silver_ohlcv_day_adjusted",
+        freshness=Freshness(state=ohlcv_state, table="silver_ohlcv_day_adjusted", detail=ohlcv_detail),
     )
     options = Envelope(
         data=[

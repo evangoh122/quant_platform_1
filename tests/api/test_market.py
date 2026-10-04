@@ -138,6 +138,22 @@ def test_options_bounded_by_days(client, mock_delta_reads):
     assert captured.get("limit") == 50
 
 
+def test_ohlcv_source_label_is_silver(client, mock_delta_reads):
+    """OHLCV envelope source must be silver_ohlcv_day_adjusted, not gold_ohlcv_features."""
+    sample_rows = [
+        {"symbol": "AAPL", "event_date": "2025-01-15", "close": 153.0},
+    ]
+
+    with patch("agent.tools_retrieval.get_market_features", return_value=sample_rows), \
+         patch("agent.tools_retrieval.get_options_features", return_value=[]):
+        resp = client.get("/api/market/AAPL", headers={"x-forwarded-email": "u@test.com"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ohlcv"]["source"] == "silver_ohlcv_day_adjusted"
+    assert data["ohlcv"]["freshness"]["table"] == "silver_ohlcv_day_adjusted"
+
+
 def test_ohlcv_uses_event_date_and_price_basis(client, mock_delta_reads):
     """OHLCV rows use event_date (not feature_ts) and include price_basis."""
     sample_rows = [

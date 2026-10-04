@@ -82,7 +82,7 @@ export function MarketDashboard() {
             {data && data.ohlcv.empty ? (
               <EmptyState
                 title="No market features yet"
-                detail={`gold_ohlcv_features is empty for ${symbol} — features appear once the silver→gold pipeline has run.`}
+                detail={`silver_ohlcv_day_adjusted is empty for ${symbol} — features appear once the silver→gold pipeline has run.`}
               />
             ) : (
               <Table columns={ohlcvColumns} rows={data?.ohlcv.data ?? []} rowKey={(r) => r.event_date || r.symbol} />
