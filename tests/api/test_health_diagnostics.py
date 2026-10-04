@@ -70,16 +70,23 @@ def _reset_state():
     from api import deps
     from api.diagnostics import ring_buffer
     import api.routes.health as health_mod
+    import db.delta_adapter as adapter
 
     deps._breaker.reset()
     deps._role_cache.clear()
     ring_buffer.clear()
     health_mod._inflight.clear()
+    with adapter._warm_lock:
+        adapter._warm_state = "idle"
+        adapter._warm_detail = ""
     yield
     deps._breaker.reset()
     deps._role_cache.clear()
     ring_buffer.clear()
     health_mod._inflight.clear()
+    with adapter._warm_lock:
+        adapter._warm_state = "idle"
+        adapter._warm_detail = ""
 
 
 @pytest.fixture
@@ -680,3 +687,247 @@ def test_warehouse_cot_uses_named_params(monkeypatch):
     q = conn.cursor_instance.executed_query
     assert ":mapped_asset" in q
     assert conn.cursor_instance.executed_params == {"mapped_asset": "AAPL"}
+
+
+# ── 12. Background connection warming ────────────────────────────────────────
+
+def test_warm_warehouse_connection_starts_background_thread():
+    """warm_warehouse_connection starts a background thread and transitions state."""
+    import db.delta_adapter as adapter
+    import threading as _threading
+
+    connect_called = _threading.Event()
+
+    def _fake_connect():
+        connect_called.set()
+        return "fake_conn"
+
+    original_get = adapter._get_warehouse_connection
+
+    with adapter._warm_lock:
+        assert adapter._warm_state == "idle"
+
+    # Patch _get_warehouse_connection to simulate slow connect
+    import time as _time
+
+    def _slow_connect():
+        _time.sleep(0.2)
+        connect_called.set()
+        return "fake_conn"
+
+    adapter._get_warehouse_connection = _slow_connect
+    try:
+        adapter.warm_warehouse_connection()
+        with adapter._warm_lock:
+            assert adapter._warm_state == "warming"
+            assert adapter._warm_detail == "connecting"
+
+        # Wait for background thread
+        connect_called.wait(timeout=5.0)
+        _time.sleep(0.1)  # let state update
+
+        with adapter._warm_lock:
+            assert adapter._warm_state == "ready"
+            assert adapter._warm_detail == "reachable"
+    finally:
+        adapter._get_warehouse_connection = original_get
+
+
+def test_warm_warehouse_connection_reports_error_on_failure():
+    """warm_warehouse_connection reports error state when connect fails."""
+    import db.delta_adapter as adapter
+    import time as _time
+
+    def _fail_connect():
+        raise RuntimeError("connection refused")
+
+    original_get = adapter._get_warehouse_connection
+    adapter._get_warehouse_connection = _fail_connect
+    try:
+        adapter.warm_warehouse_connection()
+        _time.sleep(0.3)  # let background thread run
+
+        with adapter._warm_lock:
+            assert adapter._warm_state == "error"
+            assert adapter._warm_detail == "RuntimeError"
+    finally:
+        adapter._get_warehouse_connection = original_get
+
+
+def test_warm_warehouse_connection_is_idempotent():
+    """Calling warm_warehouse_connection twice does not start a second thread."""
+    import db.delta_adapter as adapter
+    import time as _time
+    import threading as _threading
+
+    call_count = [0]
+
+    def _counting_connect():
+        call_count[0] += 1
+        _time.sleep(0.1)
+        return "fake_conn"
+
+    original_get = adapter._get_warehouse_connection
+    adapter._get_warehouse_connection = _counting_connect
+    try:
+        adapter.warm_warehouse_connection()
+        _time.sleep(0.05)
+        adapter.warm_warehouse_connection()  # should be no-op
+        _time.sleep(0.3)
+
+        assert call_count[0] == 1
+    finally:
+        adapter._get_warehouse_connection = original_get
+
+
+def test_check_warehouse_health_reports_warming():
+    """check_warehouse_health returns (False, 'connecting') while warming."""
+    import db.delta_adapter as adapter
+
+    with adapter._warm_lock:
+        adapter._warm_state = "warming"
+        adapter._warm_detail = "connecting"
+
+    ok, detail = adapter.check_warehouse_health()
+    assert ok is False
+    assert detail == "connecting"
+
+
+def test_health_probe_reports_warming_state(client, monkeypatch):
+    """Health endpoint reports 'connecting' detail when warehouse is warming."""
+    import db.delta_adapter as adapter
+    import api.routes.health as health_mod
+
+    with adapter._warm_lock:
+        adapter._warm_state = "warming"
+        adapter._warm_detail = "connecting"
+
+    # Make lakebase probe succeed fast
+    monkeypatch.setattr(health_mod, "_probe_lakebase", lambda: (True, 1.0, "reachable"))
+
+    resp = client.get("/api/health")
+    data = resp.json()
+
+    delta_dep = next(d for d in data["dependencies"] if d["name"] == "delta")
+    assert delta_dep["ok"] is False
+    assert delta_dep["detail"] == "connecting"
+
+
+# ── 13. cursor.cancel() on timeout + bounded semaphore ───────────────────────
+
+def test_warehouse_query_calls_cancel_on_timeout(monkeypatch):
+    """On timeout, cursor.cancel() is called before cursor.close().
+
+    MUTATION: drop cancel() → test FAILS (cancel_called stays False).
+    """
+    import db.delta_adapter as adapter
+
+    cancel_called = []
+    close_called = []
+
+    class SlowCursor:
+        def execute(self, query, params=None):
+            import time as _time
+            _time.sleep(9999)
+        def fetchall(self):
+            return []
+        @property
+        def description(self):
+            return []
+        def cancel(self):
+            cancel_called.append(True)
+        def close(self):
+            close_called.append(True)
+
+    class FakeConn:
+        def cursor(self):
+            return SlowCursor()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: FakeConn())
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        adapter._warehouse_query("SELECT 1", timeout=1, limit=1)
+
+    assert len(cancel_called) == 1, "cancel() was not called on timeout"
+    assert len(close_called) >= 1, "close() was not called after cancel()"
+
+
+def test_warehouse_query_semaphore_bounded(monkeypatch):
+    """Stuck queries are capped by the bounded semaphore.
+
+    With _MAX_CONCURRENT_QUERIES=2, a 3rd concurrent query should block/fail.
+    MUTATION: remove semaphore → 20 concurrent hanging calls all start (FAIL).
+    """
+    import db.delta_adapter as adapter
+    import threading as _threading
+    import time as _time
+
+    monkeypatch.setattr(adapter, "_MAX_CONCURRENT_QUERIES", 2)
+    monkeypatch.setattr(adapter, "_query_semaphore", _threading.Semaphore(2))
+
+    class HangingCursor:
+        def execute(self, query, params=None):
+            _time.sleep(9999)
+        def fetchall(self):
+            return []
+        @property
+        def description(self):
+            return []
+        def cancel(self):
+            pass
+        def close(self):
+            pass
+
+    class FakeConn:
+        def cursor(self):
+            return HangingCursor()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: FakeConn())
+
+    started = []
+    results = []
+
+    def _run_query(i):
+        started.append(i)
+        try:
+            adapter._warehouse_query("SELECT 1", timeout=1, limit=1)
+        except TimeoutError:
+            results.append(("timeout", i))
+        except Exception as e:
+            results.append(("error", i, type(e).__name__))
+
+    threads = [_threading.Thread(target=_run_query, args=(i,)) for i in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    # Only _MAX_CONCURRENT_QUERIES should have started executing (others block
+    # on semaphore), and all should eventually resolve to timeout.
+    assert len(results) >= 2, f"Expected at least 2 timed-out queries, got {results}"
+
+
+def test_warehouse_query_semaphore_timeout(monkeypatch):
+    """Semaphore wait itself times out when all slots are busy.
+
+    MUTATION: remove semaphore.acquire timeout → blocks forever.
+    """
+    import db.delta_adapter as adapter
+    import threading as _threading
+    import time as _time
+
+    # Set max concurrent to 1 and pre-occupy the slot
+    monkeypatch.setattr(adapter, "_MAX_CONCURRENT_QUERIES", 1)
+    sem = _threading.Semaphore(0)  # already exhausted
+    monkeypatch.setattr(adapter, "_query_semaphore", sem)
+
+    start = _time.monotonic()
+    with pytest.raises(TimeoutError, match="semaphore"):
+        adapter._warehouse_query("SELECT 1", timeout=1, limit=1)
+    elapsed = _time.monotonic() - start
+
+    assert elapsed < 3.0, f"Semaphore wait took {elapsed:.1f}s, expected < 3s"

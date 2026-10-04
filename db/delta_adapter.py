@@ -59,6 +59,51 @@ def _now() -> datetime:
 
 _warehouse_conn = None
 _warehouse_lock = __import__("threading").Lock()
+_MAX_CONCURRENT_QUERIES = int(os.getenv("DATABRICKS_MAX_CONCURRENT_QUERIES", "10"))
+_query_semaphore = __import__("threading").Semaphore(_MAX_CONCURRENT_QUERIES)
+
+# ── connection warm-up state ─────────────────────────────────────────────────
+# "idle" → never started | "warming" → background connect in flight
+# "ready" → connection established | "error" → warm-up failed
+_warm_state: str = "idle"
+_warm_detail: str = ""
+_warm_lock = __import__("threading").Lock()
+
+
+def warm_warehouse_connection() -> None:
+    """Kick off a background warehouse connect (non-blocking).
+
+    Call at app startup.  The health probe reports ``warming`` (ok=False) while
+    the first connect is in flight instead of a bare timeout.
+    """
+    global _warm_state, _warm_detail
+    with _warm_lock:
+        if _warm_state in ("warming", "ready"):
+            return
+        _warm_state = "warming"
+        _warm_detail = "connecting"
+
+    import threading as _t
+
+    def _do_warm():
+        global _warm_state, _warm_detail
+        try:
+            _get_warehouse_connection()
+            with _warm_lock:
+                _warm_state = "ready"
+                _warm_detail = "reachable"
+        except Exception as exc:  # noqa: BLE001
+            with _warm_lock:
+                _warm_state = "error"
+                _warm_detail = type(exc).__name__
+
+    _t.Thread(target=_do_warm, daemon=True, name="warehouse-warmup").start()
+
+
+def get_warm_state() -> tuple[str, str]:
+    """Return (state, detail) of the background warm-up."""
+    with _warm_lock:
+        return _warm_state, _warm_detail
 
 
 def _get_warehouse_connection():
@@ -106,6 +151,10 @@ def _warehouse_query(
     (``cursor.execute("... WHERE symbol = :symbol", {"symbol": s})``).
     The query is bounded by LIMIT and has a statement timeout enforced via a
     daemon thread (the connector has no native statement timeout).
+
+    On timeout, ``cursor.cancel()`` is called to abort the in-flight query on
+    the warehouse, then the cursor is closed.  A bounded semaphore caps
+    concurrent in-flight queries so stuck calls cannot pile up.
     """
     import threading as _threading
     from api.diagnostics import stage
@@ -115,37 +164,63 @@ def _warehouse_query(
         query = f"{query.rstrip(';')} LIMIT {int(limit)}"
 
     conn = _get_warehouse_connection()
-    with stage("warehouse_query", table=_extract_table_name(query)):
-        result: List[Dict[str, Any]] = []
-        error: list[Exception] = []
 
-        def _execute():
-            try:
-                cursor = conn.cursor()
+    # Acquire semaphore slot — blocks if _MAX_CONCURRENT_QUERIES are in flight
+    if not _query_semaphore.acquire(timeout=timeout):
+        raise TimeoutError(
+            f"Warehouse query semaphore wait timed out after {timeout}s: "
+            f"{_extract_table_name(query)}"
+        )
+
+    try:
+        with stage("warehouse_query", table=_extract_table_name(query)):
+            result: List[Dict[str, Any]] = []
+            error: list[Exception] = []
+            cursor_ref: list = []
+
+            def _execute():
                 try:
+                    cursor = conn.cursor()
+                    cursor_ref.append(cursor)
                     cursor.execute(query, params)
                     columns = [desc[0] for desc in cursor.description] if cursor.description else []
                     rows = cursor.fetchall()
                     result.extend(dict(zip(columns, row)) for row in rows)
+                except Exception as exc:
+                    error.append(exc)
                 finally:
-                    cursor.close()
-            except Exception as exc:
-                error.append(exc)
+                    if cursor_ref:
+                        try:
+                            cursor_ref[0].close()
+                        except Exception:  # noqa: BLE001
+                            pass
 
-        t = _threading.Thread(target=_execute, daemon=True)
-        t.start()
-        t.join(timeout=timeout)
+            t = _threading.Thread(target=_execute, daemon=True)
+            t.start()
+            t.join(timeout=timeout)
 
-        if t.is_alive():
-            raise TimeoutError(
-                f"Warehouse query timed out after {timeout}s: "
-                f"{_extract_table_name(query)}"
-            )
+            if t.is_alive():
+                # Cancel the in-flight query on the warehouse
+                if cursor_ref:
+                    try:
+                        cursor_ref[0].cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        cursor_ref[0].close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                raise TimeoutError(
+                    f"Warehouse query timed out after {timeout}s: "
+                    f"{_extract_table_name(query)}"
+                )
 
-        if error:
-            raise error[0]
+            if error:
+                raise error[0]
 
-        return result
+            return result
+    finally:
+        _query_semaphore.release()
 
 
 def _extract_table_name(query: str) -> str:
@@ -170,10 +245,16 @@ def as_dicts(result: Any) -> List[Dict[str, Any]]:
 
 
 def check_warehouse_health() -> Tuple[bool, str]:
-    """Probe the SQL warehouse with SELECT 1. Returns (ok, detail)."""
+    """Probe the SQL warehouse with SELECT 1. Returns (ok, detail).
+
+    Reports ``warming`` (ok=False) while the background connect is in flight.
+    """
     try:
         if not _warehouse_available():
             return False, "databricks-sql-connector not installed"
+        state, detail = get_warm_state()
+        if state == "warming":
+            return False, "connecting"
         rows = _warehouse_query("SELECT 1", timeout=5, limit=1)
         ok = len(rows) == 1
         return (ok, "reachable" if ok else "no response")

@@ -303,6 +303,11 @@ def create_app() -> FastAPI:
         if demo:
             validate_public_demo_environment()
 
+    # Warm warehouse connection in background (non-blocking)
+    if not demo:
+        from db.delta_adapter import warm_warehouse_connection
+        warm_warehouse_connection()
+
     with stage("startup_fastapi_init"):
         application = FastAPI(
             title="Mid-Frequency Quant Trading Platform",
