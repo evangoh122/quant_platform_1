@@ -56,12 +56,19 @@ def mint_token_via_cli(instance_name: str = LAKEBASE_INSTANCE) -> dict:
     payload = json.dumps(
         {"request_id": request_id, "instance_names": [instance_name]}
     )
-    proc = subprocess.run(
-        ["databricks", "api", "post", "/api/2.0/database/credentials", "--json", payload],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["databricks", "api", "post", "/api/2.0/database/credentials", "--json", payload],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=LAKEBASE_CONNECT_TIMEOUT + 2,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Lakebase credential mint timed out after {exc.timeout}s, "
+            f"request_id={request_id}"
+        ) from exc
     if proc.returncode != 0:
         # Never propagate raw CLI stderr/stdout: it may contain credential or
         # session material. Report only the exit code and request id.
@@ -160,9 +167,10 @@ class Lakebase:
                 configure=self._configure,
                 **self._pool_kwargs,
             )
-            # Bound total connection establishment so a disabled/hanging endpoint
-            # raises promptly (within ~3-4 s) instead of retrying for 30+ s.
+            # Open the pool (starts background connection establishment)
+            # then wait for min_size connections to be ready within timeout.
             # PoolTimeout is raised if min_size connections are not ready in time.
+            pool.open(wait=False)
             pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT)
         return pool
 

@@ -336,7 +336,10 @@ def test_first_request_bounded_when_pool_hangs(client, monkeypatch):
         """Simulates a pool that cannot establish connections in time."""
 
         def __init__(self, **kwargs):
-            pass
+            self._opened = False
+
+        def open(self, wait=True):
+            self._opened = True
 
         def wait(self, timeout=None):
             raise PoolTimeout("pool could not connect in time")
@@ -345,6 +348,8 @@ def test_first_request_bounded_when_pool_hangs(client, monkeypatch):
             pass
 
         def connection(self):
+            if not self._opened:
+                raise RuntimeError("pool not open")
             raise RuntimeError("pool not open")
 
     monkeypatch.setattr(lb, "ConnectionPool", BlockingPool)
