@@ -1570,7 +1570,19 @@ class SparkDataWriter:
             MERGE INTO {table} AS target
             USING _merge_src AS source
             ON target.accession_number = source.accession_number
-            WHEN NOT MATCHED THEN INSERT *
+            WHEN NOT MATCHED THEN INSERT (
+                record_key, ticker, cik, company_name, form_type, filing_date,
+                accepted_ts, accession_number, primary_doc, filing_url,
+                chunk_id, filing_section, chunk_text, chunk_char_count,
+                source, ingest_ts, raw_payload
+            ) VALUES (
+                source.record_key, source.ticker, source.cik, source.company_name,
+                source.form_type, source.filing_date, source.accepted_ts,
+                source.accession_number, source.primary_doc, source.filing_url,
+                source.chunk_id, source.filing_section, source.chunk_text,
+                source.chunk_char_count, source.source, source.ingest_ts,
+                source.raw_payload
+            )
         """)
 
         # Get actual inserted count from the TARGET table's history

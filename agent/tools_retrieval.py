@@ -152,55 +152,12 @@ def search_sec_filings(
         }]
     except Exception as e:
         import logging
-        logging.warning("Hybrid retriever failed (%s), falling back to substring filter", e)
-        try:
-            from pyspark.sql import functions as F
-
-            df = _spark().table(_fqn("silver_sec_sections")).where(
-                F.col("ticker") == symbol
-            )
-
-            # Point-in-time: exclude filings accepted after as_of
-            # Compare as epoch seconds to avoid Spark session timezone ambiguity.
-            if as_of is not None:
-                as_of_epoch = int(as_of.timestamp())
-                df = df.where(
-                    F.unix_timestamp(F.col("accepted_ts")) <= F.lit(as_of_epoch)
-                )
-
-            # Push query filter into Spark so it runs before the limit
-            if query:
-                df = df.where(
-                    F.lower(F.col("chunk_text")).contains(query.lower())
-                )
-
-            df = df.orderBy(F.col("accepted_ts").desc()).limit(50)
-
-            results = [r.asDict() for r in df.collect()]
-
-            # Map to the same output schema as the hybrid path
-            mapped = []
-            for r in results:
-                mapped.append({
-                    "accession_number": r.get("accession_number", ""),
-                    "form_type": r.get("form_type", ""),
-                    "accepted_ts": r.get("accepted_ts", ""),
-                    "source_url": r.get("source_url", ""),
-                    "ticker": r.get("ticker", ""),
-                    "section": r.get("filing_section", ""),
-                    "chunk_index": r.get("chunk_index", 0),
-                    "chunk_text": r.get("chunk_text", ""),
-                    "retrieval_mode": "substring_fallback",
-                    "_warning": "hybrid_retrieval_failed",
-                })
-            return mapped[:top_k]
-        except Exception as fallback_err:
-            logging.error("Substring fallback also failed: %s", fallback_err)
-            return [{
-                "error": "retrieval_unavailable",
-                "message": "SEC filing corpus could not be loaded. Check Delta table connectivity.",
-                "ticker": symbol,
-            }]
+        logging.error("Hybrid retriever failed: %s", e)
+        return [{
+            "error": "retrieval_unavailable",
+            "message": "SEC filing retrieval failed. Check table connectivity and configuration.",
+            "ticker": symbol,
+        }]
 
 
 def get_cot_positioning(mapped_asset: str) -> dict:

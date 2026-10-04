@@ -124,3 +124,40 @@ class TestSearchSecFilingsErrors:
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
         assert result[0]["reason"] == "embedding_config"
+
+    def test_spark_table_error_returns_retrieval_unavailable(self):
+        """Spark/table errors must return retrieval_unavailable, not fall through to substring."""
+        from agent.tools_retrieval import search_sec_filings
+
+        def raise_spark_error(*args, **kwargs):
+            raise RuntimeError("Table not found: silver_sec_sections")
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.side_effect = raise_spark_error
+            result = search_sec_filings("NVDA", query="test")
+
+        assert len(result) == 1
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["ticker"] == "NVDA"
+        # Must NOT have retrieval_mode (no substring fallback)
+        assert "retrieval_mode" not in result[0]
+
+    def test_table_error_does_not_invoke_substring_path(self):
+        """Spark/table errors must not trigger substring fallback path."""
+        from agent.tools_retrieval import search_sec_filings
+
+        def raise_spark_error(*args, **kwargs):
+            raise RuntimeError("Connection refused")
+
+        mock_spark = MagicMock()
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
+             patch("agent.tools_retrieval._spark", return_value=mock_spark):
+            MockRetriever.return_value.retrieve.side_effect = raise_spark_error
+            result = search_sec_filings("NVDA", query="test")
+
+        # The Spark session must NOT have been called (no substring fallback)
+        mock_spark.table.assert_not_called()
+        assert result[0]["error"] == "retrieval_unavailable"

@@ -1228,7 +1228,7 @@ class TestSearchSecFilingsError:
         assert result == []
 
     def test_fallback_results_tagged_with_retrieval_mode(self, fake_pyspark, monkeypatch):
-        """Non-corpus exception must return results tagged with retrieval_mode."""
+        """Non-corpus exception must return retrieval_unavailable, not substring fallback."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
@@ -1240,26 +1240,28 @@ class TestSearchSecFilingsError:
         mock_retriever = MagicMock()
         mock_retriever.retrieve.side_effect = fake_retrieve
 
-        mock_row = MagicMock()
-        mock_row.asDict.return_value = {
-            "chunk_text": "NVIDIA revenue growth",
-            "ticker": "NVDA",
-            "accession_number": "ACC1",
-            "form_type": "10-K",
-            "accepted_ts": "2025-01-15",
-            "source_url": "",
-            "filing_section": "item_7",
-            "chunk_index": 0,
-        }
-        # Fluent mock: each chained method returns the mock itself
-        mock_df = MagicMock()
-        mock_df.where.return_value = mock_df
-        mock_df.orderBy.return_value = mock_df
-        mock_df.limit.return_value = mock_df
-        mock_df.collect.return_value = [mock_row]
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) == 1
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert "retrieval_mode" not in result[0]
+
+    def test_spark_table_error_returns_retrieval_unavailable(self, fake_pyspark, monkeypatch):
+        """Spark/table errors must return retrieval_unavailable, not fall through."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+
+        def fake_retrieve(*args, **kwargs):
+            raise RuntimeError("Table not found: silver_sec_sections")
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
 
         mock_spark = MagicMock()
-        mock_spark.table.return_value = mock_df
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
@@ -1267,93 +1269,13 @@ class TestSearchSecFilingsError:
             result = search_sec_filings("NVDA", query="revenue")
 
         assert len(result) == 1
-        assert result[0]["retrieval_mode"] == "substring_fallback"
-        assert result[0]["_warning"] == "hybrid_retrieval_failed"
-
-    def test_fallback_as_of_filters_future_filings(self, fake_pyspark, monkeypatch):
-        """Rows with accepted_ts after as_of must be excluded from fallback results."""
-        mock_lakebase = MagicMock()
-        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
-
-        from agent.tools_retrieval import search_sec_filings
-
-        def fake_retrieve(*args, **kwargs):
-            raise RuntimeError("connection timeout")
-
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
-
-        mock_row_past = MagicMock()
-        mock_row_past.asDict.return_value = {
-            "chunk_text": "Past filing text",
-            "ticker": "NVDA",
-            "accession_number": "PAST",
-            "form_type": "10-K",
-            "accepted_ts": "2024-06-01",
-            "source_url": "",
-            "filing_section": "item_7",
-            "chunk_index": 0,
-        }
-        mock_row_future = MagicMock()
-        mock_row_future.asDict.return_value = {
-            "chunk_text": "Future filing text",
-            "ticker": "NVDA",
-            "accession_number": "FUTURE",
-            "form_type": "10-K",
-            "accepted_ts": "2026-01-01",
-            "source_url": "",
-            "filing_section": "item_7",
-            "chunk_index": 0,
-        }
-
-        # Track calls to .where() to verify as_of filter is applied
-        where_calls = []
-        all_rows = [mock_row_past, mock_row_future]
-
-        def mock_where(col_expr):
-            where_calls.append(col_expr)
-            return mock_df
-
-        mock_df = MagicMock()
-        mock_df.where.side_effect = mock_where
-        mock_df.orderBy.return_value = mock_df
-        # Return all rows — the test asserts that as_of filtering was ATTEMPTED
-        # in Spark. To prove the filter matters, we also run a mutation test.
-        mock_df.limit.return_value = mock_df
-        mock_df.collect.return_value = [mock_row_past, mock_row_future]
-
-        mock_spark = MagicMock()
-        mock_spark.table.return_value = mock_df
-
-        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
-
-        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
-             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
-             patch("agent.tools_retrieval._spark", return_value=mock_spark):
-            result = search_sec_filings("NVDA", as_of=as_of)
-
-        # Verify that where() was called at least twice (ticker + as_of)
-        assert len(where_calls) >= 2, (
-            f"Expected at least 2 where calls (ticker + as_of), got {len(where_calls)}"
-        )
-
-        # Mutation test: write a temp copy without as_of and verify it would
-        # return the future row (proving the filter is load-bearing).
-        # We do this by calling again with as_of=None and checking the result.
-        where_calls.clear()
-        mock_df.collect.return_value = [mock_row_past, mock_row_future]
-
-        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
-             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
-             patch("agent.tools_retrieval._spark", return_value=mock_spark):
-            result_no_asof = search_sec_filings("NVDA", as_of=None)
-
-        # With as_of=None, the now() default means future filings still get
-        # filtered (since 2026 > now). But the key assertion is that the
-        # as_of code path was hit — verified by the where_calls count above.
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["ticker"] == "NVDA"
+        # Spark must NOT have been called (no substring fallback)
+        mock_spark.table.assert_not_called()
 
     def test_fallback_output_keys_match_hybrid_path(self, fake_pyspark, monkeypatch):
-        """Fallback must return the same keys as the hybrid path."""
+        """Non-corpus exception returns retrieval_unavailable with correct keys."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
@@ -1365,60 +1287,24 @@ class TestSearchSecFilingsError:
         mock_retriever = MagicMock()
         mock_retriever.retrieve.side_effect = fake_retrieve
 
-        mock_row = MagicMock()
-        mock_row.asDict.return_value = {
-            "chunk_text": "Some filing text",
-            "ticker": "NVDA",
-            "accession_number": "ACC1",
-            "form_type": "10-K",
-            "accepted_ts": "2025-01-15",
-            "source_url": "https://sec.gov/filing",
-            "filing_section": "item_7",
-            "chunk_index": 3,
-        }
-
-        mock_df = MagicMock()
-        mock_df.where.return_value = mock_df
-        mock_df.orderBy.return_value = mock_df
-        mock_df.limit.return_value = mock_df
-        mock_df.collect.return_value = [mock_row]
-
-        mock_spark = MagicMock()
-        mock_spark.table.return_value = mock_df
-
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
-             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
-             patch("agent.tools_retrieval._spark", return_value=mock_spark):
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
             result = search_sec_filings("NVDA", query="filing")
 
         assert len(result) == 1
         r = result[0]
 
-        # Must have the same keys as the hybrid path
-        expected_keys = {
-            "accession_number", "form_type", "accepted_ts", "source_url",
-            "ticker", "section", "chunk_index", "chunk_text",
-            "retrieval_mode", "_warning",
-        }
+        # Must have the structured error keys
+        expected_keys = {"error", "message", "ticker"}
         assert set(r.keys()) == expected_keys, (
             f"Key mismatch: missing={expected_keys - set(r.keys())}, "
             f"extra={set(r.keys()) - expected_keys}"
         )
-
-        # Verify values are mapped correctly
-        assert r["accession_number"] == "ACC1"
-        assert r["form_type"] == "10-K"
-        assert r["accepted_ts"] == "2025-01-15"
-        assert r["source_url"] == "https://sec.gov/filing"
+        assert r["error"] == "retrieval_unavailable"
         assert r["ticker"] == "NVDA"
-        assert r["section"] == "item_7"
-        assert r["chunk_index"] == 3
-        assert r["chunk_text"] == "Some filing text"
-        assert r["retrieval_mode"] == "substring_fallback"
-        assert r["_warning"] == "hybrid_retrieval_failed"
 
-    def test_fallback_error_returns_structured_unavailable(self, monkeypatch):
-        """If the fallback itself raises, return retrieval_unavailable dict."""
+    def test_generic_exception_returns_retrieval_unavailable(self, monkeypatch):
+        """Generic exceptions must return retrieval_unavailable, not substring fallback."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
@@ -1430,21 +1316,15 @@ class TestSearchSecFilingsError:
         mock_retriever = MagicMock()
         mock_retriever.retrieve.side_effect = fake_retrieve
 
-        # Make the Spark table call raise to trigger the inner except
-        mock_spark = MagicMock()
-        mock_spark.table.side_effect = RuntimeError("Delta table not found")
-
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
-             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
-             patch("agent.tools_retrieval._spark", return_value=mock_spark):
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
             result = search_sec_filings("NVDA", query="test")
 
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
-        assert "SEC filing corpus could not be loaded" in result[0]["message"]
         assert result[0]["ticker"] == "NVDA"
         # Must not leak raw exception text
-        assert "Delta table not found" not in result[0]["message"]
+        assert "connection timeout" not in result[0]["message"]
 
     def test_unavailable_result_contains_no_exception_text(self, monkeypatch):
         """The error message must not leak raw exception text."""
