@@ -346,7 +346,8 @@ WITH entity_returns AS (
         return_1d,
         information_available_ts
     FROM ${catalog}.${schema}.serve_daily_equity_metrics_v1
-    WHERE information_available_ts <= :as_of
+    WHERE event_date >= :start_date
+      AND information_available_ts <= :as_of
 ),
 benchmark_returns AS (
     SELECT
@@ -355,6 +356,7 @@ benchmark_returns AS (
         information_available_ts AS bench_info_ts
     FROM ${catalog}.${schema}.serve_daily_equity_metrics_v1
     WHERE symbol = :benchmark
+      AND event_date >= :start_date
       AND information_available_ts <= :as_of
 ),
 entity_cumulative AS (
@@ -407,7 +409,7 @@ FROM entity_cumulative e
 JOIN benchmark_cumulative b ON e.event_date = b.event_date;
 ```
 
-**Source:** Derived from `serve_daily_equity_metrics_v1`. Benchmark is a typed bounded parameter (SPY, QQQ, or RSP); the view takes the benchmark as a `:benchmark` bind parameter. Cumulative return is computed as `EXP(SUM(LN(1 + return_1d)))` over the window, and relative performance is entity cumulative minus benchmark cumulative. Output `information_available_ts` is the GREATEST of entity and benchmark availability to ensure PIT safety.
+**Source:** Derived from `serve_daily_equity_metrics_v1`. Benchmark is a typed bounded parameter (SPY, QQQ, or RSP); the view takes the benchmark as a `:benchmark` bind parameter. The view takes a `:start_date` bind parameter to anchor the cumulative return window to the requested period (not inception-to-date). Cumulative return is computed as `EXP(SUM(LN(1 + return_1d)))` over the window from `:start_date`, and relative performance is entity cumulative minus benchmark cumulative. Output `information_available_ts` is the GREATEST of entity and benchmark availability to ensure PIT safety.
 
 ---
 

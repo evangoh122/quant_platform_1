@@ -522,6 +522,21 @@ class TestDDLRelativePerformanceSemantics:
             "Relative performance must use cumulative return"
         )
 
+    def test_start_date_bound_in_inputs(self, ddl_content):
+        """Relative performance must have :start_date bound in input CTEs."""
+        section_start = ddl_content.find("## serve_relative_performance_v1")
+        section_end = ddl_content.find("## serve_options_metrics_v1")
+        section = ddl_content[section_start:section_end]
+
+        # Must have :start_date in WHERE clauses
+        assert ":start_date" in section, (
+            "Relative performance must have :start_date bound in inputs"
+        )
+        # Must filter by event_date >= :start_date
+        assert "event_date >= :start_date" in section.lower() or "event_date >= :start_date" in section, (
+            "Relative performance must filter by event_date >= :start_date"
+        )
+
 
 class TestDDLAvailabilityContract:
     """Every output information_available_ts must be a window MAX / GREATEST over all inputs."""
