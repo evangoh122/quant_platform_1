@@ -1984,3 +1984,19 @@ class TestBronzeFallbackAvailability:
             f"Mutation proof: after dropping ingest_ts from GREATEST, "
             f"availability should be Jan 2 (derived), got {avail_ts}"
         )
+
+def test_adjusted_returns_availability_includes_adjusted_source():
+    """The adjusted equity-metrics view joins return_1d from the adjusted source, so its output availability must be the
+    GREATEST of the price row's AND the adjusted source's availability — a late adjusted-return revision must move it."""
+    import re
+
+    from tests.analytics_nl._ddl_extract import extract_view_sql
+
+    sql = extract_view_sql("serve_daily_equity_metrics_v1", variant="adjusted")
+    m = re.search(r"returns_from_source\s+AS\s*\((.*?)\n\)", sql, re.S | re.I)
+    assert m, "returns_from_source CTE not found in the adjusted serve_daily_equity_metrics_v1 DDL"
+    cte = re.sub(r"\s+", " ", m.group(1))
+    assert re.search(
+        r"GREATEST\(\s*dp\.information_available_ts\s*,\s*adj\.information_available_ts\s*\)\s+AS\s+information_available_ts",
+        cte, re.I,
+    ), "returns_from_source must output GREATEST(dp.information_available_ts, adj.information_available_ts)"
