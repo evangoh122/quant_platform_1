@@ -21,6 +21,7 @@ Expected: ~10,720 rows on first run, 0 on second run (idempotent).
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import threading
@@ -28,10 +29,13 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import Optional
 
 # Ensure repo root is on sys.path so ``api.*`` and ``pipelines.*`` resolve
 # when invoked via ``python_file`` in a Databricks job.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+logger = logging.getLogger(__name__)
 
 # -- Config --
 
@@ -144,10 +148,11 @@ def build(
     _merge_lock = threading.Lock()
 
     def _embed_batch(batch):
-        """Worker: embed a batch and write to Delta.  Returns row count."""
+        """Worker: embed a batch and write to Delta.  Returns row count (0 if unknown)."""
         from api.services.embeddings import get_embeddings as _get
         worker_embeddings = _get()
-        return _embed_and_write_batch(spark, worker_embeddings, batch, now, _merge_lock)
+        result = _embed_and_write_batch(spark, worker_embeddings, batch, now, _merge_lock)
+        return result if result is not None else 0
 
     # Submit batches to the pool as they come off the iterator.
     # At most max_workers futures are in-flight at any time (bounded memory).
@@ -214,7 +219,7 @@ def _embed_and_write_batch(
     batch: list,
     now: datetime,
     merge_lock: threading.Lock,
-) -> int:
+) -> Optional[int]:
     """Embed a batch of chunks and MERGE into the embeddings table.
 
     Uses a unique temp view name per batch to avoid concurrent-view conflicts.
@@ -278,7 +283,11 @@ def _embed_and_write_batch(
                 if metrics and "numTargetRowsInserted" in metrics:
                     inserted = int(metrics["numTargetRowsInserted"])
         except Exception:
-            inserted = len(out_rows)
+            logger.warning(
+                "Could not read MERGE metrics from DESCRIBE HISTORY; "
+                "reporting inserted count as unknown"
+            )
+            inserted = None
 
     # Drop the unique temp view
     try:
