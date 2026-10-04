@@ -1112,3 +1112,154 @@ class TestMassiveRequiresKey:
         )
         assert hasattr(src, "fetch_splits")
         assert callable(src.fetch_splits)
+
+
+# ---------------------------------------------------------------------------
+# 15. API key leak via error messages
+# ---------------------------------------------------------------------------
+
+class _LeakySession:
+    """Session that raises exceptions containing an API key in the message."""
+
+    def __init__(self, exc_class, secret="SECRET123"):
+        self._exc_class = exc_class
+        self._secret = secret
+        self._calls = []
+
+    def get(self, url, timeout=None):
+        self._calls.append(url)
+        raise self._exc_class(
+            f"Connection failed for https://api.massive.com/v3/splits?ticker=X&apiKey={self._secret}"
+        )
+
+
+class TestApiKeyLeak:
+
+    def _check_no_secret(self, text, secret="SECRET123"):
+        """Assert secret does not appear in text."""
+        assert secret not in text, f"Secret leaked in: {text[:200]}"
+
+    def test_http_error_no_key_in_exception(self):
+        """requests.HTTPError with apiKey in message → redacted in RuntimeError."""
+        import requests
+        session = _LeakySession(requests.HTTPError)
+        src = MassiveCorporateActionsSource(
+            api_key="SECRET123",
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+            max_retries=0,
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            src.fetch_splits("X")
+        self._check_no_secret(str(exc_info.value))
+        self._check_no_secret(repr(exc_info.value))
+        # Check __cause__ and __context__ chains
+        cause = exc_info.value.__cause__
+        while cause:
+            self._check_no_secret(str(cause))
+            self._check_no_secret(repr(cause))
+            cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+
+    def test_connection_error_no_key_in_exception(self):
+        """requests.ConnectionError with apiKey in message → redacted."""
+        import requests
+        session = _LeakySession(requests.ConnectionError)
+        src = MassiveCorporateActionsSource(
+            api_key="SECRET123",
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+            max_retries=0,
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            src.fetch_splits("X")
+        self._check_no_secret(str(exc_info.value))
+        self._check_no_secret(repr(exc_info.value))
+
+    def test_no_key_in_report_failures(self, capsys, caplog):
+        """Simulate notebook error handling — apiKey must not appear in report."""
+        import requests
+        import logging
+
+        secret = "SECRET123"
+        session = _LeakySession(requests.HTTPError, secret=secret)
+        src = MassiveCorporateActionsSource(
+            api_key=secret,
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+            max_retries=0,
+        )
+
+        # Simulate what the notebook does
+        report_failures = {}
+        try:
+            src.fetch_splits("X")
+        except Exception as exc:
+            from notebooks.refresh_bronze_corporate_actions import _redact_api_key
+            safe_msg = _redact_api_key(str(exc))[:200]
+            report_failures["X"] = safe_msg
+
+        self._check_no_secret(str(report_failures))
+
+    def test_no_key_in_printed_output(self, capsys):
+        """Printed error output must not contain apiKey."""
+        import requests
+
+        secret = "SECRET123"
+        session = _LeakySession(requests.HTTPError, secret=secret)
+        src = MassiveCorporateActionsSource(
+            api_key=secret,
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+            max_retries=0,
+        )
+
+        try:
+            src.fetch_splits("X")
+        except RuntimeError as exc:
+            from notebooks.refresh_bronze_corporate_actions import _redact_api_key
+            safe_msg = _redact_api_key(str(exc))[:200]
+            print(f"  FAILED X: {safe_msg}")
+
+        captured = capsys.readouterr()
+        self._check_no_secret(captured.out)
+        self._check_no_secret(captured.err)
+
+    def test_mutation_remove_redaction_leaks(self):
+        """Mutation proof: the raw exception from requests contains the secret,
+        but the adapter's RuntimeError never does. This proves redaction works."""
+        import requests
+
+        secret = "SECRET123"
+        session = _LeakySession(requests.HTTPError, secret=secret)
+
+        # Step 1: The raw exception from the session DOES contain the secret
+        try:
+            session.get("https://api.massive.com/v3/splits?ticker=X&apiKey=SECRET123")
+        except requests.HTTPError as raw_exc:
+            assert secret in str(raw_exc), \
+                "Raw requests exception should contain the secret (baseline)"
+        else:
+            assert False, "Expected exception"
+
+        # Step 2: The adapter's RuntimeError does NOT contain the secret
+        src = MassiveCorporateActionsSource(
+            api_key=secret,
+            session=session,
+            clock=_fixed_clock(),
+            sleeper=_NoOpSleeper(),
+            max_retries=0,
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            src.fetch_splits("X")
+        assert secret not in str(exc_info.value), \
+            "Adapter RuntimeError must not contain the secret"
+        # Check the full chain
+        cause = exc_info.value.__cause__
+        while cause:
+            assert secret not in str(cause), \
+                f"Exception chain must not contain the secret: {cause}"
+            cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
