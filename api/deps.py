@@ -96,7 +96,19 @@ def get_current_user(request: Request) -> AppUser:
     ``AUTH_DEV_USER`` fallback is used — but that fallback is never treated as an
     authenticated principal. A database error during role lookup returns ``503``,
     never a role.
+
+    In public-demo mode, returns a fixed anonymous viewer immediately — every
+    identity header is ignored and no database is touched.
     """
+    from api.demo import PUBLIC_DEMO_ROLE, PUBLIC_DEMO_USER_ID, is_public_demo
+
+    if is_public_demo():
+        return AppUser(
+            user_id=PUBLIC_DEMO_USER_ID,
+            role=PUBLIC_DEMO_ROLE,
+            authenticated=False,
+        )
+
     header_value = request.headers.get(_AUTH_USER_HEADER)
     if header_value and header_value.strip():
         user_id = header_value.strip()
@@ -150,14 +162,39 @@ def get_lakebase():
     return _get()
 
 
-def read_delta(fn: Callable[[], List[dict]]) -> Tuple[List[dict], str, str]:
+def read_delta(
+    fn: Callable[[], List[dict]],
+    *,
+    snapshot_key: str | None = None,
+) -> Tuple[List[dict], str, str]:
     """Run a Delta-backed read, mapping failure modes to a freshness state.
 
     Returns ``(rows, state, detail)`` where state is one of ``fresh``,
     ``stale``, ``empty``, ``unavailable``. Never raises: a missing pyspark or a
     failing Spark call degrades to ``unavailable`` so the route can return a
     well-formed empty envelope instead of crashing.
+
+    In public-demo mode the live *fn* is never called.  If a *snapshot_key* is
+    provided the function lazily imports ``api.demo_data.read_snapshot`` and
+    serves the pre-exported JSON.  Missing key, missing module, or any
+    validation failure degrades to ``([], "unavailable", <detail>)`` without
+    exposing raw exception text.
     """
+    from api.demo import is_public_demo
+
+    if is_public_demo():
+        if not snapshot_key:
+            return [], "unavailable", "no snapshot key"
+        try:
+            from api.demo_data import read_snapshot
+
+            rows = read_snapshot(snapshot_key)
+            if not rows:
+                return [], "empty", "0 rows"
+            return rows, "fresh", f"{len(rows)} rows"
+        except Exception:  # noqa: BLE001 - never expose exception text
+            return [], "unavailable", "snapshot read failed"
+
     try:
         rows = fn() or []
     except ImportError:

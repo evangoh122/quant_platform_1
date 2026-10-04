@@ -61,6 +61,7 @@ from execution.bridge import IBKRBridge
 # ``from agent.tools_write import *`` can never surface the injectable internals.
 __all__ = [
     "ApprovalContext",
+    "PublicDemoWriteDisabled",
     "add_to_watchlist",
     "save_research_note",
     "create_order_intent",
@@ -69,6 +70,25 @@ __all__ = [
     "cancel_paper_order",
     "record_agent_action",
 ]
+
+
+class PublicDemoWriteDisabled(RuntimeError):
+    """Raised when a write tool is called in public-demo mode."""
+
+
+def _reject_public_demo_write() -> None:
+    """Reject write operations when public-demo mode is active.
+
+    Must be called as the first executable statement in every write tool,
+    before argument normalization, UUID generation, DB access, transactions,
+    audit logging, market clock, risk engine, or broker acquisition.
+    """
+    from api.demo import is_public_demo
+
+    if is_public_demo():
+        raise PublicDemoWriteDisabled(
+            "write operations are disabled in public demo mode"
+        )
 
 # Statuses from which a new placement is still allowed.
 _PLACEABLE_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED")
@@ -167,6 +187,7 @@ def _log_action(
 # ── watchlists ────────────────────────────────────────────────────────────────
 def add_to_watchlist(symbol: str, user_id: str = "default", *, db: Optional[Lakebase] = None) -> dict:
     """INSERT into watchlists; idempotent per (user, symbol)."""
+    _reject_public_demo_write()
     db = db or get_lakebase()
     watchlist_id = _id("wl")
     with db.transaction() as conn:
@@ -196,6 +217,7 @@ def save_research_note(
     user_id: str = "default", *, db: Optional[Lakebase] = None,
 ) -> dict:
     """INSERT into research_notes."""
+    _reject_public_demo_write()
     db = db or get_lakebase()
     note_id = _id("note")
     with db.transaction() as conn:
@@ -226,6 +248,7 @@ def create_order_intent(
     user_id: str = "default", *, db: Optional[Lakebase] = None,
 ) -> dict:
     """INSERT an order in PENDING_APPROVAL state. No broker call. Idempotent by key."""
+    _reject_public_demo_write()
     db = db or get_lakebase()
     side = side.upper()
     order_type = order_type.upper()
@@ -307,6 +330,7 @@ def record_approval(order_id: str, approver: ApprovalContext, *,
     and no approval row is written. This stops fabricated identities and
     cross-user approval, not a same-process caller (see module docstring).
     """
+    _reject_public_demo_write()
     if not isinstance(approver, ApprovalContext):
         return {
             "order_id": order_id, "status": "REJECTED", "ok": False,
@@ -433,6 +457,7 @@ def approve_and_place_paper_order(order_id: str) -> dict:
     This is not an enforcement boundary against a same-process caller: the
     private test seam below remains importable (see module docstring).
     """
+    _reject_public_demo_write()
     db = get_lakebase()
     engine = RiskEngine(load_allowlist=True)
     bridge = IBKRBridge()
@@ -705,6 +730,7 @@ def cancel_paper_order(order_id: str, user_id: str = "default", *,
     Only the order identity and acting user are accepted; the bridge is acquired
     internally.
     """
+    _reject_public_demo_write()
     db = db or get_lakebase()
     bridge = IBKRBridge()
     return _cancel_paper_order(order_id, user_id, db=db, bridge=bridge)
@@ -786,6 +812,7 @@ def record_agent_action(
     status: str = "success", user_id: str = "default", *, db: Optional[Lakebase] = None,
 ) -> dict:
     """INSERT into agent_actions (standalone audit tool)."""
+    _reject_public_demo_write()
     db = db or get_lakebase()
     with db.transaction() as conn:
         with conn.cursor() as cur:

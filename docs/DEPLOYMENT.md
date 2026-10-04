@@ -178,6 +178,95 @@ or a structured 503 when Lakebase is unreachable — never a 500 crash.
 - CORS is disabled by default (same-origin). Enable only for local dev via
   `CORS_ORIGINS=http://localhost:5173`.
 
+## 10. Render deployment — proxy trust and rate limiting
+
+When deploying on Render, the following configuration applies:
+
+### Fail-closed startup guard
+
+On Render (the `RENDER` environment variable is set), the application
+**refuses to start** unless `PUBLIC_DEMO=1` is also set. This prevents the
+insecure default where an absent `PUBLIC_DEMO` silently enables the full
+write surface. Set `PUBLIC_DEMO=1` explicitly in the Render service
+environment.
+
+### Rate limiter — IP extraction (`CLIENT_IP_SOURCE`)
+
+The source of the client IP for rate limiting is controlled by the
+`CLIENT_IP_SOURCE` environment variable:
+
+| Value | Default on | Behaviour |
+|-------|-----------|-----------|
+| `xff_leftmost` | **Render** | Leftmost `X-Forwarded-For` entry if valid; otherwise `request.client.host`. **Never reads** `CF-Connecting-IP` or `True-Client-IP`. |
+| `cf_connecting_ip` | — | `CF-Connecting-IP` only (valid IP); otherwise `request.client.host`. Opt-in for verified Cloudflare setups. |
+| `peer` | **non-Render** | `request.client.host` only; all headers ignored. |
+
+An unrecognised value raises `PublicDemoConfigurationError` at startup.
+
+**Why `xff_leftmost` is the default on Render:**
+
+Render's documentation states: *"we set the first IP in the list to the real
+client IP"* ([source](https://render.com/docs/forwarding-and-proxying)).
+The `CF-Connecting-IP` and `True-Client-IP` headers are **not** rewritten
+by Render — a client can set them to arbitrary values. DeepSeek's check6
+proved that trusting `CF-Connecting-IP` first is spoofable: rotating the
+header 200x gives 200/200 accepted, then a real client gets 429.
+
+Outside Render (no `RENDER` env var), the default is `peer` and all headers
+are ignored regardless of `CLIENT_IP_SOURCE`.
+
+We avoid using `--forwarded-allow-ips='*'` because that would make
+`request.client.host` read from the (spoofable) `X-Forwarded-For` header.
+
+The per-IP limit defaults to 60 req/min; an aggregate token bucket of 600
+tokens refills at 10 tokens/sec, so bursts cause brief 429s that
+self-recover within seconds rather than a hard minute-long outage. Both
+are configurable via `RATE_LIMIT_READS` and `RATE_LIMIT_GLOBAL`. The LRU
+cap on distinct IP keys defaults to 10,000 (configurable via
+`RATE_LIMIT_LRU_MAX`).
+
+### Uvicorn startup command
+
+```bash
+uvicorn api.main:app --host 0.0.0.0 --port $PORT
+```
+
+Do **not** pass `--forwarded-allow-ips='*'`. Render's proxy is not trusted
+at the uvicorn level; the application reads headers directly for
+rate-limiting purposes only.
+
+### Post-deploy verification
+
+After deploying, run these checks before going public:
+
+```bash
+# (a) Confirm which IP the limiter keys on.
+# Enable diagnostic logging, send X-Forwarded-For, check the log (redacted key).
+# Set RATE_LIMIT_DEBUG=1 in your Render service env, then:
+curl -H "X-Forwarded-For: 1.2.3.4" https://YOUR_APP.onrender.com/api/health
+# The log should show: rate_limit_debug client_ip_source=xff_leftmost key=1.2.x.x
+# If the key is "1.2" something is wrong (the redacted format must be "1.2.x.x").
+# Turn RATE_LIMIT_DEBUG off after verification.
+
+# (b) Confirm per-IP limiting with spoofed headers.
+# From one machine, send 70 requests with rotating spoofed XFF,
+# CF-Connecting-IP, and True-Client-IP headers.
+# Request 61 should get 429 (one bucket, spoofed headers ignored).
+for i in $(seq 1 70); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -H "X-Forwarded-For: 10.0.$(( RANDOM % 256 )).1" \
+    -H "CF-Connecting-IP: $(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 ))" \
+    -H "True-Client-IP: $(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 ))" \
+    https://YOUR_APP.onrender.com/api/health
+done | sort | uniq -c
+
+# (c) If (b) fails (no 429s), switch CLIENT_IP_SOURCE.
+```
+
+If verification shows that spoofed headers bypass the limiter, set
+`CLIENT_IP_SOURCE=peer` as an immediate mitigation and investigate the
+proxy configuration.
+
 ## Lakebase agent tools — approver authority and migrations
 
 ### Approver authority (out-of-band grant only)
