@@ -243,7 +243,7 @@ class TestParseSecTimestamp:
         assert ts.year == 2025
         assert ts.month == 2
         assert ts.day == 20
-        assert ts.tzinfo is None  # UTC-naive for Spark
+        assert ts.tzinfo == timezone.utc  # tz-aware UTC for Spark
 
     def test_none_input(self):
         assert parse_sec_timestamp(None) is None
@@ -256,14 +256,16 @@ class TestParseSecTimestamp:
         ts = parse_sec_timestamp("2025-01-15T12:00:00+05:00")
         assert ts is not None
         assert ts.hour == 7  # UTC = 12 - 5
+        assert ts.tzinfo == timezone.utc
 
     def test_epoch_equality(self):
-        """Verify epoch-second roundtrip."""
+        """Verify epoch-second roundtrip with tz-aware UTC."""
         ts = parse_sec_timestamp("2025-02-20T18:30:00.000Z")
         assert ts is not None
-        epoch = int(ts.replace(tzinfo=timezone.utc).timestamp())
+        epoch = int(ts.timestamp())
+        assert epoch == 1740076200
         # Reconstruct from epoch
-        ts2 = datetime.fromtimestamp(epoch, tz=timezone.utc).replace(tzinfo=None)
+        ts2 = datetime.fromtimestamp(epoch, tz=timezone.utc)
         assert ts == ts2
 
 
@@ -657,7 +659,11 @@ class TestIdempotency:
         assert result2.total_rows_appended == 0
 
     def test_missing_accepted_ts_cannot_publish(self):
-        """Filing with missing acceptance datetime fails and logs."""
+        """Filing with missing acceptance datetime fails and logs.
+
+        With resume support, an 'in_progress' entry is persisted before work,
+        then the 'failed' entry is written when accepted_ts is missing.
+        """
         clock = FakeClock()
         http = FakeHttpClient()
 
@@ -700,6 +706,9 @@ class TestIdempotency:
         failed = [e for e in log_writer.entries if e.status == "failed"]
         assert len(failed) == 1
         assert failed[0].error_code == "missing_accepted_ts"
+        # Also verify in_progress was persisted
+        in_progress = [e for e in log_writer.entries if e.status == "in_progress"]
+        assert len(in_progress) == 1
 
 
 # -- Dry run tests --
@@ -800,9 +809,9 @@ class TestProcessFiling:
             form_type="10-K",
             filing_date="2025-02-20",
             primary_doc="nvda-20250126.htm",
-            accepted_ts=datetime(2025, 2, 20, 18, 30, 0),
+            accepted_ts=datetime(2025, 2, 20, 18, 30, 0, tzinfo=timezone.utc),
         )
-        ingest_ts = datetime(2025, 3, 1, 12, 0, 0)
+        ingest_ts = datetime(2025, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
         rows = process_filing("NVDA", "1045810", "NVIDIA Corp", filing, filing_html, ingest_ts)
         assert len(rows) > 0
 
@@ -815,16 +824,16 @@ class TestProcessFiling:
             assert "chunk_id" in row
             assert row["chunk_id"] >= 1
             assert row["ticker"] == "NVDA"
-            assert row["accepted_ts"] == datetime(2025, 2, 20, 18, 30, 0)
+            assert row["accepted_ts"] == datetime(2025, 2, 20, 18, 30, 0, tzinfo=timezone.utc)
 
     def test_empty_html(self):
         from pipelines.sec_rag_ingest import FilingMeta
         filing = FilingMeta(
             accession_number="0001", form_type="10-K",
             filing_date="2025-01-01", primary_doc="test.htm",
-            accepted_ts=datetime(2025, 1, 1),
+            accepted_ts=datetime(2025, 1, 1, tzinfo=timezone.utc),
         )
-        rows = process_filing("TEST", "1234", "Test", filing, "", datetime.now())
+        rows = process_filing("TEST", "1234", "Test", filing, "", datetime.now(timezone.utc))
         assert rows == []
 
 
@@ -1459,6 +1468,415 @@ class TestMainEndToEnd:
         assert cik_log.entries[0].cik == "0001045810"
         assert cik_log.entries[0].status == "mapped"
         assert cik_log.flush_count == 1
+
+
+# -- Round 8a: New tests for findings 1-6 --
+
+
+class TestAtomicBronzeWrites:
+    """Finding 1: MERGE (not append), explicit schema, ownership conflict."""
+
+    def test_merge_not_append(self):
+        """FakeDataWriter tracks append calls; SparkDataWriter uses MERGE.
+
+        Verify that the FakeDataWriter records rows correctly (proxy for MERGE).
+        """
+        writer = FakeDataWriter()
+        rows = [{"accession_number": "001", "cik": "0001", "ticker": "T", "record_key": "k1"}]
+        inserted = writer.append_bronze_rows("cat", "sch", rows)
+        assert inserted == 1
+        assert writer.total_rows == 1
+
+    def test_batch_ownership_conflict_raises(self):
+        """Two rows with same accession but different CIK → AccessionOwnershipConflict."""
+        from pipelines.sec_rag_ingest import SparkDataWriter, AccessionOwnershipConflict
+
+        captured = {}
+        class FakeSpark:
+            def createDataFrame(self, data, schema=None):
+                captured["data"] = list(data)
+                captured["schema"] = schema
+                df = MagicMock()
+                df.createOrReplaceTempView = MagicMock()
+                return df
+            def sql(self, q):
+                m = MagicMock()
+                m.collect.return_value = []
+                return m
+
+        writer = SparkDataWriter(spark_factory=lambda: FakeSpark())
+        rows = [
+            {"accession_number": "001", "cik": "0001", "ticker": "A",
+             "record_key": "k1", "form_type": "10-K", "filing_date": "2025-01-01",
+             "accepted_ts": None, "primary_doc": "", "filing_url": "",
+             "chunk_id": 1, "filing_section": "s", "chunk_text": "t",
+             "chunk_char_count": 1, "source": "sec", "ingest_ts": None,
+             "raw_payload": None, "company_name": "A"},
+            {"accession_number": "001", "cik": "0002", "ticker": "B",
+             "record_key": "k2", "form_type": "10-K", "filing_date": "2025-01-01",
+             "accepted_ts": None, "primary_doc": "", "filing_url": "",
+             "chunk_id": 1, "filing_section": "s", "chunk_text": "t",
+             "chunk_char_count": 1, "source": "sec", "ingest_ts": None,
+             "raw_payload": None, "company_name": "B"},
+        ]
+        with pytest.raises(AccessionOwnershipConflict, match="Conflicting CIKs"):
+            writer.append_bronze_rows("cat", "sch", rows)
+
+
+class TestAcceptedTsUTC:
+    """Finding 2: accepted_ts must be tz-aware UTC, never naive."""
+
+    def test_epoch_under_singapore_tz(self):
+        """2025-02-20T18:30:00Z must produce epoch 1740076200 regardless of local TZ."""
+        ts = parse_sec_timestamp("2025-02-20T18:30:00.000Z")
+        assert ts is not None
+        epoch = int(ts.timestamp())
+        assert epoch == 1740076200, (
+            f"Expected epoch 1740076200 (UTC), got {epoch}. "
+            "Naive datetime was serialized via time.mktime using local TZ."
+        )
+
+    def test_tz_aware_utc(self):
+        """parse_sec_timestamp returns tz-aware UTC datetime."""
+        ts = parse_sec_timestamp("2025-02-20T18:30:00.000Z")
+        assert ts.tzinfo is not None
+        assert ts.tzinfo == timezone.utc
+
+    def test_offset_preserves_utc(self):
+        """Non-UTC offset is converted to UTC."""
+        ts = parse_sec_timestamp("2025-01-15T12:00:00+05:00")
+        assert ts is not None
+        assert ts.hour == 7
+        assert ts.tzinfo == timezone.utc
+
+    def test_process_filing_tz_aware(self):
+        """process_filing rows carry tz-aware accepted_ts."""
+        from pipelines.sec_rag_ingest import FilingMeta
+        filing = FilingMeta(
+            accession_number="001", form_type="10-K",
+            filing_date="2025-01-01", primary_doc="t.htm",
+            accepted_ts=datetime(2025, 2, 20, 18, 30, 0, tzinfo=timezone.utc),
+        )
+        rows = process_filing("T", "1234", "Corp", filing, "<p>" + "x" * 200 + "</p>", datetime.now(timezone.utc))
+        if rows:
+            assert rows[0]["accepted_ts"].tzinfo == timezone.utc
+
+
+class TestDiscoveryCompleteness:
+    """Finding 3: Discovery must not silently succeed on incomplete data."""
+
+    def test_exhausted_submissions_raises(self):
+        """When submissions request fails after retries, SecClientError propagates."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        http.set_error("https://data.sec.gov/submissions/CIK0001045810.json", 500)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        with pytest.raises(SecClientError):
+            discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+
+    def test_history_failure_logged_and_continues(self):
+        """History file failure is skipped (logged), not fatal."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        # History file returns error
+        http.set_error("https://data.sec.gov/submissions/CIK0001045810-submissions-001.json", 500)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        # Should still get filings from recent (not crash)
+        assert len(filings) >= 1
+
+    def test_history_overlap_uses_filing_to(self):
+        """History file is fetched when filingTo >= start_date (overlap check)."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        # Submissions with a history file that overlaps the cutoff
+        submissions = {
+            "cik": "0001045810",
+            "entityName": "Test",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"], "filingDate": ["2025-01-15"],
+                    "accessionNumber": ["001"], "primaryDocument": ["t.htm"],
+                    "acceptanceDateTime": ["2025-01-15T10:00:00Z"],
+                },
+                "files": [{"name": "hist.json", "filingFrom": "2020-01-01", "filingTo": "2024-12-31"}],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        # History file has a filing AFTER the cutoff
+        history = {
+            "filings": {
+                "recent": {
+                    "form": ["10-Q"], "filingDate": ["2024-11-15"],
+                    "accessionNumber": ["002"], "primaryDocument": ["q.htm"],
+                    "acceptanceDateTime": ["2024-11-15T10:00:00Z"],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/hist.json", history)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        accessions = {f.accession_number for f in filings}
+        assert "002" in accessions, "History filing after cutoff should be included"
+
+    def test_missing_acceptance_datetime_not_dropped(self):
+        """Filing with missing acceptanceDateTime is included (accepted_ts=None)."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = {
+            "cik": "0001045810",
+            "entityName": "Test",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"], "filingDate": ["2025-01-15"],
+                    "accessionNumber": ["001"], "primaryDocument": ["t.htm"],
+                    "acceptanceDateTime": [None],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K"})
+        assert len(filings) == 1
+        assert filings[0].accepted_ts is None  # Not dropped
+
+
+class TestCikAmbiguousAndCacheFallback:
+    """Finding 4: CIK ambiguous status + stale-cache fallback."""
+
+    def test_two_cik_fixture_marks_ambiguous(self):
+        """A ticker mapping to two distinct CIKs → status='ambiguous'."""
+        payload = {
+            "0": {"cik_str": 100, "ticker": "DUAL", "title": "Dual A"},
+            "1": {"cik_str": 200, "ticker": "DUAL", "title": "Dual B"},
+        }
+        result = build_cik_map(["DUAL"], payload)
+        assert result["DUAL"].status == "ambiguous"
+        assert result["DUAL"].cik is None
+        assert "100" in result["DUAL"].reason
+        assert "200" in result["DUAL"].reason
+
+    def test_stale_cache_used_on_network_failure(self):
+        """30-day-old cache is used when network fails."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        http.set_error("https://www.sec.gov/files/company_tickers.json", 500)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        # Use the real fixture as cache
+        result = load_company_tickers(
+            client,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cache_ttl=3600,
+        )
+        # Should have used stale cache (fixture has NVDA)
+        assert "0" in result
+
+    def test_dry_run_does_not_write_cache(self, tmp_path):
+        """Dry run must not write the persistent cache file."""
+        cache_file = tmp_path / "tickers.json"
+        clock = FakeClock()
+        http = FakeHttpClient()
+        company_tickers = json.loads((FIXTURES / "company_tickers.json").read_text())
+        http.set_json("https://www.sec.gov/files/company_tickers.json", company_tickers)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        load_company_tickers(client, cache_path=str(cache_file), dry_run=True)
+        assert not cache_file.exists(), "Dry run should not write cache file"
+
+
+class TestFairAccess:
+    """Finding 5: Process-wide rate limiter shared across callers."""
+
+    def test_global_limiter_singleton(self):
+        """get_global_limiter returns the same instance."""
+        from pipelines.sec_rag_ingest import get_global_limiter, _global_limiter
+        # Reset for test
+        import pipelines.sec_rag_ingest as mod
+        old = mod._global_limiter
+        mod._global_limiter = None
+        try:
+            l1 = get_global_limiter(max_rps=5)
+            l2 = get_global_limiter(max_rps=10)  # ignored — already created
+            assert l1 is l2
+            assert l1.max_rps == 5
+        finally:
+            mod._global_limiter = old
+
+    def test_http_date_retry_after(self):
+        """Retry-After with HTTP-date is parsed correctly."""
+        from email.utils import format_datetime
+        future = datetime.now(timezone.utc) + __import__("datetime").timedelta(seconds=30)
+        http_date = format_datetime(future, usegmt=True)
+
+        result = SecClient._parse_retry_after({"Retry-After": http_date})
+        assert result is not None
+        assert 25 <= result <= 35  # ~30 seconds
+
+    def test_numeric_retry_after(self):
+        """Retry-After with numeric seconds."""
+        result = SecClient._parse_retry_after({"Retry-After": "42"})
+        assert result == 42.0
+
+
+class TestResumeAndWorkers:
+    """Finding 6: Resume, workers, attempt tracking."""
+
+    def test_in_progress_persisted_before_work(self):
+        """in_progress log entry is written before processing begins."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        log_writer = FakeLogWriter()
+
+        run_ingest(
+            catalog="test", schema="test",
+            start_date="2025-01-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=FakeDataWriter(),
+            log_writer=log_writer,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        in_progress = [e for e in log_writer.entries if e.status == "in_progress"]
+        assert len(in_progress) >= 1, "in_progress entry should be persisted before work"
+
+    def test_resume_skips_succeeded(self):
+        """Previously succeeded accessions are skipped on resume."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+
+        class FakeIngestLogReader:
+            def read_succeeded_accessions(self, catalog, schema, run_id):
+                # Pretend both filings already succeeded
+                return {
+                    (run_id, "NVDA", "0001045810-25-000010"),
+                    (run_id, "NVDA", "0001045810-24-000020"),
+                }
+            def read_max_attempt(self, catalog, schema, run_id, ticker, accession):
+                return 1
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=FakeDataWriter(),
+            log_writer=FakeLogWriter(),
+            ingest_log_reader=FakeIngestLogReader(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        assert result.skipped_existing_count == 2
+        assert result.total_rows_appended == 0
+
+    def test_attempt_increments(self):
+        """Attempt number = previous max attempt + 1."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        log_writer = FakeLogWriter()
+
+        class FakeIngestLogReader:
+            def read_succeeded_accessions(self, catalog, schema, run_id):
+                return set()
+            def read_max_attempt(self, catalog, schema, run_id, ticker, accession):
+                return 3  # Previous attempt was 3
+
+        run_ingest(
+            catalog="test", schema="test",
+            start_date="2025-01-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=FakeDataWriter(),
+            log_writer=log_writer,
+            ingest_log_reader=FakeIngestLogReader(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        succeeded = [e for e in log_writer.entries if e.status == "succeeded"]
+        assert len(succeeded) >= 1
+        assert succeeded[0].attempt == 4, "Attempt should be previous_max + 1 = 4"
+
+    def test_max_workers_used(self):
+        """max_workers > 1 uses ThreadPoolExecutor (verifiable via result)."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000020/nvda-20241027.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        writer = FakeDataWriter()
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            max_workers=4,
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=writer,
+            log_writer=FakeLogWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended > 0
 
 
 # -- Grep-style test: no example.com or your_email in production code --

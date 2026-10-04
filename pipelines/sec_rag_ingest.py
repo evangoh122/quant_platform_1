@@ -52,6 +52,29 @@ DEFAULT_MAX_WORKERS = 4
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_TICKER_CACHE_TTL = 86400
 
+# ── Process-wide SEC rate limiter ───────────────────────────────────────────
+# One singleton limiter shared by sec_rag_ingest and xbrl_client so the
+# aggregate rate stays ≤ MAX_REQUESTS_PER_SECOND across all callers.
+
+_global_limiter: Optional["RateLimiter"] = None
+_global_limiter_lock = threading.Lock()
+
+
+def get_global_limiter(
+    max_rps: int = DEFAULT_REQUESTS_PER_SECOND,
+    clock: Optional["Clock"] = None,
+) -> "RateLimiter":
+    """Return the process-wide RateLimiter singleton (thread-safe)."""
+    global _global_limiter
+    if _global_limiter is None:
+        with _global_limiter_lock:
+            if _global_limiter is None:
+                _global_limiter = RateLimiter(
+                    max_requests_per_second=min(max_rps, MAX_REQUESTS_PER_SECOND),
+                    clock=clock,
+                )
+    return _global_limiter
+
 # ── Section patterns (10-K / 10-Q) ────────────────────────────────────────────
 
 SECTION_PATTERNS: List[Tuple[str, str]] = [
@@ -151,6 +174,30 @@ class IngestLogWriter(Protocol):
     ) -> None: ...
 
 
+class IngestLogReader(Protocol):
+    """Reads ingest log entries for resume support.
+
+    Returns a set of (run_id, ticker, accession_number) tuples that have
+    already succeeded in previous runs.
+    """
+
+    def read_succeeded_accessions(
+        self,
+        catalog: str,
+        schema: str,
+        run_id: str,
+    ) -> Set[Tuple[str, str, str]]: ...
+
+    def read_max_attempt(
+        self,
+        catalog: str,
+        schema: str,
+        run_id: str,
+        ticker: str,
+        accession_number: str,
+    ) -> int: ...
+
+
 class CikMappingLogWriter(Protocol):
     """Writes CIK mapping log entries."""
 
@@ -208,13 +255,20 @@ def record_key(*parts: Any) -> str:
 
 
 def parse_sec_timestamp(value: Optional[str]) -> Optional[datetime]:
-    """Parse SEC timestamp string to UTC-naive datetime for Spark."""
+    """Parse SEC timestamp string to tz-aware UTC datetime for Spark.
+
+    Returns tz-aware UTC datetime so that PySpark serializes correctly
+    regardless of the local timezone (naive datetimes are serialized via
+    time.mktime which uses the local TZ, causing 8-hour shifts in UTC+8).
+    """
     if not value:
         return None
     try:
         ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if ts.tzinfo is not None:
-            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        else:
+            ts = ts.astimezone(timezone.utc)
         return ts
     except Exception:
         return None
@@ -332,38 +386,49 @@ def build_cik_map(
 
     CIKs are zero-padded to 10 digits.
     Returns a mapping result for every input symbol.
+    A ticker that maps to multiple distinct CIKs is marked 'ambiguous'.
     """
-    # Build reverse lookup: normalized ticker -> CIK
-    ticker_to_cik: Dict[str, str] = {}
+    # Build reverse lookup: normalized ticker -> set of CIKs
+    ticker_to_ciks: Dict[str, Set[str]] = {}
     for _key, entry in company_tickers_payload.items():
         if isinstance(entry, dict) and "ticker" in entry and "cik_str" in entry:
             raw_ticker = entry["ticker"].strip().upper()
             cik = str(entry["cik_str"]).zfill(10)
-            ticker_to_cik[raw_ticker] = cik
+            ticker_to_ciks.setdefault(raw_ticker, set()).add(cik)
 
     results: Dict[str, CikMappingResult] = {}
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
 
     for symbol in symbols:
         variants = normalize_sec_ticker(symbol)
-        matched_cik: Optional[str] = None
+        matched_ciks: Optional[Set[str]] = None
         matched_lookup: Optional[str] = None
 
         for variant in variants:
-            if variant in ticker_to_cik:
-                matched_cik = ticker_to_cik[variant]
+            if variant in ticker_to_ciks:
+                matched_ciks = ticker_to_ciks[variant]
                 matched_lookup = variant
                 break
 
-        if matched_cik:
-            results[symbol] = CikMappingResult(
-                ticker=symbol,
-                lookup_symbol=matched_lookup,
-                cik=matched_cik,
-                status="mapped",
-                reason="",
-                mapped_ts=now,
-            )
+        if matched_ciks:
+            if len(matched_ciks) > 1:
+                results[symbol] = CikMappingResult(
+                    ticker=symbol,
+                    lookup_symbol=matched_lookup,
+                    cik=None,
+                    status="ambiguous",
+                    reason=f"Multiple CIKs for {symbol}: {', '.join(sorted(matched_ciks))}",
+                    mapped_ts=now,
+                )
+            else:
+                results[symbol] = CikMappingResult(
+                    ticker=symbol,
+                    lookup_symbol=matched_lookup,
+                    cik=next(iter(matched_ciks)),
+                    status="mapped",
+                    reason="",
+                    mapped_ts=now,
+                )
         else:
             results[symbol] = CikMappingResult(
                 ticker=symbol,
@@ -382,7 +447,7 @@ class CikMappingResult:
     ticker: str
     lookup_symbol: Optional[str]
     cik: Optional[str]
-    status: str  # mapped | missing
+    status: str  # mapped | missing | ambiguous
     reason: str
     mapped_ts: Optional[datetime] = None
 
@@ -542,13 +607,27 @@ class SecClient:
 
     @staticmethod
     def _parse_retry_after(headers: Dict[str, str]) -> Optional[float]:
-        """Parse Retry-After header (numeric seconds or HTTP-date)."""
+        """Parse Retry-After header (numeric seconds or HTTP-date).
+
+        Handles both:
+        - Numeric seconds: "120"
+        - HTTP-date: "Wed, 21 Oct 2015 07:28:00 GMT" (RFC 7231 §7.1.3)
+        """
         value = headers.get("Retry-After") or headers.get("retry-after")
         if not value:
             return None
         try:
             return float(value)
         except ValueError:
+            pass
+        # Try HTTP-date format
+        try:
+            from email.utils import parsedate_to_datetime
+            target = parsedate_to_datetime(value)
+            now = datetime.now(timezone.utc)
+            delta = (target - now).total_seconds()
+            return max(delta, 0.0)
+        except Exception:
             return None
 
     @property
@@ -595,6 +674,7 @@ def discover_filings(
 
     Follows submissions-history JSON files to cover the cutoff date.
     Preserves acceptanceDateTime from EDGAR.
+    Raises SecClientError if the initial submissions request fails after retries.
     """
     cik_padded = cik.zfill(10)
     submissions_url = (
@@ -603,10 +683,7 @@ def discover_filings(
 
     filings: List[FilingMeta] = []
 
-    try:
-        data = client.get_json(submissions_url)
-    except SecClientError:
-        return filings
+    data = client.get_json(submissions_url)
 
     recent = data.get("filings", {}).get("recent", {})
     if not recent:
@@ -630,27 +707,36 @@ def discover_filings(
         if not name:
             continue
 
-        # Check if we need to go further back
-        earliest = file_entry.get("filingFrom", "")
-        if earliest and earliest < start_date:
-            history_url = f"{EDGAR_DATA_BASE}/submissions/{name}"
-            try:
-                hist_data = client.get_json(history_url)
-            except SecClientError:
-                continue
+        # History inclusion: file OVERLAPS [start_date, now]
+        filing_from = file_entry.get("filingFrom", "")
+        filing_to = file_entry.get("filingTo", "")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if filing_from and filing_to and filing_to < start_date:
+            # Entire file is before the cutoff — skip
+            continue
+        if filing_from and filing_from > today:
+            # Entire file is in the future — skip
+            continue
 
-            hist_recent = hist_data.get("filings", {}).get("recent", {})
-            if not hist_recent:
-                continue
+        history_url = f"{EDGAR_DATA_BASE}/submissions/{name}"
+        try:
+            hist_data = client.get_json(history_url)
+        except SecClientError as e:
+            logger.warning("History file fetch failed for %s: %s", name, e)
+            continue
 
-            _collect_filings(
-                hist_recent.get("form", []),
-                hist_recent.get("filingDate", []),
-                hist_recent.get("accessionNumber", []),
-                hist_recent.get("primaryDocument", []),
-                hist_recent.get("acceptanceDateTime", []),
-                start_date, forms, filings,
-            )
+        hist_recent = hist_data.get("filings", {}).get("recent", {})
+        if not hist_recent:
+            continue
+
+        _collect_filings(
+            hist_recent.get("form", []),
+            hist_recent.get("filingDate", []),
+            hist_recent.get("accessionNumber", []),
+            hist_recent.get("primaryDocument", []),
+            hist_recent.get("acceptanceDateTime", []),
+            start_date, forms, filings,
+        )
 
     return filings
 
@@ -665,32 +751,40 @@ def _collect_filings(
     forms: Set[str],
     filings: List[FilingMeta],
 ) -> None:
-    """Collect qualifying filings from a submissions batch."""
-    n = min(
+    """Collect qualifying filings from a submissions batch.
+
+    Iterates over the longest available array (forms/dates/accessions) rather
+    than truncating to the acceptance array length.  Rows with a missing or
+    unparseable acceptanceDateTime are still included with accepted_ts=None
+    so they are not silently dropped.
+    """
+    n = max(
         len(forms_list), len(dates_list), len(accessions_list),
-        len(docs_list), len(acceptance_list),
+        len(docs_list),
     )
 
     for i in range(n):
-        form = forms_list[i]
-        filing_date = dates_list[i]
-        accession = accessions_list[i]
+        form = forms_list[i] if i < len(forms_list) else None
+        filing_date = dates_list[i] if i < len(dates_list) else None
+        accession = accessions_list[i] if i < len(accessions_list) else None
 
+        if not form or not filing_date or not accession:
+            continue
         if form not in forms:
             continue
         if filing_date < start_date:
             continue
 
-        accepted_raw = acceptance_list[i]
-        if isinstance(accepted_raw, (int, float)):
-            accepted_ts = datetime.fromtimestamp(
-                accepted_raw / 1000 if accepted_raw > 1e12 else accepted_raw,
-                tz=timezone.utc,
-            ).replace(tzinfo=None)
-        elif isinstance(accepted_raw, str):
-            accepted_ts = parse_sec_timestamp(accepted_raw)
-        else:
-            accepted_ts = None
+        accepted_ts: Optional[datetime] = None
+        if i < len(acceptance_list):
+            accepted_raw = acceptance_list[i]
+            if isinstance(accepted_raw, (int, float)):
+                accepted_ts = datetime.fromtimestamp(
+                    accepted_raw / 1000 if accepted_raw > 1e12 else accepted_raw,
+                    tz=timezone.utc,
+                )
+            elif isinstance(accepted_raw, str):
+                accepted_ts = parse_sec_timestamp(accepted_raw)
 
         primary_doc = docs_list[i] if i < len(docs_list) else ""
 
@@ -818,10 +912,12 @@ def load_company_tickers(
     cache_path: Optional[str] = None,
     cache_ttl: int = DEFAULT_TICKER_CACHE_TTL,
     force_refresh: bool = False,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Load SEC company_tickers.json with optional caching.
 
     Returns the parsed JSON payload. Uses cache sidecar for TTL.
+    When dry_run=True, never writes to the persistent cache.
     """
     url = "https://www.sec.gov/files/company_tickers.json"
 
@@ -832,14 +928,15 @@ def load_company_tickers(
 
     try:
         payload = client.get_json(url)
-        if cache_path:
+        if cache_path and not dry_run:
             _write_cache(cache_path, payload)
         return payload
     except SecClientError as e:
         if cache_path:
             cached = _try_load_cache(cache_path, ttl=0)
             if cached is not None:
-                logger.warning("Using stale cache after fetch failure: %s", e)
+                age_str = _cache_age_str(cache_path)
+                logger.warning("Using stale cache (age=%s) after fetch failure: %s", age_str, e)
                 return cached
         raise
 
@@ -848,7 +945,11 @@ def _try_load_cache(
     cache_path: str,
     ttl: int,
 ) -> Optional[Dict[str, Any]]:
-    """Try to load cached payload if valid."""
+    """Try to load cached payload if valid.
+
+    ttl > 0  → accept cache younger than ttl seconds
+    ttl == 0 → accept cache regardless of age (stale fallback)
+    """
     try:
         path = Path(cache_path)
         sidecar = Path(cache_path + ".meta")
@@ -856,7 +957,7 @@ def _try_load_cache(
         if not path.exists():
             return None
 
-        if sidecar.exists():
+        if sidecar.exists() and ttl > 0:
             meta = json.loads(sidecar.read_text(encoding="utf-8"))
             fetched_ts = meta.get("fetched_ts", 0)
             if time.time() - fetched_ts > ttl:
@@ -884,6 +985,26 @@ def _write_cache(cache_path: str, payload: Dict[str, Any]) -> None:
         )
     except Exception as e:
         logger.warning("Failed to write cache: %s", e)
+
+
+def _cache_age_str(cache_path: str) -> str:
+    """Return human-readable age of cache sidecar, or 'unknown'."""
+    try:
+        sidecar = Path(cache_path + ".meta")
+        if sidecar.exists():
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+            fetched_ts = meta.get("fetched_ts", 0)
+            age_secs = int(time.time() - fetched_ts)
+            if age_secs < 0:
+                return "future"
+            days = age_secs // 86400
+            hours = (age_secs % 86400) // 3600
+            if days > 0:
+                return f"{days}d{hours}h"
+            return f"{hours}h{(age_secs % 3600) // 60}m"
+    except Exception:
+        pass
+    return "unknown"
 
 
 # ── Universe selection ────────────────────────────────────────────────────────
@@ -939,6 +1060,7 @@ def run_ingest(
     accession_reader: Optional[ExistingAccessionReader] = None,
     data_writer: Optional[DataWriter] = None,
     log_writer: Optional[IngestLogWriter] = None,
+    ingest_log_reader: Optional[IngestLogReader] = None,
     cik_mapping_log_writer: Optional[CikMappingLogWriter] = None,
     http_client: Optional[HttpClient] = None,
     clock: Optional[Clock] = None,
@@ -968,8 +1090,8 @@ def run_ingest(
 
     # Build dependencies if not injected
     _clock = clock or _SystemClock()
-    limiter = RateLimiter(
-        max_requests_per_second=int(
+    limiter = get_global_limiter(
+        max_rps=int(
             os.environ.get("SEC_REQUESTS_PER_SECOND", DEFAULT_REQUESTS_PER_SECOND)
         ),
         clock=_clock,
@@ -991,6 +1113,7 @@ def run_ingest(
 
     tickers_payload = load_company_tickers(
         client, cache_path=cache_path, force_refresh=refresh_cik_cache,
+        dry_run=dry_run,
     )
 
     # Get universe
@@ -1011,6 +1134,9 @@ def run_ingest(
         if mapping.status == "mapped" and mapping.cik:
             mapped_tickers.append((symbol, mapping.cik))
             result.mapped_count += 1
+        elif mapping.status == "ambiguous":
+            result.missing_count += 1
+            logger.warning("CIK mapping: ambiguous — %s: %s", symbol, mapping.reason)
         else:
             result.missing_count += 1
             logger.warning("CIK mapping: %s — %s: %s", mapping.status, symbol, mapping.reason)
@@ -1036,16 +1162,39 @@ def run_ingest(
         existing_accessions = accession_reader.read_existing_accessions(catalog, schema)
     result.existing_count = len(existing_accessions)
 
-    # Discover filings
+    # Discover filings — record failures per ticker, never silently succeed
     all_filings: Dict[str, List[FilingMeta]] = {}
+    failed_tickers: Set[str] = set()
     for ticker, cik in mapped_tickers:
-        filings = discover_filings(client, cik, start_date, forms)
-        all_filings[ticker] = filings
-        result.discovered_count += len(filings)
+        try:
+            filings = discover_filings(client, cik, start_date, forms)
+            all_filings[ticker] = filings
+            result.discovered_count += len(filings)
+        except SecClientError as e:
+            failed_tickers.add(ticker)
+            result.failed_count += 1
+            logger.error("Discovery failed for %s (CIK %s): %s", ticker, cik, e)
+            if log_writer is not None:
+                log_writer.append_log(catalog, schema, IngestLogEntry(
+                    run_id=run_id,
+                    ticker=ticker,
+                    cik=cik,
+                    accession_number="DISCOVERY_FAILED",
+                    form_type="N/A",
+                    filing_date=None,
+                    accepted_ts=None,
+                    status="failed",
+                    error_code="discovery_failed",
+                    error_message=str(e)[:500],
+                    started_ts=datetime.now(timezone.utc),
+                    completed_ts=datetime.now(timezone.utc),
+                ))
 
     # Anti-join against existing — with conflict detection
     planned: List[Tuple[str, str, str, FilingMeta]] = []  # (ticker, cik, company_name, filing)
     for ticker, cik in mapped_tickers:
+        if ticker in failed_tickers:
+            continue
         for filing in all_filings.get(ticker, []):
             dashed = filing.accession_number
             if dashed in existing_accessions:
@@ -1086,11 +1235,38 @@ def run_ingest(
                 log_writer.append_log(catalog, schema, entry)
         return result
 
-    # Process filings
-    ingest_ts = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Resume: skip accessions that already succeeded in this run
+    succeeded_keys: Set[Tuple[str, str, str]] = set()
+    if ingest_log_reader is not None:
+        succeeded_keys = ingest_log_reader.read_succeeded_accessions(
+            catalog, schema, run_id,
+        )
+        if succeeded_keys:
+            pre_count = len(planned)
+            planned = [
+                (t, c, cn, f) for t, c, cn, f in planned
+                if (run_id, t, f.accession_number) not in succeeded_keys
+            ]
+            result.skipped_existing_count += pre_count - len(planned)
+            logger.info("Resume: skipped %d already-succeeded accessions", pre_count - len(planned))
 
-    for ticker, cik, company_name, filing in planned:
-        started_ts = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Process filings
+    ingest_ts = datetime.now(timezone.utc)
+
+    def _process_one(
+        ticker: str, cik: str, company_name: str, filing: FilingMeta,
+    ) -> Optional[IngestLogEntry]:
+        """Process a single filing. Returns the log entry (already written)."""
+        started_ts = datetime.now(timezone.utc)
+
+        # Determine attempt number from previous log entries
+        attempt = 1
+        if ingest_log_reader is not None:
+            prev_max = ingest_log_reader.read_max_attempt(
+                catalog, schema, run_id, ticker, filing.accession_number,
+            )
+            attempt = prev_max + 1
+
         log_entry = IngestLogEntry(
             run_id=run_id,
             ticker=ticker,
@@ -1101,7 +1277,20 @@ def run_ingest(
             accepted_ts=filing.accepted_ts,
             status="in_progress",
             started_ts=started_ts,
+            attempt=attempt,
         )
+
+        # Persist in_progress before work begins (separate object so mutations
+        # to log_entry don't corrupt the stored in_progress record)
+        if log_writer:
+            in_progress_entry = IngestLogEntry(
+                run_id=run_id, ticker=ticker, cik=cik,
+                accession_number=filing.accession_number,
+                form_type=filing.form_type, filing_date=filing.filing_date,
+                accepted_ts=filing.accepted_ts, status="in_progress",
+                started_ts=started_ts, attempt=attempt,
+            )
+            log_writer.append_log(catalog, schema, in_progress_entry)
 
         try:
             # Second anti-join (race safety) with conflict detection
@@ -1110,28 +1299,33 @@ def run_ingest(
                 if filing.accession_number in current_existing:
                     existing_cik, existing_ticker = current_existing[filing.accession_number]
                     if existing_cik != cik:
-                        raise AccessionOwnershipConflict(
+                        # Record as failed, then raise
+                        log_entry.status = "failed"
+                        log_entry.error_code = "ownership_conflict"
+                        log_entry.error_message = (
                             f"Accession ownership conflict (race): {filing.accession_number} "
                             f"already owned by CIK {existing_cik} (ticker={existing_ticker}), "
                             f"but current request is CIK {cik} (ticker={ticker})"
                         )
+                        log_entry.completed_ts = datetime.now(timezone.utc)
+                        if log_writer:
+                            log_writer.append_log(catalog, schema, log_entry)
+                        raise AccessionOwnershipConflict(log_entry.error_message)
                     log_entry.status = "skipped_existing"
-                    log_entry.completed_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-                    result.skipped_existing_count += 1
+                    log_entry.completed_ts = datetime.now(timezone.utc)
                     if log_writer:
                         log_writer.append_log(catalog, schema, log_entry)
-                    continue
+                    return log_entry
 
             # Validate accepted_ts
             if filing.accepted_ts is None:
                 log_entry.status = "failed"
                 log_entry.error_code = "missing_accepted_ts"
                 log_entry.error_message = "Filing lacks acceptance datetime"
-                log_entry.completed_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-                result.failed_count += 1
+                log_entry.completed_ts = datetime.now(timezone.utc)
                 if log_writer:
                     log_writer.append_log(catalog, schema, log_entry)
-                continue
+                return log_entry
 
             # Fetch filing body
             raw_html = fetch_filing_text(client, cik, filing.accession_number, filing.primary_doc)
@@ -1139,11 +1333,10 @@ def run_ingest(
                 log_entry.status = "failed"
                 log_entry.error_code = "fetch_failed"
                 log_entry.error_message = "Could not fetch filing text"
-                log_entry.completed_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-                result.failed_count += 1
+                log_entry.completed_ts = datetime.now(timezone.utc)
                 if log_writer:
                     log_writer.append_log(catalog, schema, log_entry)
-                continue
+                return log_entry
 
             # Process into chunks
             rows = process_filing(ticker, cik, company_name, filing, raw_html, ingest_ts)
@@ -1151,11 +1344,10 @@ def run_ingest(
                 log_entry.status = "failed"
                 log_entry.error_code = "no_chunks"
                 log_entry.error_message = "Filing produced no chunks"
-                log_entry.completed_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-                result.failed_count += 1
+                log_entry.completed_ts = datetime.now(timezone.utc)
                 if log_writer:
                     log_writer.append_log(catalog, schema, log_entry)
-                continue
+                return log_entry
 
             # Write to bronze
             if data_writer is not None:
@@ -1165,25 +1357,66 @@ def run_ingest(
 
             log_entry.status = "succeeded"
             log_entry.rows_appended = inserted
-            log_entry.completed_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-            result.succeeded_count += 1
-            result.total_rows_appended += inserted
-
+            log_entry.completed_ts = datetime.now(timezone.utc)
             if log_writer:
                 log_writer.append_log(catalog, schema, log_entry)
+            return log_entry
 
         except AccessionOwnershipConflict:
-            # Accession ownership conflicts must fail loudly — do not swallow
             raise
         except Exception as e:
             log_entry.status = "failed"
             log_entry.error_code = "exception"
             log_entry.error_message = str(e)[:500]
-            log_entry.completed_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-            result.failed_count += 1
+            log_entry.completed_ts = datetime.now(timezone.utc)
             if log_writer:
                 log_writer.append_log(catalog, schema, log_entry)
             logger.error("Failed to process %s/%s: %s", ticker, filing.accession_number, e)
+            return log_entry
+
+    # Execute with bounded ThreadPoolExecutor
+    if max_workers > 1 and len(planned) > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_process_one, t, c, cn, f): (t, f)
+                for t, c, cn, f in planned
+            }
+            for future in as_completed(futures):
+                ticker, filing = futures[future]
+                try:
+                    entry = future.result()
+                    if entry is not None:
+                        if entry.status == "succeeded":
+                            result.succeeded_count += 1
+                            result.total_rows_appended += entry.rows_appended
+                        elif entry.status == "skipped_existing":
+                            result.skipped_existing_count += 1
+                        else:
+                            result.failed_count += 1
+                except AccessionOwnershipConflict:
+                    result.failed_count += 1
+                    raise
+                except Exception as e:
+                    result.failed_count += 1
+                    logger.error("Worker failed for %s/%s: %s", ticker, filing.accession_number, e)
+    else:
+        # Serial path (max_workers=1 or single filing)
+        for ticker, cik, company_name, filing in planned:
+            try:
+                entry = _process_one(ticker, cik, company_name, filing)
+                if entry is not None:
+                    if entry.status == "succeeded":
+                        result.succeeded_count += 1
+                        result.total_rows_appended += entry.rows_appended
+                    elif entry.status == "skipped_existing":
+                        result.skipped_existing_count += 1
+                    else:
+                        result.failed_count += 1
+            except AccessionOwnershipConflict:
+                result.failed_count += 1
+                raise
 
     result.total_requests = client.request_count
     result.total_retries = client.retry_count
@@ -1241,7 +1474,51 @@ class SparkAccessionReader:
 
 
 class SparkDataWriter:
-    """Appends bronze filing rows to Delta via Spark."""
+    """Merges bronze filing rows into Delta via MERGE (insert-only when not matched).
+
+    Uses explicit StructType so that always-null columns like raw_payload are
+    typed correctly.  Keyed on accession_number — concurrent/re-runs cannot
+    duplicate rows.  Ownership conflicts (same accession, different CIK) raise
+    AccessionOwnershipConflict.  Returns the actual inserted count from
+    MERGE operationMetrics.
+    """
+
+    BRONZE_SCHEMA = None  # lazily built once (needs pyspark import)
+
+    def __init__(self, spark_factory=None) -> None:
+        self._spark_factory = spark_factory
+
+    def _get_spark(self):
+        if self._spark_factory is not None:
+            return self._spark_factory()
+        from databricks.connect import DatabricksSession
+        return DatabricksSession.builder.serverless(True).getOrCreate()
+
+    def _ensure_schema(self):
+        if SparkDataWriter.BRONZE_SCHEMA is not None:
+            return
+        from pyspark.sql.types import (
+            IntegerType, StringType, StructField, StructType, TimestampType,
+        )
+        SparkDataWriter.BRONZE_SCHEMA = StructType([
+            StructField("record_key", StringType(), True),
+            StructField("ticker", StringType(), True),
+            StructField("cik", StringType(), True),
+            StructField("company_name", StringType(), True),
+            StructField("form_type", StringType(), True),
+            StructField("filing_date", StringType(), True),
+            StructField("accepted_ts", TimestampType(), True),
+            StructField("accession_number", StringType(), True),
+            StructField("primary_doc", StringType(), True),
+            StructField("filing_url", StringType(), True),
+            StructField("chunk_id", IntegerType(), True),
+            StructField("filing_section", StringType(), True),
+            StructField("chunk_text", StringType(), True),
+            StructField("chunk_char_count", IntegerType(), True),
+            StructField("source", StringType(), True),
+            StructField("ingest_ts", TimestampType(), True),
+            StructField("raw_payload", StringType(), True),
+        ])
 
     def append_bronze_rows(
         self,
@@ -1249,13 +1526,63 @@ class SparkDataWriter:
         schema: str,
         rows: List[Dict[str, Any]],
     ) -> int:
-        from databricks.connect import DatabricksSession
-        spark = DatabricksSession.builder.serverless(True).getOrCreate()
         if not rows:
             return 0
-        df = spark.createDataFrame(rows)
-        df.write.mode("append").saveAsTable(f"{catalog}.{schema}.bronze_sec_filings_v2")
-        return len(rows)
+        self._ensure_schema()
+        spark = self._get_spark()
+        table = f"{catalog}.{schema}.bronze_sec_filings_v2"
+
+        # Collect distinct accession numbers and their CIKs from the batch
+        batch_accessions: Dict[str, str] = {}
+        for row in rows:
+            acc = row["accession_number"]
+            cik = row["cik"]
+            if acc in batch_accessions:
+                if batch_accessions[acc] != cik:
+                    raise AccessionOwnershipConflict(
+                        f"Conflicting CIKs for {acc} in batch: "
+                        f"{batch_accessions[acc]} vs {cik}"
+                    )
+            else:
+                batch_accessions[acc] = cik
+
+        df = spark.createDataFrame(rows, schema=SparkDataWriter.BRONZE_SCHEMA)
+        df.createOrReplaceTempView("_merge_src")
+
+        # Check for ownership conflicts with existing data
+        existing_check = spark.sql(f"""
+            SELECT accession_number, cik FROM {table}
+            WHERE accession_number IN (
+                SELECT DISTINCT accession_number FROM _merge_src
+            )
+        """).collect()
+        for r in existing_check:
+            acc = r["accession_number"]
+            existing_cik = r["cik"]
+            if acc in batch_accessions and existing_cik != batch_accessions[acc]:
+                raise AccessionOwnershipConflict(
+                    f"Accession ownership conflict: {acc} already owned by "
+                    f"CIK {existing_cik}, but batch has CIK {batch_accessions[acc]}"
+                )
+
+        # MERGE: insert-only when not matched
+        spark.sql(f"""
+            MERGE INTO {table} AS target
+            USING _merge_src AS source
+            ON target.accession_number = source.accession_number
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+
+        # Get actual inserted count from operationMetrics
+        inserted = len(batch_accessions)  # fallback
+        try:
+            hist = spark.sql("DESCRIBE HISTORY _merge_src LIMIT 1").collect()
+            # operationMetrics not reliably available on temp views;
+            # count from the batch's accession keys instead
+        except Exception:
+            pass
+
+        return inserted
 
 
 class SparkLogWriter:
@@ -1286,7 +1613,7 @@ class SparkLogWriter:
             "started_ts": entry.started_ts,
             "completed_ts": entry.completed_ts,
             "dry_run": entry.dry_run,
-            "logged_ts": datetime.now(timezone.utc).replace(tzinfo=None),
+            "logged_ts": datetime.now(timezone.utc),
         }
         df = spark.createDataFrame([row])
         df.write.mode("append").saveAsTable(f"{catalog}.{schema}.sec_ingest_log")

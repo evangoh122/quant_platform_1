@@ -1,10 +1,9 @@
 """
 XBRL companyfacts client — fetches tagged facts from SEC EDGAR.
 Rate limit: ≤10 req/s (CONSTRAINT-005). User-Agent mandatory.
+Uses the process-wide limiter from pipelines.sec_rag_ingest.
 """
 import os
-import time
-import threading
 import requests
 from dataclasses import dataclass
 from typing import Optional
@@ -12,6 +11,7 @@ from functools import lru_cache
 from loguru import logger
 
 from api.config import TICKER_TO_CIK
+from pipelines.sec_rag_ingest import get_global_limiter
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 _USER_AGENT = None  # Lazy-initialized on first use
@@ -28,9 +28,6 @@ def _get_user_agent() -> str:
             )
         _USER_AGENT = raw
     return _USER_AGENT
-_rate_lock = threading.Lock()
-_last_call: float = 0.0
-_MIN_INTERVAL = 0.11  # ~9 req/s to stay under 10/s
 
 @dataclass
 class XBRLFact:
@@ -43,14 +40,13 @@ class XBRLFact:
     accession: str
 
 def _rate_limited_get(url: str) -> dict:
-    """GET with rate limiting and User-Agent header."""
-    global _last_call
-    with _rate_lock:
-        elapsed = time.time() - _last_call
-        if elapsed < _MIN_INTERVAL:
-            time.sleep(_MIN_INTERVAL - elapsed)
-        resp = requests.get(url, headers={"User-Agent": _get_user_agent()}, timeout=15)
-        _last_call = time.time()
+    """GET with rate limiting and User-Agent header.
+
+    Uses the process-wide limiter shared with sec_rag_ingest.
+    """
+    limiter = get_global_limiter()
+    limiter.acquire()
+    resp = requests.get(url, headers={"User-Agent": _get_user_agent()}, timeout=15)
     resp.raise_for_status()
     return resp.json()
 

@@ -496,7 +496,7 @@
   ticker                             string NOT NULL
   lookup_symbol                      string
   cik                                string
-  status                             string NOT NULL
+  status                             string NOT NULL   (mapped | missing | ambiguous)
   reason                             string
   mapped_ts                          timestamp
   run_id                             string
