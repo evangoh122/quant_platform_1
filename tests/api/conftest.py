@@ -71,9 +71,9 @@ def fake_lakebase(monkeypatch) -> FakeLakebase:
 def client():
     from fastapi.testclient import TestClient
 
-    from api.main import app
+    from api.main import create_app
 
-    return TestClient(app)
+    return TestClient(create_app())
 
 
 @pytest.fixture

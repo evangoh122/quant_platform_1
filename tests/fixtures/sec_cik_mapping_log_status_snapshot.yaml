@@ -1,0 +1,6 @@
+# Snapshot of statuses emitted by build_cik_map in
+# slice/rag-coverage:pipelines/sec_rag_ingest.py:323-381 and written at :1290-1311.
+# Refresh only after an intentional change to the mapping writer.
+statuses:
+  - mapped
+  - missing

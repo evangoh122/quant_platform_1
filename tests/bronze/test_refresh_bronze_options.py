@@ -25,7 +25,7 @@ def test_parse_opra_symbol_call():
     )
     assert underlying == "AAPL"
     assert expiry.isoformat() == "2025-01-17"
-    assert right == "call"
+    assert right == "CALL"
     assert strike == 200.0
 
 
@@ -35,7 +35,7 @@ def test_parse_opra_symbol_put():
     )
     assert underlying == "SPY"
     assert expiry.isoformat() == "2025-12-19"
-    assert right == "put"
+    assert right == "PUT"
     assert strike == 430.0
 
 
@@ -55,6 +55,82 @@ def test_parse_opra_symbol_rejects_malformed():
 def test_parse_opra_symbol_rejects_bad_expiry():
     # 99 is not a valid month -> strptime raises -> None
     assert m.parse_opra_symbol("O:AAPL259917C00200000") is None
+
+
+# ---------------------------------------------------------------------------
+# canonical_day_right: single source of truth for day-agg right encoding
+# ---------------------------------------------------------------------------
+
+def test_canonical_day_right_call_variants():
+    assert m.canonical_day_right("C") == "CALL"
+    assert m.canonical_day_right("CALL") == "CALL"
+    assert m.canonical_day_right("call") == "CALL"
+
+
+def test_canonical_day_right_put_variants():
+    assert m.canonical_day_right("P") == "PUT"
+    assert m.canonical_day_right("PUT") == "PUT"
+    assert m.canonical_day_right("put") == "PUT"
+
+
+def test_canonical_day_right_rejects_unknown():
+    assert m.canonical_day_right("X") is None
+    assert m.canonical_day_right("") is None
+    assert m.canonical_day_right(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _shape_day: emits uppercase PUT/CALL via canonical_day_right
+# ---------------------------------------------------------------------------
+
+def test_shape_day_emits_uppercase_right():
+    """_shape_day must emit uppercase 'PUT'/'CALL' via canonical_day_right.
+
+    Mutation proof: if _shape_day() is reverted to inline F.when('C', 'CALL')
+    without going through canonical_day_right, the UDF mock below would not be
+    invoked and the assertion on the mock call count would fail.
+
+    We mock Spark's DataFrame chain (read → csv → select → filter) because
+    this environment uses Databricks Connect (no local SparkSession).
+    """
+    pytest.importorskip("pyspark")
+    from unittest.mock import MagicMock, patch, call
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import StringType
+
+    # Build a mock DataFrame chain that records .select() column expressions.
+    mock_df_raw = MagicMock()
+    mock_df_shaped = MagicMock()
+    mock_df_filtered = MagicMock()
+
+    mock_spark = MagicMock()
+    mock_spark.read.option.return_value.csv.return_value = mock_df_raw
+    mock_df_raw.select.return_value = mock_df_shaped
+    mock_df_shaped.filter.return_value = mock_df_filtered
+
+    # Patch F.udf so we can verify canonical_day_right is wrapped as a UDF.
+    captured_udf_fn = None
+    orig_udf = F.udf
+
+    def _capture_udf(fn, returnType):
+        nonlocal captured_udf_fn
+        captured_udf_fn = fn
+        return orig_udf(fn, returnType)
+
+    with patch.object(F, "udf", side_effect=_capture_udf):
+        m._shape_day(mock_spark, "/fake/file.csv", "test.csv",
+                     "2026-10-04T00:00:00")
+
+    # Verify canonical_day_right was passed to F.udf.
+    assert captured_udf_fn is m.canonical_day_right, (
+        "_shape_day did not wrap canonical_day_right as a UDF"
+    )
+
+    # Verify the UDF produces uppercase for OPRA right letters.
+    assert captured_udf_fn("C") == "CALL"
+    assert captured_udf_fn("P") == "PUT"
+    assert captured_udf_fn("c") == "CALL"
+    assert captured_udf_fn("p") == "PUT"
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +429,7 @@ def test_trading_days_skips_holiday():
 def test_trading_day_missing_file_counts_as_failed(monkeypatch, capsys):
     """A trading day whose S3 object 404s (head_object raises a non-403
     ClientError) must increment the failed counter, not entitlement_gap."""
-    from botocore.exceptions import ClientError
+    ClientError = pytest.importorskip("botocore.exceptions").ClientError
 
     monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
 
@@ -553,7 +629,7 @@ _TARGET_ROWS = [
 
 def _run_anti_join(incoming_rows, target_rows):
     """Execute _anti_join_new through the fake engine and return result rows."""
-    import pyspark.sql.functions as F_mod
+    F_mod = pytest.importorskip("pyspark.sql.functions")
 
     spark = _FakeSparkSession()
     spark._register(_TABLE, target_rows)

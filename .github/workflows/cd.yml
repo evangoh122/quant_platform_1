@@ -1,0 +1,64 @@
+name: Deploy Databricks bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Bundle target to deploy
+        required: true
+        type: choice
+        default: dev
+        options:
+          - dev
+          - prod
+      start_app:
+        description: Restart the app after deploy
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    env:
+      DATABRICKS_AUTH_TYPE: github-oidc
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Set up Databricks CLI
+        uses: databricks/setup-cli@095d26a91ccd1ff8860b6832b0739d71f21ced75 # v0.276.0
+
+      - name: Deploy bundle
+        run: databricks bundle deploy -t "${{ inputs.target }}"
+
+      - name: Start app
+        if: ${{ inputs.start_app }}
+        run: databricks bundle run quant_platform -t "${{ inputs.target }}"

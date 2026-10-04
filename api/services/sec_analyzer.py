@@ -24,7 +24,7 @@ from api.services.polygon_verifier import run_checks as polygon_run_checks
 
 
 # ---------------------------------------------------------------------------
-# LLM client (same pattern as evals/ragas_eval.py)
+# LLM client (same pattern as evals/rag_eval/generation.py)
 # ---------------------------------------------------------------------------
 
 def _llm_call(prompt: str, max_tokens: int = 1024) -> str:

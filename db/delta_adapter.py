@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 from typing import List, Dict, Optional
 import re
 
-CATALOG = "bootcamp_students"
-SCHEMA  = "evangoh_capstone"
+import os
+
+CATALOG = os.getenv("CATALOG", "bootcamp_students")
+SCHEMA  = os.getenv("SCHEMA", "evangoh_capstone")
 
 def _fqn(table: str) -> str:
     return f"{CATALOG}.{SCHEMA}.{table}"
