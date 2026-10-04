@@ -3309,3 +3309,61 @@ class TestJsonlGraphStoreFindNodes:
         xbrl = store.find_nodes("XbrlFact",
                                 accepted_before=datetime(2024, 6, 1, tzinfo=timezone.utc))
         assert len(xbrl) == 2
+
+@pytest.mark.skipif(not hasattr(__import__("time"), "tzset"), reason="time.tzset unavailable (Windows)")
+class TestPipelineEpochUnderClientTimezone:
+    """The PIPELINE's accepted_ts handling must not depend on the driver's local timezone.
+
+    Rows carry both the Spark-computed epoch and a naive UTC wall-clock datetime. Under TZ=Asia/Singapore,
+    a naive ``.timestamp()`` would shift the instant by 8 hours; the pipeline must keep the exact epoch.
+    """
+
+    def test_build_keeps_exact_epoch_under_singapore_tz(self, monkeypatch):
+        import time
+        from datetime import datetime
+
+        monkeypatch.setenv("TZ", "Asia/Singapore")
+        time.tzset()
+        try:
+            naive_utc = datetime(2023, 11, 14, 22, 13, 20)  # == epoch 1700000000 in UTC
+            assert int(naive_utc.timestamp()) != 1700000000  # precondition: naive conversion is tz-dependent here
+            entity_rows = [
+                _FakeRow(
+                    cik="0001045810", ticker="NVDA", accession_number="0001045810-24-000001", form_type="10-K",
+                    accepted_epoch=1700000000, accepted_ts=naive_utc,
+                    entity_type="company", entity_key="NVIDIA Corp", entity_value="NVIDIA Corporation",
+                    entity_unit="", period_start=None, period_end=None, confidence=1.0, source_chunk_id="c1",
+                ),
+            ]
+            section_rows = [
+                _FakeRow(
+                    chunk_id="c1", ticker="NVDA", accession_number="0001045810-24-000001", form_type="10-K",
+                    accepted_epoch=1700000000, accepted_ts=naive_utc,
+                    filing_section="item1_business", chunk_index=0,
+                ),
+            ]
+            fake_spark, _ = _setup_pyspark_mocks(monkeypatch, entity_rows=entity_rows, section_rows=section_rows)
+
+            import pipelines.build_sec_knowledge_graph as pipeline_mod
+            from sec_kg.build import build_graph as _real_build_graph
+
+            captured = {}
+
+            def _capture(entities_arg, corpus_arg, build_version):
+                captured["entities"] = list(entities_arg)
+                captured["corpus"] = corpus_arg
+                return _real_build_graph(entities_arg, corpus_arg, build_version)
+
+            monkeypatch.setattr(pipeline_mod, "build_graph", _capture)
+            pipeline_mod.build(fake_spark, catalog="test_cat", schema="test_sch")
+
+            epochs = [e["accepted_epoch"] for e in captured["entities"]]
+            assert epochs == [1700000000], f"entity accepted_epoch shifted under TZ=Asia/Singapore: {epochs}"
+            corpus = captured["corpus"]
+            chunk = corpus["c1"] if isinstance(corpus, dict) else next(c for c in corpus if c["chunk_id"] == "c1")
+            assert chunk["accepted_epoch"] == 1700000000, (
+                f"chunk accepted_epoch shifted under TZ=Asia/Singapore: {chunk['accepted_epoch']}"
+            )
+        finally:
+            monkeypatch.delenv("TZ", raising=False)
+            time.tzset()
