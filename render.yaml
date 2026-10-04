@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: qp1-showcase
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements-render.txt && cd frontend && npm ci && npm run build
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: NODE_VERSION
+        value: "20.18.0"
+      - key: PUBLIC_DEMO
+        value: "1"
+      - key: APP_ENV
+        value: demo

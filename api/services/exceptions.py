@@ -22,4 +22,11 @@ class EmbeddingConfigError(CorpusUnavailableError):
 
     Subclass of CorpusUnavailableError so search_sec_filings surfaces it as
     retrieval_unavailable with the missing setting name — never the secret value.
+
+    Set ``user_safe=True`` when the message contains no secret material and is
+    safe to surface directly to the end user.
     """
+
+    def __init__(self, *args, user_safe: bool = False):
+        super().__init__(*args)
+        self.user_safe = user_safe
