@@ -74,7 +74,12 @@ def _parse_requirements() -> set[str]:
 
 
 def _scan_top_level_imports(dirs: list[str]) -> set[str]:
-    """Walk Python files in *dirs* and collect top-level (module-scope) third-party imports."""
+    """Walk Python files in *dirs* and collect top-level (module-scope) third-party imports.
+
+    For ``ImportFrom`` nodes, both the full dotted module name (e.g.
+    ``databricks.sql``) and the top-level package (e.g. ``databricks``) are
+    collected so that dotted mappings in ``_IMPORT_TO_DIST`` are reachable.
+    """
     imports: set[str] = set()
     for d in dirs:
         dpath = _PROJECT_ROOT / d
@@ -91,6 +96,10 @@ def _scan_top_level_imports(dirs: list[str]) -> set[str]:
                         imports.add(alias.name.split(".")[0])
                 elif isinstance(node, ast.ImportFrom):
                     if node.module and node.level == 0:
+                        # Keep the full dotted name (e.g. "databricks.sql")
+                        # so dotted mappings in _IMPORT_TO_DIST are reachable.
+                        imports.add(node.module)
+                        # Also keep the top-level package for generic lookups.
                         imports.add(node.module.split(".")[0])
     return imports
 
