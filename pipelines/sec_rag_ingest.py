@@ -1706,19 +1706,28 @@ class SparkDataWriter:
                 # Get actual inserted count from this MERGE's own metrics,
                 # read inside the lock so it cannot be attributed to another
                 # worker's MERGE.
-                inserted: Optional[int] = 0
+                inserted: Optional[int] = None
                 try:
                     hist = spark.sql(f"DESCRIBE HISTORY {table} LIMIT 1").collect()
                     if hist:
                         metrics = hist[0]["operationMetrics"]
                         if metrics and "numTargetRowsInserted" in metrics:
                             inserted = int(metrics["numTargetRowsInserted"])
+                        else:
+                            logger.warning(
+                                "DESCRIBE HISTORY returned no operationMetrics or "
+                                "numTargetRowsInserted key; reporting inserted count as unknown"
+                            )
+                    else:
+                        logger.warning(
+                            "DESCRIBE HISTORY returned no rows; "
+                            "reporting inserted count as unknown"
+                        )
                 except Exception:
                     logger.warning(
                         "Could not read MERGE metrics from DESCRIBE HISTORY; "
                         "reporting inserted count as unknown"
                     )
-                    inserted = None
 
                 return inserted
         finally:
