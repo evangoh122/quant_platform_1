@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,20 +42,11 @@ _IMPORT_TO_DIST: dict[str, str] = {
 # in the scanned directories, but we list them defensively).
 _DEFERRED_ALLOWED = {"ibapi", "pyspark", "pyspark.sql"}
 
-# Standard-library modules (Python 3.12).  Not exhaustive — only the ones
-# actually used in this codebase.  The test also skips any import whose
-# name matches a local package directory.
-_STDLIB_MODULES = {
-    "__future__", "abc", "ast", "asyncio", "base64", "bisect", "collections",
-    "concurrent", "contextlib", "copy", "csv", "dataclasses", "datetime",
-    "decimal", "enum", "functools", "glob", "hashlib", "heapq", "hmac",
-    "html", "http", "importlib", "inspect", "io", "itertools", "json",
-    "logging", "math", "mimetypes", "os", "pathlib", "pickle", "platform",
-    "posixpath", "random", "re", "shlex", "shutil", "signal", "site",
-    "socket", "sqlite3", "ssl", "stat", "string", "struct", "subprocess",
-    "sys", "tempfile", "textwrap", "threading", "time", "traceback",
-    "typing", "unittest", "urllib", "uuid", "warnings", "weakref", "xml",
-    "zipfile", "zoneinfo", "ipaddress",
+# Standard-library modules — use sys.stdlib_module_names (Python ≥3.10)
+# for completeness, augmented with sub-package prefixes that appear in
+# import statements but aren't top-level module names.
+_STDLIB_MODULES: set[str] = set(sys.stdlib_module_names) | {
+    "__future__", "posixpath", "site",
 }
 
 
