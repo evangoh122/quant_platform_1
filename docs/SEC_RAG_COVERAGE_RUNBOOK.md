@@ -21,12 +21,12 @@ Create the secret (never commit the actual value):
 databricks secrets put-secret evangoh_capstone sec_edgar_user_agent
 ```
 
-When prompted, enter a descriptive string like `YourCompany your-email@example.com`.
+When prompted, enter `<app-name> <your real contact email>` (SEC requires a real contact; values containing "example" are rejected).
 
 To verify the secret exists:
 
 ```bash
-databricks secrets list-scope evangoh_capstone
+databricks secrets list-secrets evangoh_capstone   # metadata only; shows the key, never the value
 ```
 
 The `resources/jobs.yml` passes `--user-agent-secret-scope evangoh_capstone` and
