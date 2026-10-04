@@ -53,17 +53,18 @@ def _config_fingerprint(config: Mapping) -> str:
 
 
 def _data_fingerprint(panel) -> str:
-    """Hash shape, date range, symbol list, and a value checksum."""
+    """Hash full panel values: close AND dollar_volume for all symbols and dates."""
     import hashlib as _hl
     h = _hl.sha256()
     if panel is not None and not panel.empty:
         h.update(f"shape={panel.shape}".encode())
-        dates = sorted(panel["event_date"].unique())
-        h.update(f"dates={dates[0]!s}:{dates[-1]!s}".encode())
-        syms = sorted(panel["symbol"].unique())
-        h.update(f"symbols={','.join(syms[:20])}...n={len(syms)}".encode())
-        vals = panel["close"].dropna()
-        h.update(f"val_sum={vals.sum():.6f}".encode())
+        cols = ["symbol", "event_date", "close"]
+        if "dollar_volume" in panel.columns:
+            cols.append("dollar_volume")
+        sub = panel[cols].copy()
+        sub = sub.sort_values(["event_date", "symbol"]).reset_index(drop=True)
+        hash_bytes = pd.util.hash_pandas_object(sub).values.tobytes()
+        h.update(hash_bytes)
     else:
         h.update(b"no_panel")
     return h.hexdigest()[:12]
@@ -98,10 +99,11 @@ def compute_cache_fingerprint(
     variant_fp: str,
     config: Mapping,
     panel=None,
+    effective_overrides: Optional[Mapping] = None,
 ) -> str:
     """Composite fingerprint for cache invalidation.
 
-    Covers variant params, config, data, and code version.
+    Covers variant params, config, data, code version, and CLI overrides.
     """
     combined = (
         variant_fp
@@ -109,7 +111,40 @@ def compute_cache_fingerprint(
         + _data_fingerprint(panel)
         + _code_fingerprint()
     )
+    if effective_overrides:
+        blob = json.dumps(dict(effective_overrides), sort_keys=True, default=str).encode()
+        combined += hashlib.sha256(blob).hexdigest()[:12]
     return hashlib.sha256(combined.encode()).hexdigest()[:12]
+
+
+def save_variant_cache(cache_dir: str | "Path", cache_key: str, vr: dict) -> None:
+    """Persist a variant result to disk using pickle (type-preserving).
+
+    Pickle preserves DatetimeIndex, MultiIndex, and all pandas/numpy types
+    natively, so round-tripping is lossless.  Drops input-only fields
+    (``adv_wide``, ``industry``) to reduce file size.
+    """
+    import pickle
+    from pathlib import Path
+
+    p = Path(cache_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    # Drop input-only fields that are not results.
+    serialisable = {k: v for k, v in vr.items() if k not in ("adv_wide", "industry")}
+    with open(p / f"{cache_key}.pkl", "wb") as f:
+        pickle.dump(serialisable, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_variant_cache(cache_dir: str | "Path", cache_key: str) -> Optional[dict]:
+    """Load a cached variant result from disk.  Returns None if missing."""
+    import pickle
+    from pathlib import Path
+
+    p = Path(cache_dir) / f"{cache_key}.pkl"
+    if not p.exists():
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)  # noqa: S301 — trusted local cache
 
 
 def build_variant_registry(base_config: Mapping) -> list[VariantSpec]:

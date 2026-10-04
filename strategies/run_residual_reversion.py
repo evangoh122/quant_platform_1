@@ -558,6 +558,8 @@ def main() -> None:
             remove_top_pnl_contributors,
             compute_rank_ic,
             compute_cache_fingerprint,
+            save_variant_cache,
+            load_variant_cache,
         )
         robustness_cfg = cfg.get("robustness", {})
         gates_cfg = cfg.get("metric_gates", {})
@@ -578,52 +580,13 @@ def main() -> None:
 
         # ── Checkpointing ─────────────────────────────────────────────────
         cache_dir = Path("strategies/results/.robustness_cache")
-        if not args.no_resume:
-            cache_dir.mkdir(parents=True, exist_ok=True)
 
-        def _load_cache(fp: str):
-            p = cache_dir / f"{fp}.json"
-            if not p.exists():
-                return None
-            import json
-            with open(p, "r") as f:
-                d = json.load(f)
-            # Restore Series from lists.
-            for key in ("net", "gross", "turnover"):
-                if key in d and isinstance(d[key], list):
-                    d[key] = pd.Series(d[key])
-            # Restore DataFrames from nested lists.
-            for key in ("weights", "trade_returns", "s_score",
-                        "residual_returns"):
-                entry = d.get(key)
-                if isinstance(entry, dict) and "data" in entry:
-                    d[key] = pd.DataFrame(
-                        entry["data"],
-                        index=entry.get("index"),
-                        columns=entry.get("columns"),
-                    )
-            return d
-
-        def _save_cache(fp: str, vr: dict):
-            import json
-            serialisable = {}
-            for k, v in vr.items():
-                if isinstance(v, pd.Series):
-                    serialisable[k] = v.tolist()
-                elif isinstance(v, pd.DataFrame):
-                    serialisable[k] = {
-                        "data": v.values.tolist(),
-                        "index": [str(x) for x in v.index],
-                        "columns": list(v.columns),
-                    }
-                elif isinstance(v, pd.DatetimeIndex):
-                    serialisable[k] = [str(x) for x in v]
-                elif isinstance(v, np.ndarray):
-                    serialisable[k] = v.tolist()
-                else:
-                    serialisable[k] = v
-            with open(cache_dir / f"{fp}.json", "w") as f:
-                json.dump(serialisable, f)
+        # Effective overrides that must enter the fingerprint.
+        effective_overrides = {
+            "book_capital": book_capital,
+            "factor_model": factor_model,
+            "pca_components": pca_components,
+        }
 
         # ── Parallel variant execution ────────────────────────────────────
         from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -634,9 +597,12 @@ def main() -> None:
         work = []  # list of (vs, n_trials, cache_key)
         cached_count = 0
         for vs in registry:
-            cache_key = compute_cache_fingerprint(vs.fingerprint, cfg, panel)
+            cache_key = compute_cache_fingerprint(
+                vs.fingerprint, cfg, panel,
+                effective_overrides=effective_overrides,
+            )
             if not args.no_resume:
-                cached = _load_cache(cache_key)
+                cached = load_variant_cache(cache_dir, cache_key)
                 if cached is not None:
                     results_by_id[vs.variant_id] = cached
                     cached_count += 1
@@ -673,7 +639,7 @@ def main() -> None:
                     results_by_id[work[idx][0].variant_id] = vr
                     # Checkpoint with composite fingerprint.
                     if not args.no_resume:
-                        _save_cache(work[idx][2], vr)
+                        save_variant_cache(cache_dir, work[idx][2], vr)
                     done_count += 1
                     elapsed = time.time() - t_start
                     rate = done_count / elapsed if elapsed > 0 else 0
@@ -690,8 +656,10 @@ def main() -> None:
         # Run summary.
         wall_time = time.time() - t_start
         computed_count = len(work)
+        total_counted = computed_count + cached_count
         print(f"\nrobustness summary: {len(registry)} variants total, "
-              f"{computed_count} computed, {cached_count} cached, "
+              f"Executed trials (computed this run): {computed_count} / "
+              f"cached: {cached_count} / total counted: {total_counted}, "
               f"wall time {wall_time:.1f}s", flush=True)
 
         # ── Rank IC per factor model (baseline variants) ──────────────────
