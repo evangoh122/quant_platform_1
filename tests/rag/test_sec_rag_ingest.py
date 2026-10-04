@@ -2252,6 +2252,132 @@ class TestResumeAndWorkers:
         assert result.total_rows_appended > 0
 
 
+class TestTotalRowsAppendedAggregation:
+    """total_rows_appended propagates None (unknown) from any successful filing.
+
+    Mirrors the embeddings-aggregate pattern: if ANY successful filing's
+    rows_appended is None (writer couldn't determine inserted count), the
+    total must be None — not silently coerced to 0.
+    """
+
+    @staticmethod
+    def _make_writer(*return_values):
+        """FakeDataWriter that returns the given values in order."""
+        class SeqWriter:
+            def __init__(self):
+                self._values = list(return_values)
+                self._idx = 0
+                self.appended = []
+                self.total_rows = 0
+            def append_bronze_rows(self, catalog, schema, rows):
+                self.appended.append(rows)
+                val = self._values[self._idx]
+                self._idx += 1
+                if val is not None:
+                    self.total_rows += val
+                return val
+        return SeqWriter()
+
+    def _run(self, writer, max_workers=1):
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000020/nvda-20241027.htm",
+            filing_html,
+        )
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        return run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            max_workers=max_workers,
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=writer,
+            log_writer=FakeLogWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+    def test_all_none_serial(self):
+        """[None, None] → None in serial mode."""
+        writer = self._make_writer(None, None)
+        result = self._run(writer, max_workers=1)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended is None
+
+    def test_all_none_threaded(self):
+        """[None, None] → None in threaded mode."""
+        writer = self._make_writer(None, None)
+        result = self._run(writer, max_workers=4)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended is None
+
+    def test_mixed_serial(self):
+        """[3, None] → None in serial mode."""
+        writer = self._make_writer(3, None)
+        result = self._run(writer, max_workers=1)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended is None
+
+    def test_mixed_threaded(self):
+        """[3, None] → None in threaded mode."""
+        writer = self._make_writer(3, None)
+        result = self._run(writer, max_workers=4)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended is None
+
+    def test_all_zeros_serial(self):
+        """[0, 0] → 0 in serial mode."""
+        writer = self._make_writer(0, 0)
+        result = self._run(writer, max_workers=1)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended == 0
+
+    def test_all_zeros_threaded(self):
+        """[0, 0] → 0 in threaded mode."""
+        writer = self._make_writer(0, 0)
+        result = self._run(writer, max_workers=4)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended == 0
+
+    def test_real_values_serial(self):
+        """[2, 5] → 7 in serial mode."""
+        writer = self._make_writer(2, 5)
+        result = self._run(writer, max_workers=1)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended == 7
+
+    def test_real_values_threaded(self):
+        """[2, 5] → 7 in threaded mode."""
+        writer = self._make_writer(2, 5)
+        result = self._run(writer, max_workers=4)
+        assert result.succeeded_count == 2
+        assert result.total_rows_appended == 7
+
+    def test_mutation_skip_none_aggregation_fails(self):
+        """Mutation: restoring skip-None aggregation → this test FAILS.
+
+        If the code reverts to `if entry.rows_appended is not None: total += ...`,
+        then [None, None] produces 0 instead of None.
+        """
+        writer = self._make_writer(None, None)
+        result = self._run(writer, max_workers=1)
+        assert result.total_rows_appended is None, (
+            f"Expected None (unknown) when all filings return None rows, "
+            f"got {result.total_rows_appended}. "
+            f"Mutation: skip-None aggregation was restored."
+        )
+
+
 class TestSparkIngestLogReader:
     """SparkIngestLogReader reads from sec_ingest_log with pushed-down predicates."""
 

@@ -165,7 +165,7 @@ class DataWriter(Protocol):
         catalog: str,
         schema: str,
         rows: List[Dict[str, Any]],
-    ) -> int: ...
+    ) -> Optional[int]: ...
 
 
 class IngestLogWriter(Protocol):
@@ -1096,7 +1096,7 @@ class IngestResult:
     skipped_existing_count: int = 0
     total_requests: int = 0
     total_retries: int = 0
-    total_rows_appended: int = 0
+    total_rows_appended: Optional[int] = 0
     dry_run: bool = False
     partial_tickers: List[str] = field(default_factory=list)
 
@@ -1493,7 +1493,9 @@ def run_ingest(
                     if entry is not None:
                         if entry.status == "succeeded":
                             result.succeeded_count += 1
-                            if entry.rows_appended is not None:
+                            if entry.rows_appended is None:
+                                result.total_rows_appended = None
+                            elif result.total_rows_appended is not None:
                                 result.total_rows_appended += entry.rows_appended
                         elif entry.status == "skipped_existing":
                             result.skipped_existing_count += 1
@@ -1513,7 +1515,9 @@ def run_ingest(
                 if entry is not None:
                     if entry.status == "succeeded":
                         result.succeeded_count += 1
-                        if entry.rows_appended is not None:
+                        if entry.rows_appended is None:
+                            result.total_rows_appended = None
+                        elif result.total_rows_appended is not None:
                             result.total_rows_appended += entry.rows_appended
                     elif entry.status == "skipped_existing":
                         result.skipped_existing_count += 1
@@ -1528,12 +1532,13 @@ def run_ingest(
 
     logger.info(
         "Ingestion complete: mapped=%d, missing=%d, discovered=%d, existing=%d, "
-        "planned=%d, succeeded=%d, failed=%d, partial=%d, skipped=%d, rows=%d, "
+        "planned=%d, succeeded=%d, failed=%d, partial=%d, skipped=%d, rows=%s, "
         "requests=%d, retries=%d",
         result.mapped_count, result.missing_count, result.discovered_count,
         result.existing_count, result.planned_count, result.succeeded_count,
         result.failed_count, result.partial_count, result.skipped_existing_count,
-        result.total_rows_appended, result.total_requests, result.total_retries,
+        "unknown" if result.total_rows_appended is None else result.total_rows_appended,
+        result.total_requests, result.total_retries,
     )
 
     return result

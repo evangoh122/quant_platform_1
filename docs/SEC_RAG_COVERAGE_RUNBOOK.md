@@ -158,6 +158,12 @@ databricks bundle run -t dev sec_rag_ingest -- --start-date 2024-09-01 --forms 1
 # Expected: rows_appended = 0
 ```
 
+**Important:** If the summary reports `rows=unknown` instead of `rows=0`, the idempotency
+gate is **NOT** satisfied. `unknown` means one or more MERGE writers could not determine
+the inserted row count (DESCRIBE HISTORY returned no metrics). Re-run the ingestion; if
+`unknown` persists, investigate the affected filings in `sec_ingest_log` where
+`rows_appended IS NULL`.
+
 A final embedding rerun must report zero rows written:
 
 ```bash
