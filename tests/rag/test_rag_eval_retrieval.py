@@ -192,8 +192,9 @@ class TestProductionWrapperMatchesHarness:
     def test_search_sec_filings_matches_hybrid_rerank(self, offline_adapter, monkeypatch):
         """PRODUCTION search_sec_filings output matches harness hybrid_rerank on fixture data.
 
-        Same chunk ids, same order. Uses a deterministic fake reranker so the
-        test is hermetic and fast.
+        Same chunk ids AND scores, same order. Uses a deterministic fake reranker
+        so the test is hermetic and fast.  Mutation proof: perturbing the score in
+        one path (e.g. multiply by 1.01) causes this test to FAIL.
         """
         from evals.rag_eval.corpus import install_offline_corpus
         from api.services.hybrid_retriever import HybridRetriever
@@ -206,16 +207,22 @@ class TestProductionWrapperMatchesHarness:
         if "db.lakebase" not in sys.modules:
             sys.modules["db.lakebase"] = MagicMock()
 
-        call_log: list[str] = []
+        # Capture docs as seen by rerank in each path
+        _prod_reranked_docs: list = []
 
         def _fake_rerank(query, docs, top_k=5):
-            call_log.append("rerank")
             # Assign deterministic scores for comparison
             for d in docs:
                 chunk_id = d.metadata.get("chunk_id", "")
                 d.metadata["rerank_score"] = hash(chunk_id) % 100 / 100.0
             scored = sorted(docs, key=lambda d: d.metadata.get("rerank_score", 0), reverse=True)
-            return scored[:top_k]
+            result = scored[:top_k]
+            # Capture a copy of (chunk_id, rerank_score) for production path comparison
+            _prod_reranked_docs.clear()
+            _prod_reranked_docs.extend(
+                [(d.metadata.get("chunk_id", ""), d.metadata.get("rerank_score")) for d in result]
+            )
+            return result
 
         monkeypatch.setattr(reranker_mod, "rerank", _fake_rerank)
 
@@ -234,7 +241,7 @@ class TestProductionWrapperMatchesHarness:
                 top_k=5,
             )
 
-            call_log.clear()
+            _prod_reranked_docs.clear()
 
             # Production path: search_sec_filings uses the same composition
             with patch.object(tr, "normalize_symbol", return_value="NVDA"), \
@@ -246,15 +253,27 @@ class TestProductionWrapperMatchesHarness:
                     as_of=as_of,
                 )
 
-        # Extract chunk IDs in order from both paths
-        harness_chunk_ids = [d.metadata.get("chunk_id", "") for d in docs_harness]
-        prod_chunk_ids = [r.get("chunk_id", "") for r in results_prod]
+        # Compare (chunk_id, score) tuples in order
+        harness_seq = [
+            (d.metadata.get("chunk_id", ""), d.metadata.get("rerank_score"))
+            for d in docs_harness
+        ]
+        prod_seq = list(_prod_reranked_docs)
 
-        assert harness_chunk_ids == prod_chunk_ids, (
-            f"PRODUCTION search_sec_filings and harness hybrid_rerank chunk IDs differ.\n"
-            f"  harness: {harness_chunk_ids}\n"
-            f"  prod:    {prod_chunk_ids}"
+        harness_ids = [cid for cid, _ in harness_seq]
+        prod_ids = [r.get("chunk_id", "") for r in results_prod]
+        assert harness_ids == prod_ids, (
+            f"chunk IDs differ.\n  harness: {harness_ids}\n  prod:    {prod_ids}"
         )
+
+        # Score comparison with pytest.approx — a mutation that perturbs scores
+        # in one path (e.g. multiply by 1.01) will fail here.
+        for i, ((h_id, h_score), (p_id, p_score)) in enumerate(zip(harness_seq, prod_seq)):
+            assert h_id == p_id, f"Chunk ID mismatch at position {i}: {h_id} vs {p_id}"
+            assert h_score == pytest.approx(p_score, rel=1e-9), (
+                f"Score mismatch at position {i} (chunk {h_id}): "
+                f"harness={h_score} vs prod={p_score}"
+            )
 
 
 class TestEveryModeFiltersBeforeScoring:

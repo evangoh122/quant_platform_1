@@ -218,7 +218,8 @@ class TestReportTextStripping:
         # Path objects must be converted to plain strings (basename)
         assert report["cli_args"]["golden"] == "golden.jsonl"
         assert isinstance(report["cli_args"]["golden"], str)
-        # Relative paths should not be changed (use Path to normalize separators)
+        # Relative paths should not be changed (exact string + Path for cross-platform)
+        assert report["cli_args"]["corpus"] == "relative/corpus.jsonl"
         assert Path(report["cli_args"]["corpus"]) == Path("relative/corpus.jsonl")
         assert report["cli_args"]["mode"] == "all"
 
@@ -326,6 +327,25 @@ class TestRecursiveRedaction:
         report = build_report(rr)
         assert report["cli_args"]["files"][0] == "relative/path.jsonl"
         assert report["cli_args"]["files"][1] == "abs.jsonl"
+
+    def test_dict_keys_redacted_to_basename(self):
+        """Dict keys that are paths (str or Path) redacted to basenames."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={
+                "mapping": {Path("/home/x/k.jsonl"): 1, "/tmp/a/b": 2},
+            },
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        mapping = report["cli_args"]["mapping"]
+        assert "k.jsonl" in mapping
+        assert mapping["k.jsonl"] == 1
+        assert "b" in mapping
+        assert mapping["b"] == 2
+        # No absolute paths in keys
+        for k in mapping:
+            assert not str(k).startswith("/")
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "rag_eval"

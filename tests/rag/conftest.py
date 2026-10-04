@@ -1,3 +1,4 @@
+import ipaddress
 import sys
 from types import ModuleType
 from unittest.mock import MagicMock
@@ -82,18 +83,24 @@ def _block_network(monkeypatch):
     """
     import socket
 
+    # Socket-level safety timeout so a broken guard fails fast instead of
+    # hanging indefinitely (defense-in-depth alongside pytest-timeout).
+    socket.setdefaulttimeout(10)
+
     def _is_loopback(host):
-        """Check if host is loopback (127.0.0.0/8 or ::1)."""
-        if host in ("127.0.0.1", "localhost", "::1"):
+        """Check if host is a loopback address.
+
+        Uses ipaddress.ip_address() for numerically correct validation.
+        Only the literal string 'localhost' is accepted as loopback by name;
+        anything else that isn't a valid IP literal is blocked.
+        """
+        if host == "localhost":
             return True
-        # Check 127.0.0.0/8 range
         try:
-            parts = host.split(".")
-            if len(parts) == 4 and parts[0] == "127":
-                return True
-        except Exception:
-            pass
-        return False
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            # Not a valid IP literal (e.g. "127.1.evil.com") — block it
+            return False
 
     _real_create_connection = socket.create_connection
     _real_socket_connect = socket.socket.connect

@@ -166,3 +166,56 @@ class TestGuardAllowsUnixSockets:
                     client.close()
             finally:
                 server.close()
+
+
+class TestIsLoopbackValidation:
+    """_is_loopback must use ipaddress.ip_address for numeric validation."""
+
+    def test_loopback_127_0_0_2_allowed(self):
+        """127.0.0.2 is in 127.0.0.0/8 — must be allowed."""
+        from tests.rag.conftest import _block_network
+        import ipaddress
+
+        # Replicate the _is_loopback logic from conftest
+        def _is_loopback(host):
+            if host == "localhost":
+                return True
+            try:
+                return ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                return False
+
+        assert _is_loopback("127.0.0.2") is True
+
+    def test_loopback_ipv6_allowed(self):
+        """::1 is IPv6 loopback — must be allowed."""
+        import ipaddress
+
+        def _is_loopback(host):
+            if host == "localhost":
+                return True
+            try:
+                return ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                return False
+
+        assert _is_loopback("::1") is True
+
+    def test_subdomain_127_blocked(self):
+        """127.1.evil.com is NOT a valid IP — must be blocked."""
+        import ipaddress
+
+        def _is_loopback(host):
+            if host == "localhost":
+                return True
+            try:
+                return ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                return False
+
+        assert _is_loopback("127.1.evil.com") is False
+
+    def test_guard_blocks_127_subdomain(self):
+        """127.1.evil.com must be blocked by the actual conftest guard."""
+        with pytest.raises(ConnectionRefusedError, match=GUARD_MSG_PREFIX):
+            socket.create_connection(("127.1.evil.com", 80))

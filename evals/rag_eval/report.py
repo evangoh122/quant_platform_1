@@ -61,7 +61,7 @@ def build_report(run_report: RunReport, *, include_text: bool = False) -> dict[s
             """Redact a single value: absolute path -> basename, PathLike -> str."""
             # Handle pathlib.Path objects directly
             if isinstance(v, Path):
-                s = str(v)
+                s = str(v).replace("\\", "/")
                 if v.is_absolute() or _is_absolute_path(s):
                     return _path_basename(s)
                 return s
@@ -71,7 +71,7 @@ def build_report(run_report: RunReport, *, include_text: bool = False) -> dict[s
             # Handle any os.PathLike object
             if hasattr(v, '__fspath__'):
                 p = Path(v)
-                s = str(p)
+                s = str(p).replace("\\", "/")
                 if p.is_absolute() or _is_absolute_path(s):
                     return _path_basename(s)
                 return s
