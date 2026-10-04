@@ -1532,13 +1532,30 @@ class TestSparkGraphStoreRoundTrip:
     # ── Monkeypatch pyspark.sql.functions ──────────────────────────────────────
 
     def _patch_pyspark(self, monkeypatch):
-        """Replace pyspark.sql.functions with fake implementations."""
-        import pyspark.sql.functions as F_mod
+        """Replace pyspark.sql.functions with fake implementations.
+
+        Installs a lightweight fake module tree into sys.modules so that
+        ``import pyspark.sql.functions`` succeeds even when pyspark is not
+        installed (CI) or is blocked by the module-level guard.
+        """
+        from types import ModuleType as _Mod
+
+        pyspark = _Mod("pyspark")
+        pyspark_sql = _Mod("pyspark.sql")
+        pyspark_sql_functions = _Mod("pyspark.sql.functions")
+
+        pyspark.sql = pyspark_sql
+        pyspark_sql.functions = pyspark_sql_functions
+
+        monkeypatch.setitem(sys.modules, "pyspark", pyspark)
+        monkeypatch.setitem(sys.modules, "pyspark.sql", pyspark_sql)
+        monkeypatch.setitem(sys.modules, "pyspark.sql.functions", pyspark_sql_functions)
+
         T = TestSparkGraphStoreRoundTrip
-        monkeypatch.setattr(F_mod, "col", lambda name: T._FakeCol(name))
-        monkeypatch.setattr(F_mod, "transform", lambda col, fn: T._FakeCol("transformed"))
-        monkeypatch.setattr(F_mod, "unix_timestamp", lambda col=None: T._FakeCol("epoch"))
-        monkeypatch.setattr(F_mod, "struct", lambda *args, **kw: T._FakeCol("struct"))
+        pyspark_sql_functions.col = lambda name: T._FakeCol(name)
+        pyspark_sql_functions.transform = lambda col, fn: T._FakeCol("transformed")
+        pyspark_sql_functions.unix_timestamp = lambda col=None: T._FakeCol("epoch")
+        pyspark_sql_functions.struct = lambda *args, **kw: T._FakeCol("struct")
 
     # ── Build store with naive datetime rows ───────────────────────────────────
 
@@ -1661,7 +1678,8 @@ class TestSparkGraphStoreRoundTrip:
         kg = SecKnowledgeGraph(store)
         cid = company_id("0001045810")
         as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
-        neighbors = kg.neighbors(cid, ["FILED"], as_of)
+        neighbors = kg.neighbors(cid, ["REPORTED_FACT"], as_of)
+        assert neighbors, "REPORTED_FACT neighbors should be non-empty"
         for n in neighbors:
             vf = datetime.fromisoformat(n["valid_from"])
             at = datetime.fromisoformat(n["accepted_ts"])
