@@ -71,8 +71,9 @@
       "description": "Short plain-text entity mention from LLM output.",
       "properties": {
         "text": {
-          "maxLength": 100,
+          "maxLength": 25,
           "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 .&'\\-/_]{0,24}$",
           "title": "Text",
           "type": "string"
         }
@@ -179,6 +180,7 @@
     "semantic_model_version": {
       "maxLength": 32,
       "minLength": 1,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
       "title": "Semantic Model Version",
       "type": "string"
     }

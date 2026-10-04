@@ -234,7 +234,10 @@ def resolve_relative_date(
         current_date = as_of
     else:
         c = clock or _SystemClock()
-        current_date = c.now().date()
+        now = c.now()
+        if now.tzinfo is None:
+            raise ValueError("Clock must return timezone-aware datetime")
+        current_date = now.astimezone(tz).date()
 
     # Map normalized aliases to enum values
     _ALIAS_MAP: dict[str, RelativeDate] = {

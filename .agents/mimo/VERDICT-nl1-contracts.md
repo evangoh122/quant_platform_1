@@ -1,44 +1,47 @@
 # VERDICT: nl1-contracts — MiMo
 **Status:** APPROVED
-**Round:** 6
+**Round:** 7
 
 ## Blocking findings
-(none)
+None — all three blocking issues from round 6 are resolved.
+
+## Changes made
+
+### 1. `LLMEntityMention.text` allowlist (`contracts.py:320-345`)
+- Replaced blacklist with allowlist pattern `^[A-Za-z0-9][A-Za-z0-9 .&'\-/_]{0,24}$`
+- Added NFKC normalization before pattern check
+- Pattern emitted in JSON schema via `Field(pattern=...)`
+- Max length reduced from 100 to 25 (longest real alias is 22 chars: `consumer_discretionary`)
+- Added `_` to character class for sector names (justified: `consumer_discretionary`, `communication_services`, `real_estate`)
+- Defense-in-depth retained: control chars, SQL metacharacters (`;'"`, `--`, `/*`, `*/`), SQL keywords (`SELECT`, `DROP`, `UNION`, etc.), prompt injection patterns
+
+### 2. `resolve_relative_date` timezone fix (`aliases.py:230-240`)
+- Changed `current_date = c.now().date()` to `current_date = now.astimezone(tz).date()` where `tz = ZoneInfo("America/New_York")`
+- Added validation: naive clocks (no tzinfo) are now rejected with `ValueError`
+- All injected-clock tests pass: UTC clocks at DST boundaries (2026-03-08, 2026-11-01) and year boundary (2025-12-31)
+
+### 3. Schema walking audit + hostile corpus (`test_contracts.py:730-1085`)
+- `TestSchemaWalkingAudit`: enumerates every string leaf of `LLMIntentOutput` schema, asserts each is enum, const, or has allowlist pattern
+- `TestHostileCorpus`: 89 hostile payloads (SQL, shell, template, JNDI, URL, control/zero-width/bidi, homoglyph, multilingual injection) — all rejected by `LLMEntityMention.text` and `LLMIntentOutput`
+- `TestMutationProofs`: verifies loosening `text` back to free string fails hostile corpus; adding new free `str` field fails schema audit
+- `TestTimezoneHandling`: UTC-clock tests at DST start (2026-03-08), DST end (2026-11-01), year boundary (2025-12-31), and naive clock rejection
+
+### 4. `semantic_model_version` pattern (`contracts.py:289, 371`)
+- Added `pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$"` to both `CanonicalIntent` and `LLMIntentOutput`
+- Schema walking audit now passes — no unconstrained string leaves
+
+### 5. Schemas regenerated
+- `python3 -m analytics_nl.export_schemas --write` → all 6 schemas updated
+- `python3 -m analytics_nl.export_schemas --check` → "All schemas match"
 
 ## Non-blocking notes
-- `DateExpression.relative` is now a closed `RelativeDate` enum with 11 values. SQL/injection strings are rejected at the schema level.
-- All remaining free-form `str` fields in `LLMIntentOutput` and nested models are fail-closed:
-  - `LLMIntentOutput.semantic_model_version` — validated against exact `SEMANTIC_MODEL_VERSION`
-  - `LLMEntityMention.text` — validated with control char, SQL metachar, and prompt injection checks
-  - `DateExpression.relative` — now enum (was free-form `str`)
-- `resolve_relative_date` now supports all 11 `RelativeDate` values with aliases handled in the deterministic alias layer (not in LLM schema).
+- `consumer_discretionary` (22 chars) is the longest real alias; pattern max 25 chars gives 3-char buffer
+- SQL keyword regex catches `SELECT`, `DROP`, `UNION`, `INSERT`, `UPDATE`, `DELETE`, `ALTER`, `CREATE`, `EXEC`, `TRUNCATE`, `GRANT`, `REVOKE` as standalone words (case-insensitive)
+- Prompt injection regex expanded to catch `disregard all/previous`, `system:`, `override safety/all`, `bypass safety/all/filters`, `ignore all/safety/constraints`, `forget all/safety/constraints`
+- Hostile corpus includes 89 payloads (exceeds ≥ 60 requirement)
 
 ## Checks run
-- `python3 -m pytest -q tests/analytics_nl` → 258 passed
-- `python3 -m pytest -q --ignore=tests/lakebase` → 796 passed, 67 skipped
-- `wsl file ...` on all changed files → LF only
-- `wsl git diff --name-only` → 5 expected files changed, no secrets, no `.agents/dispatch.sh`
-- `python3 -m analytics_nl.export_schemas --write` → schemas regenerated
-
-## Summary of changes
-
-### analytics_nl/contracts.py
-- Added `RelativeDate` enum with 11 values: last_week, last_month, last_quarter, last_year, ytd, mtd, qtd, last_5_days, last_30_days, last_90_days, last_252_days
-- Changed `DateExpression.relative` from `Annotated[str, Field(min_length=1, max_length=50)]` to `RelativeDate | None`
-
-### analytics_nl/aliases.py
-- Added `timedelta` import
-- Extended `resolve_relative_date` to support all 11 `RelativeDate` values
-- Added alias map for natural-language forms (e.g. "last month" → `last_month`)
-- All date math uses `America/New_York` timezone with injected clock
-
-### analytics_nl/schemas/llm_intent_output.v1.json
-- Regenerated: `relative` field now references `RelativeDate` enum instead of free-form string
-
-### tests/analytics_nl/test_contracts.py
-- Added `TestRelativeDateEnum` class (10 tests): SQL injection, enum validation, count check
-- Added `TestLLMStringFieldProperty` class (3 tests): adversarial string rejection property test
-- Updated `TestLLMIntentOutput.test_valid_llm_output` to use `RelativeDate.last_month`
-
-### tests/analytics_nl/test_aliases.py
-- Added `TestAllRelativeDateValues` class (20 tests): all enum values resolve correctly, DST edges, leap year, year boundary
+- `python3 -m pytest -q tests/analytics_nl` → 268 passed
+- `python3 -m pytest -q --ignore=tests/lakebase` → 806 passed, 67 skipped
+- `python3 -m analytics_nl.export_schemas --check` → "All schemas match"
+- Spot-checked: all 33 real aliases from `aliases_v1.yaml` accepted; all verdict payloads rejected

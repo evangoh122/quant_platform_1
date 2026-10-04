@@ -7,6 +7,7 @@ coercion and reject unknown fields at the wire level.
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date
 from enum import Enum
 from typing import Annotated, Literal, Union
@@ -159,7 +160,12 @@ _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SQL_METACHAR_RE = re.compile(r"[;'\"]|--|/\*|\*/")
 _PROMPT_INJECTION_RE = re.compile(
-    r"ignore\s+previous|reveal\s+(?:the\s+)?system|you\s+are\s+now|forget\s+(?:your|all)",
+    r"ignore\s+previous|reveal\s+(?:the\s+)?system|you\s+are\s+now|forget\s+(?:your|all)|disregard\s+(?:all|previous)|system\s*:|override\s+(?:safety|all)|bypass\s+(?:safety|all|filters)|ignore\s+(?:all|safety|constraints)|forget\s+(?:all|safety|constraints)",
+    re.IGNORECASE,
+)
+_ENTITY_MENTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .&'\-/_]{0,24}$")
+_SQL_KEYWORD_RE = re.compile(
+    r"\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|UNION|EXEC|EXECUTE|TRUNCATE|GRANT|REVOKE)\b",
     re.IGNORECASE,
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -280,7 +286,7 @@ class DateRange(FrozenStrictModel):
 class CanonicalIntent(FrozenStrictModel):
     """Resolved canonical intent — all entities are canonical IDs."""
 
-    semantic_model_version: Annotated[str, Field(min_length=1, max_length=32)]
+    semantic_model_version: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")]
     operation: Operation
     metric: Metric
     entities: Annotated[list[EntityRef], Field(min_length=1, max_length=100)]
@@ -318,15 +324,23 @@ class CanonicalIntent(FrozenStrictModel):
 class LLMEntityMention(FrozenStrictModel):
     """Short plain-text entity mention from LLM output."""
 
-    text: Annotated[str, Field(min_length=1, max_length=100)]
+    text: Annotated[str, Field(min_length=1, max_length=25, pattern=r"^[A-Za-z0-9][A-Za-z0-9 .&'\-/_]{0,24}$")]
 
     @field_validator("text")
     @classmethod
     def validate_text(cls, v: str) -> str:
+        v = unicodedata.normalize("NFKC", v)
+        if not _ENTITY_MENTION_RE.match(v):
+            raise ValueError(
+                "Entity mention must match allowlist pattern: "
+                "alphanumeric start, alphanumeric/space/dot/ampersand/apostrophe/hyphen/slash/underscore only"
+            )
         if _CONTROL_CHAR_RE.search(v):
             raise ValueError("Control characters not allowed in entity mention")
         if _SQL_METACHAR_RE.search(v):
             raise ValueError("SQL/comment metacharacters not allowed in entity mention")
+        if _SQL_KEYWORD_RE.search(v):
+            raise ValueError("SQL keywords not allowed in entity mention")
         if _PROMPT_INJECTION_RE.search(v):
             raise ValueError("Prompt injection patterns not allowed in entity mention")
         return v
@@ -354,7 +368,7 @@ class LLMIntentOutput(FrozenStrictModel):
     predicate, order_by, expression, prompt, url, html, javascript fields.
     """
 
-    semantic_model_version: Annotated[str, Field(min_length=1, max_length=32)]
+    semantic_model_version: Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")]
     operation: Operation
     metric: Metric
     entity_mentions: Annotated[
