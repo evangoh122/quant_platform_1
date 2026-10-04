@@ -129,6 +129,21 @@ def _extract_table_name(query: str) -> str:
     return m.group(1) if m else "unknown"
 
 
+def as_dicts(result: Any) -> List[Dict[str, Any]]:
+    """Normalize a query result to list[dict].
+
+    Handles both pyspark DataFrames (via .collect() + .asDict()) and plain
+    lists-of-dicts returned by the warehouse backend.
+    """
+    if isinstance(result, list):
+        return result
+    # pyspark DataFrame — collect and convert
+    try:
+        return [r.asDict() for r in result.collect()]
+    except AttributeError:
+        return []
+
+
 def check_warehouse_health() -> Tuple[bool, str]:
     """Probe the SQL warehouse with SELECT 1. Returns (ok, detail)."""
     try:
@@ -138,7 +153,7 @@ def check_warehouse_health() -> Tuple[bool, str]:
         ok = len(rows) == 1
         return (ok, "reachable" if ok else "no response")
     except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {str(exc)[:80]}"
+        return False, type(exc).__name__
 
 
 # ── DuckDB table name -> Delta table name ─────────────────────────────────────

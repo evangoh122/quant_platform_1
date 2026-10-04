@@ -39,35 +39,48 @@ def _fqn(table: str) -> str:
 # ── Delta-backed reads ────────────────────────────────────────────────────────
 def get_latest_signal(symbol: str) -> dict:
     symbol = normalize_symbol(symbol)
-    from db.delta_adapter import latest_signals
+    from db.delta_adapter import as_dicts, latest_signals
 
-    df = latest_signals(symbol, limit=1)
-    rows = df.collect()
-    return rows[0].asDict() if rows else {}
+    rows = as_dicts(latest_signals(symbol, limit=1))
+    return rows[0] if rows else {}
 
 
 def get_market_features(symbol: str, start_time: str, end_time: str, *, limit: int = 5000) -> list:
     symbol = normalize_symbol(symbol)
-    from db.delta_adapter import market_features
+    from db.delta_adapter import as_dicts, market_features
 
-    df = market_features(symbol, start_time, end_time, limit=limit)
-    return [r.asDict() for r in df.collect()]
+    return as_dicts(market_features(symbol, start_time, end_time, limit=limit))
 
 
 def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: int = 5000) -> list:
     symbol = normalize_symbol(symbol)
-    from pyspark.sql import functions as F
+    from db.delta_adapter import _has_pyspark, _warehouse_query, _fqn
 
-    cols = ["symbol", "feature_ts", "expiry", "atm_iv", "skew", "put_call_ratio", "volume_anomaly"]
-    df = (
-        _spark()
-        .table(_fqn("gold_options_features"))
-        .where(F.col("symbol") == symbol)
-        .select(*cols)
+    if _has_pyspark:
+        from pyspark.sql import functions as F
+
+        cols = ["symbol", "feature_ts", "expiry", "atm_iv", "skew", "put_call_ratio", "volume_anomaly"]
+        df = (
+            _spark()
+            .table(_fqn("gold_options_features"))
+            .where(F.col("symbol") == symbol)
+            .select(*cols)
+        )
+        if expiry:
+            df = df.where(F.col("expiry") == expiry)
+        return [r.asDict() for r in df.limit(limit).collect()]
+
+    # Warehouse fallback
+    query = (
+        f"SELECT symbol, feature_ts, expiry, atm_iv, skew, put_call_ratio, volume_anomaly "
+        f"FROM {_fqn('gold_options_features')} "
+        f"WHERE symbol = %s"
     )
+    params: tuple = (symbol,)
     if expiry:
-        df = df.where(F.col("expiry") == expiry)
-    return [r.asDict() for r in df.limit(limit).collect()]
+        query += " AND expiry = %s"
+        params = (symbol, expiry)
+    return _warehouse_query(query, params=params, limit=limit)
 
 
 def search_sec_filings(
@@ -350,13 +363,21 @@ def _get_default_graph():
 
 def get_cot_positioning(mapped_asset: str) -> dict:
     mapped_asset = normalize_symbol(mapped_asset)
-    from pyspark.sql import functions as F
+    from db.delta_adapter import _has_pyspark, _warehouse_query, _fqn
 
-    df = _spark().table(_fqn("gold_cot_features")).where(
-        F.col("mapped_asset") == mapped_asset
-    ).limit(1)
-    rows = df.collect()
-    return rows[0].asDict() if rows else {}
+    if _has_pyspark:
+        from pyspark.sql import functions as F
+
+        df = _spark().table(_fqn("gold_cot_features")).where(
+            F.col("mapped_asset") == mapped_asset
+        ).limit(1)
+        rows = df.collect()
+        return rows[0].asDict() if rows else {}
+
+    # Warehouse fallback
+    query = f"SELECT * FROM {_fqn('gold_cot_features')} WHERE mapped_asset = %s"
+    rows = _warehouse_query(query, params=(mapped_asset,), limit=1)
+    return rows[0] if rows else {}
 
 
 # ── Lakebase-backed reads ─────────────────────────────────────────────────────

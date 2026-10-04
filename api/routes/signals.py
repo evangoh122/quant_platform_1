@@ -31,10 +31,9 @@ def list_signals(
             raise HTTPException(status_code=422, detail="invalid symbol") from None
 
     def _read() -> list[dict]:
-        from db.delta_adapter import latest_signals
+        from db.delta_adapter import as_dicts, latest_signals
 
-        df = latest_signals(symbol, limit=limit)
-        return [r.asDict() for r in df.collect()]
+        return as_dicts(latest_signals(symbol, limit=limit))
 
     from api.diagnostics import stage
 

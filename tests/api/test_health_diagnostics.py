@@ -342,3 +342,115 @@ def test_warehouse_health_probe_returns_tuple(monkeypatch):
     ok, detail = adapter.check_warehouse_health()
     assert isinstance(ok, bool)
     assert isinstance(detail, str)
+
+
+# ── 7. Warehouse e2e: route → tool → adapter with pyspark absent ─────────────
+
+def _fake_warehouse_query(query, params=None, **kwargs):
+    """Fake warehouse query that returns realistic rows."""
+    q = query.upper()
+    if "GOLD_TRADING_SIGNALS" in q:
+        return [{"signal_id": "s1", "symbol": "AAPL", "direction": "long",
+                 "probability": 0.8, "prediction_ts": "2024-01-01T00:00:00Z",
+                 "model_version": "v1", "horizon": "1d", "status": "active"}]
+    if "GOLD_OHLCV_FEATURES" in q:
+        return [{"symbol": "AAPL", "feature_ts": "2024-01-01",
+                 "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
+                 "volume": 1000000, "vwap": 100.1}]
+    if "GOLD_OPTIONS_FEATURES" in q:
+        return [{"symbol": "AAPL", "feature_ts": "2024-01-01", "expiry": "2024-02-01",
+                 "atm_iv": 0.25, "skew": 0.01, "put_call_ratio": 1.1, "volume_anomaly": 0.0}]
+    if "GOLD_COT_FEATURES" in q:
+        return [{"mapped_asset": "AAPL", "report_date": "2024-01-01",
+                 "net_position": 50000, "net_pct_oi": 0.15}]
+    return []
+
+
+def test_signals_route_warehouse_e2e(client, monkeypatch):
+    """Signals route returns real rows through warehouse backend (pyspark absent).
+
+    MUTATION: return Spark-style objects from warehouse → route FAILS.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_warehouse_query", _fake_warehouse_query)
+
+    resp = client.get("/api/signals?symbol=AAPL", headers={"x-forwarded-email": "u@test.com"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["data"][0]["symbol"] == "AAPL"
+    assert data["freshness"]["state"] == "fresh"
+
+
+def test_market_route_warehouse_e2e(client, monkeypatch):
+    """Market route returns real rows through warehouse backend (pyspark absent).
+
+    MUTATION: return Spark-style objects from warehouse → route FAILS.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_warehouse_query", _fake_warehouse_query)
+
+    resp = client.get("/api/market/AAPL", headers={"x-forwarded-email": "u@test.com"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["symbol"] == "AAPL"
+    assert data["ohlcv"]["count"] == 1
+    assert data["options"]["count"] == 1
+
+
+def test_options_features_warehouse_e2e(monkeypatch):
+    """get_options_features returns real rows through warehouse backend.
+
+    MUTATION: remove warehouse fallback → ImportError when pyspark absent.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_warehouse_query", _fake_warehouse_query)
+
+    from agent.tools_retrieval import get_options_features
+    rows = get_options_features("AAPL")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAPL"
+    assert "atm_iv" in rows[0]
+
+
+def test_cot_positioning_warehouse_e2e(monkeypatch):
+    """get_cot_positioning returns real rows through warehouse backend.
+
+    MUTATION: remove warehouse fallback → ImportError when pyspark absent.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_warehouse_query", _fake_warehouse_query)
+
+    from agent.tools_retrieval import get_cot_positioning
+    result = get_cot_positioning("AAPL")
+    assert result["mapped_asset"] == "AAPL"
+    assert "net_position" in result
+
+
+def test_warehouse_health_returns_type_only(monkeypatch):
+    """check_warehouse_health returns exception type only, not message.
+
+    MUTATION: include str(exc) → leaked host/credential in detail.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_warehouse_available", lambda: True)
+
+    def _fail_query(*a, **kw):
+        raise RuntimeError("connection to host=db.internal port=443 password=secret123 failed")
+
+    monkeypatch.setattr(adapter, "_warehouse_query", _fail_query)
+
+    ok, detail = adapter.check_warehouse_health()
+    assert ok is False
+    assert "RuntimeError" in detail
+    assert "password" not in detail
+    assert "db.internal" not in detail
