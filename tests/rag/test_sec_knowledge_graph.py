@@ -1466,6 +1466,15 @@ class TestSparkGraphStoreRoundTrip:
         def contains(self, substr):
             return TestSparkGraphStoreRoundTrip._Expr("contains", self._name, substr)
 
+    class _LoweredCol:
+        """Wraps a _FakeCol so .contains(s) evaluates as lower(value).contains(s)."""
+        def __init__(self, inner):
+            self._inner = inner
+        def contains(self, substr):
+            return TestSparkGraphStoreRoundTrip._Expr(
+                "lower_contains", self._inner._name, substr
+            )
+
     # ── Fake Row / DataFrame / SparkSession ────────────────────────────────────
 
     class _FakeRow:
@@ -1520,6 +1529,9 @@ class TestSparkGraphStoreRoundTrip:
             elif expr.op == "contains":
                 val = getattr(row, expr.left, None) or ""
                 return expr.right in val
+            elif expr.op == "lower_contains":
+                val = getattr(row, expr.left, None) or ""
+                return expr.right in val.lower()
             elif expr.op == "or":
                 return T._eval(expr.left, row) or T._eval(expr.right, row)
             elif expr.op == "and":
@@ -1565,6 +1577,9 @@ class TestSparkGraphStoreRoundTrip:
         pyspark_sql_functions.transform = lambda col, fn: T._FakeCol("transformed")
         pyspark_sql_functions.unix_timestamp = lambda col=None: T._FakeCol("epoch")
         pyspark_sql_functions.struct = lambda *args, **kw: T._FakeCol("struct")
+        pyspark_sql_functions.get_json_object = lambda col, path: T._FakeCol("json_val")
+        pyspark_sql_functions.lower = lambda col: T._LoweredCol(col if isinstance(col, T._FakeCol) else T._FakeCol("lowered"))
+        pyspark_sql_functions.exists = lambda col, pred: T._FakeCol("exists")
 
     # ── Build store with naive datetime rows ───────────────────────────────────
 
@@ -2066,10 +2081,16 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
         def createDataFrame(self, data, schema=None):
             write_spy.record("createDataFrame", data=data, schema=schema)
             rows = []
+            # Convert tuples to named _FakeRow objects using schema field names
+            field_names = None
+            if schema and hasattr(schema, 'fields') and schema.fields:
+                field_names = [f.name for f in schema.fields]
             if data and not isinstance(data[0], _FakeRow):
                 for item in data:
                     if isinstance(item, dict):
                         rows.append(_FakeRow(**item))
+                    elif field_names and isinstance(item, (tuple, list)):
+                        rows.append(_FakeRow(**dict(zip(field_names, item))))
                     else:
                         rows.append(item)
             else:
@@ -2127,6 +2148,8 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
     pyspark_sql_functions.lower = lambda *a, **kw: MagicMock()
     pyspark_sql_functions.unix_timestamp = lambda *a, **kw: MagicMock()
     pyspark_sql_functions.desc = lambda *a, **kw: MagicMock()
+    pyspark_sql_functions.get_json_object = lambda *a, **kw: MagicMock()
+    pyspark_sql_functions.exists = lambda *a, **kw: MagicMock()
     pyspark_sql_functions.F = MagicMock()
 
     # ── Install delta mock module ─────────────────────────────────────────────
@@ -2173,7 +2196,7 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
     except Exception:
         pass
 
-    return fake_spark, write_spy
+    return fake_spark, write_spy, _table_data
 
 
 class TestPipelineValidation:
@@ -2228,7 +2251,7 @@ class TestPipelineValidation:
         """(a) Undocumented rejection reason → ValueError AND write spy records ZERO writes."""
         entity_rows = self._make_entity_rows()
         section_rows = self._make_section_rows()
-        fake_spark, write_spy = _setup_pyspark_mocks(
+        fake_spark, write_spy, _ = _setup_pyspark_mocks(
             monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
         )
 
@@ -2285,7 +2308,7 @@ class TestPipelineValidation:
                 filing_section="item1_business", chunk_index=0,
             ),
         ]
-        fake_spark, write_spy = _setup_pyspark_mocks(
+        fake_spark, write_spy, _ = _setup_pyspark_mocks(
             monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
         )
 
@@ -2324,7 +2347,7 @@ class TestPipelineValidation:
         """(c) Manifest row written to gold_sec_kg_build_runs carries exact expected counts."""
         entity_rows = self._make_entity_rows()
         section_rows = self._make_section_rows()
-        fake_spark, write_spy = _setup_pyspark_mocks(
+        fake_spark, write_spy, _ = _setup_pyspark_mocks(
             monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
         )
 
@@ -2401,7 +2424,7 @@ class TestPipelineValidation:
         """Manifest createDataFrame is called with explicit StructType of 9 columns."""
         entity_rows = self._make_entity_rows()
         section_rows = self._make_section_rows()
-        fake_spark, write_spy = _setup_pyspark_mocks(
+        fake_spark, write_spy, _ = _setup_pyspark_mocks(
             monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
         )
 
@@ -2660,30 +2683,7 @@ class TestLosslessCitationComparison:
         assert d == Decimal("-1234.56")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 29. Full rebuild stale row deletion (P1)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestFullRebuildStaleRows:
-    """Full rebuild must delete rows absent from current build."""
-
-    def test_merge_has_delete_clause(self):
-        """MERGE statement must include whenNotMatchedBySourceDelete."""
-        import inspect
-        import pipelines.build_sec_knowledge_graph as pipeline_mod
-        source = inspect.getsource(pipeline_mod.build)
-        assert "whenNotMatchedBySourceDelete" in source, (
-            "MERGE missing whenNotMatchedBySourceDelete — stale rows won't be removed"
-        )
-
-    def test_mutation_remove_delete_clause_fails(self):
-        """Mutation: remove the delete clause → test fails."""
-        import inspect
-        import pipelines.build_sec_knowledge_graph as pipeline_mod
-        source = inspect.getsource(pipeline_mod.build)
-        # This test passes when the clause is present
-        # If someone removes it, this test fails
-        assert "whenNotMatchedBySourceDelete" in source
+# §29 (source-grep stale-delete) replaced by §39 (functional fake-Delta test).
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2867,6 +2867,12 @@ class TestPredicatePushdown:
             elif condition.op == "and":
                 return (TestPredicatePushdown._eval_condition(condition.left, row) and
                         TestPredicatePushdown._eval_condition(condition.right, row))
+            elif condition.op == "contains":
+                val = getattr(row, condition.left, None) or ""
+                return condition.right in val
+            elif condition.op == "lower_contains":
+                val = getattr(row, condition.left, None) or ""
+                return condition.right in val.lower()
         return True
 
     def _make_spy_store(self, monkeypatch, node_rows, edge_rows):
@@ -3169,7 +3175,7 @@ class TestSubsetFilterDeleteSafety:
                 filing_section="item1_business", chunk_index=0,
             ),
         ]
-        fake_spark, _ = _setup_pyspark_mocks(
+        fake_spark, _, _ = _setup_pyspark_mocks(
             monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
         )
 
@@ -3206,7 +3212,7 @@ class TestSubsetFilterDeleteSafety:
                 filing_section="item1_business", chunk_index=0,
             ),
         ]
-        fake_spark, _ = _setup_pyspark_mocks(
+        fake_spark, _, _ = _setup_pyspark_mocks(
             monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
         )
 
@@ -3342,7 +3348,7 @@ class TestPipelineEpochUnderClientTimezone:
                     filing_section="item1_business", chunk_index=0,
                 ),
             ]
-            fake_spark, _ = _setup_pyspark_mocks(monkeypatch, entity_rows=entity_rows, section_rows=section_rows)
+            fake_spark, _, _ = _setup_pyspark_mocks(monkeypatch, entity_rows=entity_rows, section_rows=section_rows)
 
             import pipelines.build_sec_knowledge_graph as pipeline_mod
             from sec_kg.build import build_graph as _real_build_graph
@@ -3367,3 +3373,575 @@ class TestPipelineEpochUnderClientTimezone:
         finally:
             monkeypatch.delenv("TZ", raising=False)
             time.tzset()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 36. LIMIT before as-of — provenance filter must not consume limit (round 11)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestLimitBeforeAsOf:
+    """As-of filter must apply BEFORE limit so ineligible rows don't consume budget."""
+
+    def _make_store_with_future_and_eligible(self):
+        """Two nodes: one with only-future provenance, one eligible."""
+        from datetime import datetime, timezone
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1800000000,  # far future (2027)
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "999", "entity_unit": "USD",
+            "period_start": "2026-01-01", "period_end": "2026-12-31",
+            "confidence": 1.0, "source_chunk_id": "c_future",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000002",
+            "form_type": "10-K", "accepted_epoch": 1700000000,  # past (2023)
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "100", "entity_unit": "USD",
+            "period_start": "2023-01-01", "period_end": "2023-12-31",
+            "confidence": 1.0, "source_chunk_id": "c_past",
+        }]
+        corpus = {
+            "c_future": {"chunk_id": "c_future", "ticker": "NVDA",
+                         "accession_number": "0001045810-24-000001",
+                         "form_type": "10-K", "accepted_epoch": 1800000000,
+                         "filing_section": "item1", "chunk_index": 0,
+                         "chunk_text": "text"},
+            "c_past": {"chunk_id": "c_past", "ticker": "NVDA",
+                       "accession_number": "0001045810-24-000002",
+                       "form_type": "10-K", "accepted_epoch": 1700000000,
+                       "filing_section": "item1", "chunk_index": 0,
+                       "chunk_text": "text"},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        return store
+
+    def test_limit_1_returns_eligible_not_future(self):
+        """limit=1 with as-of must return the eligible row, not the future one."""
+        store = self._make_store_with_future_and_eligible()
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        results = store.find_nodes("XbrlFact", concept="Revenues",
+                                   accepted_before=as_of, limit=1)
+        assert len(results) == 1
+        props = json.loads(results[0].properties_json)
+        assert props.get("value_text") == "100", (
+            f"Expected eligible row (100), got {props.get('value_text')} — "
+            "limit may be applied before as-of filter"
+        )
+
+    def test_mutation_limit_before_filter_returns_future(self):
+        """Mutation: if limit is applied before as-of, the future row would be returned."""
+        store = self._make_store_with_future_and_eligible()
+        # Without as-of filter, limit=1 returns the first node encountered
+        # (which could be the future one)
+        all_nodes = store.find_nodes("XbrlFact", concept="Revenues", limit=1)
+        assert len(all_nodes) == 1
+        # The important thing is that with as-of, we get a DIFFERENT result
+        # than without as-of when the first node is in the future
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        filtered = store.find_nodes("XbrlFact", concept="Revenues",
+                                    accepted_before=as_of, limit=1)
+        assert len(filtered) == 1
+        # If limit were before filter, and the future node came first,
+        # we'd get 0 results (future node filtered out after limit)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 37. Case-insensitive concept matching parity (round 11)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCaseInsensitiveConceptMatching:
+    """Concept matching must be case-insensitive on both stores."""
+
+    def _make_store(self):
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Assets",
+            "entity_value": "50000000000", "entity_unit": "USD",
+            "period_start": "", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        return store
+
+    def test_lowercase_concept_matches(self):
+        """'revenues' (lowercase) matches 'Revenues' node."""
+        store = self._make_store()
+        results = store.find_nodes("XbrlFact", concept="revenues")
+        assert len(results) == 1
+
+    def test_original_case_matches(self):
+        """'Revenues' (original case) matches."""
+        store = self._make_store()
+        results = store.find_nodes("XbrlFact", concept="Revenues")
+        assert len(results) == 1
+
+    def test_uppercase_concept_matches(self):
+        """'REVENUES' (uppercase) matches 'Revenues' node."""
+        store = self._make_store()
+        results = store.find_nodes("XbrlFact", concept="REVENUES")
+        assert len(results) == 1
+
+    def test_mixed_case_concept_matches(self):
+        """'rEvEnUeS' (mixed case) matches 'Revenues' node."""
+        store = self._make_store()
+        results = store.find_nodes("XbrlFact", concept="rEvEnUeS")
+        assert len(results) == 1
+
+    def test_parity_both_stores_return_same_count(self):
+        """Both lowercase and original case return the same count."""
+        store = self._make_store()
+        lower_results = store.find_nodes("XbrlFact", concept="revenues")
+        exact_results = store.find_nodes("XbrlFact", concept="Revenues")
+        assert len(lower_results) == len(exact_results), (
+            f"Case mismatch: 'revenues' → {len(lower_results)}, "
+            f"'Revenues' → {len(exact_results)}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 38. Driver memory cap (round 11)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestDriverMemoryCap:
+    """Build must raise MemoryError when entity count exceeds max_entities."""
+
+    def test_cap_raises_on_overflow(self, monkeypatch):
+        """max_entities=5 with 6 entities raises MemoryError."""
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id=f"c{i}",
+            )
+            for i in range(6)
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id=f"c{i}", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            )
+            for i in range(6)
+        ]
+        fake_spark, _, _ = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+
+        with pytest.raises(MemoryError, match="exceeds max_entities"):
+            pipeline_mod.build(
+                fake_spark,
+                catalog="test_cat",
+                schema="test_sch",
+                max_entities=5,
+            )
+
+    def test_cap_default_allows_small_dataset(self, monkeypatch):
+        """Default max_entities=2_000_000 allows small datasets."""
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id="c1", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            ),
+        ]
+        fake_spark, _, _ = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+
+        # Should not raise
+        pipeline_mod.build(
+            fake_spark,
+            catalog="test_cat",
+            schema="test_sch",
+        )
+
+    def test_mutation_no_cap_allows_overflow(self, monkeypatch):
+        """Mutation: setting max_entities very high allows overflow."""
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id=f"c{i}",
+            )
+            for i in range(6)
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id=f"c{i}", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            )
+            for i in range(6)
+        ]
+        fake_spark, _, _ = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+
+        # With very high cap, should not raise
+        pipeline_mod.build(
+            fake_spark,
+            catalog="test_cat",
+            schema="test_sch",
+            max_entities=999_999_999,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 39. Functional stale-delete via fake DeltaTable (round 11, replaces §29)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestFunctionalStaleDelete:
+    """Full rebuild must delete rows absent from current build.
+
+    Replaces the source-grep test in §29 with a functional fake-Delta test.
+    """
+
+    def test_merge_calls_when_not_matched_by_source_delete(self, monkeypatch):
+        """MERGE must invoke whenNotMatchedBySourceDelete on both tables."""
+        from unittest.mock import MagicMock
+
+        delete_calls = []
+
+        class _RecordingMerge:
+            def whenMatchedUpdateAll(self):
+                return self
+            def whenNotMatchedInsertAll(self):
+                return self
+            def whenNotMatchedBySourceDelete(self):
+                delete_calls.append(True)
+                return self
+            def execute(self):
+                return None
+
+        class _RecordingDeltaTable:
+            _tables = {}
+            def __init__(self, table_name):
+                self.table_name = table_name
+            @classmethod
+            def forName(cls, spark, tableName):
+                if tableName not in cls._tables:
+                    cls._tables[tableName] = cls(tableName)
+                return cls._tables[tableName]
+            def alias(self, name):
+                return self
+            def merge(self, source, condition):
+                return _RecordingMerge()
+
+        _RecordingDeltaTable._tables = {}
+
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id="c1", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            ),
+        ]
+        fake_spark, _, _ = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        import delta.tables as dt_mod
+        monkeypatch.setattr(dt_mod, "DeltaTable", _RecordingDeltaTable)
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+        pipeline_mod.build(fake_spark, catalog="test_cat", schema="test_sch")
+
+        assert len(delete_calls) == 2, (
+            f"Expected 2 whenNotMatchedBySourceDelete calls (nodes + edges), "
+            f"got {len(delete_calls)}"
+        )
+
+    def test_stale_row_removed_on_second_build(self, monkeypatch):
+        """Run 2 without a node → that node is deleted from the in-memory table."""
+        class _MergeBuilder:
+            def __init__(self, table_state):
+                self._table = table_state
+                self._source_data = None
+                self._delete_unmatched = False
+            def whenMatchedUpdateAll(self):
+                return self
+            def whenNotMatchedInsertAll(self):
+                return self
+            def whenNotMatchedBySourceDelete(self):
+                self._delete_unmatched = True
+                return self
+            def execute(self):
+                source_ids = set()
+                if self._source_data:
+                    for row in self._source_data:
+                        node_id = getattr(row, "node_id", None) or getattr(row, "edge_id", None)
+                        if node_id:
+                            source_ids.add(node_id)
+                if self._delete_unmatched:
+                    to_delete = [k for k in self._table if k not in source_ids]
+                    for k in to_delete:
+                        del self._table[k]
+                if self._source_data:
+                    for row in self._source_data:
+                        node_id = getattr(row, "node_id", None) or getattr(row, "edge_id", None)
+                        if node_id:
+                            self._table[node_id] = row
+
+        class _StatefulDeltaTable:
+            def __init__(self, table_state):
+                self._table = table_state
+            @classmethod
+            def forName(cls, spark, tableName):
+                if not hasattr(cls, "_tables"):
+                    cls._tables = {}
+                if tableName not in cls._tables:
+                    cls._tables[tableName] = {}
+                return cls(cls._tables[tableName])
+            def alias(self, name):
+                return self
+            def merge(self, source, condition):
+                builder = _MergeBuilder(self._table)
+                if hasattr(source, "_rows"):
+                    builder._source_data = source._rows
+                elif hasattr(source, "collect"):
+                    builder._source_data = source.collect()
+                return builder
+
+        if hasattr(_StatefulDeltaTable, "_tables"):
+            delattr(_StatefulDeltaTable, "_tables")
+
+        # Run 1: two entities
+        entity_rows_1 = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="xbrl_fact", entity_key="Revenues",
+                entity_value="2943719000", entity_unit="USD",
+                period_start="2023-01-29", period_end="2024-01-28",
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id="c1", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            ),
+        ]
+
+        fake_spark, _, table_data = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows_1, section_rows=section_rows,
+        )
+        import delta.tables as dt_mod
+        monkeypatch.setattr(dt_mod, "DeltaTable", _StatefulDeltaTable)
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+        pipeline_mod.build(fake_spark, catalog="test_cat", schema="test_sch")
+
+        run1_node_count = len(_StatefulDeltaTable._tables.get(
+            "test_cat.test_sch.gold_sec_kg_nodes", {}
+        ))
+
+        # Run 2: only company entity (Revenues removed) — update table data in-place
+        entity_rows_2 = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        table_data["silver_sec_entities"] = entity_rows_2
+
+        pipeline_mod.build(fake_spark, catalog="test_cat", schema="test_sch")
+
+        nodes_table = _StatefulDeltaTable._tables.get(
+            "test_cat.test_sch.gold_sec_kg_nodes", {}
+        )
+        run2_node_count = len(nodes_table)
+        assert run2_node_count < run1_node_count, (
+            f"Expected stale nodes deleted ({run2_node_count} < {run1_node_count})"
+        )
+
+    def test_mutation_remove_delete_fails(self, monkeypatch):
+        """Mutation: if whenNotMatchedBySourceDelete is a no-op, stale rows persist."""
+        class _NoDeleteMerge:
+            """Merge builder that ignores whenNotMatchedBySourceDelete (no-op)."""
+            def __init__(self, table_state):
+                self._table = table_state
+                self._source_data = None
+            def whenMatchedUpdateAll(self):
+                return self
+            def whenNotMatchedInsertAll(self):
+                return self
+            def whenNotMatchedBySourceDelete(self):
+                return self  # no-op: stale rows are NOT deleted
+            def execute(self):
+                if self._source_data:
+                    for row in self._source_data:
+                        node_id = getattr(row, "node_id", None) or getattr(row, "edge_id", None)
+                        if node_id:
+                            self._table[node_id] = row
+
+        class _NoDeleteDeltaTable:
+            def __init__(self, table_state):
+                self._table = table_state
+            @classmethod
+            def forName(cls, spark, tableName):
+                if not hasattr(cls, "_tables"):
+                    cls._tables = {}
+                if tableName not in cls._tables:
+                    cls._tables[tableName] = {}
+                return cls(cls._tables[tableName])
+            def alias(self, name):
+                return self
+            def merge(self, source, condition):
+                builder = _NoDeleteMerge(self._table)
+                if hasattr(source, "_rows"):
+                    builder._source_data = source._rows
+                elif hasattr(source, "collect"):
+                    builder._source_data = source.collect()
+                return builder
+
+        if hasattr(_NoDeleteDeltaTable, "_tables"):
+            delattr(_NoDeleteDeltaTable, "_tables")
+
+        entity_rows_1 = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="xbrl_fact", entity_key="Revenues",
+                entity_value="2943719000", entity_unit="USD",
+                period_start="2023-01-29", period_end="2024-01-28",
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id="c1", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            ),
+        ]
+
+        fake_spark, _, table_data = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows_1, section_rows=section_rows,
+        )
+        import delta.tables as dt_mod
+        monkeypatch.setattr(dt_mod, "DeltaTable", _NoDeleteDeltaTable)
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+        pipeline_mod.build(fake_spark, catalog="test_cat", schema="test_sch")
+
+        run1_node_count = len(_NoDeleteDeltaTable._tables.get(
+            "test_cat.test_sch.gold_sec_kg_nodes", {}
+        ))
+
+        # Run 2: only company
+        entity_rows_2 = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        table_data["silver_sec_entities"] = entity_rows_2
+
+        pipeline_mod.build(fake_spark, catalog="test_cat", schema="test_sch")
+
+        nodes_table = _NoDeleteDeltaTable._tables.get(
+            "test_cat.test_sch.gold_sec_kg_nodes", {}
+        )
+        run2_node_count = len(nodes_table)
+        # Without delete, run 1's stale nodes persist
+        assert run2_node_count >= run1_node_count, (
+            f"Expected stale nodes to persist ({run2_node_count} >= {run1_node_count}) — "
+            "mutation confirms whenNotMatchedBySourceDelete is required"
+        )

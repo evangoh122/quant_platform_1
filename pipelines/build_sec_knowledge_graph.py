@@ -2,6 +2,11 @@
 """pipelines/build_sec_knowledge_graph.py — Databricks Delta build for SEC KG.
 
 Provides build(spark, *, catalog, schema, ...) and CLI entry point.
+
+Design: The build is driver-bound — all entities and chunk metadata are
+collected into driver memory before ``build_graph`` runs in pure Python.
+A configurable ``max_entities`` cap (default 2M) raises MemoryError before
+OOM if the dataset grows beyond driver capacity.
 """
 from __future__ import annotations
 
@@ -35,8 +40,15 @@ def build(
     enable_llm_extraction: bool = False,
     llm_budget: int = 0,
     subset_filter: Optional[Dict[str, str]] = None,
+    max_entities: int = 2_000_000,
 ) -> None:
     """Build SEC knowledge graph Delta tables.
+
+    DESIGN NOTE: The graph build is driver-bound.  All entities and chunk
+    metadata are collected into driver memory (lists / dicts) before
+    ``build_graph`` runs in pure Python.  At current scale (~63.5k nodes /
+    ~137k edges) this comfortably fits a driver; the ``max_entities`` cap
+    guards against unbounded growth.
 
     Args:
         spark: SparkSession
@@ -47,9 +59,12 @@ def build(
         subset_filter: if set, indicates a partial rebuild (e.g. {"ticker": "NVDA"}).
             When set, the unscoped whenNotMatchedBySourceDelete is REFUSED to prevent
             deleting rows belonging to other tickers/partitions.
+        max_entities: hard cap on total entities collected into driver memory.
+            Raises MemoryError before OOM if exceeded.  Default 2,000,000.
 
     Raises:
         ValueError: if subset_filter is set (partial rebuilds not supported with unscoped delete)
+        MemoryError: if entity count exceeds max_entities
     """
     from pyspark.sql import functions as F
     from pyspark.sql.types import (
@@ -61,9 +76,10 @@ def build(
     entities_df = spark.table(f"{catalog}.{schema}.silver_sec_entities")
     sections_df = spark.table(f"{catalog}.{schema}.silver_sec_sections")
 
-    # Collect chunk metadata for corpus — use unix_timestamp to avoid
+    # Collect chunk metadata for corpus — uses unix_timestamp to avoid
     # driver-timezone-dependent naive datetime conversion.
-    # Use toLocalIterator to avoid driver-wide collect of whole table.
+    # NOTE: toLocalIterator streams rows but the dict still accumulates in
+    # driver memory.  This is acceptable at current scale; max_entities caps growth.
     chunk_metadata = {}
     for row in sections_df.select(
         "chunk_id", "ticker", "accession_number", "form_type",
@@ -81,9 +97,10 @@ def build(
             "chunk_text": "",  # Not needed for build
         }
 
-    # Convert entities to list of dicts — use unix_timestamp to avoid
+    # Convert entities to list of dicts — uses unix_timestamp to avoid
     # driver-timezone-dependent naive datetime conversion.
-    # Use toLocalIterator to avoid driver-wide collect of whole table.
+    # NOTE: toLocalIterator streams rows but the list still accumulates in
+    # driver memory.  Guarded by max_entities cap below.
     entities = []
     for row in entities_df.select(
         "cik", "ticker", "accession_number", "form_type",
@@ -106,6 +123,14 @@ def build(
             "confidence": row.confidence,
             "source_chunk_id": row.source_chunk_id,
         })
+
+    # Driver memory cap — fail fast before OOM
+    total_collected = len(chunk_metadata) + len(entities)
+    if total_collected > max_entities:
+        raise MemoryError(
+            f"Entity count {total_collected:,} exceeds max_entities={max_entities:,}. "
+            f"The graph build is driver-bound; increase max_entities or reduce input scope."
+        )
 
     # Optional LLM enrichment
     if enable_llm_extraction and llm_budget > 0:

@@ -441,10 +441,16 @@ class SparkGraphStore:
                 f'"ticker":"{ticker.upper()}"'
             ))
         if concept is not None:
-            # XBRL facts use "metric", other types may use "entity_key"
+            # Case-insensitive match on structured fields (parity with JsonlGraphStore).
+            # Compare lower(concept) to lower() of JSON field values.
+            lowered = concept.lower()
             df = df.where(
-                F.col("properties_json").contains(f'"entity_key":"{concept}"') |
-                F.col("properties_json").contains(f'"metric":"{concept}"')
+                F.lower(F.col("properties_json")).contains(
+                    f'"entity_key":"{lowered}"'
+                ) |
+                F.lower(F.col("properties_json")).contains(
+                    f'"metric":"{lowered}"'
+                )
             )
         if period_start is not None:
             df = df.where(F.col("properties_json").contains(
@@ -454,6 +460,18 @@ class SparkGraphStore:
             df = df.where(F.col("properties_json").contains(
                 f'"period_end":"{period_end}"'
             ))
+
+        # PIT filter: push as-of predicate into Spark BEFORE limit so
+        # ineligible rows never consume the limit budget.
+        if accepted_before is not None:
+            accepted_before = ensure_utc(accepted_before)
+            as_of_epoch = int(accepted_before.timestamp())
+            df = df.where(
+                F.exists(
+                    F.col("provenance"),
+                    lambda p: p["accepted_epoch"] <= as_of_epoch,
+                )
+            )
 
         # Hard limit BEFORE collecting
         df = df.limit(limit)
@@ -471,9 +489,8 @@ class SparkGraphStore:
                 for p in (row.provenance or [])
             )
 
-            # PIT filter on provenance (post-collect, provenance is per-node)
+            # Post-collect: keep only eligible provenance entries
             if accepted_before is not None:
-                accepted_before = ensure_utc(accepted_before)
                 eligible = [p for p in provenance if p.accepted_ts <= accepted_before]
                 if not eligible:
                     continue
