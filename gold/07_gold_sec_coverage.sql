@@ -6,11 +6,12 @@
 -- n_filings: distinct chunk-bearing accessions.
 -- first_filed / last_filed: min/max accepted_ts (EDGAR acceptance, not filing_date).
 -- last_ingest_ts: max bronze ingest_ts.
+-- cik: from the latest successful sec_cik_mapping_log entry (mapped status).
 
-CREATE OR REPLACE TABLE bootcamp_students.evangoh_capstone.gold_sec_coverage AS
+CREATE OR REPLACE TABLE {catalog}.{schema}.gold_sec_coverage AS
 WITH universe AS (
   SELECT upper(trim(symbol)) AS ticker
-  FROM bootcamp_students.evangoh_capstone.gold_tradable_universe
+  FROM {catalog}.{schema}.gold_tradable_universe
   GROUP BY upper(trim(symbol))
 ),
 filing_agg AS (
@@ -20,7 +21,7 @@ filing_agg AS (
     min(accepted_ts) AS first_filed,
     max(accepted_ts) AS last_filed,
     max(ingest_ts) AS last_ingest_ts
-  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
+  FROM {catalog}.{schema}.bronze_sec_filings_v2
   WHERE filing_section IS NOT NULL
     AND filing_section <> 'metadata'
     AND filing_section NOT LIKE 'xbrl_fact_%'
@@ -31,7 +32,7 @@ chunk_agg AS (
   SELECT
     upper(ticker) AS ticker,
     count(*) AS n_chunks
-  FROM bootcamp_students.evangoh_capstone.silver_sec_sections
+  FROM {catalog}.{schema}.silver_sec_sections
   GROUP BY upper(ticker)
 ),
 latest_mapping AS (
@@ -42,14 +43,15 @@ latest_mapping AS (
     SELECT
       upper(ticker) AS ticker,
       cik,
-      ROW_NUMBER() OVER (PARTITION BY upper(ticker) ORDER BY ingest_ts DESC) AS rn
-    FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
+      ROW_NUMBER() OVER (PARTITION BY upper(ticker) ORDER BY mapped_ts DESC) AS rn
+    FROM {catalog}.{schema}.sec_cik_mapping_log
     WHERE cik IS NOT NULL
+      AND status = 'mapped'
   )
   WHERE rn = 1
 )
 SELECT
-  coalesce(u.ticker, f.ticker, c.ticker) AS ticker,
+  u.ticker,
   coalesce(lm.cik, '') AS cik,
   coalesce(f.n_filings, 0) AS n_filings,
   coalesce(c.n_chunks, 0) AS n_chunks,
@@ -57,6 +59,6 @@ SELECT
   f.last_filed,
   f.last_ingest_ts
 FROM universe u
-FULL OUTER JOIN filing_agg f ON upper(u.ticker) = upper(f.ticker)
-FULL OUTER JOIN chunk_agg c ON upper(coalesce(u.ticker, f.ticker)) = upper(c.ticker)
-LEFT JOIN latest_mapping lm ON upper(coalesce(u.ticker, f.ticker)) = upper(lm.ticker)
+LEFT JOIN filing_agg f ON upper(u.ticker) = upper(f.ticker)
+LEFT JOIN chunk_agg c ON upper(u.ticker) = upper(c.ticker)
+LEFT JOIN latest_mapping lm ON upper(u.ticker) = upper(lm.ticker)

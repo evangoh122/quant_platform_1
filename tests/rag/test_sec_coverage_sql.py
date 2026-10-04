@@ -57,4 +57,35 @@ class TestGoldCoverageSql:
 
     def test_left_join_to_universe(self):
         """Must left-join to universe so mapped tickers with zero chunks appear."""
-        assert "LEFT JOIN" in self.sql or "left join" in self.sql.lower() or "FULL OUTER JOIN" in self.sql
+        assert "LEFT JOIN" in self.sql or "left join" in self.sql.lower()
+
+    def test_no_hardcoded_catalog_schema(self):
+        """Must NOT contain hardcoded catalog.schema — uses {catalog}.{schema} placeholders."""
+        assert "bootcamp_students.evangoh_capstone" not in self.sql, (
+            "SQL must use {catalog}.{schema} placeholders, not hardcoded values"
+        )
+
+    def test_uses_placeholders(self):
+        """Must use {catalog} and {schema} placeholders for runner substitution."""
+        assert "{catalog}" in self.sql
+        assert "{schema}" in self.sql
+
+    def test_cik_from_mapping_log_not_bronze(self):
+        """CIK must come from sec_cik_mapping_log, not bronze_sec_filings_v2."""
+        assert "sec_cik_mapping_log" in self.sql
+        # The latest_mapping CTE should NOT reference bronze_sec_filings_v2
+        # for CIK (it's ok for filing_agg to reference bronze for n_filings)
+        mapping_section = self.sql[self.sql.index("latest_mapping"):]
+        assert "bronze_sec_filings_v2" not in mapping_section, (
+            "latest_mapping CTE must use sec_cik_mapping_log, not bronze_sec_filings_v2"
+        )
+
+    def test_mapping_requires_mapped_status(self):
+        """latest_mapping must filter to status = 'mapped' entries only."""
+        assert "mapped" in self.sql.lower()
+
+    def test_restricted_to_universe(self):
+        """Output must be restricted to universe members (no FULL OUTER JOIN)."""
+        assert "FULL OUTER JOIN" not in self.sql, (
+            "Must use LEFT JOIN from universe (not FULL OUTER JOIN) to restrict to universe members"
+        )

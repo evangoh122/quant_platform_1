@@ -141,7 +141,11 @@ def run_step(spark, name, path, kind, symbols):
         n = mod.build(spark, symbols)
     else:
         sql_text = open(os.path.join(HERE, path), encoding="utf-8").read()
-        sql = sql_text.replace("{date_start}", DATE_START).replace("{date_end}", DATE_END)
+        sql = (sql_text
+               .replace("{date_start}", DATE_START)
+               .replace("{date_end}", DATE_END)
+               .replace("{catalog}", CATALOG)
+               .replace("{schema}", SCHEMA))
         for stmt in split_statements(sql):
             spark.sql(stmt)
         n = count(spark, name)
