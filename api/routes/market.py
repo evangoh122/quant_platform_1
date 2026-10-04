@@ -90,11 +90,18 @@ def market_features(
             OptionsFeature(
                 symbol=str(r.get("symbol", symbol)),
                 feature_ts=iso(r.get("feature_ts")) or "",
-                expiry=iso(r.get("expiry")) or "",
-                atm_iv=r.get("atm_iv"),
-                skew=r.get("skew"),
+                put_volume=r.get("put_volume"),
+                call_volume=r.get("call_volume"),
                 put_call_ratio=r.get("put_call_ratio"),
-                volume_anomaly=r.get("volume_anomaly"),
+                iv_atm=r.get("iv_atm"),
+                iv_25d_put=r.get("iv_25d_put"),
+                iv_25d_call=r.get("iv_25d_call"),
+                iv_skew=r.get("iv_skew"),
+                iv_term_slope=r.get("iv_term_slope"),
+                avg_spread_pct=r.get("avg_spread_pct"),
+                volume_anomaly_zscore=r.get("volume_anomaly_zscore"),
+                oi_concentration=r.get("oi_concentration"),
+                net_delta_exposure=r.get("net_delta_exposure"),
             )
             for r in opt_rows
         ],

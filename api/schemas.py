@@ -57,6 +57,7 @@ class Signal(BaseModel):
 
 
 class OHLCVFeature(BaseModel):
+    """Split-adjusted daily bars from silver_ohlcv_day_adjusted."""
     symbol: str
     feature_ts: str = ""
     open: Optional[float] = None
@@ -70,11 +71,18 @@ class OHLCVFeature(BaseModel):
 class OptionsFeature(BaseModel):
     symbol: str
     feature_ts: str = ""
-    expiry: str = ""
-    atm_iv: Optional[float] = None
-    skew: Optional[float] = None
+    put_volume: Optional[float] = None
+    call_volume: Optional[float] = None
     put_call_ratio: Optional[float] = None
-    volume_anomaly: Optional[float] = None
+    iv_atm: Optional[float] = None
+    iv_25d_put: Optional[float] = None
+    iv_25d_call: Optional[float] = None
+    iv_skew: Optional[float] = None
+    iv_term_slope: Optional[float] = None
+    avg_spread_pct: Optional[float] = None
+    volume_anomaly_zscore: Optional[float] = None
+    oi_concentration: Optional[float] = None
+    net_delta_exposure: Optional[float] = None
 
 
 class MarketSnapshot(BaseModel):

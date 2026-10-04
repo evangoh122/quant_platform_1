@@ -42,11 +42,18 @@ export interface OHLCVFeature {
 export interface OptionsFeature {
   symbol: string;
   feature_ts: string;
-  expiry: string;
-  atm_iv: number | null;
-  skew: number | null;
+  put_volume: number | null;
+  call_volume: number | null;
   put_call_ratio: number | null;
-  volume_anomaly: number | null;
+  iv_atm: number | null;
+  iv_25d_put: number | null;
+  iv_25d_call: number | null;
+  iv_skew: number | null;
+  iv_term_slope: number | null;
+  avg_spread_pct: number | null;
+  volume_anomaly_zscore: number | null;
+  oi_concentration: number | null;
+  net_delta_exposure: number | null;
 }
 
 export interface MarketSnapshot {

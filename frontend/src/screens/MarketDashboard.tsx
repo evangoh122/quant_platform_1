@@ -71,8 +71,8 @@ export function MarketDashboard() {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <StatTile label="Latest Close" value={latest?.close?.toFixed(2) ?? '—'} hint={symbol} />
             <StatTile label="Volume" value={latest?.volume?.toLocaleString() ?? '—'} />
-            <StatTile label="ATM IV" value={data?.options.data[0]?.atm_iv?.toFixed(4) ?? '—'} />
-            <StatTile label="Skew" value={data?.options.data[0]?.skew?.toFixed(4) ?? '—'} />
+            <StatTile label="ATM IV" value={data?.options.data[0]?.iv_atm?.toFixed(4) ?? '—'} />
+            <StatTile label="Skew" value={data?.options.data[0]?.iv_skew?.toFixed(4) ?? '—'} />
           </div>
 
           <Card title="OHLCV Features" subtitle="gold_ohlcv_features" actions={<FreshnessBadge freshness={data ? data.ohlcv.freshness : { state: 'empty', table: '', detail: '' }} />}>

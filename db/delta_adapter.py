@@ -369,39 +369,69 @@ def latest_signals(symbol: Optional[str] = None, limit: int = 20) -> Any:
 
 
 def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 5000) -> Any:
-    """Read OHLCV + options features. Auto-selects pyspark or warehouse backend."""
+    """Read daily bars from silver_ohlcv_day_adjusted (split-adjusted).
+
+    Uses ``adj_*`` columns aliased to the wire names expected by the frontend.
+    Auto-selects pyspark or warehouse backend.
+    """
     if _has_pyspark:
         spark = _spark()
-        ohlcv_cols = ["symbol", "feature_ts", "open", "high", "low", "close", "volume", "vwap"]
-        opts_cols = ["symbol", "feature_ts", "expiry", "atm_iv", "skew", "put_call_ratio", "volume_anomaly"]
-        ohlcv = spark.table(_fqn("gold_ohlcv_features")).where(
-            (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts))
-        ).select(*ohlcv_cols)
-        opts = spark.table(_fqn("gold_options_features")).where(
-            (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts))
-        ).select(*opts_cols)
-        return ohlcv.join(opts, ["symbol", "feature_ts"], "left").limit(limit)
+        daily_cols = [
+            "symbol",
+            F.col("event_date").alias("feature_ts"),
+            F.col("adj_open").alias("open"),
+            F.col("adj_high").alias("high"),
+            F.col("adj_low").alias("low"),
+            F.col("adj_close").alias("close"),
+            F.col("adj_volume").alias("volume"),
+            F.col("adj_vwap").alias("vwap"),
+            F.col("return_1d"),
+        ]
+        df = spark.table(_fqn("silver_ohlcv_day_adjusted")).where(
+            (F.col("symbol") == symbol) & (F.col("event_date").between(start_ts, end_ts))
+        ).select(*daily_cols)
+        return df.limit(limit)
 
-    # Warehouse fallback — two separate queries (no Spark join available)
-    ohlcv_query = (
-        f"SELECT symbol, feature_ts, open, high, low, close, volume, vwap "
+    # Warehouse fallback
+    daily_query = (
+        f"SELECT symbol, event_date AS feature_ts, "
+        f"adj_open AS open, adj_high AS high, adj_low AS low, "
+        f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
+        f"return_1d "
+        f"FROM {_fqn('silver_ohlcv_day_adjusted')} "
+        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts"
+    )
+    params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
+    return _warehouse_query(daily_query, params=params, limit=limit)
+
+
+def market_features_intraday(symbol: str, start_ts: str, end_ts: str, *, limit: int = 5000) -> Any:
+    """Read intraday features from gold_ohlcv_features.
+
+    Returns the real columns: returns, rvol, atr, momentum, rsi, vwap_deviation, etc.
+    Auto-selects pyspark or warehouse backend.
+    """
+    intraday_cols = [
+        "symbol", "feature_ts",
+        "return_1m", "return_5m", "return_15m", "return_30m",
+        "rvol_5m", "rvol_15m", "rvol_30m",
+        "atr_14", "momentum_5m", "momentum_15m",
+        "rsi_14", "vwap_deviation", "relative_volume",
+        "dist_session_high", "dist_session_low",
+    ]
+    if _has_pyspark:
+        spark = _spark()
+        df = spark.table(_fqn("gold_ohlcv_features")).where(
+            (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts))
+        ).select(*intraday_cols)
+        return df.limit(limit)
+
+    # Warehouse fallback
+    cols_sql = ", ".join(intraday_cols)
+    query = (
+        f"SELECT {cols_sql} "
         f"FROM {_fqn('gold_ohlcv_features')} "
         f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
     )
-    opts_query = (
-        f"SELECT symbol, feature_ts, expiry, atm_iv, skew, put_call_ratio, volume_anomaly "
-        f"FROM {_fqn('gold_options_features')} "
-        f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
-    )
     params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
-    ohlcv_rows = _warehouse_query(ohlcv_query, params=params, limit=limit)
-    opts_rows = _warehouse_query(opts_query, params=params, limit=limit)
-
-    # Merge by (symbol, feature_ts)
-    opts_by_key = {(r["symbol"], r["feature_ts"]): r for r in opts_rows}
-    merged = []
-    for row in ohlcv_rows:
-        key = (row.get("symbol"), row.get("feature_ts"))
-        opt = opts_by_key.get(key, {})
-        merged.append({**row, **opt})
-    return merged
+    return _warehouse_query(query, params=params, limit=limit)

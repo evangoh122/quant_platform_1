@@ -357,22 +357,66 @@ def test_warehouse_health_probe_returns_tuple(monkeypatch):
 # ── 7. Warehouse e2e: route → tool → adapter with pyspark absent ─────────────
 
 def _fake_warehouse_query(query, params=None, **kwargs):
-    """Fake warehouse query that returns realistic rows."""
+    """Fake warehouse query that returns realistic rows with real column names."""
     q = query.upper()
     if "GOLD_TRADING_SIGNALS" in q:
         return [{"signal_id": "s1", "symbol": "AAPL", "direction": "long",
                  "probability": 0.8, "prediction_ts": "2024-01-01T00:00:00Z",
                  "model_version": "v1", "horizon": "1d", "status": "active"}]
-    if "GOLD_OHLCV_FEATURES" in q:
+    if "SILVER_OHLCV_DAY_ADJUSTED" in q:
         return [{"symbol": "AAPL", "feature_ts": "2024-01-01",
                  "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
-                 "volume": 1000000, "vwap": 100.1}]
+                 "volume": 1000000, "vwap": 100.1, "return_1d": 0.005}]
+    if "GOLD_OHLCV_FEATURES" in q:
+        return [{"symbol": "AAPL", "feature_ts": "2024-01-01",
+                 "return_1m": 0.001, "return_5m": 0.005, "return_15m": 0.01,
+                 "return_30m": 0.02, "rvol_5m": 1.1, "rvol_15m": 1.2, "rvol_30m": 1.3,
+                 "atr_14": 2.5, "momentum_5m": 0.003, "momentum_15m": 0.008,
+                 "rsi_14": 55.0, "vwap_deviation": 0.001, "relative_volume": 1.05,
+                 "dist_session_high": 0.5, "dist_session_low": 1.0}]
     if "GOLD_OPTIONS_FEATURES" in q:
-        return [{"symbol": "AAPL", "feature_ts": "2024-01-01", "expiry": "2024-02-01",
-                 "atm_iv": 0.25, "skew": 0.01, "put_call_ratio": 1.1, "volume_anomaly": 0.0}]
+        return [{"symbol": "AAPL", "feature_ts": "2024-01-01",
+                 "put_volume": 5000, "call_volume": 8000, "put_call_ratio": 0.625,
+                 "iv_atm": 0.25, "iv_25d_put": 0.28, "iv_25d_call": 0.22,
+                 "iv_skew": 0.06, "iv_term_slope": 0.02, "avg_spread_pct": 0.01,
+                 "volume_anomaly_zscore": 1.5, "oi_concentration": 0.3,
+                 "net_delta_exposure": 1500.0}]
     if "GOLD_COT_FEATURES" in q:
-        return [{"mapped_asset": "AAPL", "report_date": "2024-01-01",
-                 "net_position": 50000, "net_pct_oi": 0.15}]
+        return [{"mapped_asset": "equity_index", "report_date": "2024-01-01",
+                 "lev_money_net": 50000, "lev_money_net_chg_1w": 5000,
+                 "lev_money_pctile_52w": 0.75, "lev_money_zscore_52w": 1.2,
+                 "asset_mgr_net": 30000, "asset_mgr_pctile_52w": 0.6,
+                 "crowding_score": 0.4, "regime_label": "risk_on"}]
+    if "DESCRIBE" in q:
+        # Return fake DESCRIBE output for schema contract checks
+        table_cols = {
+            "GOLD_TRADING_SIGNALS": ["signal_id", "symbol", "prediction_ts", "horizon",
+                                     "direction", "probability", "model_version",
+                                     "feature_snapshot_id", "status", "processed_ts"],
+            "GOLD_OHLCV_FEATURES": ["symbol", "feature_ts", "information_available_ts",
+                                    "return_1m", "return_5m", "return_15m", "return_30m",
+                                    "rvol_5m", "rvol_15m", "rvol_30m", "atr_14",
+                                    "momentum_5m", "momentum_15m", "rsi_14",
+                                    "vwap_deviation", "relative_volume",
+                                    "dist_session_high", "dist_session_low", "processed_ts"],
+            "GOLD_OPTIONS_FEATURES": ["symbol", "feature_ts", "information_available_ts",
+                                      "put_volume", "call_volume", "put_call_ratio",
+                                      "iv_atm", "iv_25d_put", "iv_25d_call", "iv_skew",
+                                      "iv_term_slope", "avg_spread_pct",
+                                      "volume_anomaly_zscore", "oi_concentration",
+                                      "net_delta_exposure", "processed_ts"],
+            "GOLD_COT_FEATURES": ["mapped_asset", "report_date", "information_available_ts",
+                                  "lev_money_net", "lev_money_net_chg_1w",
+                                  "lev_money_pctile_52w", "lev_money_zscore_52w",
+                                  "asset_mgr_net", "asset_mgr_pctile_52w",
+                                  "crowding_score", "regime_label", "processed_ts"],
+            "SILVER_OHLCV_DAY_ADJUSTED": ["symbol", "event_date", "adj_open", "adj_high",
+                                          "adj_low", "adj_close", "adj_vwap", "adj_volume",
+                                          "return_1d", "information_available_ts"],
+        }
+        for key, cols in table_cols.items():
+            if key in q:
+                return [{"col_name": c} for c in cols]
     return []
 
 
@@ -426,7 +470,10 @@ def test_options_features_warehouse_e2e(monkeypatch):
     rows = get_options_features("AAPL")
     assert len(rows) == 1
     assert rows[0]["symbol"] == "AAPL"
-    assert "atm_iv" in rows[0]
+    assert "iv_atm" in rows[0]
+    assert "put_volume" in rows[0]
+    assert "call_volume" in rows[0]
+    assert "volume_anomaly_zscore" in rows[0]
 
 
 def test_cot_positioning_warehouse_e2e(monkeypatch):
@@ -440,9 +487,10 @@ def test_cot_positioning_warehouse_e2e(monkeypatch):
     monkeypatch.setattr(adapter, "_warehouse_query", _fake_warehouse_query)
 
     from agent.tools_retrieval import get_cot_positioning
-    result = get_cot_positioning("AAPL")
-    assert result["mapped_asset"] == "AAPL"
-    assert "net_position" in result
+    result = get_cot_positioning("equity_index")
+    assert result["mapped_asset"] == "equity_index"
+    assert "lev_money_net" in result
+    assert "crowding_score" in result
 
 
 def test_warehouse_health_returns_type_only(monkeypatch):
@@ -622,13 +670,14 @@ def test_warehouse_latest_signals_uses_named_params(monkeypatch):
 def test_warehouse_market_features_uses_named_params(monkeypatch):
     """market_features warehouse path uses :symbol/:start_ts/:end_ts markers.
 
+    Now reads from silver_ohlcv_day_adjusted (single query, no options join).
+
     MUTATION: put back one %s → FAIL.
     """
     import db.delta_adapter as adapter
 
     monkeypatch.setattr(adapter, "_has_pyspark", False)
 
-    queries = []
     conns = []
 
     def _make_conn():
@@ -639,19 +688,20 @@ def test_warehouse_market_features_uses_named_params(monkeypatch):
     monkeypatch.setattr(adapter, "_get_warehouse_connection", _make_conn)
 
     rows = adapter.market_features("AAPL", "2024-01-01", "2024-12-31", limit=100)
-    assert len(conns) == 2  # ohlcv + opts
-    for c in conns:
-        q = c.cursor_instance.executed_query
-        assert ":symbol" in q
-        assert ":start_ts" in q
-        assert ":end_ts" in q
-        assert c.cursor_instance.executed_params == {
-            "symbol": "AAPL", "start_ts": "2024-01-01", "end_ts": "2024-12-31",
-        }
+    assert len(conns) == 1  # single daily bars query
+    c = conns[0]
+    q = c.cursor_instance.executed_query
+    assert ":symbol" in q
+    assert ":start_ts" in q
+    assert ":end_ts" in q
+    assert "silver_ohlcv_day_adjusted" in q.lower()
+    assert c.cursor_instance.executed_params == {
+        "symbol": "AAPL", "start_ts": "2024-01-01", "end_ts": "2024-12-31",
+    }
 
 
 def test_warehouse_options_features_uses_named_params(monkeypatch):
-    """get_options_features warehouse path uses :symbol and optionally :expiry.
+    """get_options_features warehouse path uses :symbol only (no expiry column).
 
     MUTATION: put back one %s → FAIL.
     """
@@ -663,11 +713,11 @@ def test_warehouse_options_features_uses_named_params(monkeypatch):
     monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: conn)
 
     from agent.tools_retrieval import get_options_features
-    rows = get_options_features("AAPL", expiry="2024-02-01", limit=100)
+    rows = get_options_features("AAPL", limit=100)
     q = conn.cursor_instance.executed_query
     assert ":symbol" in q
-    assert ":expiry" in q
-    assert conn.cursor_instance.executed_params == {"symbol": "AAPL", "expiry": "2024-02-01"}
+    assert "expiry" not in q.lower()
+    assert conn.cursor_instance.executed_params == {"symbol": "AAPL"}
 
 
 def test_warehouse_cot_uses_named_params(monkeypatch):
@@ -683,10 +733,10 @@ def test_warehouse_cot_uses_named_params(monkeypatch):
     monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: conn)
 
     from agent.tools_retrieval import get_cot_positioning
-    rows = get_cot_positioning("AAPL")
+    rows = get_cot_positioning("equity_index")
     q = conn.cursor_instance.executed_query
     assert ":mapped_asset" in q
-    assert conn.cursor_instance.executed_params == {"mapped_asset": "AAPL"}
+    assert conn.cursor_instance.executed_params == {"mapped_asset": "equity_index"}
 
 
 # ── 12. Background connection warming ────────────────────────────────────────
@@ -931,3 +981,126 @@ def test_warehouse_query_semaphore_timeout(monkeypatch):
     elapsed = _time.monotonic() - start
 
     assert elapsed < 3.0, f"Semaphore wait took {elapsed:.1f}s, expected < 3s"
+
+
+# ── 15. Schema contract validation ────────────────────────────────────────────
+
+def test_schema_contract_passes():
+    """db/schema_contract.py: validate_query_columns returns no errors.
+
+    MUTATION: reference 'open' from gold_ohlcv_features → FAIL.
+    """
+    from db.schema_contract import validate_query_columns
+
+    errors = validate_query_columns()
+    assert errors == [], f"Schema contract errors: {errors}"
+
+
+def test_schema_contract_rejects_bad_column():
+    """Mutation: add 'open' to gold_ohlcv_features query → contract fails."""
+    from db.schema_contract import QUERY_COLUMNS, validate_query_columns
+    import db.schema_contract as sc
+
+    # Mutate: add a bad column
+    original = sc.QUERY_COLUMNS["market_features_intraday"]["gold_ohlcv_features"]
+    sc.QUERY_COLUMNS["market_features_intraday"]["gold_ohlcv_features"] = original | {"open"}
+
+    try:
+        errors = validate_query_columns()
+        assert any("open" in e for e in errors), f"Expected 'open' error, got {errors}"
+    finally:
+        sc.QUERY_COLUMNS["market_features_intraday"]["gold_ohlcv_features"] = original
+
+
+# ── 16. Signals: no_signals_published explicit state ──────────────────────────
+
+def test_signals_empty_table_returns_no_signals_published(client, monkeypatch):
+    """Empty gold_trading_signals returns no_signals_published detail.
+
+    MUTATION: remove the override → detail is '0 rows' instead.
+    """
+    import db.delta_adapter as adapter
+
+    def _empty_query(*a, **kw):
+        return []
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_warehouse_query", _empty_query)
+
+    resp = client.get("/api/signals", headers={"x-forwarded-email": "u@test.com"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["empty"] is True
+    assert data["freshness"]["state"] == "empty"
+    assert data["freshness"]["detail"] == "no_signals_published"
+
+
+# ── 17. COT: ticker → asset class mapping ─────────────────────────────────────
+
+def test_cot_ticker_mapping_to_asset_class(monkeypatch):
+    """SPY maps to equity_index, not passed as-is.
+
+    MUTATION: skip mapping → SPY passed as mapped_asset, query returns empty.
+    """
+    import db.delta_adapter as adapter
+
+    captured_params = {}
+
+    def _capture_query(query, params=None, **kwargs):
+        captured_params.update(params or {})
+        return [{"mapped_asset": "equity_index", "report_date": "2024-01-01",
+                 "lev_money_net": 50000}]
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_warehouse_query", _capture_query)
+
+    from agent.tools_retrieval import get_cot_positioning
+    result = get_cot_positioning("SPY")
+    assert captured_params.get("mapped_asset") == "equity_index"
+    assert result["mapped_asset"] == "equity_index"
+
+
+def test_cot_unknown_ticker_returns_no_mapping():
+    """Unknown ticker returns explicit no_mapping error dict.
+
+    MUTATION: return empty dict instead → looks like 'no data' not 'no mapping'.
+    """
+    from agent.tools_retrieval import get_cot_positioning
+
+    result = get_cot_positioning("ZZZZZZ")
+    assert result.get("error") == "no_mapping"
+    assert "ZZZZZZ" in result.get("ticker", "")
+    assert "no cot" in result.get("message", "").lower() or "no mapping" in result.get("message", "").lower()
+
+
+def test_cot_valid_asset_class_direct():
+    """Passing asset class directly (lowercase) works without mapping."""
+    import db.delta_adapter as adapter
+
+    captured_params = {}
+
+    def _capture_query(query, params=None, **kwargs):
+        captured_params.update(params or {})
+        return [{"mapped_asset": "commodity", "report_date": "2024-01-01"}]
+
+    import db.delta_adapter as da
+    import unittest.mock as mock
+    with mock.patch.object(da, "_has_pyspark", False), \
+         mock.patch.object(da, "_warehouse_query", _capture_query):
+        from agent.tools_retrieval import get_cot_positioning
+        result = get_cot_positioning("commodity")
+        assert captured_params.get("mapped_asset") == "commodity"
+
+
+# ── 18. Options: expiry rejection ─────────────────────────────────────────────
+
+def test_options_expiry_returns_error():
+    """Passing expiry returns explicit error dict.
+
+    MUTATION: silently ignore expiry → user doesn't know filter was dropped.
+    """
+    from agent.tools_retrieval import get_options_features
+
+    result = get_options_features("AAPL", expiry="2024-02-01")
+    assert len(result) == 1
+    assert result[0].get("error") == "expiry_not_supported"
