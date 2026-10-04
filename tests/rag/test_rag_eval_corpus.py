@@ -156,6 +156,54 @@ class TestOfflineInstallRestoresCache:
         assert hr._corpus_loaded == orig_loaded
 
 
+class TestOfflineCoverageCheck:
+    """install_offline_corpus monkey-patches check_ticker_coverage."""
+
+    def test_offline_coverage_resolves_from_corpus(self, tmp_path):
+        """check_ticker_coverage answers from offline data without Spark."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # Should answer from offline data without raising
+            n_chunks, cik = hr.check_ticker_coverage("NVDA")
+            assert n_chunks > 0
+            assert cik == ""  # offline mode returns empty CIK
+
+    def test_offline_coverage_restores_original(self, tmp_path):
+        """check_ticker_coverage is restored after context exit."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        orig_check = hr.check_ticker_coverage
+
+        with install_offline_corpus(adapter):
+            pass
+
+        assert hr.check_ticker_coverage is orig_check
+
+    def test_offline_tickers_bypass_lru_limit(self, tmp_path):
+        """All offline tickers fit in cache regardless of RAG_TICKER_CACHE_MAX."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # All tickers from the corpus should be in cache
+            assert len(hr._ticker_cache) > 0
+
+
 class TestDeltaImportIsLazy:
     """test_delta_import_is_lazy"""
 

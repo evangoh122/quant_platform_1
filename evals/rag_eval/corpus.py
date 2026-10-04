@@ -353,6 +353,10 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
     This is an explicit test/eval seam around production scoring — not a forked
     retriever implementation.  Restores prior globals even after errors and
     serializes concurrent use.
+
+    Bypasses the LRU size limit so all offline tickers fit, and monkey-patches
+    ``check_ticker_coverage`` to answer from the offline ticker groups so
+    Spark is not required.
     """
     import api.services.hybrid_retriever as hr
 
@@ -366,6 +370,7 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
         orig_loaded = hr._corpus_loaded
         orig_dim = hr._stored_index_dim
         orig_model = hr._stored_embedding_model
+        orig_check_coverage = hr.check_ticker_coverage
 
         # Save per-ticker LRU cache
         with hr._ticker_cache_lock:
@@ -434,6 +439,7 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
                 hr._stored_embedding_model = adapter.embedding_model_name
 
             # Build and install per-ticker TickerCorpus objects
+            # Bypass LRU size limit: insert directly into cache dict
             with hr._ticker_cache_lock:
                 hr._ticker_cache.clear()
 
@@ -458,9 +464,29 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
                     load_ts=0.0,
                     approx_bytes=0,
                 )
-                hr._insert_ticker_corpus(ticker, corpus)
+                # Direct insert — bypasses _RAG_TICKER_CACHE_MAX eviction
+                with hr._ticker_cache_lock:
+                    hr._ticker_cache[ticker] = corpus
 
             hr._corpus_loaded = True
+
+            # Monkey-patch check_ticker_coverage to answer from offline data
+            offline_tickers = set(ticker_docs.keys())
+
+            def _offline_check_ticker_coverage(
+                ticker: str, _orig=orig_check_coverage
+            ) -> tuple[int, str | None]:
+                ticker = ticker.upper().strip()
+                if ticker in offline_tickers:
+                    n_chunks = len(ticker_docs.get(ticker, []))
+                    if n_chunks == 0:
+                        from api.services.hybrid_retriever import NoCoverageError
+                        raise NoCoverageError(ticker)
+                    return n_chunks, ""
+                return _orig(ticker)
+
+            hr.check_ticker_coverage = _offline_check_ticker_coverage  # type: ignore[assignment]
+
             yield
 
         finally:
@@ -475,6 +501,7 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
             hr._corpus_loaded = orig_loaded
             hr._stored_index_dim = orig_dim
             hr._stored_embedding_model = orig_model
+            hr.check_ticker_coverage = orig_check_coverage  # type: ignore[assignment]
 
             # Restore per-ticker LRU cache
             with hr._ticker_cache_lock:
