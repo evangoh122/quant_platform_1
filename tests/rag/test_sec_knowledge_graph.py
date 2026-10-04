@@ -2132,12 +2132,15 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
         def select(self, *args, **kwargs):
             return self
         def collect(self):
+            write_spy.record("collect")
             return self._rows
         def toLocalIterator(self):
+            write_spy.record("toLocalIterator")
             return iter(self._rows)
         def where(self, condition):
             return self
         def count(self):
+            write_spy.record("count")
             return len(self._rows)
         def limit(self, n):
             return _FakeDataFrame(self._rows[:n], self._schema)
@@ -5071,3 +5074,12 @@ class TestMetricPeriodValidation:
                             datetime(2024, 6, 1, tzinfo=timezone.utc))
 
 
+
+
+
+@pytest.mark.parametrize("metric,period", [("Revenues\n", "2024-01-28"), ("Revenues", "2023\n"), ("Revenues", "2024-Q1\n")])
+def test_metric_and_period_reject_trailing_newline(metric, period):
+    """`$` under re.match accepts a trailing newline; the tool must reject it before the backend."""
+    from agent.tools_retrieval import query_sec_facts
+    with pytest.raises(ValueError):
+        query_sec_facts("NVDA", metric, period, datetime(2024, 6, 1, tzinfo=timezone.utc))

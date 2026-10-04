@@ -272,7 +272,7 @@ def query_sec_facts(
             injection-shaped input before it reaches the backend.
             """
             import re
-            if not re.match(r"^[A-Za-z][A-Za-z0-9._:\-]*$", v):
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9._:\-]*", v):
                 raise ValueError(
                     f"Metric {v!r} does not match the allowed XBRL concept name pattern "
                     f"(letters, digits, dot, underscore, colon, hyphen; must start with a letter)"
@@ -292,12 +292,12 @@ def query_sec_facts(
             """
             import re
             _PERIOD_RE = re.compile(
-                r"^\d{4}$"                                      # YYYY
-                r"|^\d{4}-Q[1-4]$"                              # YYYY-Qn
-                r"|^\d{4}-\d{2}-\d{2}$"                         # YYYY-MM-DD
-                r"|^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$"   # YYYY-MM-DD..YYYY-MM-DD
+                r"\d{4}"                                        # YYYY
+                r"|\d{4}-Q[1-4]"                                # YYYY-Qn
+                r"|\d{4}-\d{2}-\d{2}"                           # YYYY-MM-DD
+                r"|\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}"     # YYYY-MM-DD..YYYY-MM-DD
             )
-            if not _PERIOD_RE.match(v):
+            if not _PERIOD_RE.fullmatch(v):
                 raise ValueError(
                     f"Period {v!r} does not match any accepted format: "
                     f"YYYY, YYYY-Qn, YYYY-MM-DD, or YYYY-MM-DD..YYYY-MM-DD"
