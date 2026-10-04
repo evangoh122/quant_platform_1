@@ -426,51 +426,25 @@ def test_pool_closed_without_open_raises(client, monkeypatch):
 
 
 def test_token_mint_subprocess_timeout(monkeypatch):
-    """Token mint subprocess that hangs past the timeout is bounded.
+    """Production mint_token_via_cli passes a bounded timeout to subprocess.run
+    and turns TimeoutExpired into a clear RuntimeError.
 
-    MUTATION: drop timeout= at db/lakebase.py:65 → subprocess.run blocks
-    indefinitely → test hangs → FAIL.
+    MUTATION: drop timeout= from db/lakebase.py mint_token_via_cli -> FAIL.
     """
+    import subprocess as _sp
     import db.lakebase as lb
 
-    def _slow_mint(instance_name: str = "test") -> dict:
-        """Simulate a subprocess that sleeps past the timeout."""
-        import subprocess as _sp
-        proc = _sp.run(
-            ["python3", "-c", "import time; time.sleep(60)"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=lb.LAKEBASE_CONNECT_TIMEOUT + 2,
-        )
-        return {"token": "fake", "expiration_time": None}
+    seen = {}
 
-    # Replace mint_token_via_cli with a function that calls subprocess.run
-    # with the same timeout parameter as the real code
-    def _mint_with_timeout(instance_name: str = lb.LAKEBASE_INSTANCE) -> dict:
-        import subprocess as _sp
-        import json as _json
-        import uuid as _uuid
-        request_id = str(_uuid.uuid4())
-        payload = _json.dumps(
-            {"request_id": request_id, "instance_names": [instance_name]}
-        )
-        try:
-            proc = _sp.run(
-                ["python3", "-c", "import time; time.sleep(60)"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=lb.LAKEBASE_CONNECT_TIMEOUT + 2,
-            )
-        except _sp.TimeoutExpired as exc:
-            raise RuntimeError(
-                f"Lakebase credential mint timed out after {exc.timeout}s, "
-                f"request_id={request_id}"
-            ) from exc
-        return {"token": "fake", "expiration_time": None}
+    def _fake_run(*args, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        if kwargs.get("timeout") is None:
+            # Without a timeout the real call would block forever.
+            raise AssertionError("subprocess.run called without timeout=")
+        raise _sp.TimeoutExpired(cmd=args[0] if args else "databricks", timeout=kwargs["timeout"])
 
-    token = lb.LakebaseToken(provider=_mint_with_timeout)
+    monkeypatch.setattr(lb.subprocess, "run", _fake_run)
 
     with pytest.raises(RuntimeError, match="timed out"):
-        token.get()
+        lb.mint_token_via_cli("test-instance")
+    assert seen["timeout"] is not None and 0 < seen["timeout"] <= lb.LAKEBASE_CONNECT_TIMEOUT + 2

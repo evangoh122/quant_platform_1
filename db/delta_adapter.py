@@ -225,6 +225,7 @@ def _warehouse_query(
             f"{_extract_table_name(query)}"
         )
 
+    worker_started = False
     try:
         with stage("warehouse_query", table=_extract_table_name(query)):
             result: List[Dict[str, Any]] = []
@@ -256,6 +257,7 @@ def _warehouse_query(
 
             t = _threading.Thread(target=_execute, daemon=True)
             t.start()
+            worker_started = True
             t.join(timeout=timeout)
 
             if t.is_alive():
@@ -279,11 +281,11 @@ def _warehouse_query(
 
             return result
     except BaseException:
-        # If the worker already released the semaphore (normal completion or
-        # error), this is a no-op (Semaphore.release() on an already-full
-        # semaphore is harmless for bounded semaphores).  If the worker is
-        # still alive (should not happen after join), release here as safety.
-        if t.is_alive():
+        # Once the worker has started it owns the slot and releases it in its
+        # own finally (even after a timeout, when the query finally returns).
+        # Release here only if we failed before the worker started, otherwise a
+        # timed-out query would free its slot twice and exceed the bound.
+        if not worker_started:
             _query_semaphore.release()
         raise
 
