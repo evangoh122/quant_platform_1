@@ -28,6 +28,7 @@ sys.modules.setdefault("databricks.connect", MagicMock())
 
 from pipelines.sec_rag_ingest import (  # noqa: E402
     AccessionOwnershipConflict,
+    CikMappingLogEntry,
     HttpResponse,
     IngestLogEntry,
     RateLimiter,
@@ -152,6 +153,16 @@ class FakeLogWriter:
         self.entries: List[IngestLogEntry] = []
 
     def append_log(self, catalog: str, schema: str, entry: IngestLogEntry) -> None:
+        self.entries.append(entry)
+
+
+class FakeCikMappingLogWriter:
+    """Records CIK mapping log entries."""
+
+    def __init__(self):
+        self.entries: List[CikMappingLogEntry] = []
+
+    def append_mapping_log(self, catalog: str, schema: str, entry: CikMappingLogEntry) -> None:
         self.entries.append(entry)
 
 
@@ -840,6 +851,41 @@ class TestMissingCik:
         assert result.missing_count == 1
 
 
+# -- CIK mapping log tests --
+
+class TestCikMappingLog:
+    def test_cik_mapping_log_written(self):
+        """CIK mapping log writer receives entries for all tickers."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+
+        universe = [TickerEntry(ticker="NVDA", phase=1), TickerEntry(ticker="XYZMISS", phase=1)]
+        writer = FakeDataWriter()
+        cik_log = FakeCikMappingLogWriter()
+
+        run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA", "XYZMISS"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(set()),
+            data_writer=writer,
+            cik_mapping_log_writer=cik_log,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        # Both tickers should appear in the mapping log
+        assert len(cik_log.entries) == 2
+        statuses = {e.ticker: e.status for e in cik_log.entries}
+        assert statuses["NVDA"] == "mapped"
+        assert statuses["XYZMISS"] == "missing"
+        assert all(e.run_id is not None for e in cik_log.entries)
+
+
 # -- Accession conflict tests --
 
 class TestAccessionConflict:
@@ -980,6 +1026,10 @@ class TestMainEndToEnd:
             "pipelines.sec_rag_ingest.SparkLogWriter",
             lambda: log_writer,
         )
+        monkeypatch.setattr(
+            "pipelines.sec_rag_ingest.SparkCikMappingLogWriter",
+            lambda: FakeCikMappingLogWriter(),
+        )
         monkeypatch.setattr("pipelines._http_adapter.RequestsAdapter", lambda: http)
 
         monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent test@company.com")
@@ -1027,6 +1077,10 @@ class TestMainEndToEnd:
         monkeypatch.setattr(
             "pipelines.sec_rag_ingest.SparkLogWriter",
             lambda: log_writer,
+        )
+        monkeypatch.setattr(
+            "pipelines.sec_rag_ingest.SparkCikMappingLogWriter",
+            lambda: FakeCikMappingLogWriter(),
         )
         monkeypatch.setattr("pipelines._http_adapter.RequestsAdapter", lambda: http)
 
@@ -1090,6 +1144,10 @@ class TestMainEndToEnd:
         monkeypatch.setattr(
             "pipelines.sec_rag_ingest.SparkLogWriter",
             lambda: log_writer,
+        )
+        monkeypatch.setattr(
+            "pipelines.sec_rag_ingest.SparkCikMappingLogWriter",
+            lambda: FakeCikMappingLogWriter(),
         )
         monkeypatch.setattr("pipelines._http_adapter.RequestsAdapter", lambda: http)
 

@@ -151,6 +151,28 @@ class IngestLogWriter(Protocol):
     ) -> None: ...
 
 
+class CikMappingLogWriter(Protocol):
+    """Writes CIK mapping log entries."""
+
+    def append_mapping_log(
+        self,
+        catalog: str,
+        schema: str,
+        entry: "CikMappingLogEntry",
+    ) -> None: ...
+
+
+@dataclass
+class CikMappingLogEntry:
+    ticker: str
+    lookup_symbol: Optional[str]
+    cik: Optional[str]
+    status: str
+    reason: str
+    mapped_ts: Optional[datetime] = None
+    run_id: Optional[str] = None
+
+
 @dataclass
 class IngestLogEntry:
     run_id: str
@@ -913,6 +935,7 @@ def run_ingest(
     accession_reader: Optional[ExistingAccessionReader] = None,
     data_writer: Optional[DataWriter] = None,
     log_writer: Optional[IngestLogWriter] = None,
+    cik_mapping_log_writer: Optional[CikMappingLogWriter] = None,
     http_client: Optional[HttpClient] = None,
     clock: Optional[Clock] = None,
     cache_path: Optional[str] = None,
@@ -987,6 +1010,20 @@ def run_ingest(
         else:
             result.missing_count += 1
             logger.warning("CIK mapping: %s — %s: %s", mapping.status, symbol, mapping.reason)
+
+    # Write CIK mapping log
+    if cik_mapping_log_writer is not None:
+        for symbol, mapping in cik_map.items():
+            cik_log_entry = CikMappingLogEntry(
+                ticker=mapping.ticker,
+                lookup_symbol=mapping.lookup_symbol,
+                cik=mapping.cik,
+                status=mapping.status,
+                reason=mapping.reason,
+                mapped_ts=mapping.mapped_ts,
+                run_id=run_id,
+            )
+            cik_mapping_log_writer.append_mapping_log(catalog, schema, cik_log_entry)
 
     # Get existing accessions for anti-join (with ownership info)
     existing_accessions: Dict[str, Tuple[str, str]] = {}
@@ -1250,6 +1287,30 @@ class SparkLogWriter:
         df.write.mode("append").saveAsTable(f"{catalog}.{schema}.sec_ingest_log")
 
 
+class SparkCikMappingLogWriter:
+    """Writes CIK mapping log entries to sec_cik_mapping_log via Spark."""
+
+    def append_mapping_log(
+        self,
+        catalog: str,
+        schema: str,
+        entry: CikMappingLogEntry,
+    ) -> None:
+        from databricks.connect import DatabricksSession
+        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        row = {
+            "ticker": entry.ticker,
+            "lookup_symbol": entry.lookup_symbol,
+            "cik": entry.cik,
+            "status": entry.status,
+            "reason": entry.reason,
+            "mapped_ts": entry.mapped_ts,
+            "run_id": entry.run_id,
+        }
+        df = spark.createDataFrame([row])
+        df.write.mode("append").saveAsTable(f"{catalog}.{schema}.sec_cik_mapping_log")
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1279,6 +1340,7 @@ def main() -> None:
     accession_reader = SparkAccessionReader()
     data_writer = SparkDataWriter()
     log_writer = SparkLogWriter()
+    cik_mapping_log_writer = SparkCikMappingLogWriter()
 
     result = run_ingest(
         catalog=args.catalog,
@@ -1296,6 +1358,7 @@ def main() -> None:
         accession_reader=accession_reader,
         data_writer=data_writer,
         log_writer=log_writer,
+        cik_mapping_log_writer=cik_mapping_log_writer,
     )
 
     if result.failed_count > 0:
