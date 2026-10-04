@@ -158,7 +158,8 @@ def _chunk_text_matches_value(
 ) -> bool:
     """Conservative check: chunk text contains the entity value AND period or metric.
 
-    Handles normalised forms like 274300000 ↔ "274.3 million" ↔ "274,300".
+    Matches exact numeric values (with comma-separated thousands) in chunk text
+    against the entity value using Decimal for lossless comparison.
     Returns True only when confident the chunk contains the fact.
     Uses decimal.Decimal for lossless comparison of large integers.
     """

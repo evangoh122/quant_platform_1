@@ -32,6 +32,24 @@ class GraphStore(Protocol):
     def get_node(self, node_id: str) -> Optional[KgNode]: ...
     def get_edges_for_node(self, node_id: str, edge_types: Optional[List[str]] = None,
                            as_of: Optional[datetime] = None) -> List[KgEdge]: ...
+    def find_nodes(
+        self,
+        node_type: str,
+        cik: Optional[str] = None,
+        ticker: Optional[str] = None,
+        concept: Optional[str] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+        accepted_before: Optional[datetime] = None,
+        limit: int = 10000,
+    ) -> List[KgNode]: ...
+    def find_edges_by_node_ids(
+        self,
+        node_ids: set,
+        edge_types: Optional[List[str]] = None,
+        as_of: Optional[datetime] = None,
+        limit: int = 100000,
+    ) -> List[KgEdge]: ...
 
 
 # ── JSONL store (offline / tests) ───────────────────────────────────────────
@@ -140,6 +158,68 @@ class JsonlGraphStore:
             if as_of is not None and edge.valid_from > as_of:
                 continue
             results.append(edge)
+        return results
+
+    def find_nodes(
+        self,
+        node_type: str,
+        cik: Optional[str] = None,
+        ticker: Optional[str] = None,
+        concept: Optional[str] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+        accepted_before: Optional[datetime] = None,
+        limit: int = 10000,
+    ) -> List[KgNode]:
+        """Find nodes filtered by type and properties. In-memory for JsonlGraphStore."""
+        results = []
+        for node in self._nodes.values():
+            if node.node_type != node_type:
+                continue
+            props = json.loads(node.properties_json)
+            if cik is not None and props.get("cik", "") != cik:
+                continue
+            if ticker is not None and props.get("ticker", "").upper() != ticker.upper():
+                continue
+            if concept is not None:
+                node_concept = props.get("entity_key", props.get("metric", ""))
+                if normalize_unicode(node_concept).lower() != concept.lower():
+                    continue
+            if period_start is not None and props.get("period_start", "") != period_start:
+                continue
+            if period_end is not None and props.get("period_end", "") != period_end:
+                continue
+            if accepted_before is not None:
+                accepted_before = ensure_utc(accepted_before)
+                has_eligible = any(p.accepted_ts <= accepted_before for p in node.provenance)
+                if not has_eligible:
+                    continue
+            results.append(node)
+            if len(results) >= limit:
+                break
+        return results
+
+    def find_edges_by_node_ids(
+        self,
+        node_ids: set,
+        edge_types: Optional[List[str]] = None,
+        as_of: Optional[datetime] = None,
+        limit: int = 100000,
+    ) -> List[KgEdge]:
+        """Find edges where src_id or dst_id is in node_ids. In-memory for JsonlGraphStore."""
+        if as_of is not None:
+            as_of = ensure_utc(as_of)
+        results = []
+        for edge in self._edges:
+            if edge.src_id not in node_ids and edge.dst_id not in node_ids:
+                continue
+            if edge_types and edge.edge_type not in edge_types:
+                continue
+            if as_of is not None and edge.valid_from > as_of:
+                continue
+            results.append(edge)
+            if len(results) >= limit:
+                break
         return results
 
 
@@ -321,6 +401,150 @@ class SparkGraphStore:
             ))
         return edges
 
+    def find_nodes(
+        self,
+        node_type: str,
+        cik: Optional[str] = None,
+        ticker: Optional[str] = None,
+        concept: Optional[str] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+        accepted_before: Optional[datetime] = None,
+        limit: int = 10000,
+    ) -> List[KgNode]:
+        """Find nodes with Spark-side predicate pushdown and LIMIT.
+
+        All filters use column expressions (no string-built SQL).
+        A hard .limit(n) is applied BEFORE collecting.
+        """
+        from pyspark.sql import functions as F
+        spark = self._get_spark()
+        df = spark.table(self._nodes_table()).select(
+            "node_id", "node_type", "label", "properties_json", "build_version",
+            F.transform(
+                F.col("provenance"),
+                lambda p: F.struct(
+                    p["accession_number"],
+                    p["source_chunk_id"],
+                    F.unix_timestamp(p["accepted_ts"]).alias("accepted_epoch"),
+                ),
+            ).alias("provenance"),
+        )
+
+        # Push predicates into Spark
+        df = df.where(F.col("node_type") == node_type)
+
+        if cik is not None:
+            df = df.where(F.col("properties_json").contains(f'"cik":"{cik}"'))
+        if ticker is not None:
+            df = df.where(F.col("properties_json").contains(
+                f'"ticker":"{ticker.upper()}"'
+            ))
+        if concept is not None:
+            # XBRL facts use "metric", other types may use "entity_key"
+            df = df.where(
+                F.col("properties_json").contains(f'"entity_key":"{concept}"') |
+                F.col("properties_json").contains(f'"metric":"{concept}"')
+            )
+        if period_start is not None:
+            df = df.where(F.col("properties_json").contains(
+                f'"period_start":"{period_start}"'
+            ))
+        if period_end is not None:
+            df = df.where(F.col("properties_json").contains(
+                f'"period_end":"{period_end}"'
+            ))
+
+        # Hard limit BEFORE collecting
+        df = df.limit(limit)
+
+        nodes = []
+        for row in df.toLocalIterator():
+            provenance = tuple(
+                Provenance(
+                    accession_number=p["accession_number"],
+                    source_chunk_id=p["source_chunk_id"],
+                    accepted_ts=datetime.fromtimestamp(
+                        int(p["accepted_epoch"]), tz=timezone.utc
+                    ),
+                )
+                for p in (row.provenance or [])
+            )
+
+            # PIT filter on provenance (post-collect, provenance is per-node)
+            if accepted_before is not None:
+                accepted_before = ensure_utc(accepted_before)
+                eligible = [p for p in provenance if p.accepted_ts <= accepted_before]
+                if not eligible:
+                    continue
+                provenance = tuple(eligible)
+
+            nodes.append(KgNode(
+                node_id=row.node_id,
+                node_type=row.node_type,
+                label=row.label,
+                properties_json=row.properties_json,
+                provenance=provenance,
+                build_version=row.build_version,
+            ))
+        return nodes
+
+    def find_edges_by_node_ids(
+        self,
+        node_ids: set,
+        edge_types: Optional[List[str]] = None,
+        as_of: Optional[datetime] = None,
+        limit: int = 100000,
+    ) -> List[KgEdge]:
+        """Find edges where src_id or dst_id is in node_ids.
+
+        Uses bounded IN predicate in Spark.  Hard .limit(n) before collecting.
+        """
+        from pyspark.sql import functions as F
+        if not node_ids:
+            return []
+
+        spark = self._get_spark()
+        df = spark.table(self._edges_table()).select(
+            "edge_id", "src_id", "edge_type", "dst_id",
+            F.unix_timestamp(F.col("valid_from")).alias("valid_from_epoch"),
+            "accession_number", "source_chunk_id",
+            F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+            "confidence", "properties_json", "build_version",
+        ).where(
+            F.col("src_id").isin(list(node_ids)) | F.col("dst_id").isin(list(node_ids))
+        )
+
+        if edge_types:
+            df = df.where(F.col("edge_type").isin(edge_types))
+        if as_of is not None:
+            as_of = ensure_utc(as_of)
+            as_of_epoch = int(as_of.timestamp())
+            df = df.where(F.col("valid_from_epoch") <= as_of_epoch)
+
+        df = df.limit(limit)
+
+        edges = []
+        for row in df.toLocalIterator():
+            edges.append(KgEdge(
+                edge_id=row.edge_id,
+                src_id=row.src_id,
+                edge_type=row.edge_type,
+                dst_id=row.dst_id,
+                valid_from=datetime.fromtimestamp(
+                    int(row.valid_from_epoch), tz=timezone.utc
+                ),
+                accession_number=row.accession_number,
+                source_chunk_id=row.source_chunk_id,
+                accepted_ts=datetime.fromtimestamp(
+                    int(row.accepted_epoch), tz=timezone.utc
+                ),
+                confidence=row.confidence,
+                properties_json=row.properties_json,
+                build_version=row.build_version,
+            ))
+        return edges
+
 
 # ── SecKnowledgeGraph facade ────────────────────────────────────────────────
 
@@ -366,23 +590,21 @@ class SecKnowledgeGraph:
         as_of = ensure_utc(as_of)
         period_start, period_end = parse_period(period)
 
+        # Use filtered accessor — pushes node_type, ticker, period_end into Spark
+        nodes = self._store.find_nodes(
+            node_type="XbrlFact",
+            ticker=ticker,
+            concept=metric,
+            period_end=period_end,
+            period_start=period_start if period_start else None,
+            accepted_before=as_of,
+            limit=10000,
+        )
+
         # Find matching XbrlFact nodes
         matching_facts = []
-        for node in self._store.iter_nodes():
-            if node.node_type != "XbrlFact":
-                continue
+        for node in nodes:
             props = json.loads(node.properties_json)
-            if props.get("ticker", "").upper() != ticker:
-                continue
-            # Match metric by label or properties
-            node_metric = props.get("entity_key", props.get("metric", ""))
-            if normalize_unicode(node_metric).lower() != metric.lower():
-                continue
-            # Match period
-            if props.get("period_end", "") != period_end:
-                continue
-            if period_start and props.get("period_start", "") != period_start:
-                continue
 
             # PIT filter: at least one provenance <= as_of
             eligible_provs = [p for p in node.provenance if p.accepted_ts <= as_of]
@@ -468,17 +690,19 @@ class SecKnowledgeGraph:
         metric = normalize_unicode(metric)
         as_of = ensure_utc(as_of)
 
+        # Use filtered accessor — pushes node_type, ticker, concept into Spark
+        nodes = self._store.find_nodes(
+            node_type="XbrlFact",
+            ticker=ticker,
+            concept=metric,
+            accepted_before=as_of,
+            limit=10000,
+        )
+
         # Collect all eligible facts grouped by series key
         series: Dict[tuple, Dict[str, Any]] = {}
-        for node in self._store.iter_nodes():
-            if node.node_type != "XbrlFact":
-                continue
+        for node in nodes:
             props = json.loads(node.properties_json)
-            if props.get("ticker", "").upper() != ticker:
-                continue
-            node_metric = props.get("entity_key", props.get("metric", ""))
-            if normalize_unicode(node_metric).lower() != metric.lower():
-                continue
 
             eligible_provs = [p for p in node.provenance if p.accepted_ts <= as_of]
             if not eligible_provs:
@@ -532,13 +756,17 @@ class SecKnowledgeGraph:
         ticker = normalize_ticker(ticker)
         as_of = ensure_utc(as_of)
 
+        # Use filtered accessor — pushes node_type, ticker into Spark
+        nodes = self._store.find_nodes(
+            node_type="RiskFactor",
+            ticker=ticker,
+            accepted_before=as_of,
+            limit=10000,
+        )
+
         results = []
-        for node in self._store.iter_nodes():
-            if node.node_type != "RiskFactor":
-                continue
+        for node in nodes:
             props = json.loads(node.properties_json)
-            if props.get("ticker", "").upper() != ticker:
-                continue
 
             eligible_provs = [p for p in node.provenance if p.accepted_ts <= as_of]
             if not eligible_provs:

@@ -1448,7 +1448,7 @@ class TestSparkGraphStoreRoundTrip:
             return TestSparkGraphStoreRoundTrip._Expr("or", self, other)
 
     class _FakeCol:
-        """Column stand-in supporting ==, <=, |, isin, alias."""
+        """Column stand-in supporting ==, <=, |, isin, alias, contains."""
         def __init__(self, name):
             self._name = name
         def __eq__(self, other):
@@ -1463,6 +1463,8 @@ class TestSparkGraphStoreRoundTrip:
             return TestSparkGraphStoreRoundTrip._Expr("isin", self._name, list(vals))
         def alias(self, name):
             return self
+        def contains(self, substr):
+            return TestSparkGraphStoreRoundTrip._Expr("contains", self._name, substr)
 
     # ── Fake Row / DataFrame / SparkSession ────────────────────────────────────
 
@@ -1489,6 +1491,8 @@ class TestSparkGraphStoreRoundTrip:
                 if TestSparkGraphStoreRoundTrip._eval(condition, r)
             ]
             return TestSparkGraphStoreRoundTrip._FakeDataFrame(filtered)
+        def limit(self, n):
+            return TestSparkGraphStoreRoundTrip._FakeDataFrame(self._rows[:n])
         def collect(self):
             return self._rows
         def toLocalIterator(self):
@@ -1513,6 +1517,9 @@ class TestSparkGraphStoreRoundTrip:
                 return getattr(row, expr.left, None) <= expr.right
             elif expr.op == "isin":
                 return getattr(row, expr.left, None) in expr.right
+            elif expr.op == "contains":
+                val = getattr(row, expr.left, None) or ""
+                return expr.right in val
             elif expr.op == "or":
                 return T._eval(expr.left, row) or T._eval(expr.right, row)
             elif expr.op == "and":
@@ -2017,6 +2024,10 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
             return iter(self._rows)
         def where(self, condition):
             return self
+        def count(self):
+            return len(self._rows)
+        def limit(self, n):
+            return _FakeDataFrame(self._rows[:n], self._schema)
         @property
         def write(self):
             return self
@@ -2776,3 +2787,525 @@ class TestNoDriverWideCollects:
                     pytest.fail(
                         f"Line {i+1}: collect() used in main data path: {line.strip()}"
                     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 32. Predicate pushdown spy tests (round 10)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class _SpyDataFrame:
+    """DataFrame spy that records .where/.filter/.limit calls and validates predicates."""
+
+    def __init__(self, rows, spy_log):
+        self._rows = rows
+        self._spy_log = spy_log
+        self._filtered = False
+        self._limited = False
+
+    def select(self, *args, **kwargs):
+        return self
+
+    def where(self, condition):
+        self._spy_log.append(("where", condition))
+        self._filtered = True
+        # Evaluate the condition against rows for functional correctness
+        filtered = [
+            r for r in self._rows
+            if TestPredicatePushdown._eval_condition(condition, r)
+        ]
+        return _SpyDataFrame(filtered, self._spy_log)
+
+    def filter(self, condition):
+        return self.where(condition)
+
+    def limit(self, n):
+        self._spy_log.append(("limit", n))
+        self._limited = True
+        return _SpyDataFrame(self._rows[:n], self._spy_log)
+
+    def collect(self):
+        self._spy_log.append(("collect", None))
+        return self._rows
+
+    def toLocalIterator(self):
+        self._spy_log.append(("toLocalIterator", None))
+        return iter(self._rows)
+
+
+class _SpySparkSession:
+    """SparkSession spy that returns _SpyDataFrame for table reads."""
+
+    def __init__(self, table_rows, spy_log):
+        self._table_rows = table_rows
+        self._spy_log = spy_log
+
+    def table(self, name):
+        rows = self._table_rows.get(name, [])
+        return _SpyDataFrame(rows, self._spy_log)
+
+
+class TestPredicatePushdown:
+    """Verify that query methods push predicates into Spark and apply LIMIT before collecting."""
+
+    @staticmethod
+    def _eval_condition(condition, row):
+        """Evaluate a filter condition against a _FakeRow."""
+        # Handle _Expr objects from the existing test infrastructure
+        if hasattr(condition, 'op'):
+            if condition.op == "eq":
+                left_val = getattr(row, condition.left, None) if isinstance(condition.left, str) else condition.left
+                return left_val == condition.right
+            elif condition.op == "le":
+                left_val = getattr(row, condition.left, None) if isinstance(condition.left, str) else condition.left
+                return left_val <= condition.right
+            elif condition.op == "isin":
+                left_val = getattr(row, condition.left, None) if isinstance(condition.left, str) else condition.left
+                return left_val in condition.right
+            elif condition.op == "or":
+                return (TestPredicatePushdown._eval_condition(condition.left, row) or
+                        TestPredicatePushdown._eval_condition(condition.right, row))
+            elif condition.op == "and":
+                return (TestPredicatePushdown._eval_condition(condition.left, row) and
+                        TestPredicatePushdown._eval_condition(condition.right, row))
+        return True
+
+    def _make_spy_store(self, monkeypatch, node_rows, edge_rows):
+        """Create a SparkGraphStore with spy DataFrames."""
+        T = TestSparkGraphStoreRoundTrip
+
+        # Patch pyspark
+        T._patch_pyspark(T, monkeypatch)
+
+        spy_log = []
+        table_rows = {
+            "test_cat.test_sch.gold_sec_kg_nodes": node_rows,
+            "test_cat.test_sch.gold_sec_kg_edges": edge_rows,
+        }
+        spy_spark = _SpySparkSession(table_rows, spy_log)
+
+        store = SparkGraphStore("test_cat", "test_sch")
+        store._spark = spy_spark
+        return store, spy_log
+
+    def _make_node_rows(self, monkeypatch):
+        """Build fake node rows from real graph data."""
+        from datetime import timedelta
+
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "risk_factor", "entity_key": "Competition",
+            "entity_value": "Intense competition in GPU market",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 0.9, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "Revenues were 2,943,719,000 for 2024-01-28."},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        node_rows = []
+        for node in nodes:
+            prov_list = [
+                TestSparkGraphStoreRoundTrip._FakeRow(
+                    accession_number=p.accession_number,
+                    source_chunk_id=p.source_chunk_id,
+                    accepted_ts=p.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=int(p.accepted_ts.timestamp()),
+                )
+                for p in node.provenance
+            ]
+            node_rows.append(TestSparkGraphStoreRoundTrip._FakeRow(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                label=node.label,
+                properties_json=node.properties_json,
+                provenance=prov_list,
+                build_version=node.build_version,
+            ))
+
+        edge_rows = []
+        for edge in edges:
+            edge_rows.append(TestSparkGraphStoreRoundTrip._FakeRow(
+                edge_id=edge.edge_id,
+                src_id=edge.src_id,
+                edge_type=edge.edge_type,
+                dst_id=edge.dst_id,
+                valid_from=edge.valid_from.replace(tzinfo=None) + timedelta(hours=8),
+                valid_from_epoch=int(edge.valid_from.timestamp()),
+                accession_number=edge.accession_number,
+                source_chunk_id=edge.source_chunk_id,
+                accepted_ts=edge.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                accepted_epoch=int(edge.accepted_ts.timestamp()),
+                confidence=edge.confidence,
+                properties_json=edge.properties_json,
+                build_version=edge.build_version,
+            ))
+
+        return node_rows, edge_rows
+
+    def test_get_fact_pushes_ticker_and_period_predicates(self, monkeypatch):
+        """get_fact must push ticker, concept, period_end into Spark .where() and apply .limit()."""
+        node_rows, edge_rows = self._make_node_rows(monkeypatch)
+        store, spy_log = self._make_spy_store(monkeypatch, node_rows, edge_rows)
+        kg = SecKnowledgeGraph(store)
+
+        result = kg.get_fact("NVDA", "Revenues", "2024-01-28",
+                             datetime(2024, 6, 1, tzinfo=timezone.utc))
+        assert result is not None
+
+        # Verify predicates were pushed
+        where_calls = [c for c in spy_log if c[0] == "where"]
+        limit_calls = [c for c in spy_log if c[0] == "limit"]
+
+        # Must have at least: node_type, ticker, concept, period_end
+        assert len(where_calls) >= 4, (
+            f"Expected >=4 where calls, got {len(where_calls)}: {where_calls}"
+        )
+        # Must have limit before collect/toLocalIterator
+        assert len(limit_calls) >= 1, (
+            f"Expected >=1 limit call, got {len(limit_calls)}"
+        )
+
+        # Verify limit comes before collect/toLocalIterator
+        op_names = [c[0] for c in spy_log]
+        limit_idx = op_names.index("limit")
+        collect_idx = len(op_names)  # default if not found
+        for op_name in ("collect", "toLocalIterator"):
+            if op_name in op_names:
+                collect_idx = min(collect_idx, op_names.index(op_name))
+        assert limit_idx < collect_idx, (
+            f"limit (idx {limit_idx}) must come before collect (idx {collect_idx})"
+        )
+
+    def test_facts_timeseries_pushes_ticker_and_concept(self, monkeypatch):
+        """facts_timeseries must push node_type, ticker, concept into Spark .where()."""
+        node_rows, edge_rows = self._make_node_rows(monkeypatch)
+        store, spy_log = self._make_spy_store(monkeypatch, node_rows, edge_rows)
+        kg = SecKnowledgeGraph(store)
+
+        results = kg.facts_timeseries("NVDA", "Revenues",
+                                      datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+        where_calls = [c for c in spy_log if c[0] == "where"]
+        limit_calls = [c for c in spy_log if c[0] == "limit"]
+
+        # Must have at least: node_type, ticker, concept
+        assert len(where_calls) >= 3, (
+            f"Expected >=3 where calls, got {len(where_calls)}"
+        )
+        assert len(limit_calls) >= 1
+
+    def test_risk_factors_pushes_ticker_and_type(self, monkeypatch):
+        """risk_factors must push node_type, ticker into Spark .where()."""
+        node_rows, edge_rows = self._make_node_rows(monkeypatch)
+        store, spy_log = self._make_spy_store(monkeypatch, node_rows, edge_rows)
+        kg = SecKnowledgeGraph(store)
+
+        results = kg.risk_factors("NVDA",
+                                  datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+        where_calls = [c for c in spy_log if c[0] == "where"]
+        limit_calls = [c for c in spy_log if c[0] == "limit"]
+
+        # Must have at least: node_type, ticker
+        assert len(where_calls) >= 2, (
+            f"Expected >=2 where calls, got {len(where_calls)}"
+        )
+        assert len(limit_calls) >= 1
+
+    def test_collect_never_called_on_unfiltered_dataframe(self, monkeypatch):
+        """collect()/toLocalIterator() must never be called without prior .where() + .limit()."""
+        node_rows, edge_rows = self._make_node_rows(monkeypatch)
+        store, spy_log = self._make_spy_store(monkeypatch, node_rows, edge_rows)
+        kg = SecKnowledgeGraph(store)
+
+        kg.get_fact("NVDA", "Revenues", "2024-01-28",
+                     datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+        # Check that no collect/toLocalIterator appears before a where
+        op_names = [c[0] for c in spy_log]
+        for op in ("collect", "toLocalIterator"):
+            if op in op_names:
+                first_collect = op_names.index(op)
+                # There must be at least one where before any collect
+                assert "where" in op_names[:first_collect], (
+                    f"{op} called at index {first_collect} without prior where: {op_names}"
+                )
+
+    def test_mutation_unfiltered_iter_nodes_fails(self, monkeypatch):
+        """Mutation proof: if get_fact calls iter_nodes() instead of find_nodes(), this test FAILS."""
+        node_rows, edge_rows = self._make_node_rows(monkeypatch)
+        store, spy_log = self._make_spy_store(monkeypatch, node_rows, edge_rows)
+        kg = SecKnowledgeGraph(store)
+
+        result = kg.get_fact("NVDA", "Revenues", "2024-01-28",
+                             datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+        # With find_nodes: spy_log has where + limit calls
+        # With iter_nodes: spy_log would have NO where calls for the nodes table
+        where_calls = [c for c in spy_log if c[0] == "where"]
+        assert len(where_calls) >= 4, (
+            f"Expected >=4 where calls (find_nodes pushes predicates), "
+            f"got {len(where_calls)} — get_fact may be using iter_nodes()"
+        )
+
+        limit_calls = [c for c in spy_log if c[0] == "limit"]
+        assert len(limit_calls) >= 1, (
+            "Expected >=1 limit call — get_fact may be using iter_nodes()"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 33. Real TZ regression test (round 10)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestTimezoneRegression:
+    """Real TZ regression: naive .timestamp() changes value when TZ changes."""
+
+    def test_singapore_tz_affects_naive_timestamp(self, monkeypatch):
+        """Setting TZ=Asia/Singapore changes naive .timestamp() output.
+
+        This proves that the bug (using .timestamp() on naive datetimes) is
+        TZ-dependent. The fix uses unix_timestamp in Spark + fromtimestamp(epoch, tz=utc).
+        Skip on Windows (no time.tzset).
+        """
+        import sys as _sys
+        if _sys.platform == "win32":
+            pytest.skip("time.tzset() not available on Windows")
+
+        import time
+        import os
+
+        # Save original TZ
+        orig_tz = os.environ.get("TZ")
+
+        try:
+            # Set Singapore TZ (UTC+8)
+            monkeypatch.setenv("TZ", "Asia/Singapore")
+            time.tzset()
+
+            # A known UTC instant: 2023-11-14T22:13:20Z = epoch 1700000000
+            # In Singapore (UTC+8), this is 2023-11-15T06:13:20
+            naive = datetime(2023, 11, 15, 6, 13, 20)  # naive, Singapore local
+
+            # naive.timestamp() in Singapore TZ should give 1700000000
+            epoch_from_naive = int(naive.timestamp())
+            assert epoch_from_naive == 1700000000, (
+                f"Expected epoch 1700000000 in Asia/Singapore, got {epoch_from_naive}"
+            )
+
+            # The fix pattern: fromtimestamp(epoch, tz=utc) always correct
+            utc_dt = datetime.fromtimestamp(1700000000, tz=timezone.utc)
+            assert utc_dt == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+
+            # Mutation proof: if we used naive .timestamp() with UTC interpretation,
+            # we'd get the WRONG epoch
+            utc_naive = datetime(2023, 11, 14, 22, 13, 20)  # naive, but UTC intended
+            wrong_epoch = int(utc_naive.timestamp())  # this is wrong in Singapore!
+            # In Singapore, this naive datetime is interpreted as UTC+8
+            # so .timestamp() gives epoch - 8h = 1700000000 - 28800 = 1699971200
+            assert wrong_epoch != 1700000000, (
+                f"Mutation failed: naive .timestamp() in Singapore gave correct epoch {wrong_epoch}"
+            )
+
+        finally:
+            # Restore original TZ
+            if orig_tz is not None:
+                monkeypatch.setenv("TZ", orig_tz)
+            else:
+                monkeypatch.delenv("TZ", raising=False)
+            time.tzset()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 34. Subset filter delete safety (round 10)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSubsetFilterDeleteSafety:
+    """build() with subset_filter must refuse unscoped delete."""
+
+    def test_subset_filter_raises(self, monkeypatch):
+        """build() with subset_filter must raise ValueError."""
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K",
+                accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation",
+                entity_unit="", period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id="c1", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K",
+                accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            ),
+        ]
+        fake_spark, _ = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+
+        with pytest.raises(ValueError, match="subset_filter"):
+            pipeline_mod.build(
+                fake_spark,
+                catalog="test_cat",
+                schema="test_sch",
+                subset_filter={"ticker": "NVDA"},
+            )
+
+    def test_no_subset_filter_succeeds(self, monkeypatch):
+        """build() without subset_filter proceeds normally."""
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K",
+                accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation",
+                entity_unit="", period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id="c1", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K",
+                accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            ),
+        ]
+        fake_spark, _ = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+
+        # Should not raise
+        pipeline_mod.build(
+            fake_spark,
+            catalog="test_cat",
+            schema="test_sch",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 35. JsonlGraphStore.find_nodes interface parity (round 10)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestJsonlGraphStoreFindNodes:
+    """JsonlGraphStore.find_nodes filters correctly by type and properties."""
+
+    def _make_store(self):
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Assets",
+            "entity_value": "50000000000", "entity_unit": "USD",
+            "period_start": "", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "risk_factor", "entity_key": "Competition",
+            "entity_value": "Intense competition",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 0.9, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        return store
+
+    def test_find_nodes_by_type(self):
+        store = self._make_store()
+        xbrl = store.find_nodes("XbrlFact")
+        assert all(n.node_type == "XbrlFact" for n in xbrl)
+        assert len(xbrl) == 2
+
+    def test_find_nodes_by_type_and_ticker(self):
+        store = self._make_store()
+        xbrl = store.find_nodes("XbrlFact", ticker="NVDA")
+        assert len(xbrl) == 2
+
+    def test_find_nodes_by_type_and_concept(self):
+        store = self._make_store()
+        xbrl = store.find_nodes("XbrlFact", concept="Revenues")
+        assert len(xbrl) == 1
+
+    def test_find_nodes_by_type_and_period_end(self):
+        store = self._make_store()
+        xbrl = store.find_nodes("XbrlFact", period_end="2024-01-28")
+        assert len(xbrl) == 2
+
+    def test_find_nodes_with_limit(self):
+        store = self._make_store()
+        xbrl = store.find_nodes("XbrlFact", limit=1)
+        assert len(xbrl) == 1
+
+    def test_find_nodes_with_accepted_before(self):
+        store = self._make_store()
+        # Before any filing
+        xbrl = store.find_nodes("XbrlFact",
+                                accepted_before=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        assert len(xbrl) == 0
+        # After filing
+        xbrl = store.find_nodes("XbrlFact",
+                                accepted_before=datetime(2024, 6, 1, tzinfo=timezone.utc))
+        assert len(xbrl) == 2

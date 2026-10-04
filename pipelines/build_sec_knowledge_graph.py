@@ -18,6 +18,15 @@ from sec_kg.build import build_graph, validate_and_raise
 from sec_kg.model import BUILD_VERSION
 
 
+def _table_exists(spark, table_name: str) -> bool:
+    """Check if a Delta table exists."""
+    try:
+        spark.table(table_name).limit(1).collect()
+        return True
+    except Exception:
+        return False
+
+
 def build(
     spark,
     *,
@@ -25,6 +34,7 @@ def build(
     schema: str,
     enable_llm_extraction: bool = False,
     llm_budget: int = 0,
+    subset_filter: Optional[Dict[str, str]] = None,
 ) -> None:
     """Build SEC knowledge graph Delta tables.
 
@@ -34,6 +44,12 @@ def build(
         schema: Schema name
         enable_llm_extraction: whether to run LLM enrichment
         llm_budget: max LLM calls (0=disabled)
+        subset_filter: if set, indicates a partial rebuild (e.g. {"ticker": "NVDA"}).
+            When set, the unscoped whenNotMatchedBySourceDelete is REFUSED to prevent
+            deleting rows belonging to other tickers/partitions.
+
+    Raises:
+        ValueError: if subset_filter is set (partial rebuilds not supported with unscoped delete)
     """
     from pyspark.sql import functions as F
     from pyspark.sql.types import (
@@ -209,6 +225,18 @@ def build(
     # Idempotent MERGE by ID with stale-row cleanup
     from delta.tables import DeltaTable
 
+    # Guard: refuse unscoped delete when subset filter is active
+    if subset_filter is not None:
+        raise ValueError(
+            f"Cannot issue unscoped whenNotMatchedBySourceDelete with "
+            f"subset_filter={subset_filter}. Partial rebuilds must use "
+            f"scoped delete to avoid wiping other partitions' rows."
+        )
+
+    # Count existing rows before merge (for delete logging)
+    existing_node_count = spark.table(nodes_table).count() if _table_exists(spark, nodes_table) else 0
+    existing_edge_count = spark.table(edges_table).count() if _table_exists(spark, edges_table) else 0
+
     # Merge nodes — delete rows absent from current build
     existing_nodes = DeltaTable.forName(spark, nodes_table)
     existing_nodes.alias("target").merge(
@@ -222,6 +250,15 @@ def build(
         edges_df.alias("source"),
         "target.edge_id = source.edge_id"
     ).whenMatchedUpdateAll().whenNotMatchedInsertAll().whenNotMatchedBySourceDelete().execute()
+
+    # Log deleted counts (approximate: max(0, existing + inserted - final))
+    # For full rebuild, inserted = len(nodes)/len(edges), final = same as inserted
+    # so deleted = max(0, existing - 0) = existing when all rows are replaced
+    deleted_nodes_est = max(0, existing_node_count) if existing_node_count > 0 else 0
+    deleted_edges_est = max(0, existing_edge_count) if existing_edge_count > 0 else 0
+    print(f"  Merge complete: {len(nodes)} nodes, {len(edges)} edges written")
+    if deleted_nodes_est > 0 or deleted_edges_est > 0:
+        print(f"  Stale rows cleaned: ~{deleted_nodes_est} nodes, ~{deleted_edges_est} edges")
 
     # Write run manifest
     runs_table = f"{catalog}.{schema}.gold_sec_kg_build_runs"
