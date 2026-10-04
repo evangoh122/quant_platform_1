@@ -173,6 +173,38 @@ def test_write_route_intents_returns_503_when_breaker_open(client, monkeypatch):
     assert resp.status_code == 503
 
 
+# ── degraded user role is viewer and cannot pass trader/admin ─────────────────
+
+
+def test_degraded_user_role_is_viewer(client, monkeypatch):
+    """Degraded user's role is exactly 'viewer' and cannot pass require_role('trader')."""
+    from api import deps
+
+    monkeypatch.setattr("db.lakebase.get_lakebase", lambda: FailingLakebase())
+
+    # Trip the breaker so the next request degrades
+    for _ in range(deps._CB_FAILURE_THRESHOLD + 1):
+        try:
+            deps._resolve_role("degraded@test.com")
+        except Exception:
+            pass
+
+    assert deps._breaker.is_open
+
+    # Read route succeeds — degraded user gets viewer role
+    resp = client.get("/api/signals", headers={"x-forwarded-email": "degraded@test.com"})
+    assert resp.status_code == 200
+
+    # Write route (requires trader) returns 503 — degraded cannot pass role check
+    resp = client.post(
+        "/api/watchlists",
+        json={"symbol": "AAPL"},
+        headers={"x-forwarded-email": "degraded@test.com"},
+    )
+    assert resp.status_code == 503
+    assert "Account services unavailable" in resp.json()["detail"]
+
+
 # ── breaker opens after N failures and recovers after cool-down ──────────────
 
 
