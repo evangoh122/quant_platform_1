@@ -250,10 +250,9 @@ def classify_intent(
         # date_range is always present in CanonicalIntent
         pass
 
-    # 11. Coverage check for sparse metrics (aggregate operations only)
+    # 11. Coverage check for sparse metrics (all operations)
     if (
-        intent.operation == Operation.aggregate
-        and entry.coverage is not None
+        entry.coverage is not None
         and coverage_stats is not None
     ):
         stats = coverage_stats.get(pair_key)

@@ -979,8 +979,8 @@ class TestInsufficientData:
         assert result.cost_class != CostClass.REJECT
         assert PolicyReasonCode.INSUFFICIENT_DATA not in result.reason_codes
 
-    def test_iv_trend_no_coverage_check(self, registry, bounds):
-        """IV trend (non-aggregate) does not trigger coverage check."""
+    def test_iv_trend_coverage_check(self, registry, bounds):
+        """IV trend (all operations) triggers coverage check."""
         intent = _make_intent(
             metric=Metric.implied_volatility,
             operation=Operation.trend,
@@ -994,8 +994,42 @@ class TestInsufficientData:
             as_of=date(2024, 12, 31),
             coverage_stats=coverage_stats,
         )
-        # Trend is not aggregate → no coverage check
-        assert PolicyReasonCode.INSUFFICIENT_DATA not in result.reason_codes
+        # Trend now triggers coverage check → INSUFFICIENT_DATA
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_iv_compare_coverage_check(self, registry, bounds):
+        """IV compare (all operations) triggers coverage check."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.compare,
+            entities=[TickerEntity(canonical_id="AAPL"), TickerEntity(canonical_id="MSFT")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        coverage_stats = {"implied_volatility.compare": (12, 19390)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        # Compare now triggers coverage check → INSUFFICIENT_DATA
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_iv_rank_coverage_check(self, registry, bounds):
+        """IV rank (all operations) triggers coverage check."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.rank,
+            entities=[TickerEntity(canonical_id="AAPL")],
+        )
+        coverage_stats = {"implied_volatility.rank": (12, 19390)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        # Rank now triggers coverage check → INSUFFICIENT_DATA
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
 
     def test_no_coverage_stats_skips_check(self, registry, bounds):
         """Without coverage_stats, no coverage check is performed."""
