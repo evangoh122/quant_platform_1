@@ -1790,6 +1790,158 @@ class TestRunBatchMutationProofs:
         success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
         assert len(success_logs) == 1
 
+    def test_resume_all_keys_already_in_bronze_records_success(self):
+        """Regression: when all of SYM's keys already exist in bronze (all
+        conflicts, new_rows empty), run_batch must still verify and record
+        SUCCESS so resume skips SYM.
+
+        Rule: verify ALL fetched candidate keys — new AND already-existing
+        (conflict) keys — and record SUCCESS when every key is present in
+        bronze.  Writer must NOT be called (nothing new to write).
+        """
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        adapter = _StubAdapter({"SYM": [
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 1, 1),
+                "split_ratio": 2.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+            })(),
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 6, 1),
+                "split_ratio": 3.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 6, 1, 13, 30),
+            })(),
+        ]})
+
+        # All of SYM's keys already exist in bronze
+        all_sym_keys = {
+            ("SYM", "2024-01-01", "massive"),
+            ("SYM", "2024-06-01", "massive"),
+        }
+        writer = _InMemoryWriter()
+        verifier = _InMemoryKeyVerifier(existing_keys=all_sym_keys)
+        checkpoint = _InMemoryCheckpointStore()
+
+        new_rows, report = run_batch(
+            symbols=["SYM"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=all_sym_keys,
+            mode="write",
+        )
+
+        # Anti-join filters all rows → nothing new to write
+        assert len(new_rows) == 0
+        # Writer must NOT be called
+        assert len(writer.appended) == 0
+        # But SUCCESS must be recorded (all keys verified in bronze)
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 1, (
+            f"Expected SUCCESS for SYM when all keys exist in bronze, "
+            f"got logs: {checkpoint.logs}"
+        )
+        assert success_logs[0]["symbol"] == "SYM"
+
+    def test_resume_skips_already_bronze_symbol(self):
+        """Second resume with same run_id skips SYM (already SUCCESS)."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        split = type("Split", (), {
+            "symbol": "SYM", "ex_date": dt.date(2024, 1, 1),
+            "split_ratio": 2.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+        })()
+
+        all_sym_keys = {("SYM", "2024-01-01", "massive")}
+
+        # First call: all keys in bronze → SUCCESS
+        adapter1 = _StubAdapter({"SYM": [split]})
+        writer1 = _InMemoryWriter()
+        verifier1 = _InMemoryKeyVerifier(existing_keys=all_sym_keys)
+        checkpoint1 = _InMemoryCheckpointStore()
+
+        run_batch(
+            symbols=["SYM"],
+            adapter=adapter1,
+            writer=writer1,
+            checkpoint_store=checkpoint1,
+            key_verifier=verifier1,
+            run_id="resume-run",
+            existing_keys_set=all_sym_keys,
+            mode="write",
+        )
+
+        assert "SYM" in checkpoint1._completed
+
+        # Second call: same run_id, SYM in completed → skipped
+        adapter2 = _StubAdapter({"SYM": [split]})
+        writer2 = _InMemoryWriter()
+        verifier2 = _InMemoryKeyVerifier(existing_keys=all_sym_keys)
+        checkpoint2 = _InMemoryCheckpointStore()
+        checkpoint2._completed = set(checkpoint1._completed)  # carry over
+
+        new_rows2, report2 = run_batch(
+            symbols=["SYM"],
+            adapter=adapter2,
+            writer=writer2,
+            checkpoint_store=checkpoint2,
+            key_verifier=verifier2,
+            run_id="resume-run",
+            existing_keys_set=all_sym_keys,
+            mode="write",
+        )
+
+        # SYM was skipped
+        assert "SYM" not in adapter2.calls
+        assert report2["attempted"] == 0
+
+    def test_mutation_verify_only_new_rows_fails(self):
+        """Mutation: revert to verifying only new_rows → test fails.
+
+        If run_batch only verified new_keys_set instead of all candidate keys,
+        a symbol whose rows already exist would never be verified or
+        checkpointed, causing infinite re-fetches on resume.
+        """
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        adapter = _StubAdapter({"SYM": [
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 1, 1),
+                "split_ratio": 2.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+            })(),
+        ]})
+
+        all_sym_keys = {("SYM", "2024-01-01", "massive")}
+        writer = _InMemoryWriter()
+        verifier = _InMemoryKeyVerifier(existing_keys=all_sym_keys)
+        checkpoint = _InMemoryCheckpointStore()
+
+        run_batch(
+            symbols=["SYM"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=all_sym_keys,
+            mode="write",
+        )
+
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 1, (
+            "Mutation detected: only new_rows were verified, so all-conflict "
+            "symbols never get SUCCESS and resume repeats forever"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 19. Rate limit — adapter enforces delay internally

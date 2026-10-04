@@ -385,13 +385,18 @@ def run_batch(
                                      error=f"write failed: {safe_msg}")
             return [], report
 
-        # --- Post-append key verification via DataFrame join ---
-        new_keys_set = {_row_to_key(r) for r in new_rows}
-        verified_keys = key_verifier.verify_keys(new_keys_set, BRONZE_TABLE)
+    # --- Post-append key verification via DataFrame join ---
+    # Verify ALL candidate keys for each successful symbol — both newly
+    # written and already-existing (conflict) keys.  This ensures that on
+    # resume, a symbol whose rows already exist in bronze is verified and
+    # checkpointed as SUCCESS instead of being re-fetched every time.
+    if mode == "write" and successful_symbols:
+        all_candidate_keys = {_row_to_key(r) for r in all_candidate_rows}
+        verified_keys = key_verifier.verify_keys(all_candidate_keys, BRONZE_TABLE)
 
-        # Group new_rows by symbol to know which symbols contributed keys
+        # Group candidate rows by symbol
         keys_by_symbol: dict[str, set[tuple]] = {}
-        for r in new_rows:
+        for r in all_candidate_rows:
             sym = r["symbol"]
             k = _row_to_key(r)
             keys_by_symbol.setdefault(sym, set()).add(k)
