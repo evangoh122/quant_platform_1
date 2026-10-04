@@ -1339,8 +1339,12 @@ class TestSearchSecFilingsError:
         mock_retriever = MagicMock()
         mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
+        def boom_spark():
+            raise RuntimeError("databricks connect unavailable")
+
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
-             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("agent.tools_retrieval._spark", side_effect=boom_spark):
             result = search_sec_filings("NVDA", query="test")
 
         assert len(result) == 1
@@ -1348,6 +1352,77 @@ class TestSearchSecFilingsError:
         assert result[0]["ticker"] == "NVDA"
         # Must not leak raw exception text
         assert "connection timeout" not in result[0]["message"]
+
+    def test_generic_exception_fallback_succeeds_with_pit_filter(self, fake_pyspark, monkeypatch):
+        """When fallback succeeds, results must have retrieval_mode=substring_fallback and respect PIT."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+
+        def fake_retrieve(*args, **kwargs):
+            raise RuntimeError("some hybrid error")
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
+
+        mock_spark = MagicMock()
+        mock_df = MagicMock()
+        mock_df.where.return_value = mock_df
+        mock_df.orderBy.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {
+            "chunk_id": "fb-001",
+            "accession_number": "ACC",
+            "form_type": "10-K",
+            "accepted_ts": "2024-01-01",
+            "source_url": "",
+            "ticker": "NVDA",
+            "filing_section": "item_7",
+            "chunk_index": 0,
+            "chunk_text": "fallback text",
+        }
+        mock_df.collect.return_value = [mock_row]
+        mock_spark.table.return_value = mock_df
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("agent.tools_retrieval._spark", return_value=mock_spark):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) >= 1
+        assert result[0]["retrieval_mode"] == "substring_fallback"
+        assert result[0]["chunk_id"] == "fb-001"
+
+    def test_no_coverage_never_reaches_fallback(self, monkeypatch):
+        """NoCoverageError must return no_coverage, never invoke the substring fallback."""
+        from api.services.hybrid_retriever import NoCoverageError
+
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+
+        def raise_no_coverage(*args, **kwargs):
+            raise NoCoverageError("XYZ")
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve_and_rerank.side_effect = raise_no_coverage
+
+        fallback_called = [False]
+
+        def spy_spark():
+            fallback_called[0] = True
+            raise RuntimeError("should not be called")
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("agent.tools_retrieval._spark", side_effect=spy_spark):
+            result = search_sec_filings("XYZ", query="test")
+
+        assert result == [{"error": "no_coverage", "ticker": "XYZ"}]
+        assert fallback_called[0] is False, "Substring fallback must not be called for NoCoverageError"
 
     def test_unavailable_result_contains_no_exception_text(self, monkeypatch):
         """The error message must not leak raw exception text."""
