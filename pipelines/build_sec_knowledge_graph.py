@@ -230,7 +230,20 @@ def build(
     """)
 
     from pyspark.sql import Row
+    from pyspark.sql.types import IntegerType, MapType, StringType, StructField, StructType, TimestampType
     import uuid
+
+    manifest_schema = StructType([
+        StructField("run_id", StringType(), False),
+        StructField("build_version", StringType(), False),
+        StructField("run_ts", TimestampType(), False),
+        StructField("input_rows_by_entity_type", MapType(StringType(), IntegerType(), False), False),
+        StructField("accepted_rows", IntegerType(), False),
+        StructField("rejected_rows", IntegerType(), False),
+        StructField("rejection_reasons", MapType(StringType(), IntegerType(), False), False),
+        StructField("node_count", IntegerType(), False),
+        StructField("edge_count", IntegerType(), False),
+    ])
 
     run_id = str(uuid.uuid4())
     run_row = Row(
@@ -244,7 +257,7 @@ def build(
         node_count=len(nodes),
         edge_count=len(edges),
     )
-    run_df = spark.createDataFrame([run_row])
+    run_df = spark.createDataFrame([run_row], manifest_schema)
     run_df.write.format("delta").mode("append").insertInto(runs_table)
 
     print(f"Build complete: {len(nodes)} nodes, {len(edges)} edges")
