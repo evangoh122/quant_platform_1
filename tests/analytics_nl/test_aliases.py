@@ -165,6 +165,41 @@ class TestHostileInputRejection:
         assert result.status == AliasResolutionStatus.rejected
         assert result.reason_code == "multi_sentence_injection"
 
+    @pytest.mark.parametrize("input_str", [
+        'a"b',
+        "a`b",
+        "a\\b",
+        "a;b",
+        "a--b",
+        "a/*b",
+        "a*/b",
+    ])
+    def test_hostile_chars_rejected_by_reject_hostile(self, input_str):
+        from analytics_nl.aliases import _reject_hostile
+        assert _reject_hostile(input_str) is not None, (
+            f"{input_str!r} not rejected by _reject_hostile"
+        )
+
+    @pytest.mark.parametrize("input_str", [
+        'a"b',
+        "a`b",
+        "a\\b",
+        "a;b",
+        "a--b",
+        "a/*b",
+        "a*/b",
+    ])
+    def test_hostile_chars_rejected_by_resolve(self, resolver, input_str):
+        result = resolver.resolve(input_str)
+        assert result.status == AliasResolutionStatus.rejected, (
+            f"{input_str!r} not rejected by resolve(), got {result.status}"
+        )
+
+    def test_apostrophe_accepted_by_reject_hostile(self):
+        from analytics_nl.aliases import _reject_hostile
+        assert _reject_hostile("McDonald's") is None
+        assert _reject_hostile("Lowe's") is None
+
 
 class TestApostropheConsistency:
     """Apostrophe names must pass both contract and resolver hostile checks."""

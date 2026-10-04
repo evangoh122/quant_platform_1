@@ -158,7 +158,7 @@ _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
 _SECTOR_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_SQL_METACHAR_RE = re.compile(r"[;]|--|/\*|\*/")
+_SQL_METACHAR_RE = re.compile(r"""["`\\;]|--|/\*|\*/""")
 _PROMPT_INJECTION_RE = re.compile(
     r"ignore\s+previous|reveal\s+(?:the\s+)?system|you\s+are\s+now|forget\s+(?:your|all)|disregard\s+(?:all|previous)|system\s*:|override\s+(?:safety|all)|bypass\s+(?:safety|all|filters)|ignore\s+(?:all|safety|constraints)|forget\s+(?:all|safety|constraints)",
     re.IGNORECASE,
