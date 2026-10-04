@@ -372,6 +372,12 @@ def run_batch(
     report["new_rows"] = len(new_rows)
     report["conflict_rows"] = len(conflicts)
 
+    if report["conflict_rows"] > 0:
+        print(f"  WARNING: {report['conflict_rows']} conflict(s) detected — "
+              f"existing (symbol, ex_date, source) keys already in bronze. "
+              f"First-write-wins: conflicts are NOT overwritten. "
+              f"Investigate if data at source has changed.")
+
     # --- Write (write mode only) ---
     if mode == "write" and new_rows:
         try:

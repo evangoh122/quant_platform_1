@@ -648,3 +648,223 @@ WHERE a.raw_gross_return IS NOT NULL
         ]
         assert len(amzn_false_positives) > 0, \
             "Mutation proof: removing 40% predicate must produce AMZN false positives"
+
+
+# ---------------------------------------------------------------------------
+# 8. Adjusted arithmetic: exact adj_close and adj_volume from real SQL
+# ---------------------------------------------------------------------------
+
+def _run_adjusted(conn: duckdb.DuckDBPyConnection, sql_text: str):
+    """Execute _massive_splits → _split_factors → _adjusted, return adjusted rows."""
+    resolved_sql = _shim_for_duckdb(_extract_cte(sql_text, "_massive_splits"))
+    factors_sql = _shim_for_duckdb(_extract_cte(sql_text, "_split_factors"))
+    adjusted_sql = _shim_for_duckdb(_extract_cte(sql_text, "_adjusted"))
+    conn.execute(resolved_sql)
+    conn.execute(factors_sql)
+    conn.execute(adjusted_sql)
+    return conn.execute(
+        "SELECT symbol, event_date, close, volume, "
+        "cumulative_split_ratio, price_adjustment_factor, "
+        "adj_close, adj_volume "
+        "FROM _adjusted ORDER BY symbol, event_date"
+    ).fetchall()
+
+
+@pytest.fixture
+def adjusted_conn(sql_text):
+    """DuckDB with three split scenarios for exact adj_close / adj_volume testing.
+
+    TWOSPLIT: two 2:1 splits (ex 2022-03-01 and 2023-06-01).
+      - Before 2022-03-01: cum = 2*2 = 4, paf = 0.25
+      - Between splits:    cum = 2,    paf = 0.5
+      - After 2023-06-01:  cum = 1,    paf = 1.0
+
+    REV: 1:10 reverse split (ex 2024-06-03, ratio 0.1).
+      - Before 2024-06-03: cum = 0.1, paf = 10.0
+      - On/after:          cum = 1,   paf = 1.0
+
+    EXDATE: 3:1 forward split (ex 2023-09-04, ratio 3.0).
+      - Before 2023-09-04: cum = 3,   paf = 1/3
+      - On/after:          cum = 1,   paf = 1.0
+    """
+    conn = duckdb.connect()
+    _setup_duckdb(conn)
+    conn.execute("DELETE FROM _universe")
+    conn.execute("INSERT INTO _universe VALUES ('TWOSPLIT'), ('REV'), ('EXDATE')")
+
+    # TWOSPLIT daily bars
+    conn.execute("""
+        INSERT INTO _deduped_daily VALUES
+        ('TWOSPLIT', '2022-02-28 00:00:00', '2022-02-28', 400, 410, 390, 400, 1000000, 405, 10000),
+        ('TWOSPLIT', '2022-03-01 00:00:00', '2022-03-01', 210, 215, 205, 210, 2000000, 212, 20000),
+        ('TWOSPLIT', '2023-05-31 00:00:00', '2023-05-31', 100, 105,  95, 100, 3000000, 102, 30000),
+        ('TWOSPLIT', '2023-06-01 00:00:00', '2023-06-01',  55,  57,  53,  55, 6000000,  56, 60000),
+        ('TWOSPLIT', '2023-06-02 00:00:00', '2023-06-02',  56,  58,  54,  56, 5500000,  57, 55000)
+    """)
+
+    # REV daily bars
+    conn.execute("""
+        INSERT INTO _deduped_daily VALUES
+        ('REV', '2024-05-31 00:00:00', '2024-05-31', 5, 5.5, 4.5, 5, 500000, 5.1, 5000),
+        ('REV', '2024-06-03 00:00:00', '2024-06-03', 52, 54, 50, 52, 100000, 53, 1000),
+        ('REV', '2024-06-04 00:00:00', '2024-06-04', 53, 55, 51, 53, 90000, 54, 900)
+    """)
+
+    # EXDATE daily bars
+    conn.execute("""
+        INSERT INTO _deduped_daily VALUES
+        ('EXDATE', '2023-09-01 00:00:00', '2023-09-01', 300, 310, 290, 300, 400000, 305, 4000),
+        ('EXDATE', '2023-09-04 00:00:00', '2023-09-04', 105, 108, 102, 105, 1200000, 106, 12000),
+        ('EXDATE', '2023-09-05 00:00:00', '2023-09-05', 107, 110, 104, 107, 1100000, 108, 11000)
+    """)
+
+    # Massive splits
+    conn.execute("""
+        INSERT INTO bronze_corporate_actions VALUES
+        ('TWOSPLIT', '2022-03-01', 2.0, 'massive', '2026-01-01'),
+        ('TWOSPLIT', '2023-06-01', 2.0, 'massive', '2026-01-01'),
+        ('REV',      '2024-06-03', 0.1, 'massive', '2026-01-01'),
+        ('EXDATE',   '2023-09-04', 3.0, 'massive', '2026-01-01')
+    """)
+
+    yield conn
+    conn.close()
+
+
+class TestAdjustedArithmetic:
+
+    def test_two_split_cumulative_product(self, adjusted_conn, sql_text):
+        """Two 2:1 splits: cumulative = 4 before first, 2 between, 1 after second.
+        adj_close = close / cum; adj_volume = volume * cum."""
+        rows = _run_adjusted(adjusted_conn, sql_text)
+        by_key = {(r[0], r[1]): r for r in rows}
+
+        # Before first split (cum=4, paf=0.25)
+        r = by_key[("TWOSPLIT", datetime.date(2022, 2, 28))]
+        assert r[4] == pytest.approx(4.0), f"cum should be 4, got {r[4]}"
+        assert r[5] == pytest.approx(0.25), f"paf should be 0.25, got {r[5]}"
+        assert r[6] == pytest.approx(100.0), f"adj_close=400/4=100, got {r[6]}"
+        assert r[7] == pytest.approx(4000000.0), f"adj_volume=1M*4=4M, got {r[7]}"
+
+        # Between splits (cum=2, paf=0.5)
+        r = by_key[("TWOSPLIT", datetime.date(2023, 5, 31))]
+        assert r[4] == pytest.approx(2.0), f"cum should be 2, got {r[4]}"
+        assert r[6] == pytest.approx(50.0), f"adj_close=100/2=50, got {r[6]}"
+        assert r[7] == pytest.approx(6000000.0), f"adj_volume=3M*2=6M, got {r[7]}"
+
+        # On second ex-date (cum=1, paf=1.0) — ex-date bar is on new basis
+        r = by_key[("TWOSPLIT", datetime.date(2023, 6, 1))]
+        assert r[4] == pytest.approx(1.0), f"cum should be 1, got {r[4]}"
+        assert r[6] == pytest.approx(55.0), f"adj_close=55/1=55, got {r[6]}"
+        assert r[7] == pytest.approx(6000000.0), f"adj_volume=6M*1=6M, got {r[7]}"
+
+    def test_reverse_split_exact_values(self, adjusted_conn, sql_text):
+        """1:10 reverse split (ratio 0.1): cum=0.1 before, 1 on/after.
+        adj_close = close / 0.1 = close * 10; adj_volume = volume * 0.1."""
+        rows = _run_adjusted(adjusted_conn, sql_text)
+        by_key = {(r[0], r[1]): r for r in rows}
+
+        # Before reverse split (cum=0.1, paf=10)
+        r = by_key[("REV", datetime.date(2024, 5, 31))]
+        assert r[4] == pytest.approx(0.1), f"cum should be 0.1, got {r[4]}"
+        assert r[5] == pytest.approx(10.0), f"paf should be 10, got {r[5]}"
+        assert r[6] == pytest.approx(50.0), f"adj_close=5/0.1=50, got {r[6]}"
+        assert r[7] == pytest.approx(50000.0), f"adj_volume=500K*0.1=50K, got {r[7]}"
+
+        # On ex-date (cum=1, paf=1.0) — ex-date bar is on new basis
+        r = by_key[("REV", datetime.date(2024, 6, 3))]
+        assert r[4] == pytest.approx(1.0), f"cum should be 1, got {r[4]}"
+        assert r[6] == pytest.approx(52.0), f"adj_close=52/1=52, got {r[6]}"
+        assert r[7] == pytest.approx(100000.0), f"adj_volume=100K*1=100K, got {r[7]}"
+
+        # Day after ex-date (still cum=1)
+        r = by_key[("REV", datetime.date(2024, 6, 4))]
+        assert r[4] == pytest.approx(1.0)
+        assert r[6] == pytest.approx(53.0)
+        assert r[7] == pytest.approx(90000.0)
+
+    def test_exdate_bar_on_new_basis(self, adjusted_conn, sql_text):
+        """3:1 split ex-date bar: cum=1 (split not included for ex-date bar).
+        adj_close = close (unchanged), adj_volume = volume (unchanged)."""
+        rows = _run_adjusted(adjusted_conn, sql_text)
+        by_key = {(r[0], r[1]): r for r in rows}
+
+        # Before split (cum=3)
+        r = by_key[("EXDATE", datetime.date(2023, 9, 1))]
+        assert r[4] == pytest.approx(3.0), f"cum should be 3, got {r[4]}"
+        assert r[6] == pytest.approx(100.0), f"adj_close=300/3=100, got {r[6]}"
+        assert r[7] == pytest.approx(1200000.0), f"adj_volume=400K*3=1.2M, got {r[7]}"
+
+        # Ex-date bar (cum=1 — ex_date > event_date excludes this split)
+        r = by_key[("EXDATE", datetime.date(2023, 9, 4))]
+        assert r[4] == pytest.approx(1.0), f"cum should be 1, got {r[4]}"
+        assert r[6] == pytest.approx(105.0), f"adj_close=105/1=105, got {r[6]}"
+        assert r[7] == pytest.approx(1200000.0), f"adj_volume=1.2M*1=1.2M, got {r[7]}"
+
+    def test_mutation_adj_close_times_cum_fails(self, adjusted_conn, sql_text):
+        """Mutation proof: adj_close = close * cum (wrong) vs close / cum (correct).
+        For TWOSPLIT before first split: close=400, cum=4.
+        Correct: adj_close = 400/4 = 100.  Mutation: 400*4 = 1600."""
+        rows = _run_adjusted(adjusted_conn, sql_text)
+        by_key = {(r[0], r[1]): r for r in rows}
+
+        r = by_key[("TWOSPLIT", datetime.date(2022, 2, 28))]
+        adj_close = r[6]
+        close = r[2]
+        cum = r[4]
+        # Correct formula: adj_close = close / cum
+        assert adj_close == pytest.approx(close / cum), \
+            f"adj_close should be close/cum = {close}/{cum} = {close/cum}, got {adj_close}"
+        # Mutation proof: adj_close should NOT be close * cum
+        assert adj_close != pytest.approx(close * cum), \
+            f"Mutation: adj_close = close*cum = {close*cum} would be wrong"
+
+    def test_mutation_adj_volume_div_cum_fails(self, adjusted_conn, sql_text):
+        """Mutation proof: adj_volume = volume / cum (wrong) vs volume * cum (correct).
+        For TWOSPLIT before first split: volume=1M, cum=4.
+        Correct: adj_volume = 1M*4 = 4M.  Mutation: 1M/4 = 250K."""
+        rows = _run_adjusted(adjusted_conn, sql_text)
+        by_key = {(r[0], r[1]): r for r in rows}
+
+        r = by_key[("TWOSPLIT", datetime.date(2022, 2, 28))]
+        adj_volume = r[7]
+        volume = r[3]
+        cum = r[4]
+        # Correct formula: adj_volume = volume * cum
+        assert adj_volume == pytest.approx(volume * cum), \
+            f"adj_volume should be volume*cum = {volume}*{cum} = {volume*cum}, got {adj_volume}"
+        # Mutation proof: adj_volume should NOT be volume / cum
+        assert adj_volume != pytest.approx(volume / cum), \
+            f"Mutation: adj_volume = volume/cum = {volume/cum} would be wrong"
+
+    def test_reverse_split_mutation_adj_close(self, adjusted_conn, sql_text):
+        """Mutation proof for reverse split: adj_close = close * cum (wrong).
+        REV before split: close=5, cum=0.1.
+        Correct: adj_close = 5/0.1 = 50.  Mutation: 5*0.1 = 0.5."""
+        rows = _run_adjusted(adjusted_conn, sql_text)
+        by_key = {(r[0], r[1]): r for r in rows}
+
+        r = by_key[("REV", datetime.date(2024, 5, 31))]
+        adj_close = r[6]
+        close = r[2]
+        cum = r[4]
+        assert adj_close == pytest.approx(close / cum), \
+            f"adj_close should be {close}/{cum} = {close/cum}, got {adj_close}"
+        assert adj_close != pytest.approx(close * cum), \
+            f"Mutation: adj_close = {close}*{cum} = {close*cum} would be wrong"
+
+    def test_reverse_split_mutation_adj_volume(self, adjusted_conn, sql_text):
+        """Mutation proof for reverse split: adj_volume = volume / cum (wrong).
+        REV before split: volume=500K, cum=0.1.
+        Correct: adj_volume = 500K*0.1 = 50K.  Mutation: 500K/0.1 = 5M."""
+        rows = _run_adjusted(adjusted_conn, sql_text)
+        by_key = {(r[0], r[1]): r for r in rows}
+
+        r = by_key[("REV", datetime.date(2024, 5, 31))]
+        adj_volume = r[7]
+        volume = r[3]
+        cum = r[4]
+        assert adj_volume == pytest.approx(volume * cum), \
+            f"adj_volume should be {volume}*{cum} = {volume*cum}, got {adj_volume}"
+        assert adj_volume != pytest.approx(volume / cum), \
+            f"Mutation: adj_volume = {volume}/{cum} = {volume/cum} would be wrong"

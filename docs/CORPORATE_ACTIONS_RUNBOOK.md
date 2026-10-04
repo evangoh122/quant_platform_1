@@ -52,8 +52,25 @@ python notebooks/refresh_bronze_corporate_actions.py \
 
 ## 3. Fetch / write
 
+**Mode:** The job defaults to `--mode dry-run` with no schedule.  Dry-run
+fetches and deduplicates splits but writes nothing.  To actually persist
+rows, pass `--mode write`.
+
+**Conflict semantics:** The write path uses first-write-wins for the
+natural key `(symbol, ex_date, source)`.  Rows already present in bronze
+are never overwritten.  Incoming rows whose key matches an existing row
+are counted as `conflict_rows` in the JSON report.  A `WARNING` log line
+is emitted when `conflict_rows > 0` — investigate this because it means
+the source returned data that is already in bronze (possible data change
+or duplicate run).
+
 ```bash
-# Run mode=write with a named run ID
+# Dry-run (default — no writes, review JSON output)
+python notebooks/refresh_bronze_corporate_actions.py \
+    --source massive \
+    --delay-seconds 0.5
+
+# Write mode with a named run ID
 python notebooks/refresh_bronze_corporate_actions.py \
     --mode write \
     --source massive \
@@ -72,7 +89,7 @@ SELECT COUNT(*) AS total_rows,
        COUNT(DISTINCT (symbol, CAST(ex_date AS STRING), source)) AS distinct_keys
 FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions;
 
-# Rerun once — prove zero appended rows
+# Rerun once — prove zero appended rows (conflict_rows should equal total)
 python notebooks/refresh_bronze_corporate_actions.py \
     --mode write \
     --source massive \
