@@ -161,6 +161,10 @@ class CikMappingLogWriter(Protocol):
         entry: "CikMappingLogEntry",
     ) -> None: ...
 
+    def flush(self, catalog: str, schema: str) -> None:
+        """Persist any buffered entries. No-op if nothing is buffered."""
+        ...
+
 
 @dataclass
 class CikMappingLogEntry:
@@ -1024,6 +1028,7 @@ def run_ingest(
                 run_id=run_id,
             )
             cik_mapping_log_writer.append_mapping_log(catalog, schema, cik_log_entry)
+        cik_mapping_log_writer.flush(catalog, schema)
 
     # Get existing accessions for anti-join (with ownership info)
     existing_accessions: Dict[str, Tuple[str, str]] = {}
@@ -1288,7 +1293,24 @@ class SparkLogWriter:
 
 
 class SparkCikMappingLogWriter:
-    """Writes CIK mapping log entries to sec_cik_mapping_log via Spark."""
+    """Writes CIK mapping log entries to sec_cik_mapping_log via Spark.
+
+    Buffers entries in memory and writes once per flush() call (typically once
+    per run).  Uses an explicit StructType so that cik=None rows are handled
+    correctly — Spark cannot infer a nullable StringType from a None value.
+    """
+
+    CIK_MAPPING_SCHEMA = None  # lazily built once (needs pyspark import)
+
+    def __init__(self, spark_factory=None) -> None:
+        self._buffer: list = []
+        self._spark_factory = spark_factory  # injectable for testing
+
+    def _get_spark(self):
+        if self._spark_factory is not None:
+            return self._spark_factory()
+        from databricks.connect import DatabricksSession
+        return DatabricksSession.builder.serverless(True).getOrCreate()
 
     def append_mapping_log(
         self,
@@ -1296,9 +1318,7 @@ class SparkCikMappingLogWriter:
         schema: str,
         entry: CikMappingLogEntry,
     ) -> None:
-        from databricks.connect import DatabricksSession
-        spark = DatabricksSession.builder.serverless(True).getOrCreate()
-        row = {
+        self._buffer.append({
             "ticker": entry.ticker,
             "lookup_symbol": entry.lookup_symbol,
             "cik": entry.cik,
@@ -1306,9 +1326,36 @@ class SparkCikMappingLogWriter:
             "reason": entry.reason,
             "mapped_ts": entry.mapped_ts,
             "run_id": entry.run_id,
-        }
-        df = spark.createDataFrame([row])
+        })
+
+    def flush(self, catalog: str, schema: str) -> None:
+        if not self._buffer:
+            return
+        from pyspark.sql.types import (
+            StringType,
+            StructField,
+            StructType,
+            TimestampType,
+        )
+
+        spark = self._get_spark()
+        if SparkCikMappingLogWriter.CIK_MAPPING_SCHEMA is None:
+            SparkCikMappingLogWriter.CIK_MAPPING_SCHEMA = StructType([
+                StructField("ticker", StringType(), False),
+                StructField("lookup_symbol", StringType(), True),
+                StructField("cik", StringType(), True),
+                StructField("status", StringType(), False),
+                StructField("reason", StringType(), True),
+                StructField("mapped_ts", TimestampType(), True),
+                StructField("run_id", StringType(), True),
+            ])
+
+        df = spark.createDataFrame(
+            self._buffer,
+            schema=SparkCikMappingLogWriter.CIK_MAPPING_SCHEMA,
+        )
         df.write.mode("append").saveAsTable(f"{catalog}.{schema}.sec_cik_mapping_log")
+        self._buffer.clear()
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────

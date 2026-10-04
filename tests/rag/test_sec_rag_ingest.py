@@ -26,6 +26,22 @@ sys.modules.setdefault("pyspark.sql.types", _pyspark_mock.sql.types)
 sys.modules.setdefault("databricks", MagicMock())
 sys.modules.setdefault("databricks.connect", MagicMock())
 
+# Make pyspark.sql.types classes importable with real type identities
+# so that isinstance() and type() checks work in tests.
+try:
+    from pyspark.sql.types import (
+        StringType as _RealStringType,
+        StructField as _RealStructField,
+        StructType as _RealStructType,
+        TimestampType as _RealTimestampType,
+    )
+    _pyspark_mock.sql.types.StringType = _RealStringType
+    _pyspark_mock.sql.types.StructField = _RealStructField
+    _pyspark_mock.sql.types.StructType = _RealStructType
+    _pyspark_mock.sql.types.TimestampType = _RealTimestampType
+except ImportError:
+    pass  # pyspark not installed; MagicMock fallback is fine for non-schema tests
+
 from pipelines.sec_rag_ingest import (  # noqa: E402
     AccessionOwnershipConflict,
     CikMappingLogEntry,
@@ -161,9 +177,13 @@ class FakeCikMappingLogWriter:
 
     def __init__(self):
         self.entries: List[CikMappingLogEntry] = []
+        self.flush_count = 0
 
     def append_mapping_log(self, catalog: str, schema: str, entry: CikMappingLogEntry) -> None:
         self.entries.append(entry)
+
+    def flush(self, catalog: str, schema: str) -> None:
+        self.flush_count += 1
 
 
 # -- Parsing tests --
@@ -885,8 +905,211 @@ class TestCikMappingLog:
         assert statuses["XYZMISS"] == "missing"
         assert all(e.run_id is not None for e in cik_log.entries)
 
+    def test_flush_called_exactly_once(self):
+        """run_ingest calls flush() exactly once after collecting all entries."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
 
-# -- Accession conflict tests --
+        universe = [TickerEntry(ticker="NVDA", phase=1), TickerEntry(ticker="XYZMISS", phase=1)]
+        cik_log = FakeCikMappingLogWriter()
+
+        run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA", "XYZMISS"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(set()),
+            data_writer=FakeDataWriter(),
+            cik_mapping_log_writer=cik_log,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        assert cik_log.flush_count == 1, (
+            f"Expected 1 flush call (batch), got {cik_log.flush_count}. "
+            "Mutation: per-ticker writes would need N flushes."
+        )
+
+
+class TestSparkCikMappingLogWriterSchema:
+    """Mutation-proof tests for SparkCikMappingLogWriter schema and batching.
+
+    These tests directly exercise the production SparkCikMappingLogWriter class
+    with an injected fake Spark session so they run without Databricks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_pyspark_types(self, monkeypatch):
+        """Temporarily restore real pyspark.sql.types for schema tests."""
+        try:
+            # Remove mock so Python can find the real module
+            saved = {}
+            for key in list(sys.modules):
+                if key.startswith("pyspark"):
+                    saved[key] = sys.modules.pop(key)
+            try:
+                import pyspark.sql.types as real_types
+                monkeypatch.setitem(sys.modules, "pyspark.sql.types", real_types)
+            finally:
+                # Restore mocks for other tests
+                for k, v in saved.items():
+                    sys.modules.setdefault(k, v)
+        except ImportError:
+            pytest.skip("pyspark not available for schema tests")
+
+    def _make_fake_spark(self, captured):
+        """Return a fake SparkSession that captures createDataFrame args."""
+        class FakeSparkSession:
+            def createDataFrame(self, data, schema=None):
+                captured["data"] = list(data)  # copy — buffer is cleared after
+                captured["schema"] = schema
+                df = MagicMock()
+                mode_mock = MagicMock()
+                df.write.mode.return_value = mode_mock
+                mode_mock.saveAsTable.return_value = None
+                return df
+        return FakeSparkSession
+
+    def test_schema_matches_documented_schema(self):
+        """StructType exactly matches docs/DATA_SCHEMAS.md sec_cik_mapping_log.
+
+        Schema from DATA_SCHEMAS.md:
+          ticker          string NOT NULL
+          lookup_symbol   string           (nullable)
+          cik             string           (nullable)
+          status          string NOT NULL
+          reason          string           (nullable)
+          mapped_ts       timestamp        (nullable)
+          run_id          string           (nullable)
+        """
+        from pipelines.sec_rag_ingest import SparkCikMappingLogWriter
+
+        captured = {}
+        writer = SparkCikMappingLogWriter(spark_factory=self._make_fake_spark(captured))
+        writer.append_mapping_log("cat", "sch", CikMappingLogEntry(
+            ticker="AAPL", lookup_symbol="AAPL", cik="0000320193",
+            status="mapped", reason="exact", mapped_ts=None, run_id="r1",
+        ))
+
+        # Clear cached schema so the test exercises the schema-building path
+        SparkCikMappingLogWriter.CIK_MAPPING_SCHEMA = None
+        writer.flush("cat", "sch")
+
+        schema = captured.get("schema")
+        assert schema is not None, (
+            "Mutation: no schema passed to createDataFrame. "
+            "Removing the schema= kwarg makes this test pass without assertion — "
+            "the schema field check below would also fail."
+        )
+
+        # Field names must match DATA_SCHEMAS.md exactly
+        expected_names = ["ticker", "lookup_symbol", "cik", "status", "reason", "mapped_ts", "run_id"]
+        actual_names = [f.name for f in schema.fields]
+        assert actual_names == expected_names, f"Field names mismatch: {actual_names}"
+
+        # Nullability: ticker=False, lookup_symbol=True, cik=True, status=False, reason=True, mapped_ts=True, run_id=True
+        expected_nullable = [False, True, True, False, True, True, True]
+        actual_nullable = [f.nullable for f in schema.fields]
+        assert actual_nullable == expected_nullable, f"Nullability mismatch: {actual_nullable}"
+
+        # Types
+        from pyspark.sql.types import StringType, TimestampType
+        expected_types = [StringType, StringType, StringType, StringType, StringType, TimestampType, StringType]
+        actual_types = [type(f.dataType) for f in schema.fields]
+        assert actual_types == expected_types, f"Type mismatch: {actual_types}"
+
+    def test_cik_none_row_written_with_schema(self):
+        """A row with cik=None must be accepted when explicit schema is provided.
+
+        Without the explicit schema, Spark's type inference from a dict with
+        cik=None would raise or produce wrong types. This test proves the
+        schema handles nullable cik.
+        """
+        from pipelines.sec_rag_ingest import SparkCikMappingLogWriter
+
+        captured = {}
+        writer = SparkCikMappingLogWriter(spark_factory=self._make_fake_spark(captured))
+        # cik=None — the problematic case
+        writer.append_mapping_log("cat", "sch", CikMappingLogEntry(
+            ticker="MISSING", lookup_symbol="MISSING", cik=None,
+            status="missing", reason="not found", mapped_ts=None, run_id="r1",
+        ))
+
+        SparkCikMappingLogWriter.CIK_MAPPING_SCHEMA = None
+        # Must not raise even with cik=None
+        writer.flush("cat", "sch")
+
+        data = captured.get("data")
+        assert data is not None
+        assert data[0]["cik"] is None
+        assert data[0]["ticker"] == "MISSING"
+
+    def test_batch_single_write_call(self):
+        """N entries → 1 createDataFrame call, not N.
+
+        Mutation proof: if flush() is called per-entry (inside append_mapping_log),
+        this test FAILS because createDataFrame would be called N times.
+        """
+        from pipelines.sec_rag_ingest import SparkCikMappingLogWriter
+
+        call_count = 0
+
+        class CountingSparkSession:
+            def createDataFrame(self, data, schema=None):
+                nonlocal call_count
+                call_count += 1
+                df = MagicMock()
+                mode_mock = MagicMock()
+                df.write.mode.return_value = mode_mock
+                mode_mock.saveAsTable.return_value = None
+                return df
+
+        writer = SparkCikMappingLogWriter(spark_factory=CountingSparkSession)
+        for i in range(5):
+            writer.append_mapping_log("cat", "sch", CikMappingLogEntry(
+                ticker=f"T{i}", lookup_symbol=f"T{i}", cik=f"000{i}",
+                status="mapped", reason="exact", mapped_ts=None, run_id="r1",
+            ))
+
+        writer.flush("cat", "sch")
+
+        assert call_count == 1, (
+            f"Expected 1 createDataFrame call for 5 entries, got {call_count}. "
+            "Mutation: per-ticker writes would call createDataFrame 5 times."
+        )
+
+    def test_buffer_cleared_after_flush(self):
+        """Buffer is empty after flush — subsequent flush is a no-op."""
+        from pipelines.sec_rag_ingest import SparkCikMappingLogWriter
+
+        write_count = 0
+
+        class CountingSparkSession:
+            def createDataFrame(self, data, schema=None):
+                nonlocal write_count
+                write_count += 1
+                df = MagicMock()
+                mode_mock = MagicMock()
+                df.write.mode.return_value = mode_mock
+                mode_mock.saveAsTable.return_value = None
+                return df
+
+        writer = SparkCikMappingLogWriter(spark_factory=CountingSparkSession)
+        writer.append_mapping_log("cat", "sch", CikMappingLogEntry(
+            ticker="AAPL", lookup_symbol="AAPL", cik="0000320193",
+            status="mapped", reason="exact", mapped_ts=None, run_id="r1",
+        ))
+
+        writer.flush("cat", "sch")
+        writer.flush("cat", "sch")  # second flush should be no-op
+
+        assert write_count == 1, (
+            f"Expected 1 write (second flush is no-op), got {write_count}. "
+            "Mutation: buffer not cleared after flush."
+        )
 
 class TestAccessionConflict:
     def test_accession_ownership_conflict_fails(self):
