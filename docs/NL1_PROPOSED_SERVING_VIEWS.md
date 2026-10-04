@@ -421,13 +421,15 @@ entity_cumulative AS (
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS has_invalid_return,
         -- Cumulative return: only compute if no invalid returns in window
+        -- NULL return_1d (data-quality breaks) are treated as no-change (0%)
+        -- for cumulative return but propagate through BOOL_OR for anomaly detection
         CASE
             WHEN BOOL_OR(return_1d <= -1) OVER (
                 PARTITION BY symbol
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             ) THEN NULL
-            ELSE EXP(SUM(LN(1 + return_1d)) OVER (
+            ELSE EXP(SUM(LN(1 + COALESCE(return_1d, 0))) OVER (
                 PARTITION BY symbol
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -439,7 +441,6 @@ entity_cumulative AS (
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS entity_info_ts
     FROM entity_returns
-    WHERE return_1d IS NOT NULL
 ),
 benchmark_cumulative AS (
     SELECT
@@ -455,7 +456,7 @@ benchmark_cumulative AS (
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             ) THEN NULL
-            ELSE EXP(SUM(LN(1 + bench_return)) OVER (
+            ELSE EXP(SUM(LN(1 + COALESCE(bench_return, 0))) OVER (
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             )) - 1
@@ -465,7 +466,6 @@ benchmark_cumulative AS (
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS bench_max_info_ts
     FROM benchmark_returns
-    WHERE bench_return IS NOT NULL
 )
 SELECT
     e.symbol,
