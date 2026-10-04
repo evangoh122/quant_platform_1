@@ -125,8 +125,8 @@ def build(
     total_processed = 0
     rows_written = 0
 
-    # Each worker initialises its own embeddings model so there is no
-    # contention on a shared object.  Bounded by max_workers=partitions.
+    # get_embeddings() is a singleton — all workers share the same model
+    # instance.  Bounded by max_workers=partitions.
     max_workers = max(1, partitions)
 
     def _embed_batch(batch):
