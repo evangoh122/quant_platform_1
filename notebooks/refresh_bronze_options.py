@@ -245,12 +245,17 @@ def resolve_snapshot_ts(provider_ts, snapshot_ts):
 
 
 def _right_from_contract_type(contract_type):
-    """Normalise a Polygon ``contract_type`` (call/put) to 'CALL'/'PUT'."""
+    """Normalise a Polygon ``contract_type`` (call/put) to 'call'/'put'.
+
+    Quotes path (bronze_options_quotes) uses lowercase to match the existing
+    live-table encoding.  The day-agg path (parse_opra_symbol / _shape_day)
+    emits uppercase 'CALL'/'PUT' separately.
+    """
     ctype = (contract_type or "").lower()
     if ctype in ("call", "c"):
-        return "CALL"
+        return "call"
     if ctype in ("put", "p"):
-        return "PUT"
+        return "put"
     return None
 
 
