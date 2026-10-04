@@ -952,8 +952,8 @@ class TestMainEndToEnd:
 
         assert writer.total_rows == 0
 
-    def test_main_write_mode_appends(self, monkeypatch):
-        """Write mode with fake adapters should append rows."""
+    def test_main_write_mode_exits_on_failure(self, monkeypatch):
+        """Write mode with missing filing data should exit(1)."""
         from pipelines.sec_rag_ingest import main
 
         http = FakeHttpClient()
@@ -995,9 +995,9 @@ class TestMainEndToEnd:
             ],
         )
 
-        main()
-
-        assert writer.total_rows >= 0  # at least no crash
+        # Filing body fetch will fail (no HTML response set), so exit(1)
+        with pytest.raises(SystemExit, match="1"):
+            main()
 
 
 # -- Grep-style test: no example.com in production User-Agent --
