@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -101,7 +103,11 @@ def build(
     )
 
     if ticker:
-        chunks_df = chunks_df.filter(F.col("ticker") == ticker.upper().strip())
+        tickers = [t.strip().upper() for t in ticker.split(",") if t.strip()]
+        if len(tickers) == 1:
+            chunks_df = chunks_df.filter(F.col("ticker") == tickers[0])
+        else:
+            chunks_df = chunks_df.filter(F.col("ticker").isin(tickers))
 
     embedded_df = (
         spark.table(EMBEDDINGS_TABLE)
@@ -129,11 +135,14 @@ def build(
     # instance.  Bounded by max_workers=partitions.
     max_workers = max(1, partitions)
 
+    # Serialize MERGEs to avoid Delta concurrent-write conflicts
+    _merge_lock = threading.Lock()
+
     def _embed_batch(batch):
         """Worker: embed a batch and write to Delta.  Returns row count."""
         from api.services.embeddings import get_embeddings as _get
         worker_embeddings = _get()
-        return _embed_and_write_batch(spark, worker_embeddings, batch, now)
+        return _embed_and_write_batch(spark, worker_embeddings, batch, now, _merge_lock)
 
     # Submit batches to the pool as they come off the iterator.
     # At most max_workers futures are in-flight at any time (bounded memory).
@@ -199,10 +208,13 @@ def _embed_and_write_batch(
     embeddings,
     batch: list,
     now: datetime,
+    merge_lock: threading.Lock,
 ) -> int:
     """Embed a batch of chunks and MERGE into the embeddings table.
 
-    Returns the number of rows written.
+    Uses a unique temp view name per batch to avoid concurrent-view conflicts.
+    Serialises the MERGE via merge_lock to avoid Delta concurrent-write errors.
+    Returns the actual inserted row count from MERGE operationMetrics.
     """
     if not batch:
         return 0
@@ -235,16 +247,41 @@ def _embed_and_write_batch(
         ))
 
     src_df = spark.createDataFrame(out_rows, schema=EMBEDDINGS_SCHEMA)
-    src_df.createOrReplaceTempView("_embed_src")
+    view_name = f"_embed_src_{uuid.uuid4().hex[:12]}"
+    src_df.createOrReplaceTempView(view_name)
 
-    spark.sql(f"""
-        MERGE INTO {EMBEDDINGS_TABLE} AS tgt
-        USING _embed_src AS src
-        ON tgt.chunk_id = src.chunk_id AND tgt.embedding_model = src.embedding_model
-        WHEN NOT MATCHED THEN INSERT *
-    """)
+    with merge_lock:
+        spark.sql(f"""
+            MERGE INTO {EMBEDDINGS_TABLE} AS tgt
+            USING {view_name} AS src
+            ON tgt.chunk_id = src.chunk_id AND tgt.embedding_model = src.embedding_model
+            WHEN NOT MATCHED THEN INSERT (
+                chunk_id, accession_number, ticker, accepted_ts,
+                embedding, embedding_model, embedded_ts
+            ) VALUES (
+                src.chunk_id, src.accession_number, src.ticker, src.accepted_ts,
+                src.embedding, src.embedding_model, src.embedded_ts
+            )
+        """)
 
-    return len(out_rows)
+        # Get actual inserted count from MERGE operationMetrics
+        inserted = 0
+        try:
+            hist = spark.sql(f"DESCRIBE HISTORY {EMBEDDINGS_TABLE} LIMIT 1").collect()
+            if hist:
+                metrics = hist[0]["operationMetrics"]
+                if metrics and "numTargetRowsInserted" in metrics:
+                    inserted = int(metrics["numTargetRowsInserted"])
+        except Exception:
+            inserted = len(out_rows)
+
+    # Drop the unique temp view
+    try:
+        spark.catalog.dropTempView(view_name)
+    except Exception:
+        pass
+
+    return inserted if inserted > 0 else len(out_rows)
 
 
 def main():
@@ -253,7 +290,7 @@ def main():
     parser.add_argument("--schema", default=os.getenv("SCHEMA", "evangoh_capstone"))
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--partitions", type=int, default=DEFAULT_PARTITIONS)
-    parser.add_argument("--ticker", default="", help="Filter to specific ticker")
+    parser.add_argument("--ticker", default="", help="Filter to specific ticker(s), comma-separated")
     parser.add_argument("--limit", type=int, default=0, help="Limit chunks to process")
     args = parser.parse_args()
 
