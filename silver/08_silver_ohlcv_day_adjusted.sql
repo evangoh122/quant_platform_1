@@ -20,9 +20,11 @@
 --
 -- Source precedence: when both massive and yfinance report a split for the
 -- same (symbol, ex_date), massive takes priority.  The resolved-splits CTE
--- picks one row per (symbol, ex_date) using this precedence.  Disagreements
--- between sources are logged to data_quality_breaks with reason
--- 'split_source_mismatch'.
+-- picks one row per (symbol, ex_date) using this precedence.  Additionally,
+-- a yfinance row within ±3 calendar days of a massive row for the same
+-- symbol is suppressed (same corporate action; massive wins on both date
+-- and ratio).  Disagreements between sources are logged to
+-- data_quality_breaks with classification 'SPLIT_SOURCE_MISMATCH'.
 
 -- ============================================================
 -- 1. Create data_quality_breaks table if not exists
@@ -129,6 +131,10 @@ UNION SELECT 'QQQ';
 -- 4b. Resolved splits: one row per (symbol, ex_date)
 --     Precedence: massive > yfinance.
 --     Prevents double-applying when both sources exist.
+--     Near-match suppression: a yfinance row within ±3 calendar days
+--     of a massive row for the same symbol is excluded (same event,
+--     massive wins on both date and ratio).  The suppressed pair is
+--     still reported to data_quality_breaks via _split_source_mismatches.
 -- ============================================================
 CREATE OR REPLACE TEMP VIEW _resolved_splits AS
 SELECT
@@ -153,6 +159,16 @@ FROM (
                 fetched_ts DESC
         ) AS rn
     FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    WHERE NOT (
+        source = 'yfinance'
+        AND EXISTS (
+            SELECT 1
+            FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions m
+            WHERE m.symbol = bronze_corporate_actions.symbol
+              AND m.source = 'massive'
+              AND ABS(DATEDIFF(m.ex_date, bronze_corporate_actions.ex_date)) <= 3
+        )
+    )
 ) sub
 WHERE rn = 1;
 
