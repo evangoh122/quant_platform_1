@@ -1573,14 +1573,18 @@ class SparkDataWriter:
             WHEN NOT MATCHED THEN INSERT *
         """)
 
-        # Get actual inserted count from operationMetrics
-        inserted = len(batch_accessions)  # fallback
+        # Get actual inserted count from the TARGET table's history
+        # (not the temp view, which has no history).
+        inserted = 0
         try:
-            hist = spark.sql("DESCRIBE HISTORY _merge_src LIMIT 1").collect()
-            # operationMetrics not reliably available on temp views;
-            # count from the batch's accession keys instead
+            hist = spark.sql(f"DESCRIBE HISTORY {table} LIMIT 1").collect()
+            if hist:
+                metrics = hist[0]["operationMetrics"]
+                if metrics and "numTargetRowsInserted" in metrics:
+                    inserted = int(metrics["numTargetRowsInserted"])
         except Exception:
-            pass
+            # Fallback: count rows that were NOT matched (new accessions)
+            inserted = len(rows)
 
         return inserted
 
@@ -1617,6 +1621,57 @@ class SparkLogWriter:
         }
         df = spark.createDataFrame([row])
         df.write.mode("append").saveAsTable(f"{catalog}.{schema}.sec_ingest_log")
+
+
+class SparkIngestLogReader:
+    """Reads ingest log entries from sec_ingest_log for resume support.
+
+    Pushes down predicates on run_id and ticker to minimize scanned data.
+    """
+
+    def __init__(self, spark_factory=None) -> None:
+        self._spark_factory = spark_factory
+
+    def _get_spark(self):
+        if self._spark_factory is not None:
+            return self._spark_factory()
+        from databricks.connect import DatabricksSession
+        return DatabricksSession.builder.serverless(True).getOrCreate()
+
+    def read_succeeded_accessions(
+        self,
+        catalog: str,
+        schema: str,
+        run_id: str,
+    ) -> Set[Tuple[str, str, str]]:
+        spark = self._get_spark()
+        rows = spark.sql(f"""
+            SELECT DISTINCT run_id, ticker, accession_number
+            FROM {catalog}.{schema}.sec_ingest_log
+            WHERE run_id = '{run_id}'
+              AND status = 'succeeded'
+        """).collect()
+        return {(r["run_id"], r["ticker"], r["accession_number"]) for r in rows}
+
+    def read_max_attempt(
+        self,
+        catalog: str,
+        schema: str,
+        run_id: str,
+        ticker: str,
+        accession_number: str,
+    ) -> int:
+        spark = self._get_spark()
+        rows = spark.sql(f"""
+            SELECT max(attempt) AS max_attempt
+            FROM {catalog}.{schema}.sec_ingest_log
+            WHERE run_id = '{run_id}'
+              AND ticker = '{ticker}'
+              AND accession_number = '{accession_number}'
+        """).collect()
+        if rows and rows[0]["max_attempt"] is not None:
+            return int(rows[0]["max_attempt"])
+        return 0
 
 
 class SparkCikMappingLogWriter:
@@ -1714,6 +1769,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     accession_reader = SparkAccessionReader()
     data_writer = SparkDataWriter()
     log_writer = SparkLogWriter()
+    ingest_log_reader = SparkIngestLogReader()
     cik_mapping_log_writer = SparkCikMappingLogWriter()
 
     result = run_ingest(
@@ -1732,6 +1788,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         accession_reader=accession_reader,
         data_writer=data_writer,
         log_writer=log_writer,
+        ingest_log_reader=ingest_log_reader,
         cik_mapping_log_writer=cik_mapping_log_writer,
     )
 
