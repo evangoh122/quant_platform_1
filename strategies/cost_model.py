@@ -21,7 +21,23 @@ class CostParams:
     commission_bps: float = 0.5
     spread_bps: float = 3.0
     slippage_bps: float = 2.0
-    adv_participation_cap: float = 0.02  # max 2 % of ADV per order
+    # ADV participation cap. EXECUTION_PLAN.md: reject/scale orders above 1 %
+    # of a name's ADV (capacity guard — a book that ignores this shows returns
+    # it could never realise). Default 1 %, not the legacy 2 %.
+    adv_participation_cap: float = 0.01
+
+    # ── Short borrow — explicit modelled assumption, never silently zero ─────
+    # QUANT_STRATEGIES.md §0 item 8: no borrow/HTB data exists in the lakehouse,
+    # so the short-side economics are a stated assumption. Shorts pay a daily
+    # borrow haircut in bps by liquidity bucket (illiquid names are costlier to
+    # borrow). Buckets are keyed off trailing ADV; thresholds default to the
+    # top-300 tradable universe's dollar-volume distribution.
+    borrow_bps_daily: dict = field(default_factory=lambda: {
+        "liquid": 0.25,     # top ADV bucket
+        "medium": 0.75,
+        "illiquid": 2.00,
+    })
+    borrow_bucket_thresholds: tuple = (5.0e7, 2.0e7)  # ADV $: >=5e7 liquid, >=2e7 medium
 
 
 def cost_per_trade(
@@ -67,6 +83,61 @@ def round_trip_cost_bps(
 ) -> float:
     """Round-trip cost in basis points (entry + exit)."""
     return 2.0 * cost_per_trade(order_notional, adv, params)
+
+
+def liquidity_bucket(adv: float, params: Optional[CostParams] = None) -> str:
+    """Map average daily dollar volume to a liquidity bucket for borrow pricing.
+
+    ``liquid`` / ``medium`` / ``illiquid`` are ordered by ADV. No borrow data
+    exists, so the bucket boundaries are a configured assumption
+    (``borrow_bucket_thresholds``), not a measurement.
+    """
+    if params is None:
+        params = CostParams()
+    if adv >= params.borrow_bucket_thresholds[0]:
+        return "liquid"
+    if adv >= params.borrow_bucket_thresholds[1]:
+        return "medium"
+    return "illiquid"
+
+
+def borrow_bps_daily(adv: float, params: Optional[CostParams] = None) -> float:
+    """Daily short-borrow haircut in basis points for a name with the given ADV.
+
+    This is the cost a short position pays each day it is held. It is an
+    explicit assumption by liquidity bucket — there is no borrow/HTB feed in the
+    lakehouse, so it must never be silently zero.
+    """
+    if params is None:
+        params = CostParams()
+    return params.borrow_bps_daily[liquidity_bucket(adv, params)]
+
+
+def borrow_cost_bps(adv: float, days_held: float, params: Optional[CostParams] = None) -> float:
+    """Total borrow cost in basis points for holding a short ``days_held`` days."""
+    return borrow_bps_daily(adv, params) * days_held
+
+
+def scale_order_to_adv_cap(
+    order_notional: float,
+    adv: float,
+    params: Optional[CostParams] = None,
+) -> tuple[float, bool]:
+    """Cap an order at ``adv_participation_cap`` of the name's ADV.
+
+    Returns ``(scaled_notional, was_capped)``. When ``adv <= 0`` (no volume),
+    the order is rejected entirely (scaled to 0.0). The backtester uses this to
+    size positions within capacity instead of pretending a 4,120-name book can
+    trade unlimited size.
+    """
+    if params is None:
+        params = CostParams()
+    if adv <= 0 or order_notional <= 0:
+        return 0.0, order_notional > 0
+    cap = params.adv_participation_cap * adv
+    if order_notional > cap:
+        return cap, True
+    return order_notional, False
 
 
 def apply_costs_to_returns(

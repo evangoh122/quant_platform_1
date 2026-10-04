@@ -507,6 +507,26 @@
   node_count                         int NOT NULL
   edge_count                         int NOT NULL
 
+### gold_tradable_universe  (6 cols)
+  trade_date                         date NOT NULL
+  symbol                             string NOT NULL
+  med_adv_60d                        double
+  adv_rank                           int
+  information_available_ts           timestamp NOT NULL
+  processed_ts                       timestamp NOT NULL
+
+### gold_regime_features  (10 cols)
+  trade_date                         date NOT NULL
+  rsp_spy_ratio                      double
+  rsp_spy_ratio_sma50                double
+  rsp_spy_ratio_zscore_252           double
+  rsp_spy_ratio_slope_20d            double
+  breadth_regime                     string
+  qqq_spy_20d                        double
+  rsp_spy_20d                        double
+  information_available_ts           timestamp NOT NULL
+  processed_ts                       timestamp NOT NULL
+
 ### bronze_corporate_actions  (6 cols)
   symbol                             string NOT NULL
   ex_date                            date NOT NULL
