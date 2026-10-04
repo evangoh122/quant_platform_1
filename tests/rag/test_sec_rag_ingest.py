@@ -27,6 +27,7 @@ sys.modules.setdefault("databricks", MagicMock())
 sys.modules.setdefault("databricks.connect", MagicMock())
 
 from pipelines.sec_rag_ingest import (  # noqa: E402
+    AccessionOwnershipConflict,
     HttpResponse,
     IngestLogEntry,
     RateLimiter,
@@ -871,8 +872,8 @@ class TestAccessionConflict:
         assert result.skipped_existing_count == 2
         assert result.total_rows_appended == 0
 
-    def test_different_cik_accession_raises_value_error(self):
-        """Same accession owned by a different CIK must raise ValueError."""
+    def test_different_cik_accession_raises_conflict(self):
+        """Same accession owned by a different CIK must raise AccessionOwnershipConflict."""
         clock = FakeClock()
         http = FakeHttpClient()
         submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
@@ -884,13 +885,58 @@ class TestAccessionConflict:
             "0001045810-25-000010": ("9999999999", "OTHER"),
         }
 
-        with pytest.raises(ValueError, match="Accession ownership conflict"):
+        with pytest.raises(AccessionOwnershipConflict, match="Accession ownership conflict"):
             run_ingest(
                 catalog="test", schema="test",
                 start_date="2024-09-01",
                 tickers=["NVDA"],
                 universe_reader=FakeUniverseReader(universe),
                 accession_reader=FakeAccessionReader(existing),
+                data_writer=FakeDataWriter(),
+                http_client=http,
+                clock=clock,
+                cache_path=str(FIXTURES / "company_tickers.json"),
+            )
+
+    def test_race_path_conflict_raises(self):
+        """Race-path conflict: accession appears between anti-join and processing.
+
+        The race-path AccessionReader returns {} on first call (anti-join passes)
+        and returns a conflicting accession on second call (inside the processing loop).
+        Mutation proof: remove the except AccessionOwnershipConflict: raise →
+        the conflict is swallowed and this test FAILS.
+        """
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+
+        class RaceAccessionReader:
+            """Returns empty on first call, conflicting accession on second."""
+            def __init__(self):
+                self._call_count = 0
+
+            def read_existing_accessions(self, catalog, schema):
+                self._call_count += 1
+                if self._call_count == 1:
+                    return {}  # Anti-join: nothing exists
+                # Race: conflicting accession appeared
+                return {"0001045810-25-000010": ("9999999999", "OTHER")}
+
+        with pytest.raises(AccessionOwnershipConflict, match="race"):
+            run_ingest(
+                catalog="test", schema="test",
+                start_date="2024-09-01",
+                tickers=["NVDA"],
+                universe_reader=FakeUniverseReader(universe),
+                accession_reader=RaceAccessionReader(),
                 data_writer=FakeDataWriter(),
                 http_client=http,
                 clock=clock,

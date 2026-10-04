@@ -63,6 +63,11 @@ SECTION_PATTERNS: List[Tuple[str, str]] = [
 ]
 
 
+class AccessionOwnershipConflict(ValueError):
+    """Raised when an accession number is already owned by a different CIK."""
+    pass
+
+
 # ── Protocols (dependency injection) ──────────────────────────────────────────
 
 class HttpClient(Protocol):
@@ -1004,7 +1009,7 @@ def run_ingest(
             if dashed in existing_accessions:
                 existing_cik, existing_ticker = existing_accessions[dashed]
                 if existing_cik != cik:
-                    raise ValueError(
+                    raise AccessionOwnershipConflict(
                         f"Accession ownership conflict: {dashed} already owned by "
                         f"CIK {existing_cik} (ticker={existing_ticker}), "
                         f"but current request is CIK {cik} (ticker={ticker})"
@@ -1063,7 +1068,7 @@ def run_ingest(
                 if filing.accession_number in current_existing:
                     existing_cik, existing_ticker = current_existing[filing.accession_number]
                     if existing_cik != cik:
-                        raise ValueError(
+                        raise AccessionOwnershipConflict(
                             f"Accession ownership conflict (race): {filing.accession_number} "
                             f"already owned by CIK {existing_cik} (ticker={existing_ticker}), "
                             f"but current request is CIK {cik} (ticker={ticker})"
@@ -1125,7 +1130,7 @@ def run_ingest(
             if log_writer:
                 log_writer.append_log(catalog, schema, log_entry)
 
-        except ValueError:
+        except AccessionOwnershipConflict:
             # Accession ownership conflicts must fail loudly — do not swallow
             raise
         except Exception as e:
