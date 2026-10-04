@@ -907,7 +907,10 @@ def test_warehouse_query_calls_cancel_on_timeout(monkeypatch):
 def test_warehouse_query_semaphore_bounded(monkeypatch):
     """Stuck queries are capped by the bounded semaphore.
 
-    With _MAX_CONCURRENT_QUERIES=2, a 3rd concurrent query should block/fail.
+    With _MAX_CONCURRENT_QUERIES=2, a 3rd concurrent query should block on
+    semaphore acquire.  The test verifies that at most 2 queries execute
+    concurrently (the rest block until slots free up).
+
     MUTATION: remove semaphore → 20 concurrent hanging calls all start (FAIL).
     """
     import db.delta_adapter as adapter
@@ -917,8 +920,17 @@ def test_warehouse_query_semaphore_bounded(monkeypatch):
     monkeypatch.setattr(adapter, "_MAX_CONCURRENT_QUERIES", 2)
     monkeypatch.setattr(adapter, "_query_semaphore", _threading.Semaphore(2))
 
+    concurrent_count = _threading.local()
+    concurrent_count.value = 0
+    max_concurrent = [0]
+    count_lock = _threading.Lock()
+
     class HangingCursor:
         def execute(self, query, params=None):
+            with count_lock:
+                concurrent_count.value = getattr(concurrent_count, 'value', 0) + 1
+                if concurrent_count.value > max_concurrent[0]:
+                    max_concurrent[0] = concurrent_count.value
             _time.sleep(9999)
         def fetchall(self):
             return []
@@ -954,11 +966,12 @@ def test_warehouse_query_semaphore_bounded(monkeypatch):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=10)
+        t.join(timeout=30)
 
-    # Only _MAX_CONCURRENT_QUERIES should have started executing (others block
-    # on semaphore), and all should eventually resolve to timeout.
-    assert len(results) >= 2, f"Expected at least 2 timed-out queries, got {results}"
+    # All should eventually resolve to timeout
+    assert len(results) == 5, f"Expected 5 resolved queries, got {results}"
+    # At most 2 should have executed concurrently (the semaphore limit)
+    assert max_concurrent[0] <= 2, f"Max concurrent was {max_concurrent[0]}, expected <= 2"
 
 
 def test_warehouse_query_semaphore_timeout(monkeypatch):

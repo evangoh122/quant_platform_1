@@ -154,7 +154,9 @@ def _warehouse_query(
 
     On timeout, ``cursor.cancel()`` is called to abort the in-flight query on
     the warehouse, then the cursor is closed.  A bounded semaphore caps
-    concurrent in-flight queries so stuck calls cannot pile up.
+    concurrent in-flight queries so stuck calls cannot pile up.  The semaphore
+    slot is held until the worker actually finishes (released in the worker's
+    finally block), so timed-out workers do not leak slots.
     """
     import threading as _threading
     from api.diagnostics import stage
@@ -164,9 +166,9 @@ def _warehouse_query(
     if limit and "LIMIT" not in _upper and _upper.startswith("SELECT"):
         query = f"{query.rstrip(';')} LIMIT {int(limit)}"
 
-    conn = _get_warehouse_connection()
-
-    # Acquire semaphore slot — blocks if _MAX_CONCURRENT_QUERIES are in flight
+    # Acquire semaphore slot — blocks if _MAX_CONCURRENT_QUERIES are in flight.
+    # Acquire BEFORE connection creation so the slot bounds total concurrency
+    # including the connect + liveness check.
     if not _query_semaphore.acquire(timeout=timeout):
         raise TimeoutError(
             f"Warehouse query semaphore wait timed out after {timeout}s: "
@@ -181,6 +183,9 @@ def _warehouse_query(
 
             def _execute():
                 try:
+                    # Connection creation + liveness inside the worker so it
+                    # is bounded by the thread join timeout.
+                    conn = _get_warehouse_connection()
                     cursor = conn.cursor()
                     cursor_ref.append(cursor)
                     cursor.execute(query, params)
@@ -195,6 +200,9 @@ def _warehouse_query(
                             cursor_ref[0].close()
                         except Exception:  # noqa: BLE001
                             pass
+                    # Release semaphore only when the worker is done, so a
+                    # timed-out worker does not leak a slot.
+                    _query_semaphore.release()
 
             t = _threading.Thread(target=_execute, daemon=True)
             t.start()
@@ -220,8 +228,14 @@ def _warehouse_query(
                 raise error[0]
 
             return result
-    finally:
-        _query_semaphore.release()
+    except BaseException:
+        # If the worker already released the semaphore (normal completion or
+        # error), this is a no-op (Semaphore.release() on an already-full
+        # semaphore is harmless for bounded semaphores).  If the worker is
+        # still alive (should not happen after join), release here as safety.
+        if t.is_alive():
+            _query_semaphore.release()
+        raise
 
 
 def _extract_table_name(query: str) -> str:
