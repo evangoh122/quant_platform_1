@@ -864,18 +864,29 @@ def discover_filings(
             failed_history_urls.add(history_url)
             continue
 
+        # History files (e.g. CIK0001045810-submissions-001.json) store arrays
+        # at the TOP level; only the main CIK file nests them under
+        # filings.recent.  Parse both shapes.
         hist_recent = hist_data.get("filings", {}).get("recent", {})
-        if not hist_recent:
-            continue
-
-        _collect_filings(
-            hist_recent.get("form", []),
-            hist_recent.get("filingDate", []),
-            hist_recent.get("accessionNumber", []),
-            hist_recent.get("primaryDocument", []),
-            hist_recent.get("acceptanceDateTime", []),
-            start_date, forms, filings,
-        )
+        if hist_recent:
+            _collect_filings(
+                hist_recent.get("form", []),
+                hist_recent.get("filingDate", []),
+                hist_recent.get("accessionNumber", []),
+                hist_recent.get("primaryDocument", []),
+                hist_recent.get("acceptanceDateTime", []),
+                start_date, forms, filings,
+            )
+        else:
+            # Top-level arrays shape (overflow/history files)
+            _collect_filings(
+                hist_data.get("form", []),
+                hist_data.get("filingDate", []),
+                hist_data.get("accessionNumber", []),
+                hist_data.get("primaryDocument", []),
+                hist_data.get("acceptanceDateTime", []),
+                start_date, forms, filings,
+            )
 
     return filings, failed_history_urls
 

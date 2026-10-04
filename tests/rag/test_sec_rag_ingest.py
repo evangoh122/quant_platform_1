@@ -749,6 +749,48 @@ class TestFilingDiscovery:
         # History: 0 filings after cutoff (2024-02-21 10-K and 2024-08-28 10-Q are before 2024-09-01)
         assert len(filings) == 2
 
+    def test_history_top_level_shape_discovered(self):
+        """History files with top-level arrays (not nested under filings.recent) must be parsed."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        # Main file: no files entry (no recent filings of interest)
+        main = {
+            "cik": "0001045810",
+            "entityName": "Test Corp",
+            "filings": {
+                "recent": {
+                    "form": ["8-K"],
+                    "filingDate": ["2025-01-10"],
+                    "accessionNumber": ["0001045810-25-000099"],
+                    "primaryDocument": ["test-8k.htm"],
+                    "acceptanceDateTime": ["2025-01-10T14:00:00.000Z"],
+                },
+                "files": [
+                    {"name": "CIK0001045810-submissions-001.json", "filingFrom": "2020-01-01", "filingTo": "2025-06-01"},
+                ],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", main)
+        # History file: TOP-LEVEL arrays (real EDGAR shape for overflow files)
+        history = {
+            "cik": "0001045810",
+            "entityName": "Test Corp",
+            "form": ["10-K"],
+            "filingDate": ["2025-01-15"],
+            "accessionNumber": ["0001045810-25-000100"],
+            "primaryDocument": ["test-10k.htm"],
+            "acceptanceDateTime": ["2025-01-15T18:00:00.000Z"],
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810-submissions-001.json", history)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        # Only the history file 10-K qualifies (8-K excluded by form filter)
+        assert len(filings) == 1
+        assert filings[0].form_type == "10-K"
+        assert filings[0].accession_number == "0001045810-25-000100"
+
     def test_filters_forms(self):
         clock = FakeClock()
         http = FakeHttpClient()
