@@ -33,6 +33,11 @@ class Config:
         self._db_path = None
         self._review_db_path = None
 
+    # ── Unity Catalog schema ────────────────────────────────────────────────
+    @property
+    def SCHEMA(self) -> str:
+        return os.getenv("SCHEMA", "evangoh_capstone")
+
     @property
     def DB_PATH(self) -> str:
         if self._db_path is None:
@@ -166,25 +171,24 @@ class Config:
     # Embedding Settings
     @property
     def EMBEDDING_PROVIDER(self) -> str:
-        return os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        return os.getenv("EMBEDDING_PROVIDER", "sentence-transformers").lower()
 
     @property
     def HF_EMBEDDING_MODEL(self) -> str:
-        return os.getenv("HF_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
+        return os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
     @property
     def ST_EMBEDDING_MODEL(self) -> str:
         # Local sentence-transformers model (runs in-process, no inference API).
-        # Qwen3-Embedding-0.6B is 1024-dim — strong retrieval quality, ~1.2GB,
-        # small enough to run in-process on the Space (the 8B variant OOMs).
-        return os.getenv("ST_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+        # BAAI/bge-small-en-v1.5 is 384-dim — matches the shipped index.
+        return os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
     @property
     def ACTIVE_EMBEDDING_MODEL(self) -> str:
         """The embedding model actually in use, per the configured provider.
         Use this for display/telemetry instead of reading provider-specific
         env vars directly."""
-        provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        provider = self.EMBEDDING_PROVIDER
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             return self.ST_EMBEDDING_MODEL
         return self.HF_EMBEDDING_MODEL
@@ -199,12 +203,12 @@ class Config:
         explicit = os.getenv("EMBEDDING_DIM")
         if explicit:
             return int(explicit)
-        provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower()
+        provider = self.EMBEDDING_PROVIDER
         if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
-            return 1024  # Qwen/Qwen3-Embedding-0.6B
+            return 384  # BAAI/bge-small-en-v1.5
         if provider == "huggingface":
-            return 4096  # Qwen/Qwen3-Embedding-8B
-        return 4096
+            return 384  # BAAI/bge-small-en-v1.5
+        return 384
 
     def get_provider_config(self):
         providers = {
