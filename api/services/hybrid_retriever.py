@@ -610,6 +610,7 @@ class HybridRetriever:
         ticker: str = "",
         as_of: Optional[datetime] = None,
         top_k: Optional[int] = None,
+        resolve_ticker: bool = True,
     ) -> List[Document]:
         """Run hybrid retrieval with RRF fusion.
 
@@ -618,6 +619,9 @@ class HybridRetriever:
             ticker: Optional ticker filter.
             as_of: Point-in-time cutoff (default: now).
             top_k: Override for number of results.
+            resolve_ticker: If True (default), auto-resolve ticker from query
+                when ticker is empty.  Set to False to honour an explicit
+                empty ticker (eval harness ticker-filter-off ablation).
 
         Returns:
             Fused and optionally reranked list of Documents.
@@ -626,7 +630,7 @@ class HybridRetriever:
         """
         as_of = _normalize_as_of(as_of)
         effective_top_k = top_k or self.top_k
-        effective_ticker = resolve_ticker_from_query(query, ticker)
+        effective_ticker = resolve_ticker_from_query(query, ticker) if resolve_ticker else ticker
 
         bm25_docs = bm25_search(
             query,
@@ -686,6 +690,7 @@ class HybridRetriever:
         ticker: str = "",
         as_of: Optional[datetime] = None,
         top_k: Optional[int] = None,
+        resolve_ticker: bool = True,
     ) -> List[Document]:
         """Run hybrid retrieval (RRF) then rerank — the full production pipeline.
 
@@ -699,11 +704,13 @@ class HybridRetriever:
             ticker: Optional ticker filter.
             as_of: Point-in-time cutoff (default: now).
             top_k: Override for number of results.
+            resolve_ticker: If True (default), auto-resolve ticker from query.
+                Set to False to honour an explicit empty ticker.
 
         Returns:
             Reranked list of Documents.
         """
-        docs = self.retrieve(query, ticker=ticker, as_of=as_of, top_k=top_k)
+        docs = self.retrieve(query, ticker=ticker, as_of=as_of, top_k=top_k, resolve_ticker=resolve_ticker)
         if not docs or not query:
             return docs
         if len(docs) <= 1:
@@ -781,6 +788,7 @@ class HybridRetriever:
                 ticker=effective_ticker,
                 as_of=as_of,
                 top_k=effective_top_k,
+                resolve_ticker=False,
             )
             for doc in results:
                 doc.metadata["retrieval_mode"] = "hybrid_rrf"
@@ -792,6 +800,7 @@ class HybridRetriever:
             ticker=effective_ticker,
             as_of=as_of,
             top_k=effective_top_k,
+            resolve_ticker=False,
         )
         for doc in results:
             doc.metadata["retrieval_mode"] = "hybrid_rerank"

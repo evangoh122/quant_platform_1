@@ -467,3 +467,40 @@ class TestSmokeFiveItemsOffline:
         answerable_results = [r for r in results if r.item.item_type == "answerable"]
         for r in answerable_results:
             assert r.error is None, f"Error for {r.item.id}: {r.error}"
+
+
+class TestTickerFilterOffAllModes:
+    """test_ticker_filter_off_all_modes_no_query_derive"""
+
+    def test_ticker_filter_off_all_modes(self, offline_adapter, monkeypatch):
+        """When harness requests ticker filter OFF (ticker=''), all four modes
+        must NOT re-derive a ticker from the query.
+
+        This is the mutation proof: restoring query-derived ticker in hybrid
+        modes causes this test to FAIL (non-NVDA tickers would be filtered out).
+        """
+        from evals.rag_eval.corpus import install_offline_corpus
+        from api.services.hybrid_retriever import HybridRetriever
+
+        item = _answerable_item(ticker="NVDA")
+        as_of = item.as_of_datetime()
+
+        for mode in ["bm25", "dense", "hybrid_rrf", "hybrid_rerank"]:
+            with install_offline_corpus(offline_adapter):
+                retriever = HybridRetriever(top_k=10, rrf_k=60)
+                docs = retriever.retrieve_mode(
+                    query=item.question,
+                    mode=mode,
+                    ticker="",  # ticker filter OFF
+                    as_of=as_of,
+                    top_k=10,
+                )
+
+            # With ticker filter OFF, results should include non-NVDA tickers
+            # (the fixture has NVDA, AAPL, MSFT, GOOGL chunks)
+            tickers = {d.metadata.get("ticker", "") for d in docs}
+            if docs:  # dense may return empty if embeddings don't match
+                assert len(tickers) > 1 or (mode == "dense"), (
+                    f"Mode {mode}: ticker filter OFF but only got {tickers}. "
+                    f"Query-derived ticker may have leaked through."
+                )
