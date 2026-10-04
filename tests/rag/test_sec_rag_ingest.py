@@ -180,13 +180,13 @@ class FakeDataWriter:
         self._seen_accessions: Set[str] = set()
 
     def append_bronze_rows(self, catalog: str, schema: str, rows: List[Dict[str, Any]]) -> int:
+        # Mirrors the production MERGE (ON target.accession_number = source.accession_number
+        # WHEN NOT MATCHED THEN INSERT): every row of an accession absent from the target
+        # BEFORE this call is inserted; rows of an accession already present insert nothing.
         self.appended.append(rows)
-        new_count = 0
-        for r in rows:
-            acc = r.get("accession_number", "")
-            if acc not in self._seen_accessions:
-                self._seen_accessions.add(acc)
-                new_count += 1
+        existing = set(self._seen_accessions)
+        new_count = sum(1 for r in rows if r.get("accession_number", "") not in existing)
+        self._seen_accessions.update(r.get("accession_number", "") for r in rows)
         self.total_rows += new_count
         return new_count
 
@@ -1503,7 +1503,7 @@ class TestAtomicBronzeWrites:
             for i in range(50)
         ]
         first = writer.append_bronze_rows("cat", "sch", rows)
-        assert first == 1, "First insert: 1 new accession → 1 inserted"
+        assert first == 50, "First insert: new accession → all 50 chunk rows inserted"
         # Re-run the same accession
         second = writer.append_bronze_rows("cat", "sch", rows)
         assert second == 0, "Re-run: same accession already seen → 0 inserted"
@@ -1626,7 +1626,7 @@ class TestDiscoveryCompleteness:
                     "accessionNumber": ["001"], "primaryDocument": ["t.htm"],
                     "acceptanceDateTime": ["2025-01-15T10:00:00Z"],
                 },
-                "files": [{"name": "hist.json", "filingFrom": "2024-06-01", "filingTo": "2024-12-31"}],
+                "files": [{"name": "hist.json", "filingFrom": "2024-10-01", "filingTo": "2024-12-31"}],
             },
         }
         http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
