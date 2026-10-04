@@ -109,9 +109,11 @@ def _block_network(monkeypatch):
             f"Mock the call or use monkeypatch to allow."
         )
 
+    _has_af_unix = hasattr(socket, "AF_UNIX")
+
     def _extract_host_port(address, sock_family):
         """Extract host and port from address tuple by socket family."""
-        if sock_family == socket.AF_UNIX:
+        if _has_af_unix and sock_family == socket.AF_UNIX:
             # AF_UNIX: address is a str or bytes path
             return None, None
         if sock_family == socket.AF_INET6:
@@ -122,7 +124,7 @@ def _block_network(monkeypatch):
 
     def _fail_socket_connect(self, address, *args, **kwargs):
         # AF_UNIX sockets are always allowed (local IPC, no network)
-        if self.family == socket.AF_UNIX:
+        if _has_af_unix and self.family == socket.AF_UNIX:
             return _real_socket_connect(self, address, *args, **kwargs)
         host, port = _extract_host_port(address, self.family)
         if _is_loopback(host):
@@ -134,7 +136,7 @@ def _block_network(monkeypatch):
 
     def _fail_socket_connect_ex(self, address, *args, **kwargs):
         # AF_UNIX sockets are always allowed (local IPC, no network)
-        if self.family == socket.AF_UNIX:
+        if _has_af_unix and self.family == socket.AF_UNIX:
             return _real_socket_connect_ex(self, address, *args, **kwargs)
         host, port = _extract_host_port(address, self.family)
         if _is_loopback(host):
@@ -213,38 +215,3 @@ def fake_pyspark(monkeypatch):
 
     pyspark_sql.SparkSession = MagicMock(name="SparkSession")
     pyspark_sql.DataFrame = MagicMock(name="DataFrame")
-
-
-@pytest.fixture(scope="module")
-def cached_offline_adapter():
-    """Module-scoped fixture for caching the offline adapter.
-
-    This avoids reloading the fixture data for every test in the module,
-    keeping parity tests fast.
-    """
-    from pathlib import Path
-    from evals.rag_eval.corpus import JsonlCorpusAdapter
-
-    fixture_dir = Path(__file__).parent / "fixtures" / "rag_eval"
-    return JsonlCorpusAdapter.from_files(
-        fixture_dir / "corpus_smoke.jsonl",
-        fixture_dir / "embeddings_smoke.npz",
-    )
-
-
-@pytest.fixture(scope="module")
-def fake_reranker():
-    """Module-scoped fixture providing a deterministic fake reranker.
-
-    Returns a function that sorts by chunk_id reversed and assigns
-    deterministic scores. Use with monkeypatch to avoid model downloads.
-    """
-    def _fake_rerank(query, docs, top_k=5):
-        # Assign deterministic scores based on chunk_id
-        for d in docs:
-            chunk_id = d.metadata.get("chunk_id", "")
-            d.metadata["rerank_score"] = hash(chunk_id) % 100 / 100.0
-        scored = sorted(docs, key=lambda d: d.metadata.get("rerank_score", 0), reverse=True)
-        return scored[:top_k]
-
-    return _fake_rerank
