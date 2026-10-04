@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import io
+import os
 import sys
 import zipfile
 from datetime import datetime, date, timezone, timedelta
@@ -66,8 +67,17 @@ DATASETS = [
 ]
 
 BASE_URL = "https://www.cftc.gov/files/dea/history"
-HTTP_HEADERS = {"User-Agent": "capstone-research (evangoh) contact@example.com"}
 HTTP_TIMEOUT = 120
+
+def _build_cot_headers() -> dict:
+    """Build CFTC User-Agent headers. Fail closed on missing email."""
+    email = os.getenv("CFTC_USER_EMAIL", "")
+    if not email or "example" in email.lower():
+        raise ValueError(
+            "CFTC_USER_EMAIL must be set to a valid contact email. "
+            "Set it from environment or Databricks secret."
+        )
+    return {"User-Agent": f"capstone-research (evangoh) {email}"}
 
 # Release-timestamp policy: COT is as-of-Tuesday, published Friday ~15:30 ET.
 # RELEASE_SAFETY_DAYS=3 → assume availability the following Monday 15:30 ET.
@@ -101,7 +111,7 @@ def download_year(url_stem: str, year: int) -> Tuple[Optional[pd.DataFrame], str
     source verbatim and no NaN-float contamination sneaks in.
     """
     url = cftc_url(url_stem, year)
-    resp = requests.get(url, headers=HTTP_HEADERS, timeout=HTTP_TIMEOUT)
+    resp = requests.get(url, headers=_build_cot_headers(), timeout=HTTP_TIMEOUT)
 
     if resp.status_code == 404:
         return None, url

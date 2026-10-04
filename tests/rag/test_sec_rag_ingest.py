@@ -1071,40 +1071,33 @@ class TestMainEndToEnd:
         assert all(e.ticker == "NVDA" for e in succeeded)
 
 
-# -- Grep-style test: no example.com in production User-Agent --
+# -- Grep-style test: no example.com or your_email in production code --
 
 class TestNoPlaceholderUserAgent:
-    """Verify no example.com User-Agent remains in production code."""
+    """Repo-wide scan: no example.com or your_email placeholders in production code."""
 
-    PRODUCTION_FILES = [
-        "pipelines/sec_rag_ingest.py",
-        "pipelines/build_sec_embeddings.py",
-        "api/services/xbrl_client.py",
-        "api/services/edgar_adapter.py",
-        "api/services/_edgar_identity.py",
-        "config/settings.py",
-        "etl/extract_edgar.py",
-    ]
-
-    def test_no_example_com_in_production_files(self):
-        """No production file should contain example.com as a User-Agent default."""
+    def test_no_example_com_or_your_email_in_production(self):
+        """No production .py or .yml file should contain example.com or your_email."""
         import re
         repo_root = Path(__file__).parent.parent.parent
-        pattern = re.compile(r"example\.com", re.IGNORECASE)
+        pattern = re.compile(r"(example\.com|your_email)", re.IGNORECASE)
         violations = []
-        for rel_path in self.PRODUCTION_FILES:
-            full_path = repo_root / rel_path
-            if not full_path.exists():
-                continue
-            content = full_path.read_text(encoding="utf-8")
-            # Skip comments and test-only strings
-            for i, line in enumerate(content.splitlines(), 1):
-                if pattern.search(line):
-                    # Allow in comments that explain the check
-                    stripped = line.lstrip()
-                    if stripped.startswith("#") or stripped.startswith("//"):
-                        continue
-                    violations.append(f"{rel_path}:{i}: {line.strip()}")
+        for ext in ("*.py", "*.yml"):
+            for path in repo_root.rglob(ext):
+                rel = path.relative_to(repo_root)
+                parts = rel.parts
+                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive") for p in parts):
+                    continue
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for i, line in enumerate(content.splitlines(), 1):
+                    if pattern.search(line):
+                        stripped = line.lstrip()
+                        if stripped.startswith("#") or stripped.startswith("//"):
+                            continue
+                        violations.append(f"{rel}:{i}: {line.strip()}")
         assert not violations, (
-            f"Found example.com in production code:\n" + "\n".join(violations)
+            f"Found placeholder User-Agent in production code:\n" + "\n".join(violations)
         )

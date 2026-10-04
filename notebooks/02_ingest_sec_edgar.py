@@ -69,6 +69,7 @@ UNIVERSE_STK = [
 FORM_TYPES = ["10-K", "10-Q", "8-K"]
 
 # ── EDGAR REST client ───────────────────────────────────────────────
+# Delegate UA construction to pipelines/sec_rag_ingest.py; fail closed.
 EDGAR_EMAIL = os.getenv("EDGAR_EMAIL", "")
 if not EDGAR_EMAIL or "example" in EDGAR_EMAIL.lower():
     raise ValueError(
