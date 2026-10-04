@@ -62,7 +62,8 @@ tables:
     keys: [run_id, ticker, accession_number, attempt]
     pit_column: logged_ts
     freshness: "Written as each SEC ingestion attempt completes; dry runs are logged only when explicitly requested"
-    statuses: [planned, in_progress, succeeded, failed, skipped_existing, missing_cik]
+    statuses: [planned, in_progress, succeeded, failed, skipped_existing]
+    status_note: "Unmapped tickers are not SEC filing attempts; missing or ambiguous mappings are recorded in sec_cik_mapping_log."
   sec_cik_mapping_log:
     grain: "One ticker-to-CIK mapping result per (run_id, ticker)"
     keys: [run_id, ticker]
@@ -192,10 +193,11 @@ tables:
     pit_column: information_available_ts
     freshness: "Event-driven at accepted_ts"
   gold_sec_coverage:
-    grain: "One current SEC coverage summary row per canonical ticker in the all-history tradable universe"
+    grain: "One current SEC coverage summary row per canonical ticker present in the all-history tradable universe, bronze filings, or silver chunks"
     keys: [ticker]
     freshness: "Refreshed after SEC bronze and silver sections; counts may be zero for uncovered universe members"
     coverage_universe: "gold_tradable_universe: 300 symbols on the latest trade_date and 557 distinct symbols ever"
+    membership_rule: "Rows are not limited to the tradable universe because the defining query FULL OUTER JOINs universe, filing, and chunk aggregates; consumers requiring universe membership must filter for it."
     acceptance_rule: "first_filed and last_filed are min/max accepted_ts, not filing_date"
   gold_sec_chunk_embeddings:
     grain: "One vector per (chunk_id, embedding_model)"

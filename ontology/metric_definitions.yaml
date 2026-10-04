@@ -21,25 +21,28 @@ metrics:
     price_adjustment: adjusted_primary_unadjusted_fallback
   realized_volatility:
     status: proposed
-    formula: "STDDEV_SAMP(return_1d) over the current and previous 19 daily rows * SQRT(252), excluding NULL data-quality-break returns"
+    formula: "On the adjusted path, first drop rows where return_1d is NULL, then compute STDDEV_SAMP(return_1d) over the current and previous 19 remaining daily rows * SQRT(252)"
     grain: "Daily per (symbol, event_date)"
     source_table: serve_daily_equity_metrics_v1
     adjusted_source_table: silver_ohlcv_day_adjusted
     price_adjustment: adjusted
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
   drawdown:
     status: proposed
-    formula: "(adj_close - running MAX(adj_close)) / running MAX(adj_close), by symbol through the current event_date"
+    formula: "On the adjusted path, first drop rows where return_1d is NULL, then compute (adj_close - running MAX(adj_close)) / running MAX(adj_close), by symbol through the current event_date"
     grain: "Daily per (symbol, event_date)"
     source_table: serve_daily_equity_metrics_v1
     adjusted_source_table: silver_ohlcv_day_adjusted
     price_adjustment: adjusted
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
   momentum:
     status: proposed
-    formula: "adj_close / LAG(adj_close, 20) - 1, by symbol ordered by event_date"
+    formula: "On the adjusted path, first drop rows where return_1d is NULL, then compute adj_close / LAG(adj_close, 20) - 1 over the remaining rows, by symbol ordered by event_date"
     grain: "Daily per (symbol, event_date)"
     source_table: serve_daily_equity_metrics_v1
     adjusted_source_table: silver_ohlcv_day_adjusted
     price_adjustment: adjusted
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
   relative_performance:
     status: proposed
     formula: "entity return_1d - benchmark return_1d on the same event_date (the proposed view defaults benchmark to SPY)"

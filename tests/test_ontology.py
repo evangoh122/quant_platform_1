@@ -14,6 +14,9 @@ FED_REFRESH = ROOT / "notebooks" / "refresh_bronze_fed.py"
 EQUITIES_REFRESH = ROOT / "notebooks" / "refresh_bronze_equities.py"
 OPTIONS_REFRESH = ROOT / "notebooks" / "refresh_bronze_options.py"
 SEC_KG_ENUM_SNAPSHOT = ROOT / "tests" / "fixtures" / "sec_kg_enum_snapshot.yaml"
+SEC_INGEST_LOG_STATUS_SNAPSHOT = (
+    ROOT / "tests" / "fixtures" / "sec_ingest_log_status_snapshot.yaml"
+)
 NL1_METRICS = {
     "price",
     "return",
@@ -239,6 +242,17 @@ def test_knowledge_graph_vocabulary_matches_canonical_sec_kg_enums():
     canonical = _canonical_kg_vocabulary()
     assert set(graph["node_types"]) == canonical["node_types"]
     assert set(graph["edge_types"]) == canonical["edge_types"]
+
+
+def test_sec_ingest_log_statuses_match_emitted_status_snapshot():
+    """Keep ontology statuses equal to those assigned by the ingestion writer."""
+    expected = set(
+        yaml.safe_load(SEC_INGEST_LOG_STATUS_SNAPSHOT.read_text(encoding="utf-8"))["statuses"]
+    )
+    actual = set(
+        _documents()["table_semantics.yaml"]["tables"]["sec_ingest_log"]["statuses"]
+    )
+    assert actual == expected
 
 
 def test_every_referenced_table_has_semantics():
