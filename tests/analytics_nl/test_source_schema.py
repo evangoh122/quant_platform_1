@@ -318,12 +318,18 @@ class TestRegistryColumnsMatchViewOutput:
 
         Skip entries with non-trivial aggregation (e.g., mean, sum) because
         their output_fields like agg_value are computed results, not direct
-        view columns.
+        view columns. Also skip entries with computed coverage fields
+        (sample_count, coverage_ratio, status) which are derived at query time.
         """
         _AGGREGATION_TOKENS = {"none", "latest"}
+        _COMPUTED_FIELDS = {"sample_count", "coverage_ratio", "status", "agg_value"}
         for pair_key, entry in registry.entries.items():
             if entry.aggregation not in _AGGREGATION_TOKENS:
                 continue  # Computed aggregation — output_fields are derived at query time
+            # Skip entries with computed coverage/aggregate fields
+            field_names = {f.name for f in entry.output_fields}
+            if field_names & _COMPUTED_FIELDS:
+                continue  # Computed fields — not direct view columns
             view_name = entry.serving_view
             view_cols = self._extract_view_select_columns(ddl_content, view_name)
             assert view_cols, (
@@ -331,20 +337,12 @@ class TestRegistryColumnsMatchViewOutput:
                 f"This test cannot verify output_fields — extraction must not be empty."
             )
 
-            # Also include derived columns from source_schemas
-            derived = source_schemas.get("derived_columns", {}).get(view_name, {})
-            derived_cols = set(derived.get("derived", []))
-            # Clean derived column names (remove comments)
-            derived_clean = {c.split("#")[0].strip() for c in derived_cols}
-
-            all_view_cols = view_cols | derived_clean
-
             for field in entry.output_fields:
                 if field.name == "symbol":
                     continue  # Always available from grouping
-                assert field.name in all_view_cols, (
+                assert field.name in view_cols, (
                     f"Entry {pair_key}: output_field {field.name!r} not found in "
-                    f"view {view_name!r} columns. Available: {sorted(all_view_cols)}"
+                    f"view {view_name!r} columns. Available: {sorted(view_cols)}"
                 )
 
 
