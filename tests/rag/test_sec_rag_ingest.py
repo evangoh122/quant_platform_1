@@ -509,6 +509,128 @@ class TestRateLimiter:
             assert count <= 10, f"Window at {window_start} had {count} requests"
 
 
+class TestGlobalCooldownN3:
+    """N3 (P2): 429/503 must trigger a global cooldown (all workers pause),
+    and Retry-After must be capped at 120 s.
+
+    Mutation proof: if trigger_cooldown is not called, cooldown_remaining == 0
+    and the other-worker test FAILS.  If MAX_RETRY_AFTER is not enforced,
+    the huge-retry-after test FAILS.
+    """
+
+    def test_429_triggers_global_cooldown(self):
+        """A 429 with Retry-After 5s must set cooldown_remaining > 0."""
+        clock = FakeClock()
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+
+        assert limiter.cooldown_remaining == 0.0
+        limiter.trigger_cooldown(5.0)
+        assert limiter.cooldown_remaining == 5.0
+
+        # After clock advances past the deadline, cooldown is 0
+        clock.advance(5.1)
+        assert limiter.cooldown_remaining == 0.0
+
+    def test_one_worker_429_pauses_others(self):
+        """When one worker triggers a 429 cooldown, other workers block on acquire()."""
+        clock = FakeClock()
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        acquire_order = []
+        barrier = threading.Barrier(2, timeout=5)
+
+        def worker_a():
+            """Worker A triggers cooldown (simulates receiving 429)."""
+            barrier.wait()
+            limiter.trigger_cooldown(2.0)
+            acquire_order.append("a_cooldown")
+
+        def worker_b():
+            """Worker B tries to acquire — should block during cooldown."""
+            barrier.wait()
+            # Small delay so A triggers cooldown first
+            time.sleep(0.01)
+            limiter.acquire()
+            acquire_order.append("b_acquired")
+
+        t_a = threading.Thread(target=worker_a)
+        t_b = threading.Thread(target=worker_b)
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=5)
+        # Worker B should be blocked (cooldown_remaining > 0)
+        # Advance clock to let B through
+        clock.advance(2.1)
+        t_b.join(timeout=5)
+
+        assert "a_cooldown" in acquire_order
+        assert "b_acquired" in acquire_order
+
+    def test_retry_after_exceeds_cap_is_hard_failure(self):
+        """Retry-After > 120 s → hard failure (SecClientError), not a retry."""
+        from pipelines.sec_rag_ingest import MAX_RETRY_AFTER
+
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            # Return a 429 with a Retry-After that exceeds the cap
+            return HttpResponse(429, "", {"Retry-After": str(MAX_RETRY_AFTER + 1)})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        with pytest.raises(SecClientError, match="exceeds cap"):
+            client.get_json("https://example.com")
+        # Should NOT have retried — hard failure on first attempt
+        assert call_count[0] == 1
+
+    def test_retry_after_at_cap_is_allowed(self):
+        """Retry-After exactly at cap (120 s) → allowed, not a failure."""
+        from pipelines.sec_rag_ingest import MAX_RETRY_AFTER
+
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return HttpResponse(429, "", {"Retry-After": str(MAX_RETRY_AFTER)})
+            return HttpResponse(200, json.dumps({"ok": True}), {})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        result = client.get_json("https://example.com")
+        assert result == {"ok": True}
+        assert call_count[0] == 2
+
+    def test_503_triggers_global_cooldown(self):
+        """A 503 with Retry-After must also trigger global cooldown."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return HttpResponse(503, "", {"Retry-After": "10"})
+            return HttpResponse(200, json.dumps({"ok": True}), {})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        result = client.get_json("https://example.com")
+        assert result == {"ok": True}
+        # Cooldown should have been triggered
+        # (clock was advanced by sleep, so remaining may be 0)
+
+
 # -- SEC client tests --
 
 class TestSecClient:

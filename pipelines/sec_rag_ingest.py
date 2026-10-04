@@ -454,11 +454,17 @@ class CikMappingResult:
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 
+MAX_RETRY_AFTER = 120  # Cap Retry-After at 120 s; above → hard failure
+
+
 class RateLimiter:
-    """Thread-safe sliding-window rate limiter.
+    """Thread-safe sliding-window rate limiter with global cooldown.
 
     Guarantees no more than max_requests request starts in any rolling
     one-second window. Uses injectable clock and sleep for testing.
+
+    When a 429/503 is received, ``trigger_cooldown`` pauses ALL workers
+    until the Retry-After deadline (capped at MAX_RETRY_AFTER seconds).
     """
 
     def __init__(
@@ -478,12 +484,23 @@ class RateLimiter:
         self._clock = clock or _SystemClock()
         self._lock = threading.Lock()
         self._timestamps: List[float] = []
+        self._cooldown_until: float = 0.0  # global cooldown deadline
 
     def acquire(self) -> None:
-        """Block until a request slot is available."""
+        """Block until a request slot is available and no global cooldown active."""
         while True:
             with self._lock:
+                # Honour global cooldown first
                 now = self._clock.monotonic()
+                if now < self._cooldown_until:
+                    wait_time = self._cooldown_until - now
+                    self._lock.release()
+                    try:
+                        self._clock.sleep(wait_time)
+                    finally:
+                        self._lock.acquire()
+                    continue
+
                 # Remove timestamps outside the 1-second window
                 cutoff = now - 1.0
                 self._timestamps = [t for t in self._timestamps if t > cutoff]
@@ -496,6 +513,24 @@ class RateLimiter:
                 wait_time = self._timestamps[0] - cutoff + 0.01
 
             self._clock.sleep(wait_time)
+
+    def trigger_cooldown(self, seconds: float) -> None:
+        """Set a global cooldown deadline — all workers pause until it expires.
+
+        Only extends the deadline (never shortens it) so that overlapping 429s
+        don't race.
+        """
+        deadline = self._clock.monotonic() + seconds
+        with self._lock:
+            if deadline > self._cooldown_until:
+                self._cooldown_until = deadline
+
+    @property
+    def cooldown_remaining(self) -> float:
+        """Seconds remaining in the global cooldown (0 if idle)."""
+        with self._lock:
+            remaining = self._cooldown_until - self._clock.monotonic()
+            return max(remaining, 0.0)
 
     @property
     def max_rps(self) -> int:
@@ -573,9 +608,20 @@ class SecClient:
                 if resp.status_code in (429, 503):
                     retry_after = self._parse_retry_after(resp.headers)
                     if retry_after is not None:
+                        # Cap Retry-After; above cap → hard failure
+                        if retry_after > MAX_RETRY_AFTER:
+                            raise SecClientError(
+                                f"Retry-After {retry_after:.0f}s exceeds cap "
+                                f"({MAX_RETRY_AFTER}s) for {url}",
+                                status_code=resp.status_code,
+                                url=url,
+                            )
+                        # Global cool-down: pause ALL workers until deadline
+                        self._limiter.trigger_cooldown(retry_after)
                         self._clock.sleep(retry_after)
                     else:
                         backoff = min(2 ** attempt, 60)
+                        self._limiter.trigger_cooldown(backoff)
                         self._clock.sleep(backoff)
                     self._retry_count += 1
                     continue
