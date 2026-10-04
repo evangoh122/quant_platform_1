@@ -1,5 +1,8 @@
 # BUILD fix/options-right-case round 2 (builder: MiMo)
 
+> CONTINUATION: your previous run timed out. Partial edits are committed as the latest "wip(options): round 2 partial" commit. Run `git show HEAD`, finish every item, run the mutation proof, write the verdict and commit. Do not start over.
+
+
 IMPLEMENT NOW. Do not ask "Shall I proceed?". Stay on branch fix/options-right-case. Descriptive commits.
 NEVER delete or weaken existing tests. Checker verdict: .agents/deepseek/VERDICT-options-right-case.md (CHANGES_REQUESTED).
 
