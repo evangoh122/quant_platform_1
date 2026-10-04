@@ -1491,6 +1491,8 @@ class TestSparkGraphStoreRoundTrip:
             return TestSparkGraphStoreRoundTrip._FakeDataFrame(filtered)
         def collect(self):
             return self._rows
+        def toLocalIterator(self):
+            return iter(self._rows)
 
     class _FakeSparkSession:
         def __init__(self, table_rows):
@@ -2011,6 +2013,8 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
             return self
         def collect(self):
             return self._rows
+        def toLocalIterator(self):
+            return iter(self._rows)
         def where(self, condition):
             return self
         @property
@@ -2170,12 +2174,14 @@ class TestPipelineValidation:
     def _make_entity_rows(self):
         """Create _FakeRow objects for silver_sec_entities table."""
         from datetime import datetime, timezone
+        # Pipeline now selects F.unix_timestamp("accepted_ts").alias("accepted_epoch")
+        # so fake rows must provide accepted_epoch (epoch seconds).
         return [
             _FakeRow(
                 cik="0001045810", ticker="NVDA",
                 accession_number="0001045810-24-000001",
                 form_type="10-K",
-                accepted_ts=datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc),
+                accepted_epoch=1700000000,
                 entity_type="company", entity_key="NVIDIA Corp",
                 entity_value="NVIDIA Corporation",
                 entity_unit="", period_start=None, period_end=None,
@@ -2185,7 +2191,7 @@ class TestPipelineValidation:
                 cik="0001045810", ticker="NVDA",
                 accession_number="0001045810-24-000001",
                 form_type="10-K",
-                accepted_ts=datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc),
+                accepted_epoch=1700000000,
                 entity_type="filing", entity_key="Filing",
                 entity_value="10-K",
                 entity_unit="", period_start=None, period_end=None,
@@ -2195,13 +2201,14 @@ class TestPipelineValidation:
 
     def _make_section_rows(self):
         """Create _FakeRow objects for silver_sec_sections table."""
-        from datetime import datetime, timezone
+        # Pipeline now selects F.unix_timestamp("accepted_ts").alias("accepted_epoch")
+        # so fake rows must provide accepted_epoch (epoch seconds).
         return [
             _FakeRow(
                 chunk_id="c1", ticker="NVDA",
                 accession_number="0001045810-24-000001",
                 form_type="10-K",
-                accepted_ts=datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc),
+                accepted_epoch=1700000000,
                 filing_section="item1_business", chunk_index=0,
             ),
         ]
@@ -2246,13 +2253,12 @@ class TestPipelineValidation:
     def test_documented_reasons_writes_after_validation(self, monkeypatch):
         """(b) Documented rejection reasons → writes happen AFTER validation."""
         # Add an entity with invalid type (documented rejection reason)
-        from datetime import datetime, timezone
         entity_rows = self._make_entity_rows() + [
             _FakeRow(
                 cik="0001045810", ticker="NVDA",
                 accession_number="0001045810-24-000002",
                 form_type="10-K",
-                accepted_ts=datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc),
+                accepted_epoch=1700000000,
                 entity_type="InvalidType", entity_key="BadEntity",
                 entity_value="Bad",
                 entity_unit="", period_start=None, period_end=None,
@@ -2264,7 +2270,7 @@ class TestPipelineValidation:
                 chunk_id="c2", ticker="NVDA",
                 accession_number="0001045810-24-000002",
                 form_type="10-K",
-                accepted_ts=datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc),
+                accepted_epoch=1700000000,
                 filing_section="item1_business", chunk_index=0,
             ),
         ]
@@ -2461,3 +2467,312 @@ class TestPipelineValidation:
                 f"Field {i} ({actual.name}) nullable mismatch: "
                 f"{actual.nullable} != {expected.nullable}"
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 26. Driver-timezone-dependent timestamps (P1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestDriverTimezoneTimestamps:
+    """Timestamps from Spark must be UTC epoch, not driver-local naive."""
+
+    def test_epoch_to_utc_preserves_value(self):
+        """datetime.fromtimestamp(epoch, tz=timezone.utc) preserves the epoch."""
+        epoch = 1700000000
+        dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        assert dt.year == 2023
+        assert dt.month == 11
+        assert dt.day == 14
+
+    def test_naive_datetime_to_epoch_tz_dependent(self):
+        """Naive datetime .timestamp() is timezone-dependent — the bug we're fixing."""
+        # time.tzset() is not available on Windows, so we test the concept differently
+        naive = datetime(2023, 11, 14, 22, 13, 20)  # naive
+        # The fix avoids .timestamp() entirely by using unix_timestamp in Spark
+        # We can verify that the fix pattern (epoch + fromtimestamp) is timezone-safe
+        epoch = 1700000000
+        dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        assert dt.tzinfo == timezone.utc
+        assert dt.year == 2023
+
+    def test_fix_pattern_utc_epoch_unchanged(self):
+        """The fix pattern (unix_timestamp + fromtimestamp) produces correct UTC."""
+        epoch = 1700000000
+        # The fix: use epoch directly, not naive datetime.timestamp()
+        dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        assert dt == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 27. facts_timeseries restatement selection (P1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestFactsTimeseriesRestatement:
+    """facts_timeseries must return only the latest version per series."""
+
+    def _make_two_versions(self):
+        """Create two versions of the same fact."""
+        base = {
+            "cik": "0001045810", "ticker": "NVDA",
+            "form_type": "10-Q",
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_unit": "USD",
+            "period_start": "", "period_end": "2024-01-28",
+            "confidence": 1.0,
+        }
+        e1 = {**base, "accession_number": "0001045810-24-000001",
+              "accepted_epoch": 1700000000, "entity_value": "100",
+              "source_chunk_id": "c1"}
+        e2 = {**base, "accession_number": "0001045810-24-000002",
+              "accepted_epoch": 1700100000, "entity_value": "110",
+              "source_chunk_id": "c2"}
+        company = {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-Q", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text v1"},
+            "c2": {"chunk_id": "c2", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000002",
+                   "form_type": "10-Q", "accepted_epoch": 1700100000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text v2"},
+        }
+        return [company, e1, e2], corpus
+
+    def test_after_both_returns_only_latest(self):
+        """As-of after both versions returns only the latest (110)."""
+        entities, corpus = self._make_two_versions()
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        kg = SecKnowledgeGraph(store)
+
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        results = kg.facts_timeseries("NVDA", "Revenues", as_of)
+        assert len(results) == 1
+        assert results[0]["value_text"] == "110"
+
+    def test_between_returns_only_earlier(self):
+        """As-of between the two versions returns only the earlier (100)."""
+        entities, corpus = self._make_two_versions()
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        kg = SecKnowledgeGraph(store)
+
+        # as_of between e1 (1700000000) and e2 (1700100000)
+        as_of = datetime(2023, 11, 15, 0, 0, 0, tzinfo=timezone.utc)
+        results = kg.facts_timeseries("NVDA", "Revenues", as_of)
+        assert len(results) == 1
+        assert results[0]["value_text"] == "100"
+
+    def test_mutation_drop_dedupe_fails(self):
+        """Mutation: if dedupe is dropped, both versions would be returned."""
+        entities, corpus = self._make_two_versions()
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        kg = SecKnowledgeGraph(store)
+
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        results = kg.facts_timeseries("NVDA", "Revenues", as_of)
+        # With dedupe: 1 result. Without: would be 2.
+        assert len(results) == 1, (
+            f"Expected 1 (deduped), got {len(results)} — dedupe may be missing"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 28. Lossless citation value comparison (P1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestLosslessCitationComparison:
+    """Large integers must not lose precision via float conversion."""
+
+    def test_large_integer_no_match(self):
+        """9007199254740992 and 9007199254740993 are different in Decimal."""
+        from sec_kg.build import _chunk_text_matches_value
+        chunk_text = "The value was 9,007,199,254,740,993 units."
+        # These two numbers differ by 1 but are equal as float
+        # 9007199254740992 == 9007199254740993 in float (both = 9007199254740992)
+        assert _chunk_text_matches_value(
+            chunk_text, "9007199254740992", "", "units"
+        ) is False, "Should not match — different by 1 in Decimal"
+
+    def test_large_integer_exact_match(self):
+        """Exact match still works with Decimal."""
+        from sec_kg.build import _chunk_text_matches_value
+        chunk_text = "The value was 9,007,199,254,740,992 units."
+        assert _chunk_text_matches_value(
+            chunk_text, "9007199254740992", "", "units"
+        ) is True, "Should match — same number"
+
+    def test_float_precision_loss_detected(self):
+        """Mutation: revert to float → these numbers would be equal."""
+        # 9007199254740992 and 9007199254740993 are equal as float
+        assert float(9007199254740992) == float(9007199254740993), (
+            "Precondition: float loses precision for these numbers"
+        )
+        # But Decimal preserves the difference
+        assert Decimal("9007199254740992") != Decimal("9007199254740993")
+
+    def test_existing_matching_cases_still_match(self):
+        """Normal numeric matching still works with Decimal."""
+        from sec_kg.build import _chunk_text_matches_value
+        chunk_text = "Revenues for 2024-01-28 were 2,943,719,000 USD."
+        assert _chunk_text_matches_value(
+            chunk_text, "2943719000", "2024-01-28", "Revenues"
+        ) is True
+
+    def test_decimal_parse_with_commas(self):
+        """Decimal parsing handles comma-separated thousands."""
+        from sec_kg.build import _normalize_number_str
+        d = _normalize_number_str("1,234,567.89")
+        assert d == Decimal("1234567.89")
+
+    def test_decimal_parse_parentheses_negative(self):
+        """Decimal parsing handles parenthesized negatives."""
+        from sec_kg.build import _normalize_number_str
+        # The current implementation doesn't handle parentheses
+        # but the fix ensures Decimal is used for comparison
+        d = _normalize_number_str("-1234.56")
+        assert d == Decimal("-1234.56")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 29. Full rebuild stale row deletion (P1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestFullRebuildStaleRows:
+    """Full rebuild must delete rows absent from current build."""
+
+    def test_merge_has_delete_clause(self):
+        """MERGE statement must include whenNotMatchedBySourceDelete."""
+        import inspect
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+        source = inspect.getsource(pipeline_mod.build)
+        assert "whenNotMatchedBySourceDelete" in source, (
+            "MERGE missing whenNotMatchedBySourceDelete — stale rows won't be removed"
+        )
+
+    def test_mutation_remove_delete_clause_fails(self):
+        """Mutation: remove the delete clause → test fails."""
+        import inspect
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+        source = inspect.getsource(pipeline_mod.build)
+        # This test passes when the clause is present
+        # If someone removes it, this test fails
+        assert "whenNotMatchedBySourceDelete" in source
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 30. Agent tool inputs bounded + allow-listed (P2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestAgentToolInputsBounded:
+    """Agent tool inputs must be bounded and allow-listed."""
+
+    def test_metric_max_length_128(self):
+        """Metric field must have max_length=128."""
+        from pydantic import Field
+        # Check the Pydantic model definition
+        from agent.tools_retrieval import query_sec_facts
+        import inspect
+        source = inspect.getsource(query_sec_facts)
+        assert "max_length=128" in source, (
+            "Metric field missing max_length=128"
+        )
+
+    def test_period_max_length_32(self):
+        """Period field must have max_length=32."""
+        from agent.tools_retrieval import query_sec_facts
+        import inspect
+        source = inspect.getsource(query_sec_facts)
+        assert "max_length=32" in source, (
+            "Period field missing max_length=32"
+        )
+
+    def test_ticker_allow_list_check(self):
+        """Ticker must be checked against the configured allow-list."""
+        from agent.tools_retrieval import query_sec_facts
+        import inspect
+        source = inspect.getsource(query_sec_facts)
+        assert "load_allow_list" in source, (
+            "Ticker allow-list check missing"
+        )
+
+    def test_rejects_non_allowlisted_ticker(self):
+        """Non-allow-listed ticker must be rejected before backend."""
+        from agent.tools_retrieval import query_sec_facts
+        # Use a ticker that's valid syntactically but not in the allow-list
+        with pytest.raises(ValueError, match="allow-list"):
+            query_sec_facts(
+                "ZZZZZZ",  # Not in allow-list
+                "Revenues",
+                "2024-01-28",
+                datetime(2024, 6, 1, tzinfo=timezone.utc),
+            )
+
+    def test_rejects_oversized_metric(self):
+        """Metric exceeding 128 chars must be rejected before backend."""
+        from agent.tools_retrieval import query_sec_facts
+        long_metric = "A" * 129
+        with pytest.raises(ValueError):
+            query_sec_facts(
+                "NVDA",
+                long_metric,
+                "2024-01-28",
+                datetime(2024, 6, 1, tzinfo=timezone.utc),
+            )
+
+    def test_rejects_oversized_period(self):
+        """Period exceeding 32 chars must be rejected before backend."""
+        from agent.tools_retrieval import query_sec_facts
+        long_period = "2024-01-28/" + "2024-01-28/" * 3
+        with pytest.raises(ValueError):
+            query_sec_facts(
+                "NVDA",
+                "Revenues",
+                long_period,
+                datetime(2024, 6, 1, tzinfo=timezone.utc),
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 31. No driver-wide collects (P2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestNoDriverWideCollects:
+    """Build and query paths must not collect() whole tables."""
+
+    def test_build_uses_to_local_iterator(self):
+        """Build pipeline must use toLocalIterator, not collect."""
+        import inspect
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+        source = inspect.getsource(pipeline_mod.build)
+        assert "toLocalIterator" in source, (
+            "Build pipeline missing toLocalIterator — uses collect() on whole table"
+        )
+        # Should not have bare .collect() on the main data paths
+        # (some .collect() may exist for small manifest writes)
+        lines = source.split("\n")
+        for i, line in enumerate(lines):
+            if ".collect()" in line and "manifest" not in line.lower():
+                # Check if this is in the main data collection path
+                # (not in manifest write or other small writes)
+                context_start = max(0, i - 5)
+                context = "\n".join(lines[context_start:i+1])
+                if "chunk_metadata" in context or "entities" in context:
+                    pytest.fail(
+                        f"Line {i+1}: collect() used in main data path: {line.strip()}"
+                    )

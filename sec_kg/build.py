@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import re
@@ -124,24 +124,29 @@ def _edgar_filing_url(cik: str, accession: str) -> str:
 _NUMBER_RE = re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?")
 
 
-def _extract_numbers_from_text(text: str) -> List[float]:
+def _extract_numbers_from_text(text: str) -> List[Decimal]:
     """Extract all numeric values from text, handling comma-separated thousands."""
     results = []
     for m in _NUMBER_RE.finditer(text):
         s = m.group().replace(",", "")
         try:
-            results.append(float(s))
-        except ValueError:
+            d = Decimal(s)
+            if d.is_finite():
+                results.append(d)
+        except (InvalidOperation, ValueError):
             continue
     return results
 
 
-def _normalize_number_str(s: str) -> Optional[float]:
-    """Normalize a number string (possibly with commas) to float."""
+def _normalize_number_str(s: str) -> Optional[Decimal]:
+    """Normalize a number string (possibly with commas) to Decimal."""
     s = s.strip().replace(",", "")
     try:
-        return float(s)
-    except ValueError:
+        d = Decimal(s)
+        if not d.is_finite():
+            return None
+        return d
+    except (InvalidOperation, ValueError):
         return None
 
 
@@ -155,6 +160,7 @@ def _chunk_text_matches_value(
 
     Handles normalised forms like 274300000 ↔ "274.3 million" ↔ "274,300".
     Returns True only when confident the chunk contains the fact.
+    Uses decimal.Decimal for lossless comparison of large integers.
     """
     if not chunk_text or not entity_value:
         return False
@@ -169,7 +175,16 @@ def _chunk_text_matches_value(
     for n in text_numbers:
         if n == 0:
             continue
-        if abs(n - target) / max(abs(target), abs(n)) < 0.0001:
+        # Use both relative and absolute tolerance to prevent false matches
+        # on large integers that differ by 1 (e.g., 9007199254740992 vs 9007199254740993)
+        max_abs = max(abs(target), abs(n))
+        diff = abs(n - target)
+        # Relative tolerance: 0.01% for matching "274.3 million" ↔ "274300000"
+        relative_ok = diff / max_abs < Decimal("0.0001")
+        # Absolute tolerance: must be within 0.5 for integer-scale numbers
+        # This prevents false matches on large integers that differ by 1
+        absolute_ok = diff <= Decimal("0.5")
+        if relative_ok and absolute_ok:
             value_matched = True
             break
 

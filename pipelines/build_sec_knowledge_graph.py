@@ -45,32 +45,42 @@ def build(
     entities_df = spark.table(f"{catalog}.{schema}.silver_sec_entities")
     sections_df = spark.table(f"{catalog}.{schema}.silver_sec_sections")
 
-    # Collect chunk metadata for corpus
+    # Collect chunk metadata for corpus — use unix_timestamp to avoid
+    # driver-timezone-dependent naive datetime conversion.
+    # Use toLocalIterator to avoid driver-wide collect of whole table.
     chunk_metadata = {}
     for row in sections_df.select(
         "chunk_id", "ticker", "accession_number", "form_type",
-        "accepted_ts", "filing_section", "chunk_index"
-    ).collect():
+        F.unix_timestamp("accepted_ts").alias("accepted_epoch"),
+        "filing_section", "chunk_index"
+    ).toLocalIterator():
         chunk_metadata[row.chunk_id] = {
             "chunk_id": row.chunk_id,
             "ticker": row.ticker,
             "accession_number": row.accession_number,
             "form_type": row.form_type,
-            "accepted_epoch": int(row.accepted_ts.timestamp()) if row.accepted_ts else None,
+            "accepted_epoch": int(row.accepted_epoch) if row.accepted_epoch is not None else None,
             "filing_section": row.filing_section,
             "chunk_index": row.chunk_index,
             "chunk_text": "",  # Not needed for build
         }
 
-    # Convert entities to list of dicts
+    # Convert entities to list of dicts — use unix_timestamp to avoid
+    # driver-timezone-dependent naive datetime conversion.
+    # Use toLocalIterator to avoid driver-wide collect of whole table.
     entities = []
-    for row in entities_df.collect():
+    for row in entities_df.select(
+        "cik", "ticker", "accession_number", "form_type",
+        F.unix_timestamp("accepted_ts").alias("accepted_epoch"),
+        "entity_type", "entity_key", "entity_value", "entity_unit",
+        "period_start", "period_end", "confidence", "source_chunk_id",
+    ).toLocalIterator():
         entities.append({
             "cik": row.cik,
             "ticker": row.ticker,
             "accession_number": row.accession_number,
             "form_type": row.form_type,
-            "accepted_epoch": int(row.accepted_ts.timestamp()) if row.accepted_ts else None,
+            "accepted_epoch": int(row.accepted_epoch) if row.accepted_epoch is not None else None,
             "entity_type": row.entity_type,
             "entity_key": row.entity_key,
             "entity_value": row.entity_value,
@@ -196,22 +206,22 @@ def build(
         PARTITIONED BY (edge_type)
     """)
 
-    # Idempotent MERGE by ID
+    # Idempotent MERGE by ID with stale-row cleanup
     from delta.tables import DeltaTable
 
-    # Merge nodes
+    # Merge nodes — delete rows absent from current build
     existing_nodes = DeltaTable.forName(spark, nodes_table)
     existing_nodes.alias("target").merge(
         nodes_df.alias("source"),
         "target.node_id = source.node_id"
-    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().whenNotMatchedBySourceDelete().execute()
 
-    # Merge edges
+    # Merge edges — delete rows absent from current build
     existing_edges = DeltaTable.forName(spark, edges_table)
     existing_edges.alias("target").merge(
         edges_df.alias("source"),
         "target.edge_id = source.edge_id"
-    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().whenNotMatchedBySourceDelete().execute()
 
     # Write run manifest
     runs_table = f"{catalog}.{schema}.gold_sec_kg_build_runs"

@@ -181,7 +181,8 @@ class SparkGraphStore:
             ).alias("provenance"),
         )
         nodes = []
-        for row in df.collect():
+        # Use toLocalIterator to avoid driver-wide collect of whole table.
+        for row in df.toLocalIterator():
             provenance = tuple(
                 Provenance(
                     accession_number=p["accession_number"],
@@ -214,7 +215,8 @@ class SparkGraphStore:
             "confidence", "properties_json", "build_version",
         )
         edges = []
-        for row in df.collect():
+        # Use toLocalIterator to avoid driver-wide collect of whole table.
+        for row in df.toLocalIterator():
             edges.append(KgEdge(
                 edge_id=row.edge_id,
                 src_id=row.src_id,
@@ -456,12 +458,18 @@ class SecKnowledgeGraph:
         metric: str,
         as_of: datetime,
     ) -> List[Dict[str, Any]]:
-        """Get all facts for a ticker/metric up to as_of, ordered by time."""
+        """Get all facts for a ticker/metric up to as_of, ordered by time.
+
+        After PIT filtering, keeps only the latest eligible version per
+        series (cik, concept, period_start, period_end, unit) ordered by
+        (accepted_ts, accession) — i.e. restatement selection.
+        """
         ticker = normalize_ticker(ticker)
         metric = normalize_unicode(metric)
         as_of = ensure_utc(as_of)
 
-        results = []
+        # Collect all eligible facts grouped by series key
+        series: Dict[tuple, Dict[str, Any]] = {}
         for node in self._store.iter_nodes():
             if node.node_type != "XbrlFact":
                 continue
@@ -478,21 +486,39 @@ class SecKnowledgeGraph:
 
             best_prov = max(eligible_provs, key=lambda p: p.accepted_ts)
 
-            results.append({
+            # Series key: (cik, concept, period_start, period_end, unit)
+            cik = props.get("cik", "")
+            concept = props.get("entity_key", props.get("metric", "")).lower()
+            period_start = props.get("period_start", "")
+            period_end = props.get("period_end", "")
+            unit = props.get("unit", "")
+            series_key = (cik, concept, period_start, period_end, unit)
+
+            candidate = {
                 "fact_id": node.node_id,
                 "value_text": props.get("value_text", ""),
                 "decimal_value": props.get("decimal_value"),
-                "unit": props.get("unit", ""),
-                "period_start": props.get("period_start", ""),
-                "period_end": props.get("period_end", ""),
+                "unit": unit,
+                "period_start": period_start,
+                "period_end": period_end,
                 "period_type": props.get("period_type", ""),
                 "chunk_id": best_prov.source_chunk_id,
                 "accession_number": best_prov.accession_number,
                 "accepted_ts": best_prov.accepted_ts.isoformat(),
                 "citation_level": props.get("citation_level", "chunk"),
                 "source_url": props.get("source_url", ""),
-            })
+            }
 
+            # Keep only the latest version per series
+            if series_key not in series:
+                series[series_key] = candidate
+            else:
+                existing = series[series_key]
+                if (candidate["accepted_ts"], candidate["accession_number"]) > \
+                   (existing["accepted_ts"], existing["accession_number"]):
+                    series[series_key] = candidate
+
+        results = list(series.values())
         results.sort(key=lambda r: (r["accepted_ts"], r["accession_number"],
                                      r["fact_id"]))
         return results

@@ -221,8 +221,8 @@ def query_sec_facts(
         model_config = {"extra": "forbid"}
 
         ticker: str
-        metric: str = Field(min_length=1)
-        period: str = Field(min_length=1)
+        metric: str = Field(min_length=1, max_length=128)
+        period: str = Field(min_length=1, max_length=32)
         as_of: datetime
 
         @model_validator(mode="before")
@@ -251,7 +251,14 @@ def query_sec_facts(
         @field_validator("ticker")
         @classmethod
         def _valid_ticker(cls, v: str) -> str:
-            return normalize_symbol(v)
+            from agent.guardrails import load_allow_list
+            normalized = normalize_symbol(v)
+            allow_list = load_allow_list()
+            if normalized not in allow_list:
+                raise ValueError(
+                    f"Ticker {normalized!r} is not in the configured allow-list"
+                )
+            return normalized
 
         @field_validator("metric", "period")
         @classmethod
