@@ -1,61 +1,116 @@
 metrics:
-  return_Nm:
-    formula: "(close[t] - close[t-N]) / close[t-N]"
-    variants: [return_1m, return_5m, return_15m, return_30m]
-    source: silver_ohlcv
-
-  rolling_realized_volatility:
-    formula: "STDDEV(return_1m) OVER (ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW)"
-    variants: [rvol_5m, rvol_15m, rvol_30m]
-
-  atr_14:
-    formula: "EMA_14( MAX(high-low, ABS(high-prev_close), ABS(low-prev_close)) )"
-
-  rsi_14:
-    formula: "100 - (100 / (1 + AVG(up_moves_14) / AVG(down_moves_14)))"
-    range: "[0, 100]; >70 overbought, <30 oversold"
-
-  vwap_deviation:
-    formula: "(close - vwap) / vwap"
-
-  relative_volume:
-    formula: "volume / AVG(volume) OVER (ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)"
-
+  price:
+    status: proposed
+    formula: "close_price = silver_ohlcv_day_adjusted.adj_close in the primary adjusted path; the fallback aliases bronze_ohlcv_day.close and is explicitly unadjusted"
+    grain: "Daily per (symbol, event_date)"
+    source_table: serve_daily_prices_v1
+    price_adjustment: adjusted_primary_unadjusted_fallback
+    note: "Historical adjusted price levels are display values; the unadjusted fallback requires split-safety rejection. The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
+  return:
+    status: proposed
+    formula: "return_1d from silver_ohlcv_day_adjusted; NULL marks a masked data-quality break"
+    grain: "Daily per (symbol, event_date)"
+    source_table: serve_daily_equity_metrics_v1
+    adjusted_source_table: silver_ohlcv_day_adjusted
+    price_adjustment: adjusted
+  volume:
+    status: proposed
+    formula: "volume = silver_ohlcv_day_adjusted.adj_volume in the primary adjusted path; the fallback passes through unadjusted bronze_ohlcv_day.volume"
+    grain: "Daily per (symbol, event_date)"
+    source_table: serve_daily_prices_v1
+    price_adjustment: adjusted_primary_unadjusted_fallback
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
+  realized_volatility:
+    status: proposed
+    formula: "On the adjusted path, first drop rows where return_1d is NULL, then compute STDDEV_SAMP(return_1d) over the current and previous 19 remaining daily rows * SQRT(252)"
+    grain: "Daily per (symbol, event_date)"
+    source_table: serve_daily_equity_metrics_v1
+    adjusted_source_table: silver_ohlcv_day_adjusted
+    price_adjustment: adjusted
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
+  drawdown:
+    status: proposed
+    formula: "On the adjusted path, first drop rows where return_1d is NULL, then compute (adj_close - running MAX(adj_close)) / running MAX(adj_close), by symbol through the current event_date"
+    grain: "Daily per (symbol, event_date)"
+    source_table: serve_daily_equity_metrics_v1
+    adjusted_source_table: silver_ohlcv_day_adjusted
+    price_adjustment: adjusted
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
+  momentum:
+    status: proposed
+    formula: "On the adjusted path, first drop rows where return_1d is NULL, then compute adj_close / LAG(adj_close, 20) - 1 over the remaining rows, by symbol ordered by event_date"
+    grain: "Daily per (symbol, event_date)"
+    source_table: serve_daily_equity_metrics_v1
+    adjusted_source_table: silver_ohlcv_day_adjusted
+    price_adjustment: adjusted
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
+  relative_performance:
+    status: proposed
+    formula: "entity return_1d - benchmark return_1d on the same event_date (the proposed view defaults benchmark to SPY)"
+    grain: "Daily per (symbol, event_date, benchmark)"
+    source_table: serve_relative_performance_v1
+    adjusted_source_table: silver_ohlcv_day_adjusted
+    price_adjustment: adjusted
+    note: "This matches the proposed DDL's daily return spread; prose describing a cumulative-return difference is not implemented by that DDL."
+  implied_volatility:
+    status: proposed
+    formula: "iv_atm passed through from gold_options_features; upstream selects provider implied_volatility from the quote with maximum open_interest per (symbol, date), ordered by open_interest DESC NULLS LAST then strike ASC"
+    grain: "Daily per (symbol, feature_ts)"
+    source_table: serve_options_metrics_v1
+    note: "The name says ATM, but the upstream implementation selects maximum open interest; no underlying_price participates in the calculation. Data availability is limited to a single quote-snapshot date (12 populated iv_atm values among 19,390 current gold rows), so this metric is effectively unavailable historically."
   put_call_ratio:
-    formula: "SUM(put_volume) / NULLIF(SUM(call_volume), 0)"
-    note: ">1 bearish; <0.7 bullish"
+    status: proposed
+    formula: "SUM(put volume) / NULLIF(SUM(call volume), 0) by underlying and session, passed through from gold_options_features"
+    grain: "Daily per (symbol, feature_ts)"
+    source_table: serve_options_metrics_v1
+    note: "bronze_options_day.right contains mixed-case values: uppercase PUT/CALL through 2026-09-04 and lowercase put/call from 2026-09-08 through 2026-10-01. The current gold SQL compares uppercase values only, so normalize with UPPER(right) before aggregation; current gold_options_features therefore ends at 2026-09-04."
 
-  iv_atm:
-    formula: "IV of nearest-to-ATM option"
-
-  iv_skew:
-    formula: "iv_25d_put - iv_25d_call"
-    note: "Positive = downside protection demand"
-
-  iv_term_slope:
-    formula: "IV(near_expiry_ATM) - IV(far_expiry_ATM)"
-
-  volume_anomaly_zscore:
-    formula: "(volume_today - AVG(volume_20d)) / STDDEV(volume_20d)"
-    note: ">2.0 is unusual"
-
-  sentiment_score:
-    formula: "(positive_words - negative_words) / total_words"
-    dictionary: "custom (partly derived from Loughran-McDonald)"
-    range: "[-1, +1]"
-
-  risk_factor_change:
-    formula: "1 - cosine_similarity(current_item1a, prior_item1a)"
-    note: ">0.3 is material"
-
-  lev_money_pctile_52w:
-    formula: "PERCENT_RANK() OVER 52-week window"
-    note: ">0.9 extreme long; <0.1 extreme short"
-
-  crowding_score:
-    formula: "weighted_avg(lev_money_pctile, asset_mgr_pctile, dealer_pctile)"
-
-  end_to_end_latency:
-    formula: "signal_visible_ts - provider_event_ts"
-    slo: "<60 seconds (<=50 sec typical)"
-    budget: {provider_to_ingestion: "0-10s", spark_micro_batch: "<=15s", feature_update: "<=10s", model_inference: "<=5s", persist_refresh: "<=10s"}
+  return_N:
+    formula: "close[t] / NULLIF(close[t-N], 0) - 1"
+    variants: [return_1m, return_5m, return_15m, return_30m]
+    source_table: gold_ohlcv_features
+    price_adjustment: unadjusted
+    unadjusted_reason: "These existing intraday features use raw silver_ohlcv close; exclude corporate-action boundaries from downstream use."
+  rolling_realized_volatility:
+    formula: "STDDEV_SAMP(return_1m) over the trailing N bars"
+    variants: [rvol_5m, rvol_15m, rvol_30m]
+    source_table: gold_ohlcv_features
+    price_adjustment: unadjusted
+    unadjusted_reason: "The input return_1m is computed from raw intraday closes; exclude corporate-action boundaries from downstream use."
+  backtest_equity_drawdown:
+    formula: "equity[t] / MAX(equity[0:t]) - 1"
+    computed_in: "ml/evaluate.py:build_backtest"
+    note: "Maximum drawdown is the minimum (non-positive) drawdown over the evaluation period; this is distinct from the NL1 adjusted-price metric named drawdown."
+  momentum_N:
+    formula: "close[t] / NULLIF(close[t-N], 0) - 1"
+    variants: [momentum_5m, momentum_15m]
+    source_table: gold_ohlcv_features
+    price_adjustment: unadjusted
+    unadjusted_reason: "These existing intraday features use raw silver_ohlcv close; exclude corporate-action boundaries from downstream use."
+  med_adv_60d:
+    formula: "MEDIAN(close * volume) over the 60 completed trading days strictly before the as_of_date"
+    source_table: gold_tradable_universe
+  rsp_spy_ratio:
+    formula: "close_RSP[t] / NULLIF(close_SPY[t], 0)"
+    source_table: gold_regime_features
+  breadth_regime:
+    formula: "BROAD if rsp_spy_ratio > SMA_50(rsp_spy_ratio) and rsp_spy_ratio / rsp_spy_ratio[t-20] - 1 > 0; NARROW if both comparisons reverse; otherwise MIXED"
+    source_table: gold_regime_features
+  rsp_spy_ratio_zscore_252:
+    formula: "(rsp_spy_ratio - trailing 252-session mean) / trailing 252-session sample standard deviation"
+    source_table: gold_regime_features
+  cot_crowding_score:
+    formula: "(lev_money_zscore_52w + asset_mgr_zscore_52w) / 2"
+    source_table: gold_cot_features
+    note: "Requires a complete trailing 52-report window; do not backfill before release_ts."
+  residual:
+    formula: "epsilon[i,t] = return[i,t] - alpha[i] - SUM_k(beta[i,k] * factor_return[k,t])"
+    computed_in: "strategies/residual_reversion.py:compute_residuals"
+  s_score:
+    formula: "s_cum / sigma, where s_cum is the rolling sum of residuals over L=5 observations and sigma is the trailing sample standard deviation of residuals over the 60-day estimation window"
+    computed_in: "strategies/residual_reversion.py:compute_residuals"
+    note: "s_cum requires all L observations; sigma uses min_obs observations, default ceil(0.8 * 60)=48. Betas are fitted strictly before the signal timestamp."
+  deflated_sharpe_ratio:
+    formula: "Phi((SR - Phi^-1(1 - 1/max(n_trials,2))) * SQRT(T-1) / SQRT(1 - skew*SR + ((kurtosis-1)/4)*SR^2))"
+    computed_in: "ml/evaluate.py:deflated_sharpe_ratio"
+    note: "SR is annualized; n_trials is the actual number of tested configurations."
