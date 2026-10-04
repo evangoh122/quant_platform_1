@@ -1,5 +1,8 @@
 # BUILD nl1 round 15 (builder: MiMo) — one test
 
+> CONTINUATION: your previous run stopped mid-task; partial edits are in the latest "wip(nl1): round 15 partial" commit. Run `git show HEAD`, finish, run both mutation proofs, write the verdict, commit. Do not start over.
+
+
 IMPLEMENT NOW. Do not ask "Shall I proceed?". Stay on branch slice/nl-contracts. Descriptive commit. NEVER delete or weaken existing tests.
 DeepSeek verdict: .agents/deepseek/VERDICT-nl1-round14.md — mutations a, c, d, e now fail; mutation (b) survives.
 
