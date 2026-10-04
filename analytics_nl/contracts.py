@@ -163,7 +163,8 @@ _PROMPT_INJECTION_RE = re.compile(
     r"ignore\s+previous|reveal\s+(?:the\s+)?system|you\s+are\s+now|forget\s+(?:your|all)|disregard\s+(?:all|previous)|system\s*:|override\s+(?:safety|all)|bypass\s+(?:safety|all|filters)|ignore\s+(?:all|safety|constraints)|forget\s+(?:all|safety|constraints)",
     re.IGNORECASE,
 )
-_ENTITY_MENTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .&'\-/_]{0,24}$")
+_ENTITY_MENTION_PATTERN: str = r"^[A-Za-z0-9][A-Za-z0-9 .&\-/_]{0,24}$"
+_ENTITY_MENTION_RE = re.compile(_ENTITY_MENTION_PATTERN)
 _SQL_KEYWORD_RE = re.compile(
     r"\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|UNION|EXEC|EXECUTE|TRUNCATE|GRANT|REVOKE)\b",
     re.IGNORECASE,
@@ -324,7 +325,7 @@ class CanonicalIntent(FrozenStrictModel):
 class LLMEntityMention(FrozenStrictModel):
     """Short plain-text entity mention from LLM output."""
 
-    text: Annotated[str, Field(min_length=1, max_length=25, pattern=r"^[A-Za-z0-9][A-Za-z0-9 .&'\-/_]{0,24}$")]
+    text: Annotated[str, Field(min_length=1, max_length=25, pattern=_ENTITY_MENTION_PATTERN)]
 
     @field_validator("text")
     @classmethod

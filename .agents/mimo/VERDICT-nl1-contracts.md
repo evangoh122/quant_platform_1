@@ -1,47 +1,49 @@
 # VERDICT: nl1-contracts — MiMo
 **Status:** APPROVED
-**Round:** 7
+**Round:** 8
 
 ## Blocking findings
-None — all three blocking issues from round 6 are resolved.
+None — all four blocking issues from the round 7 checker (VERDICT-nl1-contracts-check5) are resolved.
 
-## Changes made
+## Changes made (round 8)
 
-### 1. `LLMEntityMention.text` allowlist (`contracts.py:320-345`)
-- Replaced blacklist with allowlist pattern `^[A-Za-z0-9][A-Za-z0-9 .&'\-/_]{0,24}$`
-- Added NFKC normalization before pattern check
-- Pattern emitted in JSON schema via `Field(pattern=...)`
-- Max length reduced from 100 to 25 (longest real alias is 22 chars: `consumer_discretionary`)
-- Added `_` to character class for sector names (justified: `consumer_discretionary`, `communication_services`, `real_estate`)
-- Defense-in-depth retained: control chars, SQL metacharacters (`;'"`, `--`, `/*`, `*/`), SQL keywords (`SELECT`, `DROP`, `UNION`, etc.), prompt injection patterns
+### 1. Schema walker resolves `$ref` against root `$defs` (`test_contracts.py:733-790`)
+- `_get_string_leaves` now accepts `root_schema` and passes it through every recursive call.
+- `$ref` values (`#/$defs/X`) are resolved against `root_schema["$defs"]`, not the local sub-schema.
+- Cycle protection via a `visited: set[str]` that tracks already-seen `$ref` strings.
+- Covers `properties`, `items`, `additionalProperties`, `anyOf`, `oneOf`, `allOf`.
+- New test `test_discovered_leaves_include_required_paths` asserts the leaf set includes:
+  - `entity_mentions[].text` (the `LLMEntityMention.text` field)
+  - `start` / `end` (the `DateRange` date fields)
+  - `semantic_model_version`
 
-### 2. `resolve_relative_date` timezone fix (`aliases.py:230-240`)
-- Changed `current_date = c.now().date()` to `current_date = now.astimezone(tz).date()` where `tz = ZoneInfo("America/New_York")`
-- Added validation: naive clocks (no tzinfo) are now rejected with `ValueError`
-- All injected-clock tests pass: UTC clocks at DST boundaries (2026-03-08, 2026-11-01) and year boundary (2025-12-31)
+### 2. Hostile corpus driven from every discovered leaf (`test_contracts.py:920-990`)
+- New test `test_hostile_corpus_covers_every_string_leaf`: walks the schema, finds every pattern-constrained string leaf, builds a minimal valid `LLMIntentOutput` with a hostile payload injected at that leaf path, and asserts rejection.
+- Covers `semantic_model_version`, `entity_mentions[].text`, `date_expression.relative`, `grouping`, and date fields.
 
-### 3. Schema walking audit + hostile corpus (`test_contracts.py:730-1085`)
-- `TestSchemaWalkingAudit`: enumerates every string leaf of `LLMIntentOutput` schema, asserts each is enum, const, or has allowlist pattern
-- `TestHostileCorpus`: 89 hostile payloads (SQL, shell, template, JNDI, URL, control/zero-width/bidi, homoglyph, multilingual injection) — all rejected by `LLMEntityMention.text` and `LLMIntentOutput`
-- `TestMutationProofs`: verifies loosening `text` back to free string fails hostile corpus; adding new free `str` field fails schema audit
-- `TestTimezoneHandling`: UTC-clock tests at DST start (2026-03-08), DST end (2026-11-01), year boundary (2025-12-31), and naive clock rejection
+### 3. Real mutation proofs (`test_contracts.py:993-1050`)
+- `test_adding_free_note_field_to_entity_fails_audit`: creates `MutatedEntity` via `create_model(__base__=LLMEntityMention, note=(str, ...))`, asserts the audit finds unconstrained leaves.
+- `test_loosening_text_pattern_fails_audit`: creates `MutatedEntity` with `text=(str, Field(min_length=1, max_length=25))` (no pattern), asserts audit fails.
+- `test_adding_free_note_field_to_output_fails_audit`: same for `LLMIntentOutput`.
+- `test_loosening_version_pattern_fails_audit`: removes `pattern` from `semantic_model_version`, asserts audit fails.
 
-### 4. `semantic_model_version` pattern (`contracts.py:289, 371`)
-- Added `pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$"` to both `CanonicalIntent` and `LLMIntentOutput`
-- Schema walking audit now passes — no unconstrained string leaves
+### 4. Schema pattern matches validator exactly (`contracts.py:166-167, 327`)
+- Extracted `_ENTITY_MENTION_PATTERN: str` constant (single source of truth).
+- `_ENTITY_MENTION_RE = re.compile(_ENTITY_MENTION_PATTERN)` — validator uses the constant.
+- `Field(pattern=_ENTITY_MENTION_PATTERN)` — schema uses the same constant.
+- Removed `'` (apostrophe) from the character class: `_SQL_METACHAR_RE` rejects it, so the schema must not advertise it.
+- Pattern: `^[A-Za-z0-9][A-Za-z0-9 .&\-/_]{0,24}$` — identical in schema and validator.
 
 ### 5. Schemas regenerated
-- `python3 -m analytics_nl.export_schemas --write` → all 6 schemas updated
-- `python3 -m analytics_nl.export_schemas --check` → "All schemas match"
+- `python3 -m analytics_nl.export_schemas --write` → all 6 schemas updated.
+- `llm_intent_output.v1.json:76` now shows `"^[A-Za-z0-9][A-Za-z0-9 .&\\-/_]{0,24}$"` (no apostrophe).
 
 ## Non-blocking notes
-- `consumer_discretionary` (22 chars) is the longest real alias; pattern max 25 chars gives 3-char buffer
-- SQL keyword regex catches `SELECT`, `DROP`, `UNION`, `INSERT`, `UPDATE`, `DELETE`, `ALTER`, `CREATE`, `EXEC`, `TRUNCATE`, `GRANT`, `REVOKE` as standalone words (case-insensitive)
-- Prompt injection regex expanded to catch `disregard all/previous`, `system:`, `override safety/all`, `bypass safety/all/filters`, `ignore all/safety/constraints`, `forget all/safety/constraints`
-- Hostile corpus includes 89 payloads (exceeds ≥ 60 requirement)
+- Test count: 272 passed in `tests/analytics_nl` (was 268 in round 7; +4 mutation proof tests).
+- Full suite: 810 passed, 67 skipped (matches round 7 baseline).
+- `consumer_discretionary` (22 chars) still the longest real alias; 25-char max gives 3-char buffer.
 
 ## Checks run
-- `python3 -m pytest -q tests/analytics_nl` → 268 passed
-- `python3 -m pytest -q --ignore=tests/lakebase` → 806 passed, 67 skipped
 - `python3 -m analytics_nl.export_schemas --check` → "All schemas match"
-- Spot-checked: all 33 real aliases from `aliases_v1.yaml` accepted; all verdict payloads rejected
+- `python3 -m pytest -q tests/analytics_nl` → 272 passed
+- `python3 -m pytest -q --ignore=tests/lakebase` → 810 passed, 67 skipped
