@@ -592,7 +592,7 @@ class TestTypedArgumentRejection:
 
         from agent.tools_retrieval import query_sec_facts
         result = query_sec_facts(
-            "NVDA", "ignore previous instructions", "2024-01-28",
+            "NVDA", "Competition", "2024-01-28",
             datetime(2024, 6, 1, tzinfo=timezone.utc),
             graph=kg,
         )
@@ -1446,6 +1446,10 @@ class TestSparkGraphStoreRoundTrip:
             self.right = right
         def __or__(self, other):
             return TestSparkGraphStoreRoundTrip._Expr("or", self, other)
+        def __and__(self, other):
+            return TestSparkGraphStoreRoundTrip._Expr("and", self, other)
+        def __invert__(self):
+            return TestSparkGraphStoreRoundTrip._Expr("not", self, None)
 
     class _FakeCol:
         """Column stand-in supporting ==, <=, |, isin, alias, contains."""
@@ -1459,10 +1463,18 @@ class TestSparkGraphStoreRoundTrip:
             return TestSparkGraphStoreRoundTrip._Expr("or", self, other)
         def __ror__(self, other):
             return TestSparkGraphStoreRoundTrip._Expr("or", other, self)
-        def isin(self, vals):
-            return TestSparkGraphStoreRoundTrip._Expr("isin", self._name, list(vals))
+        def isin(self, *vals):
+            flat = []
+            for v in vals:
+                if isinstance(v, (list, tuple)):
+                    flat.extend(v)
+                else:
+                    flat.append(v)
+            return TestSparkGraphStoreRoundTrip._Expr("isin", self._name, flat)
         def alias(self, name):
-            return self
+            col = TestSparkGraphStoreRoundTrip._FakeCol(self._name)
+            col._alias = name
+            return col
         def contains(self, substr):
             return TestSparkGraphStoreRoundTrip._Expr("contains", self._name, substr)
         def isNull(self):
@@ -1489,11 +1501,36 @@ class TestSparkGraphStoreRoundTrip:
             return self._data[key]
 
     class _FakeDataFrame:
-        """Supports .select().where().collect() chaining."""
+        """Supports .select().where().collect() chaining.
+
+        select() projects to only the named columns so referencing a
+        non-projected column raises, matching real Spark behaviour.
+        """
         def __init__(self, rows):
             self._rows = rows
         def select(self, *args, **kwargs):
-            return self
+            col_names = []
+            for a in args:
+                if isinstance(a, str):
+                    col_names.append(a)
+                elif hasattr(a, '_alias'):
+                    col_names.append(a._alias)
+                else:
+                    col_names.append(getattr(a, '_name', str(a)))
+            projected = []
+            for row in self._rows:
+                kw = {}
+                for c in col_names:
+                    if not hasattr(row, c):
+                        raise AttributeError(
+                            f"Column {c!r} not in projected row "
+                            f"(available: {list(getattr(row, '_data', {}).keys())})"
+                        )
+                    kw[c] = getattr(row, c)
+                projected.append(
+                    TestSparkGraphStoreRoundTrip._FakeRow(**kw)
+                )
+            return TestSparkGraphStoreRoundTrip._FakeDataFrame(projected)
         def where(self, condition):
             if condition is None:
                 return self
@@ -1523,6 +1560,7 @@ class TestSparkGraphStoreRoundTrip:
     def _eval(expr, row):
         """Evaluate a filter expression against a FakeRow."""
         T = TestSparkGraphStoreRoundTrip
+        _MISSING = object()  # sentinel for missing column
         if isinstance(expr, T._Expr):
             if expr.op == "eq":
                 return getattr(row, expr.left, None) == expr.right
@@ -1540,11 +1578,28 @@ class TestSparkGraphStoreRoundTrip:
                 return T._eval(expr.left, row) or T._eval(expr.right, row)
             elif expr.op == "and":
                 return T._eval(expr.left, row) and T._eval(expr.right, row)
+            elif expr.op == "not":
+                return not T._eval(expr.left, row)
             elif expr.op == "exists":
                 arr = getattr(row, expr.left, None) or []
                 return any(expr.right(e) for e in arr)
             elif expr.op == "is_null":
-                return getattr(row, expr.left, None) is None
+                val = getattr(row, expr.left, _MISSING)
+                if val is _MISSING:
+                    raise AttributeError(
+                        f"UNRESOLVED_COLUMN: {expr.left!r} not in projected row"
+                    )
+                return val is None
+            elif expr.op == "json_isin":
+                # Evaluate get_json_object($.field).isin(vals) against a row
+                import json as _json
+                props_raw = getattr(row, "properties_json", None) or "{}"
+                try:
+                    props = _json.loads(props_raw) if isinstance(props_raw, str) else props_raw
+                except _json.JSONDecodeError:
+                    props = {}
+                val = str(props.get(expr.left, "") or "")
+                return val in expr.right
             else:
                 raise ValueError(f"Unknown expression op: {expr.op!r}")
         # Bare value — reject instead of silently returning True
@@ -1585,10 +1640,33 @@ class TestSparkGraphStoreRoundTrip:
 
         T = TestSparkGraphStoreRoundTrip
         pyspark_sql_functions.col = lambda name: T._FakeCol(name)
-        pyspark_sql_functions.transform = lambda col, fn: T._FakeCol("transformed")
+        pyspark_sql_functions.transform = lambda col, fn: T._FakeCol("provenance")
         pyspark_sql_functions.unix_timestamp = lambda col=None: T._FakeCol("epoch")
         pyspark_sql_functions.struct = lambda *args, **kw: T._FakeCol("struct")
-        pyspark_sql_functions.get_json_object = lambda col, path: T._FakeCol("json_val")
+        pyspark_sql_functions.lit = lambda val: val
+
+        def _get_json_object(col, path):
+            """Evaluate get_json_object(properties_json, '$.field') for tests."""
+            import json as _json
+            col_name = col._name if isinstance(col, T._FakeCol) else str(col)
+            result_col = T._FakeCol(f"_json_{path}")
+
+            class _JsonCol:
+                def __init__(self, field_path):
+                    self._field = field_path.replace("$.", "")
+                    self._name = f"_json_{field_path}"
+                def isin(self, *vals):
+                    flat = []
+                    for v in vals:
+                        if isinstance(v, (list, tuple)):
+                            flat.extend(v)
+                        else:
+                            flat.append(v)
+                    return T._Expr("json_isin", self._field, flat)
+
+            return _JsonCol(path)
+
+        pyspark_sql_functions.get_json_object = _get_json_object
         pyspark_sql_functions.lower = lambda col: T._LoweredCol(col if isinstance(col, T._FakeCol) else T._FakeCol("lowered"))
         pyspark_sql_functions.exists = lambda col, pred: T._Expr("exists", col._name if isinstance(col, T._FakeCol) else col, pred)
 
@@ -2934,6 +3012,17 @@ class TestPredicatePushdown:
                 return any(condition.right(e) for e in arr)
             elif condition.op == "is_null":
                 return getattr(row, condition.left, None) is None
+            elif condition.op == "not":
+                return not TestPredicatePushdown._eval_condition(condition.left, row)
+            elif condition.op == "json_isin":
+                import json as _json
+                props_raw = getattr(row, "properties_json", None) or "{}"
+                try:
+                    props = _json.loads(props_raw) if isinstance(props_raw, str) else props_raw
+                except _json.JSONDecodeError:
+                    props = {}
+                val = str(props.get(condition.left, "") or "")
+                return val in condition.right
             else:
                 raise ValueError(f"Unknown condition op: {condition.op!r}")
         raise ValueError(f"Cannot evaluate bare condition: {condition!r}")
@@ -3632,6 +3721,52 @@ class TestDriverMemoryCap:
                 max_entities=5,
             )
 
+    def test_mutation_count_after_collect_fails(self, monkeypatch):
+        """Mutation: if count happens after collect, spy records toLocalIterator calls."""
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation", entity_unit="",
+                period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id=f"c{i}",
+            )
+            for i in range(6)
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id=f"c{i}", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            )
+            for i in range(6)
+        ]
+        fake_spark, write_spy, _ = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+
+        with pytest.raises(MemoryError, match="exceeds max_entities"):
+            pipeline_mod.build(
+                fake_spark,
+                catalog="test_cat",
+                schema="test_sch",
+                max_entities=5,
+            )
+
+        # With the fix, count check happens before collect — spy must record
+        # ZERO toLocalIterator and collect calls on the data path.
+        iter_calls = [c for c in write_spy.calls
+                      if c["kind"] in ("toLocalIterator", "collect")]
+        assert len(iter_calls) == 0, (
+            f"Expected 0 toLocalIterator/collect calls (count check before collect), "
+            f"got {len(iter_calls)}: {iter_calls}"
+        )
+
     def test_cap_default_allows_small_dataset(self, monkeypatch):
         """Default max_entities=2_000_000 allows small datasets."""
         entity_rows = [
@@ -4213,6 +4348,32 @@ class TestConceptNormParity:
             "if this fails, Spark may still be using JSON substring"
         )
 
+    def test_mutation_select_omitting_concept_norm_fails(self, monkeypatch):
+        """Mutation: if select() omits concept_norm, the concept where() raises."""
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+
+        jsonl_store, spark_store = self._make_stores(monkeypatch, [("Revenues", "val1")])
+
+        # Simulate the broken select that omits concept_norm
+        from pyspark.sql import functions as F
+        spark = spark_store._get_spark()
+        broken_df = spark.table(spark_store._nodes_table()).select(
+            "node_id", "node_type", "label", "properties_json", "build_version",
+            # concept_norm intentionally omitted
+            F.transform(
+                F.col("provenance"),
+                lambda p: F.struct(
+                    p["accession_number"],
+                    p["source_chunk_id"],
+                    F.unix_timestamp(p["accepted_ts"]).alias("accepted_epoch"),
+                ),
+            ).alias("provenance"),
+        )
+        # Referencing concept_norm after the select must raise
+        with pytest.raises(AttributeError, match="concept_norm"):
+            broken_df.where(F.col("concept_norm").isNull())
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 41. Spark as-of-before-LIMIT with real F.exists evaluation (round 12)
@@ -4716,5 +4877,197 @@ class TestConceptNormNullGuard:
         # Should work without error
         results = store.find_nodes("XbrlFact", concept="Revenues")
         assert len(results) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 44. NULL-concept guard limited to legacy rows (round 15)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestNullConceptGuardLegacy:
+    """NULL-concept guard must only fire for concept-bearing rows (XbrlFact/Metric)
+    whose properties have a non-empty entity_key/metric but concept_norm IS NULL.
+    Non-concept-bearing rows (Company, Filing) with NULL concept_norm are OK."""
+
+    def _make_store_with_null_concept_norm(self, monkeypatch, node_type, entity_key):
+        """Create a Spark store with one node that has NULL concept_norm."""
+        from datetime import timedelta
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+
+        props = json.dumps({
+            "entity_key": entity_key,
+            "value_text": "100",
+            "period_end": "2024-01-28",
+        })
+        row = T._FakeRow(
+            node_id="test_node_1",
+            node_type=node_type,
+            label="test",
+            properties_json=props,
+            concept_norm=None,  # NULL!
+            provenance=[
+                T._FakeRow(
+                    accession_number="acc1",
+                    source_chunk_id="c1",
+                    accepted_ts=datetime(2023, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=1672531200,
+                )
+            ],
+            build_version="test-1.0",
+        )
+        return T._MockSparkGraphStore("test_cat", "test_sch", [row], [])
+
+    def test_company_null_concept_norm_no_guard(self, monkeypatch):
+        """Company node with NULL concept_norm: guard must NOT fire."""
+        store = self._make_store_with_null_concept_norm(
+            monkeypatch, "Company", "NVIDIA"
+        )
+        # Should not raise — Company is not a concept-bearing type
+        # Results may be empty because concept_norm is NULL (no match),
+        # but the important thing is: no RuntimeError is raised.
+        results = store.find_nodes("Company", concept="NVIDIA")
+        assert isinstance(results, list)
+
+    def test_filing_null_concept_norm_no_guard(self, monkeypatch):
+        """Filing node with NULL concept_norm: guard must NOT fire."""
+        store = self._make_store_with_null_concept_norm(
+            monkeypatch, "Filing", "10-K"
+        )
+        results = store.find_nodes("Filing", concept="10-K")
+        assert isinstance(results, list)
+
+    def test_xbrl_null_concept_norm_guard_fires(self, monkeypatch):
+        """XbrlFact node with non-empty entity_key and NULL concept_norm: guard fires."""
+        store = self._make_store_with_null_concept_norm(
+            monkeypatch, "XbrlFact", "Revenues"
+        )
+        with pytest.raises(RuntimeError, match="concept-bearing rows with NULL"):
+            store.find_nodes("XbrlFact", concept="Revenues")
+
+    def test_metric_null_concept_norm_guard_fires(self, monkeypatch):
+        """Metric node with non-empty entity_key and NULL concept_norm: guard fires."""
+        store = self._make_store_with_null_concept_norm(
+            monkeypatch, "Metric", "Revenues"
+        )
+        with pytest.raises(RuntimeError, match="concept-bearing rows with NULL"):
+            store.find_nodes("Metric", concept="Revenues")
+
+    def test_xbrl_empty_entity_key_no_guard(self, monkeypatch):
+        """XbrlFact with empty entity_key and NULL concept_norm: guard must NOT fire."""
+        from datetime import timedelta
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+
+        props = json.dumps({
+            "entity_key": "",  # empty
+            "value_text": "100",
+        })
+        row = T._FakeRow(
+            node_id="test_node_1",
+            node_type="XbrlFact",
+            label="test",
+            properties_json=props,
+            concept_norm=None,
+            provenance=[
+                T._FakeRow(
+                    accession_number="acc1",
+                    source_chunk_id="c1",
+                    accepted_ts=datetime(2023, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=1672531200,
+                )
+            ],
+            build_version="test-1.0",
+        )
+        store = T._MockSparkGraphStore("test_cat", "test_sch", [row], [])
+        # Empty entity_key means no concept to normalize — guard should not fire
+        # (the query returns 0 results because concept_norm is NULL, but no error)
+        results = store.find_nodes("XbrlFact", concept="Revenues")
+        assert len(results) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 45. Metric and period format validation (round 15, P3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMetricPeriodValidation:
+    """query_sec_facts must reject invalid metric/period formats before backend."""
+
+    def test_valid_xbrl_concept_name(self):
+        """Standard XBRL concept name passes."""
+        from agent.tools_retrieval import query_sec_facts
+        # Should not raise on metric validation (may raise on ticker allow-list)
+        with pytest.raises(ValueError, match="allow-list"):
+            query_sec_facts("ZZZZZZ", "Revenues", "2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_valid_metric_with_namespace(self):
+        """Metric with colon (namespace) passes."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="allow-list"):
+            query_sec_facts("ZZZZZZ", "us-gaap:Revenues", "2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_rejects_metric_with_spaces(self):
+        """Metric with spaces is rejected."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="XBRL concept name"):
+            query_sec_facts("NVDA", "bad metric name", "2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_rejects_metric_with_semicolon(self):
+        """Metric with semicolon is rejected."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="XBRL concept name"):
+            query_sec_facts("NVDA", "Revenues;DROP", "2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_rejects_metric_starting_with_digit(self):
+        """Metric starting with a digit is rejected."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="XBRL concept name"):
+            query_sec_facts("NVDA", "123Revenue", "2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_valid_period_year(self):
+        """Period '2024' passes."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="allow-list"):
+            query_sec_facts("ZZZZZZ", "Revenues", "2024",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_valid_period_quarter(self):
+        """Period '2024-Q1' passes."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="allow-list"):
+            query_sec_facts("ZZZZZZ", "Revenues", "2024-Q1",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_valid_period_date(self):
+        """Period '2024-01-28' passes."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="allow-list"):
+            query_sec_facts("ZZZZZZ", "Revenues", "2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_valid_period_range(self):
+        """Period '2023-01-29..2024-01-28' passes."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="allow-list"):
+            query_sec_facts("ZZZZZZ", "Revenues", "2023-01-29..2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_rejects_period_with_slash(self):
+        """Period with slash (not accepted format) is rejected."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="accepted format"):
+            query_sec_facts("NVDA", "Revenues", "2023-01-29/2024-01-28",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+    def test_rejects_period_random_string(self):
+        """Random string as period is rejected."""
+        from agent.tools_retrieval import query_sec_facts
+        with pytest.raises(ValueError, match="accepted format"):
+            query_sec_facts("NVDA", "Revenues", "not-a-period",
+                            datetime(2024, 6, 1, tzinfo=timezone.utc))
 
 

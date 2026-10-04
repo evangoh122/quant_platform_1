@@ -99,6 +99,17 @@ def build(
     entities_df = spark.table(f"{catalog}.{schema}.silver_sec_entities")
     sections_df = spark.table(f"{catalog}.{schema}.silver_sec_sections")
 
+    # Driver memory cap — fail fast BEFORE collecting into driver memory.
+    # Count source tables via Spark .count() (pushed to executors) so
+    # the cap is enforced without ever materialising the full datasets
+    # on the driver.
+    total_rows = entities_df.count() + sections_df.count()
+    if total_rows > max_entities:
+        raise MemoryError(
+            f"Entity count {total_rows:,} exceeds max_entities={max_entities:,}. "
+            f"The graph build is driver-bound; increase max_entities or reduce input scope."
+        )
+
     # Collect chunk metadata for corpus — uses unix_timestamp to avoid
     # driver-timezone-dependent naive datetime conversion.
     # NOTE: toLocalIterator streams rows but the dict still accumulates in
@@ -146,14 +157,6 @@ def build(
             "confidence": row.confidence,
             "source_chunk_id": row.source_chunk_id,
         })
-
-    # Driver memory cap — fail fast before OOM
-    total_collected = len(chunk_metadata) + len(entities)
-    if total_collected > max_entities:
-        raise MemoryError(
-            f"Entity count {total_collected:,} exceeds max_entities={max_entities:,}. "
-            f"The graph build is driver-bound; increase max_entities or reduce input scope."
-        )
 
     # Optional LLM enrichment
     if enable_llm_extraction and llm_budget > 0:

@@ -260,6 +260,50 @@ def query_sec_facts(
                 )
             return normalized
 
+        @field_validator("metric")
+        @classmethod
+        def _valid_metric(cls, v: str) -> str:
+            """Metric must match a valid XBRL concept name pattern.
+
+            Allows letters, digits, dots, underscores, hyphens — the
+            characters that appear in standard XBRL concept names
+            (e.g. ``us-gaap:Revenues``, ``dei:EntityRegistrantName``).
+            Rejects whitespace, quotes, semicolons, and other
+            injection-shaped input before it reaches the backend.
+            """
+            import re
+            if not re.match(r"^[A-Za-z][A-Za-z0-9._:\-]*$", v):
+                raise ValueError(
+                    f"Metric {v!r} does not match the allowed XBRL concept name pattern "
+                    f"(letters, digits, dot, underscore, colon, hyphen; must start with a letter)"
+                )
+            return v
+
+        @field_validator("period")
+        @classmethod
+        def _valid_period(cls, v: str) -> str:
+            """Period must match one of the accepted formats.
+
+            Accepted formats:
+            - ``YYYY`` (fiscal year)
+            - ``YYYY-Qn`` (quarter)
+            - ``YYYY-MM-DD`` (single date / instant)
+            - ``YYYY-MM-DD..YYYY-MM-DD`` (date range)
+            """
+            import re
+            _PERIOD_RE = re.compile(
+                r"^\d{4}$"                                      # YYYY
+                r"|^\d{4}-Q[1-4]$"                              # YYYY-Qn
+                r"|^\d{4}-\d{2}-\d{2}$"                         # YYYY-MM-DD
+                r"|^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$"   # YYYY-MM-DD..YYYY-MM-DD
+            )
+            if not _PERIOD_RE.match(v):
+                raise ValueError(
+                    f"Period {v!r} does not match any accepted format: "
+                    f"YYYY, YYYY-Qn, YYYY-MM-DD, or YYYY-MM-DD..YYYY-MM-DD"
+                )
+            return v
+
         @field_validator("metric", "period")
         @classmethod
         def _non_blank_str(cls, v: str) -> str:

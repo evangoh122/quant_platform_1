@@ -421,6 +421,7 @@ class SparkGraphStore:
         spark = self._get_spark()
         df = spark.table(self._nodes_table()).select(
             "node_id", "node_type", "label", "properties_json", "build_version",
+            "concept_norm",
             F.transform(
                 F.col("provenance"),
                 lambda p: F.struct(
@@ -444,17 +445,29 @@ class SparkGraphStore:
             # Structured column equality on NFKC-normalised, lower-cased value.
             # Parity with JsonlGraphStore: compare normalised input to concept_norm column.
             norm_concept = normalize_unicode(concept).lower()
-            # Guard: if any rows have NULL concept_norm, concept searches would
-            # silently omit them.  Raise a clear error instead of silent data loss.
-            null_count = df.where(
-                F.col("concept_norm").isNull()
-            ).limit(1).count()
-            if null_count > 0:
+            # Guard: limit to legacy rows — nodes of a concept-bearing type
+            # (XbrlFact/Metric) whose properties have a non-empty entity_key
+            # or metric but concept_norm IS NULL.  Rows whose properties lack
+            # a concept field (e.g. Company, Filing) legitimately have NULL
+            # concept_norm and must not trigger the guard.
+            legacy_null = df.where(
+                F.col("node_type").isin("XbrlFact", "Metric")
+                & F.col("concept_norm").isNull()
+                & (
+                    ~F.get_json_object(
+                        F.col("properties_json"), F.lit("$.entity_key")
+                    ).isin("", "null")
+                    | ~F.get_json_object(
+                        F.col("properties_json"), F.lit("$.metric")
+                    ).isin("", "null")
+                )
+            )
+            if legacy_null.limit(1).count() > 0:
                 raise RuntimeError(
-                    f"gold_sec_kg_nodes contains rows with NULL concept_norm. "
-                    f"A full rebuild is required to populate concept_norm before "
-                    f"concept searches can work.  Run the SEC knowledge graph build "
-                    f"job to backfill."
+                    f"gold_sec_kg_nodes contains concept-bearing rows with NULL "
+                    f"concept_norm.  A full rebuild is required to populate "
+                    f"concept_norm before concept searches can work.  Run the SEC "
+                    f"knowledge graph build job to backfill."
                 )
             df = df.where(F.col("concept_norm") == norm_concept)
         if period_start is not None:
