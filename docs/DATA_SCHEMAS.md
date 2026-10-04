@@ -473,3 +473,93 @@
   feature_snapshot_id                string NOT NULL
   status                             string NOT NULL
   processed_ts                       timestamp NOT NULL
+
+### bronze_corporate_actions  (6 cols)
+  symbol                             string NOT NULL
+  ex_date                            date NOT NULL
+  split_ratio                        double NOT NULL
+  source                             string NOT NULL
+  fetched_ts                         timestamp NOT NULL
+  information_available_ts           timestamp NOT NULL
+
+  Natural key: (symbol, ex_date, source)  — fetched_ts is NOT part of the key.
+  Append-only: no update, delete, overwrite, or replaceWhere.
+  split_ratio is new-shares / old-shares (20.0 for AMZN 20:1, 0.1 for 1:10 reverse).
+  information_available_ts is ex-date 09:30 America/New_York converted to naive UTC.
+  A same-key correction with different split_ratio is a conflict and is not silently applied.
+
+  Source: Massive REST API only (source='massive').  Key via Databricks secret scope
+          evangoh_capstone/massive_s3_secret_key or env var MASSIVE_API_KEY.
+
+  Silver: only source='massive' rows are used for adjustment.  Deduplication to one
+  row per (symbol, ex_date) — latest fetched_ts wins (Massive can return the same
+  split twice across runs).  Other sources are ignored (not deleted).
+
+  Important: adjusted prices are back-adjusted — historical levels change when a later
+  split is loaded.  Returns are unaffected.  PIT consumers must use returns (return_1d),
+  not historical adjusted levels (adj_close).
+
+### silver_ohlcv_day_adjusted  (24 cols)
+  symbol                             string NOT NULL
+  event_date                         date NOT NULL
+  event_ts                           timestamp
+  open                               double
+  high                               double
+  low                                double
+  close                              double
+  volume                             bigint
+  vwap                               double
+  trade_count                        int
+  cumulative_split_ratio             double
+  price_adjustment_factor            double
+  adj_open                           double
+  adj_high                           double
+  adj_low                            double
+  adj_close                          double
+  adj_vwap                           double
+  adj_volume                         double
+  raw_overnight_return               double
+  adjusted_return_1d_unmasked        double
+  return_1d                          double
+  is_data_quality_break              boolean
+  information_available_ts           timestamp
+  processed_ts                       timestamp NOT NULL
+
+  Natural key: (symbol, event_date).
+  Idempotent: MERGE on key.  A new future split changes historical adj_* levels.
+  adj_* columns are GLOBAL/CURRENT-SCALE back-adjusted display levels.
+  They are approved for computing returns (ratios cancel within split-free
+  intervals, and across ex-dates the prior bar includes the split while the
+  ex-date bar does NOT).  They are NOT approved as model price-level features
+  at a historical observation time — use PIT-adjusted prices instead.
+  return_1d is the canonical return: NULL when is_data_quality_break = TRUE,
+  otherwise adj_close / LAG(adj_close) - 1.  Never zero-filled for masked dates.
+  information_available_ts is 16:30 America/New_York on the bar date (daily close).
+
+### data_quality_breaks  (14 cols)
+  symbol                             string NOT NULL
+  event_date                         date NOT NULL
+  previous_event_date                date
+  previous_close                     double
+  close                              double
+  raw_overnight_return               double
+  matched_split_ratio                double
+  post_split_gross_return            double
+  split_error                        double
+  classification                     string NOT NULL
+  reason                             string
+  is_masked                          boolean NOT NULL
+  reviewed_by                        string
+  reviewed_ts                        timestamp
+  detected_ts                        timestamp NOT NULL
+  processed_ts                       timestamp NOT NULL
+
+  Natural key: (symbol, event_date).
+  Classification values:
+    SPLIT_EXPLAINED        — same-date split within 3% tolerance; not masked
+    UNEXPLAINED_PENDING    — no matching split or residual > 3%; masked until reviewed
+    CONFIRMED_DATA_BREAK   — human-verified data error (e.g. META ticker reuse); masked
+    ALLOW_REAL_MOVE        — human-verified genuine move; not masked, return restored
+  Manual review decisions (reviewed_by IS NOT NULL) are preserved on rerun.
+  is_masked = TRUE for UNEXPLAINED_PENDING and CONFIRMED_DATA_BREAK.
+  Masking sets return_1d = NULL (never 0) in silver_ohlcv_day_adjusted.

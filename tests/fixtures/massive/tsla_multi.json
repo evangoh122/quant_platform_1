@@ -1,0 +1,17 @@
+{
+  "status": "OK",
+  "results": [
+    {
+      "execution_date": "2022-08-25",
+      "split_from": 1,
+      "split_to": 3,
+      "ticker": "TSLA"
+    },
+    {
+      "execution_date": "2020-08-31",
+      "split_from": 1,
+      "split_to": 5,
+      "ticker": "TSLA"
+    }
+  ]
+}
