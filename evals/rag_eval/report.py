@@ -39,28 +39,58 @@ def build_report(run_report: RunReport, *, include_text: bool = False) -> dict[s
     # Redact absolute paths in cli_args to basename
     cli_args = report.get("cli_args", {})
     if cli_args:
-        def _redact_path(v):
+        def _is_absolute_path(s: str) -> bool:
+            """Check if a string is an absolute path (Unix or Windows style)."""
+            # Unix-style absolute path (starts with /)
+            if s.startswith("/"):
+                return True
+            # Windows-style absolute path (e.g., C:\ or \\server\)
+            if len(s) >= 2 and s[1] == ":":
+                return True
+            if s.startswith("\\"):
+                return True
+            return False
+
+        def _path_basename(s: str) -> str:
+            """Get basename from a path string, handling both Unix and Windows separators."""
+            # Split on both / and \ to handle mixed paths
+            parts = s.replace("\\", "/").rstrip("/").split("/")
+            return parts[-1] if parts else s
+
+        def _redact_value(v):
+            """Redact a single value: absolute path -> basename, PathLike -> str."""
             # Handle pathlib.Path objects directly
             if isinstance(v, Path):
-                if v.is_absolute():
-                    return v.name
-                # Convert relative paths to plain string
-                return str(v)
-            # Handle string paths
-            if isinstance(v, str) and Path(v).is_absolute():
-                return Path(v).name
+                s = str(v)
+                if v.is_absolute() or _is_absolute_path(s):
+                    return _path_basename(s)
+                return s
+            # Handle string paths (check both Unix and Windows absolute)
+            if isinstance(v, str) and _is_absolute_path(v):
+                return _path_basename(v)
             # Handle any os.PathLike object
             if hasattr(v, '__fspath__'):
                 p = Path(v)
-                if p.is_absolute():
-                    return p.name
-                return str(p)
+                s = str(p)
+                if p.is_absolute() or _is_absolute_path(s):
+                    return _path_basename(s)
+                return s
             return v
 
-        report["cli_args"] = {
-            k: _redact_path(v)
-            for k, v in cli_args.items()
-        }
+        def _redact_recursive(v):
+            """Recursively redact paths in nested structures."""
+            if isinstance(v, dict):
+                return {
+                    (_redact_value(k) if isinstance(k, (str, Path)) or hasattr(k, '__fspath__') else k): _redact_recursive(val)
+                    for k, val in v.items()
+                }
+            if isinstance(v, (list, tuple)):
+                return type(v)(_redact_recursive(item) for item in v)
+            if isinstance(v, set):
+                return {_redact_recursive(item) for item in v}
+            return _redact_value(v)
+
+        report["cli_args"] = _redact_recursive(cli_args)
 
     # Add per-item rows
     item_rows: list[dict[str, Any]] = []

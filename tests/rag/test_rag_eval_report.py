@@ -218,8 +218,8 @@ class TestReportTextStripping:
         # Path objects must be converted to plain strings (basename)
         assert report["cli_args"]["golden"] == "golden.jsonl"
         assert isinstance(report["cli_args"]["golden"], str)
-        # Relative paths should not be changed
-        assert report["cli_args"]["corpus"] == "relative/corpus.jsonl"
+        # Relative paths should not be changed (use Path to normalize separators)
+        assert Path(report["cli_args"]["corpus"]) == Path("relative/corpus.jsonl")
         assert report["cli_args"]["mode"] == "all"
 
     def test_write_json_has_no_text_in_hits(self, tmp_path):
@@ -231,3 +231,98 @@ class TestReportTextStripping:
         hits = data["item_results"][0]["hits"]
         assert "text" not in hits[0]
         assert "chunk_text" not in hits[0]
+
+
+class TestRecursiveRedaction:
+    """Recursive redaction of paths in nested cli_args structures."""
+
+    def test_list_of_paths_redacted(self):
+        """List of absolute paths redacted to basenames."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={"files": ["/home/x/a.jsonl", "/tmp/b.jsonl"]},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        assert report["cli_args"]["files"] == ["a.jsonl", "b.jsonl"]
+
+    def test_tuple_of_paths_redacted(self):
+        """Tuple of absolute paths redacted to basenames (preserves tuple type)."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={"files": ("/home/x/a.jsonl", "/tmp/b.jsonl")},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        result = report["cli_args"]["files"]
+        assert isinstance(result, tuple)
+        assert result == ("a.jsonl", "b.jsonl")
+
+    def test_set_of_paths_redacted(self):
+        """Set of absolute paths redacted to basenames."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={"files": {"/home/x/a.jsonl", "/tmp/b.jsonl"}},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        assert report["cli_args"]["files"] == {"a.jsonl", "b.jsonl"}
+
+    def test_dict_with_path_values_redacted(self):
+        """Dict with path values redacted to basenames."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={"mapping": {"golden": "/home/x/golden.jsonl", "corpus": "/tmp/corpus.jsonl"}},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        assert report["cli_args"]["mapping"]["golden"] == "golden.jsonl"
+        assert report["cli_args"]["mapping"]["corpus"] == "corpus.jsonl"
+
+    def test_nested_list_in_dict_redacted(self):
+        """Nested list inside dict: paths redacted to basenames."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={"a": [Path("/home/x/y.jsonl"), "/tmp/a/b.jsonl"]},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        assert report["cli_args"]["a"] == ["y.jsonl", "b.jsonl"]
+
+    def test_deeply_nested_redaction(self):
+        """Deeply nested structure: all paths redacted."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={
+                "level1": {
+                    "level2": ["/home/x/deep.jsonl", {"inner": "/tmp/inner.jsonl"}],
+                }
+            },
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        assert report["cli_args"]["level1"]["level2"][0] == "deep.jsonl"
+        assert report["cli_args"]["level1"]["level2"][1]["inner"] == "inner.jsonl"
+
+    def test_pathlib_path_in_nested_redacted(self):
+        """Pathlib.Path objects in nested structures redacted to string basenames."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={"paths": [Path("/home/x/a.jsonl"), Path("/tmp/b.jsonl")]},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        result = report["cli_args"]["paths"]
+        assert result == ["a.jsonl", "b.jsonl"]
+        assert isinstance(result[0], str)
+
+    def test_relative_paths_preserved_in_nested(self):
+        """Relative paths in nested structures preserved as strings."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={"files": ["relative/path.jsonl", "/home/x/abs.jsonl"]},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        assert report["cli_args"]["files"][0] == "relative/path.jsonl"
+        assert report["cli_args"]["files"][1] == "abs.jsonl"
