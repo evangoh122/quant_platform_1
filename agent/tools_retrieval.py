@@ -24,6 +24,44 @@ from db.lakebase import get_lakebase
 
 _OPEN_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SUBMITTED", "PARTIALLY_FILLED")
 
+# ── Canonical query column lists (used by production + schema contract) ───────
+
+_OPTIONS_COLS = [
+    "symbol", "feature_ts",
+    "put_volume", "call_volume", "put_call_ratio",
+    "iv_atm", "iv_25d_put", "iv_25d_call", "iv_skew",
+    "iv_term_slope", "avg_spread_pct", "volume_anomaly_zscore",
+    "oi_concentration", "net_delta_exposure",
+]
+
+_COT_COLS = [
+    "mapped_asset", "report_date",
+    "lev_money_net", "lev_money_net_chg_1w", "lev_money_pctile_52w",
+    "lev_money_zscore_52w", "asset_mgr_net", "asset_mgr_pctile_52w",
+    "crowding_score", "regime_label",
+]
+
+
+def _build_options_query(symbol: str) -> tuple[str, dict]:
+    """Build the options features query. Returns (sql, params)."""
+    from db.delta_adapter import _fqn
+    cols_sql = ", ".join(_OPTIONS_COLS)
+    query = (
+        f"SELECT {cols_sql} "
+        f"FROM {_fqn('gold_options_features')} "
+        f"WHERE symbol = :symbol "
+        f"ORDER BY feature_ts DESC"
+    )
+    return query, {"symbol": symbol}
+
+
+def _build_cot_query(mapped_asset: str) -> tuple[str, dict]:
+    """Build the COT positioning query. Returns (sql, params)."""
+    from db.delta_adapter import _fqn
+    cols_sql = ", ".join(_COT_COLS)
+    query = f"SELECT {cols_sql} FROM {_fqn('gold_cot_features')} WHERE mapped_asset = :mapped_asset"
+    return query, {"mapped_asset": mapped_asset}
+
 
 def _spark():
     from api.services.hybrid_retriever import _get_spark
@@ -63,14 +101,6 @@ def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: in
     symbol = normalize_symbol(symbol)
     from db.delta_adapter import _has_pyspark, _warehouse_query, _fqn
 
-    opts_cols = [
-        "symbol", "feature_ts",
-        "put_volume", "call_volume", "put_call_ratio",
-        "iv_atm", "iv_25d_put", "iv_25d_call", "iv_skew",
-        "iv_term_slope", "avg_spread_pct", "volume_anomaly_zscore",
-        "oi_concentration", "net_delta_exposure",
-    ]
-
     if expiry:
         return [{"error": "expiry_not_supported", "message": "gold_options_features has no expiry column; filter removed"}]
 
@@ -81,19 +111,12 @@ def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: in
             _spark()
             .table(_fqn("gold_options_features"))
             .where(F.col("symbol") == symbol)
-            .select(*opts_cols)
+            .select(*_OPTIONS_COLS)
         )
         return [r.asDict() for r in df.limit(limit).collect()]
 
     # Warehouse fallback
-    cols_sql = ", ".join(opts_cols)
-    query = (
-        f"SELECT {cols_sql} "
-        f"FROM {_fqn('gold_options_features')} "
-        f"WHERE symbol = :symbol "
-        f"ORDER BY feature_ts DESC"
-    )
-    params: dict = {"symbol": symbol}
+    query, params = _build_options_query(symbol)
     return _warehouse_query(query, params=params, limit=limit)
 
 
@@ -401,17 +424,10 @@ def get_cot_positioning(mapped_asset: str) -> dict:
 
     from db.delta_adapter import _has_pyspark, _warehouse_query, _fqn
 
-    cot_cols = [
-        "mapped_asset", "report_date",
-        "lev_money_net", "lev_money_net_chg_1w", "lev_money_pctile_52w",
-        "lev_money_zscore_52w", "asset_mgr_net", "asset_mgr_pctile_52w",
-        "crowding_score", "regime_label",
-    ]
-
     if _has_pyspark:
         from pyspark.sql import functions as F
 
-        cols = [F.col(c) for c in cot_cols]
+        cols = [F.col(c) for c in _COT_COLS]
         df = _spark().table(_fqn("gold_cot_features")).where(
             F.col("mapped_asset") == asset_class
         ).select(*cols).limit(1)
@@ -419,9 +435,8 @@ def get_cot_positioning(mapped_asset: str) -> dict:
         return rows[0].asDict() if rows else {}
 
     # Warehouse fallback
-    cols_sql = ", ".join(cot_cols)
-    query = f"SELECT {cols_sql} FROM {_fqn('gold_cot_features')} WHERE mapped_asset = :mapped_asset"
-    rows = _warehouse_query(query, params={"mapped_asset": asset_class}, limit=1)
+    query, params = _build_cot_query(asset_class)
+    rows = _warehouse_query(query, params=params, limit=1)
     return rows[0] if rows else {}
 
 

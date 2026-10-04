@@ -44,6 +44,56 @@ def _fqn(table: str) -> str:
     return f"{CATALOG}.{SCHEMA}.{table}"
 
 
+# ── Canonical SQL query constants (used by production + schema contract) ──────
+
+def _build_latest_signals_query(symbol: Optional[str] = None) -> tuple[str, Optional[Dict[str, Any]]]:
+    """Build the latest_signals query. Returns (sql, params)."""
+    query = f"SELECT * FROM {_fqn('gold_trading_signals')}"
+    params: Optional[Dict[str, Any]] = None
+    if symbol:
+        query += " WHERE symbol = :symbol"
+        params = {"symbol": symbol}
+    query += " ORDER BY prediction_ts DESC"
+    return query, params
+
+
+def _build_market_features_daily_query(symbol: str, start_ts: str, end_ts: str) -> tuple[str, Dict[str, Any]]:
+    """Build the market_features daily query. Returns (sql, params)."""
+    query = (
+        f"SELECT symbol, event_date, "
+        f"adj_open AS open, adj_high AS high, adj_low AS low, "
+        f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
+        f"return_1d "
+        f"FROM {_fqn('silver_ohlcv_day_adjusted')} "
+        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts "
+        f"ORDER BY event_date DESC"
+    )
+    params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
+    return query, params
+
+
+_INTRADAY_COLS = [
+    "symbol", "feature_ts",
+    "return_1m", "return_5m", "return_15m", "return_30m",
+    "rvol_5m", "rvol_15m", "rvol_30m",
+    "atr_14", "momentum_5m", "momentum_15m",
+    "rsi_14", "vwap_deviation", "relative_volume",
+    "dist_session_high", "dist_session_low",
+]
+
+
+def _build_market_features_intraday_query(symbol: str, start_ts: str, end_ts: str) -> tuple[str, Dict[str, Any]]:
+    """Build the market_features_intraday query. Returns (sql, params)."""
+    cols_sql = ", ".join(_INTRADAY_COLS)
+    query = (
+        f"SELECT {cols_sql} "
+        f"FROM {_fqn('gold_ohlcv_features')} "
+        f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
+    )
+    params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
+    return query, params
+
+
 def _spark():  # type: ignore[return-type]
     if not _has_pyspark:
         raise ImportError("pyspark not installed; use SQL warehouse backend")
@@ -376,12 +426,7 @@ def latest_signals(symbol: Optional[str] = None, limit: int = 20) -> Any:
         return df.orderBy(F.col("prediction_ts").desc()).limit(limit)
 
     # Warehouse fallback
-    query = f"SELECT * FROM {_fqn('gold_trading_signals')}"
-    params: Optional[Dict[str, Any]] = None
-    if symbol:
-        query += " WHERE symbol = :symbol"
-        params = {"symbol": symbol}
-    query += " ORDER BY prediction_ts DESC"
+    query, params = _build_latest_signals_query(symbol)
     return _warehouse_query(query, params=params, limit=limit)
 
 
@@ -410,16 +455,7 @@ def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 500
         return df.limit(limit)
 
     # Warehouse fallback
-    daily_query = (
-        f"SELECT symbol, event_date, "
-        f"adj_open AS open, adj_high AS high, adj_low AS low, "
-        f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
-        f"return_1d "
-        f"FROM {_fqn('silver_ohlcv_day_adjusted')} "
-        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts "
-        f"ORDER BY event_date DESC"
-    )
-    params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
+    daily_query, params = _build_market_features_daily_query(symbol, start_ts, end_ts)
     return _warehouse_query(daily_query, params=params, limit=limit)
 
 
@@ -429,27 +465,13 @@ def market_features_intraday(symbol: str, start_ts: str, end_ts: str, *, limit: 
     Returns the real columns: returns, rvol, atr, momentum, rsi, vwap_deviation, etc.
     Auto-selects pyspark or warehouse backend.
     """
-    intraday_cols = [
-        "symbol", "feature_ts",
-        "return_1m", "return_5m", "return_15m", "return_30m",
-        "rvol_5m", "rvol_15m", "rvol_30m",
-        "atr_14", "momentum_5m", "momentum_15m",
-        "rsi_14", "vwap_deviation", "relative_volume",
-        "dist_session_high", "dist_session_low",
-    ]
     if _has_pyspark:
         spark = _spark()
         df = spark.table(_fqn("gold_ohlcv_features")).where(
             (F.col("symbol") == symbol) & (F.col("feature_ts").between(start_ts, end_ts))
-        ).select(*intraday_cols)
+        ).select(*_INTRADAY_COLS)
         return df.limit(limit)
 
     # Warehouse fallback
-    cols_sql = ", ".join(intraday_cols)
-    query = (
-        f"SELECT {cols_sql} "
-        f"FROM {_fqn('gold_ohlcv_features')} "
-        f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
-    )
-    params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
+    query, params = _build_market_features_intraday_query(symbol, start_ts, end_ts)
     return _warehouse_query(query, params=params, limit=limit)

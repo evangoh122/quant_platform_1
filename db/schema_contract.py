@@ -186,81 +186,26 @@ def _extract_source_columns(sql: str) -> set[str]:
 def validate_actual_queries() -> list[str]:
     """Validate that actual SQL queries in the codebase match the contract.
 
-    Imports the query strings from delta_adapter and tools_retrieval, extracts
-    their column references, and compares against QUERY_COLUMNS.
+    Imports the canonical query builders from delta_adapter and tools_retrieval,
+    builds the real SQL strings, extracts their column references, and compares
+    against QUERY_COLUMNS.  No duplicated hardcoded SQL — the test guards the
+    actual production queries.
     """
     errors: list[str] = []
 
-    # Define the mapping: (query_name, table, sql_template_or_function)
-    # We import lazily to avoid circular imports.
     from db import delta_adapter
+    from agent import tools_retrieval
 
-    # Build the actual SQL queries (with dummy params for extraction)
+    # Build real SQL from the canonical builders
     _CATALOG = "bootcamp_students"
     _SCHEMA = "evangoh_capstone"
     _fqn = lambda t: f"{_CATALOG}.{_SCHEMA}.{t}"
 
-    # latest_signals query
-    latest_sig_sql = (
-        f"SELECT * FROM {_fqn('gold_trading_signals')} "
-        f"WHERE symbol = :symbol ORDER BY prediction_ts DESC"
-    )
-
-    # market_features daily query
-    daily_sql = (
-        f"SELECT symbol, event_date, "
-        f"adj_open AS open, adj_high AS high, adj_low AS low, "
-        f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
-        f"return_1d "
-        f"FROM {_fqn('silver_ohlcv_day_adjusted')} "
-        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts "
-        f"ORDER BY event_date DESC"
-    )
-
-    # market_features_intraday query
-    intraday_cols = delta_adapter.market_features_intraday.__doc__ or ""
-    # Build from the actual function's column list
-    intraday_col_list = [
-        "symbol", "feature_ts",
-        "return_1m", "return_5m", "return_15m", "return_30m",
-        "rvol_5m", "rvol_15m", "rvol_30m",
-        "atr_14", "momentum_5m", "momentum_15m",
-        "rsi_14", "vwap_deviation", "relative_volume",
-        "dist_session_high", "dist_session_low",
-    ]
-    intraday_sql = (
-        f"SELECT {', '.join(intraday_col_list)} "
-        f"FROM {_fqn('gold_ohlcv_features')} "
-        f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
-    )
-
-    # get_options_features query (from tools_retrieval)
-    opts_col_list = [
-        "symbol", "feature_ts",
-        "put_volume", "call_volume", "put_call_ratio",
-        "iv_atm", "iv_25d_put", "iv_25d_call", "iv_skew",
-        "iv_term_slope", "avg_spread_pct", "volume_anomaly_zscore",
-        "oi_concentration", "net_delta_exposure",
-    ]
-    opts_sql = (
-        f"SELECT {', '.join(opts_col_list)} "
-        f"FROM {_fqn('gold_options_features')} "
-        f"WHERE symbol = :symbol "
-        f"ORDER BY feature_ts DESC"
-    )
-
-    # get_cot_positioning query
-    cot_col_list = [
-        "mapped_asset", "report_date",
-        "lev_money_net", "lev_money_net_chg_1w", "lev_money_pctile_52w",
-        "lev_money_zscore_52w", "asset_mgr_net", "asset_mgr_pctile_52w",
-        "crowding_score", "regime_label",
-    ]
-    cot_sql = (
-        f"SELECT {', '.join(cot_col_list)} "
-        f"FROM {_fqn('gold_cot_features')} "
-        f"WHERE mapped_asset = :mapped_asset"
-    )
+    latest_sig_sql, _ = delta_adapter._build_latest_signals_query(symbol="AAPL")
+    daily_sql, _ = delta_adapter._build_market_features_daily_query("AAPL", "2025-01-01", "2025-12-31")
+    intraday_sql, _ = delta_adapter._build_market_features_intraday_query("AAPL", "2025-01-01", "2025-12-31")
+    opts_sql, _ = tools_retrieval._build_options_query("AAPL")
+    cot_sql, _ = tools_retrieval._build_cot_query("rate")
 
     # Validate each query's columns against the contract
     queries = [
