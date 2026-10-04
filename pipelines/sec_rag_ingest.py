@@ -669,12 +669,16 @@ def discover_filings(
     cik: str,
     start_date: str,
     forms: Set[str],
-) -> List[FilingMeta]:
+) -> Tuple[List[FilingMeta], Set[str]]:
     """Discover all 10-K/10-Q accessions from start_date onward.
 
     Follows submissions-history JSON files to cover the cutoff date.
     Preserves acceptanceDateTime from EDGAR.
     Raises SecClientError if the initial submissions request fails after retries.
+
+    Returns (filings, failed_history_urls).  ``failed_history_urls`` is the set
+    of history-file URLs that failed to fetch — the caller can use this to
+    mark the ticker as partial coverage.
     """
     cik_padded = cik.zfill(10)
     submissions_url = (
@@ -682,12 +686,13 @@ def discover_filings(
     )
 
     filings: List[FilingMeta] = []
+    failed_history_urls: Set[str] = set()
 
     data = client.get_json(submissions_url)
 
     recent = data.get("filings", {}).get("recent", {})
     if not recent:
-        return filings
+        return filings, failed_history_urls
 
     forms_list = recent.get("form", [])
     dates_list = recent.get("filingDate", [])
@@ -723,6 +728,7 @@ def discover_filings(
             hist_data = client.get_json(history_url)
         except SecClientError as e:
             logger.warning("History file fetch failed for %s: %s", name, e)
+            failed_history_urls.add(history_url)
             continue
 
         hist_recent = hist_data.get("filings", {}).get("recent", {})
@@ -738,7 +744,7 @@ def discover_filings(
             start_date, forms, filings,
         )
 
-    return filings
+    return filings, failed_history_urls
 
 
 def _collect_filings(
@@ -1035,11 +1041,13 @@ class IngestResult:
     planned_count: int = 0
     succeeded_count: int = 0
     failed_count: int = 0
+    partial_count: int = 0
     skipped_existing_count: int = 0
     total_requests: int = 0
     total_retries: int = 0
     total_rows_appended: int = 0
     dry_run: bool = False
+    partial_tickers: List[str] = field(default_factory=list)
 
 
 def run_ingest(
@@ -1167,9 +1175,33 @@ def run_ingest(
     failed_tickers: Set[str] = set()
     for ticker, cik in mapped_tickers:
         try:
-            filings = discover_filings(client, cik, start_date, forms)
+            filings, failed_hist = discover_filings(client, cik, start_date, forms)
             all_filings[ticker] = filings
             result.discovered_count += len(filings)
+            if failed_hist:
+                # History-file fetch failures → partial coverage
+                result.partial_count += 1
+                result.partial_tickers.append(ticker)
+                logger.warning(
+                    "Partial coverage for %s (CIK %s): %d history file(s) failed",
+                    ticker, cik, len(failed_hist),
+                )
+                if log_writer is not None:
+                    log_writer.append_log(catalog, schema, IngestLogEntry(
+                        run_id=run_id,
+                        ticker=ticker,
+                        cik=cik,
+                        accession_number="PARTIAL_COVERAGE",
+                        form_type="N/A",
+                        filing_date=None,
+                        accepted_ts=None,
+                        status="partial",
+                        error_code="history_fetch_failed",
+                        error_message=f"{len(failed_hist)} history file(s) failed: "
+                                      f"{', '.join(sorted(failed_hist)[:3])}",
+                        started_ts=datetime.now(timezone.utc),
+                        completed_ts=datetime.now(timezone.utc),
+                    ))
         except SecClientError as e:
             failed_tickers.add(ticker)
             result.failed_count += 1
@@ -1423,10 +1455,11 @@ def run_ingest(
 
     logger.info(
         "Ingestion complete: mapped=%d, missing=%d, discovered=%d, existing=%d, "
-        "planned=%d, succeeded=%d, failed=%d, skipped=%d, rows=%d, requests=%d, retries=%d",
+        "planned=%d, succeeded=%d, failed=%d, partial=%d, skipped=%d, rows=%d, "
+        "requests=%d, retries=%d",
         result.mapped_count, result.missing_count, result.discovered_count,
         result.existing_count, result.planned_count, result.succeeded_count,
-        result.failed_count, result.skipped_existing_count,
+        result.failed_count, result.partial_count, result.skipped_existing_count,
         result.total_rows_appended, result.total_requests, result.total_retries,
     )
 

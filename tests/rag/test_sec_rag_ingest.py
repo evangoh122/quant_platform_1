@@ -572,8 +572,9 @@ class TestFilingDiscovery:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        filings, failed_hist = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
         assert len(filings) == 2  # 10-K and 10-Q, not 8-K
+        assert len(failed_hist) == 0
 
     def test_respects_cutoff(self):
         clock = FakeClock()
@@ -583,7 +584,7 @@ class TestFilingDiscovery:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings = discover_filings(client, "1045810", "2025-01-01", {"10-K", "10-Q"})
+        filings, _ = discover_filings(client, "1045810", "2025-01-01", {"10-K", "10-Q"})
         assert len(filings) == 1  # Only the 2025-02-20 10-K
 
     def test_follows_history(self):
@@ -596,7 +597,7 @@ class TestFilingDiscovery:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
         # Recent: 2 filings (2025-02-20 10-K, 2024-11-07 10-Q)
         # History: 0 filings after cutoff (2024-02-21 10-K and 2024-08-28 10-Q are before 2024-09-01)
         assert len(filings) == 2
@@ -609,7 +610,7 @@ class TestFilingDiscovery:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K"})
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"10-K"})
         assert len(filings) == 1
         assert filings[0].form_type == "10-K"
 
@@ -1714,9 +1715,12 @@ class TestDiscoveryCompleteness:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        filings, failed_hist = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
         # Should still get filings from recent (not crash)
         assert len(filings) >= 1
+        # Failed history URL should be tracked
+        assert len(failed_hist) == 1
+        assert "submissions-001" in next(iter(failed_hist))
 
     def test_history_overlap_uses_filing_to(self):
         """History file is fetched when filingTo >= start_date (overlap check)."""
@@ -1751,7 +1755,7 @@ class TestDiscoveryCompleteness:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
         accessions = {f.accession_number for f in filings}
         assert "002" in accessions, "History filing after cutoff should be included"
 
@@ -1779,9 +1783,99 @@ class TestDiscoveryCompleteness:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings = discover_filings(client, "1045810", "2024-09-01", {"10-K"})
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"10-K"})
         assert len(filings) == 1
         assert filings[0].accepted_ts is None  # Not dropped
+
+
+class TestPartialCoverageN2:
+    """N2 (P2): A failed history-file fetch must be recorded as partial in
+    sec_ingest_log and surfaced in the run summary (IngestResult.partial_count).
+
+    Mutation proof: if discover_filings swallows the error and returns only
+    filings (no failed set), run_ingest never records partial → FAILS.
+    """
+
+    def test_partial_coverage_logged_and_counted(self):
+        """History-file fetch failure → partial status in log + partial_count in result."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        # History file returns error → partial coverage
+        http.set_error("https://data.sec.gov/submissions/CIK0001045810-submissions-001.json", 500)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        writer = FakeDataWriter()
+        log_writer = FakeLogWriter()
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=writer,
+            log_writer=log_writer,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        # partial_count must be 1
+        assert result.partial_count == 1, (
+            f"Expected partial_count=1, got {result.partial_count}. "
+            "Mutation: discover_filings swallowing history failure → 0 partial."
+        )
+        assert "NVDA" in result.partial_tickers
+
+        # partial entry in log
+        partial = [e for e in log_writer.entries if e.status == "partial"]
+        assert len(partial) == 1
+        assert partial[0].error_code == "history_fetch_failed"
+        assert partial[0].ticker == "NVDA"
+        assert "history" in partial[0].error_message.lower()
+
+    def test_no_partial_when_history_succeeds(self):
+        """When history file succeeds, partial_count stays 0."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        history = json.loads((FIXTURES / "submissions_history.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810-submissions-001.json", history)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000020/nvda-20241027.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=FakeDataWriter(),
+            log_writer=FakeLogWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        assert result.partial_count == 0
+        assert result.partial_tickers == []
 
 
 class TestCikAmbiguousAndCacheFallback:
