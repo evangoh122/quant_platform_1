@@ -603,6 +603,7 @@ WITH as_of_filtered AS (
     WHERE to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York') <= :as_of
       AND ingest_ts <= :as_of
 ),
+-- Dedup FIRST so LAG sees one row per (symbol, event_date)
 deduped AS (
     SELECT
         symbol,
@@ -614,6 +615,24 @@ deduped AS (
         volume,
         to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York')
             AS information_available_ts,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol, event_date
+            ORDER BY ingest_ts DESC
+        ) AS rn
+    FROM as_of_filtered
+),
+-- Compute suspected_split on deduplicated series so LAG compares
+-- consecutive trading days, not duplicate rows
+with_splits AS (
+    SELECT
+        symbol,
+        event_date,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        information_available_ts,
         CASE
             WHEN LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) > 0
                  AND ABS(close / LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) - 1) >= 0.4
@@ -633,12 +652,9 @@ deduped AS (
                  )
             THEN TRUE
             ELSE FALSE
-        END AS suspected_split,
-        ROW_NUMBER() OVER (
-            PARTITION BY symbol, event_date
-            ORDER BY ingest_ts DESC
-        ) AS rn
-    FROM as_of_filtered
+        END AS suspected_split
+    FROM deduped
+    WHERE rn = 1
 )
 SELECT
     symbol,
@@ -650,8 +666,7 @@ SELECT
     volume,
     information_available_ts,
     suspected_split
-FROM deduped
-WHERE rn = 1;
+FROM with_splits;
 ```
 
 **Source:** `silver_ohlcv_day_adjusted` (primary) or `bronze_ohlcv_day` (fallback). Silver constraints: ≤10 tickers, ≤2 years, ≤10,000 rows.

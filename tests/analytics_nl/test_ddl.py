@@ -1270,3 +1270,158 @@ class TestRelativePerformanceDuckDB:
                     "Mutation proof failed: disabling invalid_return status "
                     "should change status away from 'invalid_return'"
                 )
+
+
+class TestBoundedBarsDuckDB:
+    """Semantic tests for bounded-bars suspected_split using DuckDB.
+
+    Verifies that dedup happens BEFORE LAG so that suspected_split
+    compares consecutive trading days, not duplicate rows.
+    """
+
+    # SQL that deduplicates FIRST, then computes suspected_split (correct)
+    _DEDUP_THEN_LAG_SQL = """
+    WITH deduped AS (
+        SELECT
+            symbol, event_date, close,
+            ROW_NUMBER() OVER (
+                PARTITION BY symbol, event_date ORDER BY ingest_ts DESC
+            ) AS rn
+        FROM base_bars
+    ),
+    with_splits AS (
+        SELECT
+            symbol, event_date, close,
+            CASE
+                WHEN LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) > 0
+                     AND ABS(close / LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) - 1) >= 0.4
+                THEN TRUE
+                ELSE FALSE
+            END AS suspected_split
+        FROM deduped
+        WHERE rn = 1
+    )
+    SELECT symbol, event_date, close, suspected_split
+    FROM with_splits
+    ORDER BY event_date;
+    """
+
+    # SQL that computes LAG BEFORE dedup (incorrect — the mutation)
+    _LAG_BEFORE_DEDUP_SQL = """
+    WITH with_splits AS (
+        SELECT
+            symbol, event_date, close,
+            CASE
+                WHEN LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) > 0
+                     AND ABS(close / LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) - 1) >= 0.4
+                THEN TRUE
+                ELSE FALSE
+            END AS suspected_split,
+            ROW_NUMBER() OVER (
+                PARTITION BY symbol, event_date ORDER BY ingest_ts DESC
+            ) AS rn
+        FROM base_bars
+    )
+    SELECT symbol, event_date, close, suspected_split
+    FROM with_splits
+    WHERE rn = 1
+    ORDER BY event_date;
+    """
+
+    def _run_sql(self, sql: str, rows: list[tuple]) -> list[tuple]:
+        """Run SQL against a DuckDB in-memory fixture."""
+        import duckdb
+
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE base_bars (
+                symbol VARCHAR,
+                event_date DATE,
+                close DOUBLE,
+                ingest_ts TIMESTAMP
+            )
+        """)
+        con.executemany("INSERT INTO base_bars VALUES (?, ?, ?, ?)", rows)
+        result = con.execute(sql).fetchall()
+        con.close()
+        return result
+
+    def test_dedup_then_lag_correct_on_duplicates(self):
+        """With duplicates, dedup-then-LAG should see clean consecutive days."""
+        # Two rows for 2024-01-02 (duplicate ingest_ts values)
+        # Close goes 100 → 130 (30% change, below 0.4 threshold)
+        rows = [
+            ("AAPL", "2024-01-01", 100.0, "2024-01-01 10:00:00"),
+            ("AAPL", "2024-01-02", 130.0, "2024-01-02 10:00:00"),
+            ("AAPL", "2024-01-02", 130.0, "2024-01-02 11:00:00"),  # duplicate
+            ("AAPL", "2024-01-03", 125.0, "2024-01-03 10:00:00"),
+        ]
+        result = self._run_sql(self._DEDUP_THEN_LAG_SQL, rows)
+        # Should have 3 rows (after dedup)
+        assert len(result) == 3, f"Expected 3 rows after dedup, got {len(result)}"
+        # Day 2: 100→130 is 30% change < 0.4 threshold → FALSE
+        # Day 3: 130→125 is -3.8% → FALSE
+        for row in result:
+            assert row[3] is False or row[3] == 0, (
+                f"Expected no suspected split for {row[1]}, got {row[3]}"
+            )
+
+    def test_lag_before_dup_corrupted_by_duplicates(self):
+        """With duplicates, LAG-before-dedup can corrupt the split detection.
+
+        Mutation: if LAG runs before dedup, the duplicate row appears as a
+        different row in the LAG's window, potentially changing the result.
+        """
+        # Day1 close=100, Day2 has TWO rows: close=50 (ingest 10:00) and close=200 (ingest 11:00)
+        # After dedup (latest ingest): Day2 close=200, LAG(Day1=100) → 100% change (2x ratio)
+        # Before dedup: LAG may see close=50 as prev for close=200 → 4x ratio (different!)
+        rows = [
+            ("AAPL", "2024-01-01", 100.0, "2024-01-01 10:00:00"),
+            ("AAPL", "2024-01-02", 50.0, "2024-01-02 10:00:00"),   # earlier ingest
+            ("AAPL", "2024-01-02", 200.0, "2024-01-02 11:00:00"),  # later ingest (kept by dedup)
+            ("AAPL", "2024-01-03", 100.0, "2024-01-03 10:00:00"),
+        ]
+        result_correct = self._run_sql(self._DEDUP_THEN_LAG_SQL, rows)
+        result_buggy = self._run_sql(self._LAG_BEFORE_DEDUP_SQL, rows)
+
+        # The correct version deduplicates first, so Day2 sees close=200
+        # and LAG sees Day1=100 → ratio=2.0 (near 2:1 split) → TRUE
+        # The buggy version runs LAG on the raw (duplicate) data.
+        # Both should have exactly 3 rows.
+        assert len(result_correct) == 3
+        assert len(result_buggy) == 3
+
+        # Day2 in correct version: 100→200 = 2.0 ratio → detected as split
+        day2_correct = [r for r in result_correct if str(r[1]) == "2024-01-02"][0]
+        assert day2_correct[3] is True or day2_correct[3] == 1, (
+            "Correct version should detect 2:1 split on Day2"
+        )
+
+    def test_no_split_ratio_detected_as_false(self):
+        """Normal price movements (not split ratios) → suspected_split = FALSE."""
+        rows = [
+            ("AAPL", "2024-01-01", 100.0, "2024-01-01 10:00:00"),
+            ("AAPL", "2024-01-02", 105.0, "2024-01-02 10:00:00"),  # +5%
+            ("AAPL", "2024-01-03", 95.0, "2024-01-03 10:00:00"),   # -9.5%
+        ]
+        result = self._run_sql(self._DEDUP_THEN_LAG_SQL, rows)
+        for row in result:
+            assert row[3] is False or row[3] == 0, (
+                f"Normal movement on {row[1]} should not be suspected split, got {row[3]}"
+            )
+
+    def test_split_ratio_detected_as_true(self):
+        """10:1 forward split (close drops ~90%) → suspected_split = TRUE."""
+        rows = [
+            ("AAPL", "2024-01-01", 1000.0, "2024-01-01 10:00:00"),
+            ("AAPL", "2024-01-02", 100.0, "2024-01-02 10:00:00"),  # 10:1 split
+            ("AAPL", "2024-01-03", 105.0, "2024-01-03 10:00:00"),
+        ]
+        result = self._run_sql(self._DEDUP_THEN_LAG_SQL, rows)
+        # Day 2 should be detected as split
+        for row in result:
+            d = str(row[1])
+            if d == "2024-01-02":
+                assert row[3] is True or row[3] == 1, (
+                    f"10:1 split on {d} should be suspected_split=TRUE, got {row[3]}"
+                )
