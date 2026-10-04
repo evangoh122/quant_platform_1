@@ -3143,6 +3143,140 @@ class TestResolveUserAgent:
             "Secret value leaked into logs"
         )
 
+    def test_sdk_success_value_never_in_logs(self, monkeypatch, caplog, capsys):
+        """SDK success path: decoded value must not appear in logs or stdout/stderr.
+
+        Mutation: add logger.info("... value=%s", decoded) at sec_rag_ingest.py:~142
+        → this test FAILS.
+        """
+        if SecretsAPI is None:
+            pytest.skip("databricks.sdk not available")
+        import base64
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        raw_value = "LeakedAgent leak@company.com"
+        encoded_value = base64.b64encode(raw_value.encode("utf-8")).decode("utf-8")
+        mock_response = GetSecretResponse(key="sec_edgar_user_agent", value=encoded_value)
+
+        mock_secrets = MagicMock(spec=SecretsAPI)
+        mock_secrets.get_secret.return_value = mock_response
+
+        mock_client = MagicMock()
+        mock_client.secrets = mock_secrets
+
+        mock_ws_module = MagicMock()
+        mock_ws_module.WorkspaceClient.return_value = mock_client
+
+        with patch.dict("sys.modules", {
+            "databricks.sdk": mock_ws_module,
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
+        }):
+            from pipelines.sec_rag_ingest import _resolve_user_agent
+            with caplog.at_level("DEBUG", logger="pipelines.sec_rag_ingest"):
+                result = _resolve_user_agent()
+
+        assert result == raw_value, "Precondition: SDK path must resolve the value"
+
+        # Value must not appear in any log record
+        for record in caplog.records:
+            assert raw_value not in record.getMessage(), (
+                f"Value leaked in log record: {record.getMessage()}"
+            )
+        assert raw_value not in caplog.text, (
+            "Value leaked in caplog.text"
+        )
+        # Value must not appear in captured stdout/stderr
+        captured = capsys.readouterr()
+        assert raw_value not in captured.out, "Value leaked to stdout"
+        assert raw_value not in captured.err, "Value leaked to stderr"
+
+    def test_dbutils_sdk_runtime_success_value_never_in_logs(self, monkeypatch, caplog, capsys):
+        """dbutils (sdk_runtime) success path: value must not appear in logs or stdout/stderr.
+
+        Mutation: add logger.info("... value=%s", secret_val) at sec_rag_ingest.py:~114
+        → this test FAILS.
+        """
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        secret_value = "RuntimeAgent runtime@company.com"
+        mock_dbutils = MagicMock()
+        mock_dbutils.secrets.get.return_value = secret_value
+
+        mock_runtime = MagicMock()
+        mock_runtime.dbutils = mock_dbutils
+
+        with patch.dict("sys.modules", {
+            "databricks.sdk.runtime": mock_runtime,
+            "databricks.sdk": MagicMock(),
+        }):
+            from pipelines.sec_rag_ingest import _resolve_user_agent
+            with caplog.at_level("DEBUG", logger="pipelines.sec_rag_ingest"):
+                result = _resolve_user_agent()
+
+        assert result == secret_value, "Precondition: sdk_runtime path must resolve the value"
+
+        for record in caplog.records:
+            assert secret_value not in record.getMessage(), (
+                f"Value leaked in log record: {record.getMessage()}"
+            )
+        assert secret_value not in caplog.text, (
+            "Value leaked in caplog.text"
+        )
+        captured = capsys.readouterr()
+        assert secret_value not in captured.out, "Value leaked to stdout"
+        assert secret_value not in captured.err, "Value leaked to stderr"
+
+    def test_dbutils_globals_success_value_never_in_logs(self, monkeypatch, caplog, capsys):
+        """dbutils (globals) success path: value must not appear in logs or stdout/stderr.
+
+        Mutation: add logger.info("... value=%s", secret_val) at sec_rag_ingest.py:~127
+        → this test FAILS.
+        """
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        secret_value = "GlobalAgent global@company.com"
+        mock_dbutils = MagicMock()
+        mock_dbutils.secrets.get.return_value = secret_value
+
+        # sdk_runtime has dbutils=None so it falls through to globals() path
+        with patch.dict("sys.modules", {
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
+            "databricks.sdk": MagicMock(),
+        }):
+            import pipelines.sec_rag_ingest as mod
+            had_dbutils = hasattr(mod, 'dbutils')
+            old_dbutils = getattr(mod, 'dbutils', None)
+            mod.dbutils = mock_dbutils
+
+            try:
+                from pipelines.sec_rag_ingest import _resolve_user_agent
+                with caplog.at_level("DEBUG", logger="pipelines.sec_rag_ingest"):
+                    result = _resolve_user_agent()
+            finally:
+                if had_dbutils:
+                    mod.dbutils = old_dbutils
+                else:
+                    delattr(mod, 'dbutils')
+
+        assert result == secret_value, "Precondition: globals dbutils path must resolve the value"
+
+        for record in caplog.records:
+            assert secret_value not in record.getMessage(), (
+                f"Value leaked in log record: {record.getMessage()}"
+            )
+        assert secret_value not in caplog.text, (
+            "Value leaked in caplog.text"
+        )
+        captured = capsys.readouterr()
+        assert secret_value not in captured.out, "Value leaked to stdout"
+        assert secret_value not in captured.err, "Value leaked to stderr"
+
     def test_custom_scope_key_passed_through(self, monkeypatch):
         """Custom scope/key are used when env is not set (via sdk_runtime dbutils)."""
         from pipelines.sec_rag_ingest import _resolve_user_agent
