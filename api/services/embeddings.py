@@ -157,6 +157,9 @@ def get_embeddings():
     EMBEDDING_PROVIDER selects the backend:
       - sentence-transformers / local / st — in-process ST model
       - huggingface — HF Inference API
+
+    Reads the provider from config at call time (not module-level) so that
+    ``importlib.reload`` in tests always sees the current env-var value.
     """
     global _embeddings
     if _embeddings is not None:
@@ -166,16 +169,20 @@ def get_embeddings():
         if _embeddings is not None:
             return _embeddings
 
-        if EMBEDDING_PROVIDER in ("sentence-transformers", "sentence_transformers", "local", "st"):
+        # Read dynamically so importlib.reload + monkeypatch always works.
+        provider = config.EMBEDDING_PROVIDER
+        st_model = config.ST_EMBEDDING_MODEL
+
+        if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             try:
-                _embeddings = LocalSTEmbeddings(ST_EMBEDDING_MODEL)
+                _embeddings = LocalSTEmbeddings(st_model)
                 return _embeddings
             except Exception as e:
                 raise EmbeddingConfigError(
-                    f"Failed to load embedding model '{ST_EMBEDDING_MODEL}': {e}"
+                    f"Failed to load embedding model '{st_model}': {e}"
                 ) from e
 
-        if EMBEDDING_PROVIDER == "huggingface":
+        if provider == "huggingface":
             model_name = config.HF_EMBEDDING_MODEL
             hf_token = os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
             if not hf_token:
@@ -193,6 +200,6 @@ def get_embeddings():
                 ) from e
 
         raise EmbeddingConfigError(
-            f"Unsupported EMBEDDING_PROVIDER '{EMBEDDING_PROVIDER}'. "
+            f"Unsupported EMBEDDING_PROVIDER '{provider}'. "
             f"Use 'sentence-transformers' or 'huggingface'."
         )

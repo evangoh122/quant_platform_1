@@ -612,6 +612,7 @@ class HybridRetriever:
         ticker: str = "",
         as_of: Optional[datetime] = None,
         top_k: Optional[int] = None,
+        resolve_ticker: bool = True,
     ) -> List[Document]:
         """Run hybrid retrieval with RRF fusion.
 
@@ -620,6 +621,9 @@ class HybridRetriever:
             ticker: Optional ticker filter.
             as_of: Point-in-time cutoff (default: now).
             top_k: Override for number of results.
+            resolve_ticker: If True (default), auto-resolve ticker from query
+                when ticker is empty.  Set to False to honour an explicit
+                empty ticker (eval harness ticker-filter-off ablation).
 
         Returns:
             Fused and optionally reranked list of Documents.
@@ -628,7 +632,7 @@ class HybridRetriever:
         """
         as_of = _normalize_as_of(as_of)
         effective_top_k = top_k or self.top_k
-        effective_ticker = resolve_ticker_from_query(query, ticker)
+        effective_ticker = resolve_ticker_from_query(query, ticker) if resolve_ticker else ticker
 
         bm25_docs = bm25_search(
             query,
@@ -680,4 +684,126 @@ class HybridRetriever:
                 doc.metadata["retrieval_mode"] = "bm25_only"
                 doc.metadata["_warning"] = "dense_unavailable"
 
+        return results
+
+    def retrieve_and_rerank(
+        self,
+        query: str,
+        ticker: str = "",
+        as_of: Optional[datetime] = None,
+        top_k: Optional[int] = None,
+        resolve_ticker: bool = True,
+    ) -> List[Document]:
+        """Run hybrid retrieval (RRF) then rerank — the full production pipeline.
+
+        This is the shared composition used by both ``search_sec_filings``
+        (agent tool) and the eval harness ``hybrid_rerank`` mode.  Calling this
+        ensures parity: the eval harness measures exactly the same code path
+        that production uses.
+
+        Args:
+            query: The search query.
+            ticker: Optional ticker filter.
+            as_of: Point-in-time cutoff (default: now).
+            top_k: Override for number of results.
+            resolve_ticker: If True (default), auto-resolve ticker from query.
+                Set to False to honour an explicit empty ticker.
+
+        Returns:
+            Reranked list of Documents.
+        """
+        docs = self.retrieve(query, ticker=ticker, as_of=as_of, top_k=top_k, resolve_ticker=resolve_ticker)
+        if not docs or not query:
+            return docs
+        if len(docs) <= 1:
+            return docs
+        from api.services.reranker import rerank as _rerank
+        effective_top_k = top_k or self.top_k
+        return _rerank(query, docs, top_k=effective_top_k)
+
+    def retrieve_mode(
+        self,
+        query: str,
+        *,
+        mode: str,
+        ticker: str = "",
+        as_of: Optional[datetime] = None,
+        top_k: Optional[int] = None,
+        rerank: bool = False,
+    ) -> List[Document]:
+        """Run retrieval in a specific mode for evaluation.
+
+        This is the evaluation-safe mode selector used by the eval harness.
+        It uses the same ``bm25_search``, ``vector_search``, ``rrf_fuse``,
+        and ``rerank`` functions as ``retrieve()`` — no duplicated algorithms.
+
+        Args:
+            query: The search query.
+            mode: One of ``bm25``, ``dense``, ``hybrid_rrf``, ``hybrid_rerank``.
+            ticker: Ticker filter (empty string = no filter).
+            as_of: Point-in-time cutoff.
+            top_k: Number of results.
+            rerank: Whether to apply cross-encoder reranking (after fusion).
+
+        Returns:
+            List of Documents with metadata including retrieval_mode and scores.
+        """
+        valid_modes = ("bm25", "dense", "hybrid_rrf", "hybrid_rerank")
+        if mode not in valid_modes:
+            raise ValueError(f"Unknown mode '{mode}'. Valid: {valid_modes}")
+
+        as_of = _normalize_as_of(as_of)
+        effective_top_k = top_k or self.top_k
+
+        # No ticker alias resolution in eval mode — ticker is explicit
+        effective_ticker = ticker
+
+        # ── BM25-only mode ────────────────────────────────────────────────
+        if mode == "bm25":
+            results = bm25_search(
+                query,
+                top_k=effective_top_k,
+                ticker=effective_ticker,
+                ticker_boost=self.ticker_boost,
+                as_of=as_of,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "bm25"
+            return results
+
+        # ── Dense-only mode ───────────────────────────────────────────────
+        if mode == "dense":
+            results = vector_search(
+                query,
+                top_k=effective_top_k,
+                ticker=effective_ticker,
+                as_of=as_of,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "dense"
+            return results
+
+        # ── Hybrid modes — delegate to shared functions ──────────────────
+        if mode == "hybrid_rrf":
+            results = self.retrieve(
+                query=query,
+                ticker=effective_ticker,
+                as_of=as_of,
+                top_k=effective_top_k,
+                resolve_ticker=False,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "hybrid_rrf"
+            return results
+
+        # mode == "hybrid_rerank"
+        results = self.retrieve_and_rerank(
+            query=query,
+            ticker=effective_ticker,
+            as_of=as_of,
+            top_k=effective_top_k,
+            resolve_ticker=False,
+        )
+        for doc in results:
+            doc.metadata["retrieval_mode"] = "hybrid_rerank"
         return results

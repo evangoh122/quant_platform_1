@@ -1,0 +1,11 @@
+{
+  "status": "OK",
+  "results": [
+    {
+      "execution_date": "2025-11-20",
+      "split_from": 5,
+      "split_to": 1,
+      "ticker": "SQQQ"
+    }
+  ]
+}

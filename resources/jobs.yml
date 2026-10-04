@@ -17,6 +17,22 @@ resources:
           spec:
             client: "1"
 
+    corporate_action_refresh:
+      name: quant-platform-corporate-action-refresh-${bundle.target}
+      tasks:
+        - task_key: refresh_bronze_corporate_actions
+          notebook_task:
+            notebook_path: ../notebooks/refresh_bronze_corporate_actions.py
+            base_parameters:
+              mode: "dry-run"
+              source: "massive"
+              delay_seconds: "0.5"
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+
     ml_ablation:
       name: quant-platform-ml-ablation-${bundle.target}
       tasks:

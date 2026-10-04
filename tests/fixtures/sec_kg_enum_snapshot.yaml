@@ -1,0 +1,31 @@
+# Snapshot of origin/slice/rag-kg:sec_kg/model.py.
+# Refresh after an intentional canonical vocabulary change with:
+#   git show origin/slice/rag-kg:sec_kg/model.py
+# Then copy the NodeType and EdgeType string values below.
+node_types:
+  - Company
+  - Filing
+  - Section
+  - Chunk
+  - XbrlFact
+  - Metric
+  - Period
+  - RiskFactor
+  - Event
+  - Segment
+  - Product
+  - Customer
+edge_types:
+  - FILED
+  - HAS_SECTION
+  - HAS_CHUNK
+  - REPORTED_FACT
+  - INSTANCE_OF
+  - FOR_PERIOD
+  - SOURCED_FROM
+  - DISCLOSED_RISK
+  - REPORTED_EVENT
+  - HAS_SEGMENT
+  - HAS_PRODUCT
+  - HAS_CUSTOMER
+  - SUPERSEDES

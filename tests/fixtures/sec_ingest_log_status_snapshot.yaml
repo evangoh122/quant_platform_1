@@ -1,0 +1,9 @@
+# Snapshot of statuses emitted by
+# slice/rag-coverage:pipelines/sec_rag_ingest.py:1078,1097,1113,1122-1174.
+# Refresh only after an intentional change to the ingestion writer.
+statuses:
+  - planned
+  - in_progress
+  - succeeded
+  - failed
+  - skipped_existing

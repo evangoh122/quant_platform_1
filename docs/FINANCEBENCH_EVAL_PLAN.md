@@ -1,5 +1,11 @@
 # FinanceBench Evaluation Plan
 
+> **SUPERSEDED** — This plan is historical. The retrieval evaluation harness has been
+> rebuilt as `evals/rag_eval/` with deterministic retrieval metrics over the production
+> hybrid BM25 + dense + RRF pipeline. See `evals/rag_eval/README.md` and run with
+> `python -m evals.rag_eval`. FinanceBench is a separate benchmark and does not overlap
+> the 2024-2026 SEC corpus used by this project.
+
 **Purpose:** Use the [FinanceBench](https://github.com/patronus-ai/financebench) benchmark
 to verify that the documents this project extracts from SEC EDGAR — and the RAG
 pipeline built on top of them — actually produce correct, grounded answers.

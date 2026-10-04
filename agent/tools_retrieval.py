@@ -88,22 +88,18 @@ def search_sec_filings(
 
     try:
         from api.services.hybrid_retriever import HybridRetriever
-        from api.services.reranker import rerank
 
         retriever = HybridRetriever(top_k=top_k)
-        docs = retriever.retrieve(
+        docs = retriever.retrieve_and_rerank(
             query=query or symbol,
             ticker=symbol,
             as_of=as_of,
             top_k=top_k,
         )
 
-        # Apply reranker if we have a query
-        if query and len(docs) > 1:
-            docs = rerank(query, docs, top_k=top_k)
-
         return [
             {
+                "chunk_id": d.metadata.get("chunk_id", ""),
                 "chunk_text": d.page_content,
                 "accession_number": d.metadata.get("accession", ""),
                 "form_type": d.metadata.get("form_type", ""),
@@ -114,6 +110,7 @@ def search_sec_filings(
                 "chunk_index": d.metadata.get("chunk_index", 0),
                 "similarity": d.metadata.get("similarity"),
                 "distance": d.metadata.get("distance"),
+                "rerank_score": d.metadata.get("rerank_score"),
                 "retrieval_mode": d.metadata.get("retrieval_mode", "hybrid"),
                 **({"_warning": d.metadata["_warning"]} if d.metadata.get("_warning") else {}),
             }
@@ -175,6 +172,7 @@ def search_sec_filings(
             mapped = []
             for r in results:
                 mapped.append({
+                    "chunk_id": r.get("chunk_id", ""),
                     "accession_number": r.get("accession_number", ""),
                     "form_type": r.get("form_type", ""),
                     "accepted_ts": r.get("accepted_ts", ""),
