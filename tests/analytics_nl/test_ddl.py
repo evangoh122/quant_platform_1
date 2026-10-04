@@ -935,7 +935,10 @@ class TestDDLAvailabilityContract:
                 args = [a.strip() for a in args_str.split(",")]
                 info_tokens = [
                     a for a in args
-                    if "INFORMATION_AVAILABLE_TS" in a.upper() or "_INFO_TS" in a.upper()
+                    if "INFORMATION_AVAILABLE_TS" in a.upper()
+                    or "_INFO_TS" in a.upper()
+                    or "_AVAILABLE_TS" in a.upper()
+                    or a.strip().upper() == "INGEST_TS"
                 ]
                 if len(info_tokens) >= 2:
                     has_availability_greatest = True
@@ -966,7 +969,10 @@ class TestDDLAvailabilityContract:
                 args = [a.strip() for a in args_str.split(",")]
                 info_tokens = [
                     a for a in args
-                    if "INFORMATION_AVAILABLE_TS" in a.upper() or "_INFO_TS" in a.upper()
+                    if "INFORMATION_AVAILABLE_TS" in a.upper()
+                    or "_INFO_TS" in a.upper()
+                    or "_AVAILABLE_TS" in a.upper()
+                    or a.strip().upper() == "INGEST_TS"
                 ]
                 assert len(info_tokens) >= 2, (
                     f"SQL block {i + 1}: GREATEST must combine at least 2 "
@@ -974,7 +980,7 @@ class TestDDLAvailabilityContract:
                 )
                 for token_raw in info_tokens:
                     token = token_raw.upper().split(".")[-1].strip()
-                    if token == "INFORMATION_AVAILABLE_TS":
+                    if token in ("INFORMATION_AVAILABLE_TS", "INGEST_TS", "DERIVED_AVAILABLE_TS"):
                         continue
                     cte_body = self._resolve_token_to_cte(token, ctes)
                     assert cte_body is not None, (
@@ -1735,4 +1741,190 @@ class TestBoundedBarsDuckDB:
         # The mutation changes the split detection outcome
         assert day2_prod[-1] != day2_mut[-1] or len(result_prod) != len(result_mutated), (
             "Mutation proof: removing dedup should change the split detection outcome"
+        )
+
+
+class TestBronzeFallbackAvailability:
+    """Bronze fallback views must use GREATEST(derived_ts, ingest_ts) for availability.
+
+    A row dated Jan 2 but ingested Jan 5 must have availability Jan 5,
+    not Jan 2. This prevents downstream PIT consumers from treating late
+    data as historically available.
+
+    SQL is extracted from the production DDL at test time.
+    """
+
+    def _run_daily_prices_fallback(self, rows):
+        """Run serve_daily_prices_v1 fallback SQL against DuckDB."""
+        import duckdb
+
+        raw = extract_view_sql("serve_daily_prices_v1", variant="fallback")
+        sql = to_duckdb(raw, params={":as_of": "'2099-01-01'"})
+
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE bronze_ohlcv_day (
+                symbol VARCHAR,
+                event_date DATE,
+                open DOUBLE,
+                high DOUBLE,
+                low DOUBLE,
+                close DOUBLE,
+                volume DOUBLE,
+                ingest_ts TIMESTAMP
+            )
+        """)
+        con.executemany("INSERT INTO bronze_ohlcv_day VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        con.execute(sql)
+        result = con.execute(
+            "SELECT * FROM serve_daily_prices_v1 ORDER BY event_date"
+        ).fetchall()
+        con.close()
+        return result
+
+    def _run_bounded_bars_fallback(self, rows):
+        """Run serve_bounded_daily_bars_v1 fallback SQL against DuckDB."""
+        import duckdb
+
+        raw = extract_view_sql("serve_bounded_daily_bars_v1", variant="fallback")
+        sql = to_duckdb(raw, params={":as_of": "'2099-01-01'"})
+
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE bronze_ohlcv_day (
+                symbol VARCHAR,
+                event_date DATE,
+                open DOUBLE,
+                high DOUBLE,
+                low DOUBLE,
+                close DOUBLE,
+                volume DOUBLE,
+                ingest_ts TIMESTAMP
+            )
+        """)
+        con.executemany("INSERT INTO bronze_ohlcv_day VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        con.execute(sql)
+        result = con.execute(
+            "SELECT * FROM serve_bounded_daily_bars_v1 ORDER BY event_date"
+        ).fetchall()
+        con.close()
+        return result
+
+    def test_daily_prices_late_ingest_shows_ingest_ts(self):
+        """Row dated Jan 2 ingested Jan 5 → availability = Jan 5."""
+        rows = [
+            ("AAPL", "2024-01-02", 100.0, 101.0, 99.0, 100.5, 1000.0, "2024-01-05 10:00:00"),
+        ]
+        result = self._run_daily_prices_fallback(rows)
+        assert len(result) == 1
+        # information_available_ts is column index 7
+        avail_ts = str(result[0][7])
+        assert "2024-01-05" in avail_ts, (
+            f"Expected availability Jan 5 (ingest_ts), got {avail_ts}"
+        )
+
+    def test_daily_prices_early_ingest_shows_derived_ts(self):
+        """Row dated Jan 2 ingested Jan 2 → availability = Jan 2 16:30 ET."""
+        rows = [
+            ("AAPL", "2024-01-02", 100.0, 101.0, 99.0, 100.5, 1000.0, "2024-01-02 10:00:00"),
+        ]
+        result = self._run_daily_prices_fallback(rows)
+        assert len(result) == 1
+        avail_ts = str(result[0][7])
+        # Derived timestamp is 16:30 ET on event_date
+        assert "2024-01-02" in avail_ts, (
+            f"Expected availability Jan 2 (derived), got {avail_ts}"
+        )
+
+    def test_bounded_bars_late_ingest_shows_ingest_ts(self):
+        """Row dated Jan 2 ingested Jan 5 → availability = Jan 5."""
+        rows = [
+            ("AAPL", "2024-01-02", 100.0, 101.0, 99.0, 100.5, 1000.0, "2024-01-05 10:00:00"),
+        ]
+        result = self._run_bounded_bars_fallback(rows)
+        assert len(result) == 1
+        # information_available_ts is column index 7 (before suspected_split)
+        avail_ts = str(result[0][7])
+        assert "2024-01-05" in avail_ts, (
+            f"Expected availability Jan 5 (ingest_ts), got {avail_ts}"
+        )
+
+    def test_mutation_drop_ingest_ts_from_greatest_fails_daily_prices(self):
+        """Mutation: drop ingest_ts from GREATEST in daily prices → FAILS.
+
+        A row dated Jan 2 ingested Jan 5 would show Jan 2 availability
+        instead of Jan 5.
+        """
+        raw = extract_view_sql("serve_daily_prices_v1", variant="fallback")
+        sql = to_duckdb(raw, params={":as_of": "'2099-01-01'"})
+
+        # Mutation: replace GREATEST(derived_available_ts, ingest_ts)
+        # with just derived_available_ts
+        mutated = re.sub(
+            r"GREATEST\s*\(\s*derived_available_ts\s*,\s*ingest_ts\s*\)",
+            "derived_available_ts",
+            sql,
+            flags=re.IGNORECASE,
+        )
+        assert "GREATEST" not in mutated.split("FROM deduped")[-1].upper() or \
+               "INGEST_TS" not in mutated.split("FROM deduped")[-1].upper(), (
+            "Mutation should remove ingest_ts from GREATEST in final SELECT"
+        )
+
+        import duckdb
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE bronze_ohlcv_day (
+                symbol VARCHAR, event_date DATE,
+                open DOUBLE, high DOUBLE, low DOUBLE,
+                close DOUBLE, volume DOUBLE, ingest_ts TIMESTAMP
+            )
+        """)
+        con.execute(
+            "INSERT INTO bronze_ohlcv_day VALUES ('AAPL', '2024-01-02', 100, 101, 99, 100.5, 1000, '2024-01-05 10:00:00')"
+        )
+        con.execute(mutated)
+        result = con.execute("SELECT information_available_ts FROM serve_daily_prices_v1").fetchone()
+        con.close()
+        avail_ts = str(result[0])
+        # After mutation, availability = derived 16:30 on Jan 2, NOT Jan 5
+        assert "2024-01-02" in avail_ts and "2024-01-05" not in avail_ts, (
+            f"Mutation proof: after dropping ingest_ts from GREATEST, "
+            f"availability should be Jan 2 (derived), got {avail_ts}"
+        )
+
+    def test_mutation_drop_ingest_ts_from_greatest_fails_bounded_bars(self):
+        """Mutation: drop ingest_ts from GREATEST in bounded bars → FAILS."""
+        raw = extract_view_sql("serve_bounded_daily_bars_v1", variant="fallback")
+        sql = to_duckdb(raw, params={":as_of": "'2099-01-01'"})
+
+        # Mutation: replace GREATEST(derived_available_ts, ingest_ts)
+        # with just derived_available_ts
+        mutated = re.sub(
+            r"GREATEST\s*\(\s*derived_available_ts\s*,\s*ingest_ts\s*\)",
+            "derived_available_ts",
+            sql,
+            flags=re.IGNORECASE,
+        )
+
+        import duckdb
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE bronze_ohlcv_day (
+                symbol VARCHAR, event_date DATE,
+                open DOUBLE, high DOUBLE, low DOUBLE,
+                close DOUBLE, volume DOUBLE, ingest_ts TIMESTAMP
+            )
+        """)
+        con.execute(
+            "INSERT INTO bronze_ohlcv_day VALUES ('AAPL', '2024-01-02', 100, 101, 99, 100.5, 1000, '2024-01-05 10:00:00')"
+        )
+        con.execute(mutated)
+        result = con.execute("SELECT information_available_ts FROM serve_bounded_daily_bars_v1").fetchone()
+        con.close()
+        avail_ts = str(result[0])
+        # After mutation, availability = derived 16:30 on Jan 2, NOT Jan 5
+        assert "2024-01-02" in avail_ts and "2024-01-05" not in avail_ts, (
+            f"Mutation proof: after dropping ingest_ts from GREATEST, "
+            f"availability should be Jan 2 (derived), got {avail_ts}"
         )

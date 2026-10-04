@@ -112,7 +112,8 @@ deduped AS (
         close,
         volume,
         to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York')
-            AS information_available_ts,
+            AS derived_available_ts,
+        ingest_ts,
         ROW_NUMBER() OVER (
             PARTITION BY symbol, event_date
             ORDER BY ingest_ts DESC
@@ -127,7 +128,7 @@ SELECT
     low AS low_price,
     close AS close_price,
     volume,
-    information_available_ts
+    GREATEST(derived_available_ts, ingest_ts) AS information_available_ts
 FROM deduped
 WHERE rn = 1;
 ```
@@ -138,7 +139,7 @@ WHERE rn = 1;
 - `event_date` is the daily grain column (not `trade_date`).
 - In the primary (adjusted) path, `close_price` maps to `adj_close` (current-scale back-adjusted). Historical price levels are display values, not model features.
 - In the fallback (unadjusted) path, `close_price` maps to raw `close`. The registry marks `price_adjustment: unadjusted`.
-- `information_available_ts` is sourced directly from the adjusted table, or derived as 16:30 America/New_York on `event_date` in the fallback.
+- `information_available_ts` is sourced directly from the adjusted table, or computed as `GREATEST(derived_16:30_ET_timestamp, ingest_ts)` in the fallback so that late-ingested rows are not treated as historically available.
 
 ---
 
@@ -615,7 +616,8 @@ deduped AS (
         close,
         volume,
         to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York')
-            AS information_available_ts,
+            AS derived_available_ts,
+        ingest_ts,
         ROW_NUMBER() OVER (
             PARTITION BY symbol, event_date
             ORDER BY ingest_ts DESC
@@ -633,7 +635,7 @@ with_splits AS (
         low,
         close,
         volume,
-        information_available_ts,
+        GREATEST(derived_available_ts, ingest_ts) AS information_available_ts,
         CASE
             WHEN LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) > 0
                  AND ABS(close / LAG(close) OVER (PARTITION BY symbol ORDER BY event_date) - 1) >= 0.4
@@ -676,7 +678,7 @@ FROM with_splits;
 - `event_date` is the daily grain column (not `trade_date`).
 - In the primary (adjusted) path, `close_price` maps to `adj_close` (current-scale back-adjusted). `suspected_split` is always FALSE because the adjusted source has already handled corporate actions.
 - In the fallback (unadjusted) path, `close_price` maps to raw `close`. `suspected_split` detects potential splits.
-- `information_available_ts` is sourced directly from the adjusted table, or derived as 16:30 America/New_York on `event_date` in the fallback.
+- `information_available_ts` is sourced directly from the adjusted table, or computed as `GREATEST(derived_16:30_ET_timestamp, ingest_ts)` in the fallback so that late-ingested rows are not treated as historically available.
 
 ---
 
