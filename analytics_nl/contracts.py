@@ -604,3 +604,34 @@ class AliasResolutionEnvelope(FrozenStrictModel):
                 f"Version mismatch: expected {SEMANTIC_MODEL_VERSION}, got {v}"
             )
         return v
+
+
+# ---------------------------------------------------------------------------
+# Aggregate response coverage contract
+# ---------------------------------------------------------------------------
+
+
+class CoverageResult(FrozenStrictModel):
+    """Aggregate response with coverage-aware status.
+
+    The status field is bound to CoverageStatus (ok | INSUFFICIENT_DATA).
+    agg_value is nullable ONLY when status == INSUFFICIENT_DATA.
+    """
+
+    symbol: Annotated[str, Field(min_length=1, max_length=10)]
+    agg_value: Annotated[float, Field(strict=True)] | None = None
+    sample_count: Annotated[int, Field(ge=0)]
+    coverage_ratio: Annotated[float, Field(ge=0.0, le=1.0)]
+    status: CoverageStatus
+
+    @model_validator(mode="after")
+    def validate_agg_value_nullability(self) -> CoverageResult:
+        if self.status == CoverageStatus.ok and self.agg_value is None:
+            raise ValueError(
+                "agg_value must not be null when status is 'ok'"
+            )
+        if self.status == CoverageStatus.INSUFFICIENT_DATA and self.agg_value is not None:
+            raise ValueError(
+                "agg_value must be null when status is 'INSUFFICIENT_DATA'"
+            )
+        return self

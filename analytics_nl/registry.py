@@ -224,12 +224,35 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
 
         # Output fields
         output_field_names = set()
+        has_status_field = False
+        has_agg_value_field = False
+        agg_value_nullable = False
+        status_type = ""
         for f in entry_raw.get("output_fields", []):
             fname = f.get("name", "")
             _validate_identifier(fname, f"output_field in {pair_key!r}")
             if fname in output_field_names:
                 errors.append(f"Entry {pair_key}: duplicate output field {fname!r}")
             output_field_names.add(fname)
+            if fname == "status":
+                has_status_field = True
+                status_type = f.get("type", "")
+            if fname == "agg_value":
+                has_agg_value_field = True
+                agg_value_nullable = f.get("nullable", False)
+
+        # Enforce CoverageStatus binding for aggregate entries with status field
+        operation = pair_key.split(".")[-1] if "." in pair_key else ""
+        if has_status_field and operation == "aggregate":
+            if status_type != "coverage_status":
+                errors.append(
+                    f"Entry {pair_key}: status output_field type must be 'coverage_status', "
+                    f"got {status_type!r}"
+                )
+            if has_agg_value_field and not agg_value_nullable:
+                errors.append(
+                    f"Entry {pair_key}: agg_value must be nullable when status field is present"
+                )
 
         # Parameters
         for pname in entry_raw.get("parameters", {}):

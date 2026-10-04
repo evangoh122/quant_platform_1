@@ -737,7 +737,7 @@ entries:
       - {name: agg_value, type: number, nullable: true}
       - {name: sample_count, type: integer, nullable: false}
       - {name: coverage_ratio, type: number, nullable: false}
-      - {name: status, type: string, nullable: false}
+      - {name: status, type: coverage_status, nullable: false}
     chart_families: [bar, table]
     max_entities: 100
     row_limit: 1000

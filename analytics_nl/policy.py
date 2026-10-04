@@ -13,7 +13,6 @@ import yaml
 from analytics_nl.contracts import (
     CanonicalIntent,
     CostClass,
-    CoverageStatus,
     Grouping,
     Metric,
     Operation,

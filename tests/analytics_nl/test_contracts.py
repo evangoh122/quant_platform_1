@@ -1371,3 +1371,76 @@ class TestTimezoneHandling:
 
         with pytest.raises(ValueError, match="Clock must return timezone-aware datetime"):
             resolve_relative_date("ytd", clock=NaiveClock())
+
+
+class TestCoverageResult:
+    """CoverageResult: status bound to CoverageStatus, agg_value nullable only when INSUFFICIENT_DATA."""
+
+    def test_ok_status_with_value(self):
+        """ok status with non-null agg_value → valid."""
+        from analytics_nl.contracts import CoverageResult, CoverageStatus
+        r = CoverageResult(
+            symbol="AAPL",
+            agg_value=42.5,
+            sample_count=100,
+            coverage_ratio=0.95,
+            status=CoverageStatus.ok,
+        )
+        assert r.status == CoverageStatus.ok
+        assert r.agg_value == 42.5
+
+    def test_insufficient_data_with_null_value(self):
+        """INSUFFICIENT_DATA status with null agg_value → valid."""
+        from analytics_nl.contracts import CoverageResult, CoverageStatus
+        r = CoverageResult(
+            symbol="AAPL",
+            agg_value=None,
+            sample_count=5,
+            coverage_ratio=0.01,
+            status=CoverageStatus.INSUFFICIENT_DATA,
+        )
+        assert r.status == CoverageStatus.INSUFFICIENT_DATA
+        assert r.agg_value is None
+
+    def test_ok_status_with_null_value_rejected(self):
+        """ok status with null agg_value → must be rejected."""
+        from analytics_nl.contracts import CoverageResult, CoverageStatus
+        with pytest.raises(ValidationError, match="agg_value must not be null when status is 'ok'"):
+            CoverageResult(
+                symbol="AAPL",
+                agg_value=None,
+                sample_count=100,
+                coverage_ratio=0.95,
+                status=CoverageStatus.ok,
+            )
+
+    def test_insufficient_data_with_value_rejected(self):
+        """INSUFFICIENT_DATA status with non-null agg_value → must be rejected."""
+        from analytics_nl.contracts import CoverageResult, CoverageStatus
+        with pytest.raises(ValidationError, match="agg_value must be null when status is 'INSUFFICIENT_DATA'"):
+            CoverageResult(
+                symbol="AAPL",
+                agg_value=42.5,
+                sample_count=5,
+                coverage_ratio=0.01,
+                status=CoverageStatus.INSUFFICIENT_DATA,
+            )
+
+    def test_status_must_be_coverage_status_enum(self):
+        """status must be a CoverageStatus enum value, not an arbitrary string."""
+        from analytics_nl.contracts import CoverageResult
+        with pytest.raises(ValidationError):
+            CoverageResult(
+                symbol="AAPL",
+                agg_value=42.5,
+                sample_count=100,
+                coverage_ratio=0.95,
+                status="ok",  # string, not enum — should fail in strict mode
+            )
+
+    def test_coverage_status_enum_values(self):
+        """CoverageStatus must have exactly 2 values: ok and INSUFFICIENT_DATA."""
+        from analytics_nl.contracts import CoverageStatus
+        assert len(CoverageStatus) == 2
+        assert CoverageStatus.ok.value == "ok"
+        assert CoverageStatus.INSUFFICIENT_DATA.value == "INSUFFICIENT_DATA"
