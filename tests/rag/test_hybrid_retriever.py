@@ -3012,3 +3012,178 @@ class TestPITBeforeScoringPerTicker:
         accessions = [d.metadata["accession"] for d in results]
         assert "FUTURE" not in accessions, "Future chunk leaked through PIT filter"
         assert "PAST" in accessions
+
+
+# ── Round 8b: reload_corpus no-eager-load + NULL-timestamp exclusion ─────────
+
+class TestReloadCorpusNoEagerLoad:
+    """Verify reload_corpus(None) does NOT eagerly load the full corpus.
+
+    The per-ticker LRU is the only load path. reload_corpus(None) must only
+    clear state, not call _load_corpus().
+    """
+
+    def test_reload_corpus_none_does_not_call_load_corpus(self, monkeypatch):
+        """reload_corpus(None) must not trigger _load_corpus()."""
+        from api.services import hybrid_retriever as hr
+
+        load_corpus_called = [False]
+
+        def spy_load_corpus():
+            load_corpus_called[0] = True
+            return True
+
+        monkeypatch.setattr(hr, "_load_corpus", spy_load_corpus)
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+
+        result = hr.reload_corpus(None)
+
+        assert result is True
+        assert load_corpus_called[0] is False, (
+            "reload_corpus(None) eagerly called _load_corpus()"
+        )
+
+    def test_reload_corpus_none_clears_state(self, monkeypatch):
+        """reload_corpus(None) must clear all global state."""
+        from api.services import hybrid_retriever as hr
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {"c1": ("text", "T", "A", "", "", "", 0, "")})
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": "vec"})
+        monkeypatch.setattr(hr, "_bm25_docs", ["doc"])
+        monkeypatch.setattr(hr, "_bm25_tokenised", [["tok"]])
+        monkeypatch.setattr(hr, "_bm25_index", "index")
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "model")
+
+        hr.reload_corpus(None)
+
+        assert hr._corpus_loaded is False
+        assert len(hr._corpus) == 0
+        assert len(hr._embeddings_map) == 0
+        assert hr._bm25_docs is None
+        assert hr._bm25_tokenised is None
+        assert hr._bm25_index is None
+        assert hr._stored_index_dim is None
+        assert hr._stored_embedding_model is None
+
+    def test_reload_corpus_none_clears_ticker_cache(self, monkeypatch):
+        """reload_corpus(None) must also clear the per-ticker LRU cache."""
+        from api.services import hybrid_retriever as hr
+
+        # Insert a corpus into the ticker cache
+        doc = _make_doc("NVDA content", ticker="NVDA", accession="A1", accepted_ts="2025-01-01")
+        corpus = hr.TickerCorpus(
+            ticker="NVDA",
+            docs=[doc],
+            tokenised=[hr.tokenize(doc.page_content)],
+            bm25_index=hr.BM25Okapi([hr.tokenize(doc.page_content)]),
+            embeddings_map={},
+            stored_model=None,
+            stored_dim=None,
+            load_ts=0.0,
+            approx_bytes=0,
+        )
+        hr._insert_ticker_corpus("NVDA", corpus)
+        assert len(hr._ticker_cache) == 1
+
+        hr.reload_corpus(None)
+
+        assert len(hr._ticker_cache) == 0
+
+
+class TestNullTimestampExcludedFromVectorSearch:
+    """Verify vector_search excludes chunks with NULL or unparseable accepted_ts.
+
+    These chunks are treated as not-yet-available and must never appear in
+    search results for any as_of.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_corpus(self, monkeypatch):
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("NVIDIA revenue growth AI chips",
+                      ticker="NVDA", accession="VALID", accepted_ts="2024-06-01"),
+            _make_doc("NVIDIA pending filing with no timestamp",
+                      ticker="NVDA", accession="NULL_TS", accepted_ts=""),
+            _make_doc("NVIDIA unparseable timestamp",
+                      ticker="NVDA", accession="BAD_TS", accepted_ts="not-a-date"),
+        ]
+
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = doc.metadata["accession"]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        corpus = hr.TickerCorpus(
+            ticker="NVDA",
+            docs=self.docs,
+            tokenised=[hr.tokenize(d.page_content) for d in self.docs],
+            bm25_index=hr.BM25Okapi([hr.tokenize(d.page_content) for d in self.docs]),
+            embeddings_map=embeddings_map,
+            stored_model="BAAI/bge-small-en-v1.5",
+            stored_dim=384,
+            load_ts=0.0,
+            approx_bytes=0,
+        )
+        hr._insert_ticker_corpus("NVDA", corpus)
+
+        class StubEmbeddings:
+            def embed_query(self, text):
+                np.random.seed(hash(text) % (2**31))
+                v = np.random.randn(384).astype(np.float32)
+                v /= np.linalg.norm(v)
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: StubEmbeddings())
+
+    def test_null_timestamp_chunk_excluded_from_vector_search(self):
+        """Chunks with empty accepted_ts must not appear in vector_search results."""
+        from api.services.hybrid_retriever import vector_search
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        results = vector_search("NVIDIA revenue", top_k=10, ticker="NVDA", as_of=as_of)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "NULL_TS" not in accessions, (
+            "Chunk with empty accepted_ts leaked through vector_search"
+        )
+        assert "VALID" in accessions
+
+    def test_unparseable_timestamp_chunk_excluded_from_vector_search(self):
+        """Chunks with unparseable accepted_ts must not appear in vector_search results."""
+        from api.services.hybrid_retriever import vector_search
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        results = vector_search("NVIDIA filing", top_k=10, ticker="NVDA", as_of=as_of)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "BAD_TS" not in accessions, (
+            "Chunk with unparseable accepted_ts leaked through vector_search"
+        )
+
+    def test_null_timestamp_excluded_even_when_as_of_is_future(self):
+        """NULL-timestamp chunks must be excluded even with a far-future as_of."""
+        from api.services.hybrid_retriever import vector_search
+
+        as_of = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        results = vector_search("NVIDIA pending", top_k=10, ticker="NVDA", as_of=as_of)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "NULL_TS" not in accessions, (
+            "NULL-timestamp chunk leaked with future as_of"
+        )
+
+    def test_valid_timestamp_included_when_as_of_permits(self):
+        """Valid-timestamp chunk must be included when as_of is after its date."""
+        from api.services.hybrid_retriever import vector_search
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        results = vector_search("NVIDIA revenue", top_k=10, ticker="NVDA", as_of=as_of)
+
+        accessions = [d.metadata["accession"] for d in results]
+        assert "VALID" in accessions, "Valid chunk was excluded"

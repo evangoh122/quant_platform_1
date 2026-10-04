@@ -567,6 +567,9 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
 
     When ticker is None, clears the global corpus and LRU cache.
     When ticker is set, only removes that ticker from the LRU cache.
+
+    Does NOT eagerly reload — the per-ticker LRU is the only load path.
+    Callers that need data should call get_ticker_corpus() after invalidation.
     """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
     global _stored_index_dim, _stored_embedding_model
@@ -577,7 +580,7 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
             _ticker_cache.pop(ticker.upper().strip(), None)
         return True
 
-    # Full invalidation
+    # Full invalidation — clear state but do NOT eagerly reload
     with _corpus_lock:
         _corpus_loaded = False
         _corpus = {}
@@ -591,7 +594,7 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     with _ticker_cache_lock:
         _ticker_cache.clear()
 
-    return _load_corpus()
+    return True
 
 
 # -- Point-in-time filter --
@@ -866,8 +869,9 @@ def vector_search(
         if doc is None:
             continue
 
+        # Point-in-time: exclude chunks with NULL/unparseable accepted_ts
         accepted_dt = _parse_ts(doc.metadata.get("accepted_ts", ""))
-        if accepted_dt is not None and accepted_dt > as_of:
+        if accepted_dt is None or accepted_dt > as_of:
             continue
 
         sim = _cosine_similarity(qvec, vec)
