@@ -615,38 +615,92 @@ class TestDDLAvailabilityContract:
         final_select = sql_upper[pos:] if pos < len(sql_upper) else ""
         return ctes, final_select
 
+    def _resolve_token_to_cte(self, token: str, ctes: list[tuple[str, str]]):
+        """Resolve an availability token to its CTE definition.
+
+        Returns the CTE body if the token is defined as MAX(information_available_ts)
+        OVER (...), or None if not found / not a window MAX.
+        """
+        if token == "INFORMATION_AVAILABLE_TS":
+            return None  # base column, no CTE to check
+        for _name, body in ctes:
+            if re.search(
+                rf"\b{re.escape(token)}\s+AS\s*\(",
+                body,
+            ):
+                if re.search(
+                    r"MAX\s*\(\s*INFORMATION_AVAILABLE_TS\s*\)\s+OVER\s*\(\s*"
+                    r".*?PARTITION\s+BY\s+.*?ORDER\s+BY\s+.*?"
+                    r"ROWS\s+BETWEEN\s+.*?AND\s+CURRENT\s+ROW\s*\)",
+                    body,
+                    re.DOTALL,
+                ):
+                    return body
+                return None
+        return None
+
+    def _find_greatest_args(self, sql: str):
+        """Find all GREATEST(...) calls and return their argument strings."""
+        results = []
+        upper = sql.upper()
+        start = 0
+        while True:
+            idx = upper.find("GREATEST", start)
+            if idx == -1:
+                break
+            if idx > 0 and upper[idx - 1].isalnum():
+                start = idx + 1
+                continue
+            after = upper[idx + 8:]
+            if not re.match(r"\s*\(", after):
+                start = idx + 1
+                continue
+            paren_start = sql.index("(", idx + 8)
+            depth = 0
+            end = paren_start
+            while end < len(sql):
+                if sql[end] == "(":
+                    depth += 1
+                elif sql[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            args_str = sql[paren_start + 1:end]
+            results.append(args_str)
+            start = end + 1
+        return results
+
     def test_output_availability_is_window_max(self, ddl_content):
-        """Every output information_available_ts must be a window MAX / GREATEST over all inputs."""
+        """Every GREATEST availability token must resolve to a CTE defined as
+        MAX(information_available_ts) OVER (PARTITION BY ... ORDER BY ...
+        ROWS BETWEEN ... AND CURRENT ROW), matching the window frame of the
+        metric it accompanies.
+        """
         blocks = self._extract_sql_blocks(ddl_content)
         for i, sql in enumerate(blocks):
             ctes, final_select = self._parse_sql_ctes_and_final_select(sql)
-            
-            # Check if final SELECT has information_available_ts
             if "INFORMATION_AVAILABLE_TS" not in final_select:
                 continue
-            
-            # Check if it uses GREATEST or MAX(...) OVER
-            has_greatest = "GREATEST" in final_select
-            has_max_over = re.search(r"MAX\s*\([^)]+\)\s*OVER", final_select) is not None
-            
-            # For windowed metrics, must use GREATEST or MAX(...) OVER
-            if has_greatest or has_max_over:
-                # Check that GREATEST includes all contributing availability timestamps
-                if has_greatest:
-                    # Find the GREATEST(...) expression
-                    greatest_match = re.search(r"GREATEST\s*\(([^)]+)\)", final_select)
-                    if greatest_match:
-                        args = greatest_match.group(1)
-                        # Must include at least two availability timestamps
-                        # (e.g., entity_info_ts, bench_max_info_ts or information_available_ts, realized_vol_20d_info_ts)
-                        info_ts_count = len(re.findall(r"(?:INFORMATION_AVAILABLE_TS|_INFO_TS|_AVAILABILITY)", args))
-                        assert info_ts_count >= 2, (
-                            f"SQL block {i + 1}: GREATEST must combine at least 2 availability timestamps, "
-                            f"found {info_ts_count} in: {args[:200]}"
-                        )
-                elif has_max_over:
-                    # Check that MAX(...) OVER is applied to information_available_ts
-                    max_over_match = re.search(r"MAX\s*\(\s*INFORMATION_AVAILABLE_TS\s*\)\s*OVER", final_select)
-                    assert max_over_match, (
-                        f"SQL block {i + 1}: MAX(...) OVER must be applied to information_available_ts"
+            for args_str in self._find_greatest_args(sql):
+                args = [a.strip() for a in args_str.split(",")]
+                info_tokens = [
+                    a for a in args
+                    if "INFORMATION_AVAILABLE_TS" in a.upper() or "_INFO_TS" in a.upper()
+                ]
+                assert len(info_tokens) >= 2, (
+                    f"SQL block {i + 1}: GREATEST must combine at least 2 "
+                    f"availability timestamps, found {len(info_tokens)}"
+                )
+                for token_raw in info_tokens:
+                    token = token_raw.upper().split(".")[-1].strip()
+                    if token == "INFORMATION_AVAILABLE_TS":
+                        continue
+                    cte_body = self._resolve_token_to_cte(token, ctes)
+                    assert cte_body is not None, (
+                        f"SQL block {i + 1}: availability token '{token_raw}' "
+                        f"is not a window MAX(information_available_ts) OVER (...). "
+                        f"Each info_ts in GREATEST must be defined as "
+                        f"MAX(information_available_ts) OVER (PARTITION BY ... "
+                        f"ORDER BY ... ROWS BETWEEN ... AND CURRENT ROW)."
                     )
