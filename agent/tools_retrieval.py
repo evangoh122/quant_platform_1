@@ -169,6 +169,7 @@ def search_sec_filings(
             mapped = []
             for r in results:
                 mapped.append({
+                    "chunk_id": r.get("chunk_id", ""),
                     "accession_number": r.get("accession_number", ""),
                     "form_type": r.get("form_type", ""),
                     "accepted_ts": r.get("accepted_ts", ""),

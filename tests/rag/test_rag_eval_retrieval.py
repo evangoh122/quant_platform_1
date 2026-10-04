@@ -504,3 +504,53 @@ class TestTickerFilterOffAllModes:
                     f"Mode {mode}: ticker filter OFF but only got {tickers}. "
                     f"Query-derived ticker may have leaked through."
                 )
+
+
+class TestSubstringFallbackIncludesChunkId:
+    """test_substring_fallback_includes_chunk_id"""
+
+    def test_substring_fallback_has_chunk_id(self, fake_pyspark):
+        """When hybrid retriever fails, substring fallback must include chunk_id."""
+        import sys
+        from unittest.mock import MagicMock, patch
+
+        # Mock db.lakebase if psycopg is not installed
+        if "db.lakebase" not in sys.modules:
+            sys.modules["db.lakebase"] = MagicMock()
+
+        from agent import tools_retrieval as tr
+
+        # Make HybridRetriever raise to trigger substring fallback
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {
+            "chunk_id": "fallback-chunk-001",
+            "accession_number": "0000723125-24-000001",
+            "form_type": "10-K",
+            "accepted_ts": "2024-01-15T00:00:00+00:00",
+            "source_url": "https://sec.gov/...",
+            "ticker": "NVDA",
+            "filing_section": "item_7",
+            "chunk_index": 0,
+            "chunk_text": "Revenue was $60.9 billion",
+        }
+
+        mock_spark = MagicMock()
+        mock_df = MagicMock()
+        mock_df.where.return_value = mock_df
+        mock_df.orderBy.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_df.collect.return_value = [mock_row]
+        mock_spark.table.return_value = mock_df
+
+        with patch.object(tr, "normalize_symbol", return_value="NVDA"), \
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
+             patch.object(tr, "_spark", return_value=mock_spark):
+            # Make retriever raise a generic exception (not EmbeddingConfigError/CorpusUnavailableError)
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = RuntimeError("corrupt index")
+            results = tr.search_sec_filings("NVDA", query="revenue", top_k=5)
+
+        assert len(results) >= 1
+        for r in results:
+            assert "chunk_id" in r, f"chunk_id missing from fallback result: {r.keys()}"
+            if not r.get("error"):
+                assert r["chunk_id"] == "fallback-chunk-001"
