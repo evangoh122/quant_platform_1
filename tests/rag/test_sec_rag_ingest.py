@@ -1205,3 +1205,120 @@ class TestNoPlaceholderUserAgent:
         assert not violations, (
             f"Found placeholder User-Agent in production code:\n" + "\n".join(violations)
         )
+
+
+# -- Thin notebook wrapper tests --
+
+NOTEBOOK_PATH = Path(__file__).parent.parent.parent / "notebooks" / "02_ingest_sec_edgar.py"
+
+
+class TestNotebookThinWrapper:
+    """Verify notebooks/02_ingest_sec_edgar.py is a thin wrapper with no legacy code."""
+
+    def test_no_user_agent_in_notebook(self):
+        """Notebook must not contain User-Agent construction."""
+        content = NOTEBOOK_PATH.read_text(encoding="utf-8")
+        assert "User-Agent" not in content, "Notebook still contains 'User-Agent'"
+
+    def test_no_requests_get_in_notebook(self):
+        """Notebook must not contain requests.get (legacy HTTP call)."""
+        content = NOTEBOOK_PATH.read_text(encoding="utf-8")
+        assert "requests.get" not in content, "Notebook still contains 'requests.get'"
+
+    def test_no_beautifulsoup_in_notebook(self):
+        """Notebook must not contain BeautifulSoup (legacy HTML parsing)."""
+        content = NOTEBOOK_PATH.read_text(encoding="utf-8")
+        assert "BeautifulSoup" not in content, "Notebook still contains 'BeautifulSoup'"
+
+    def test_notebook_calls_main(self):
+        """Notebook must call pipelines.sec_rag_ingest.main()."""
+        content = NOTEBOOK_PATH.read_text(encoding="utf-8")
+        assert "main(" in content, "Notebook does not call main()"
+
+    def test_notebook_delegates_to_pipeline(self):
+        """Notebook must import from pipelines.sec_rag_ingest."""
+        content = NOTEBOOK_PATH.read_text(encoding="utf-8")
+        assert "from pipelines.sec_rag_ingest import main" in content, (
+            "Notebook does not import main from pipelines.sec_rag_ingest"
+        )
+
+    def test_no_other_code_imports_from_old_notebook(self):
+        """No production code imports functions from the old notebook."""
+        import re
+        repo_root = Path(__file__).parent.parent.parent
+        # The old notebook exported nothing importable (module name starts with digit),
+        # but check for any import of the module anyway.
+        pattern = re.compile(r"from\s+notebooks\.02_ingest_sec_edgar\s+import|import\s+notebooks\.02_ingest_sec_edgar")
+        violations = []
+        for ext in ("*.py", "*.yml"):
+            for path in repo_root.rglob(ext):
+                rel = path.relative_to(repo_root)
+                parts = rel.parts
+                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive") for p in parts):
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for i, line in enumerate(text.splitlines(), 1):
+                    if pattern.search(line):
+                        violations.append(f"{rel}:{i}: {line.strip()}")
+        assert not violations, (
+            f"Found imports from old notebook:\n" + "\n".join(violations)
+        )
+
+    def test_notebook_widget_argv_dry_run(self, monkeypatch):
+        """Executing notebook with fake dbutils passes --dry-run to main()."""
+        captured = {}
+
+        def fake_main(argv=None):
+            captured["argv"] = argv
+
+        monkeypatch.setattr("pipelines.sec_rag_ingest.main", fake_main)
+
+        # Simulate dbutils widget values
+        class FakeWidgets:
+            _vals = {"tickers": "AAPL,MSFT", "start_date": "2024-06-01", "dry_run": "true"}
+            def get(self, name):
+                return self._vals.get(name)
+
+        class FakeDbutils:
+            widgets = FakeWidgets()
+
+        # Execute the notebook's helper functions in a controlled namespace
+        ns = {"__name__": "__main__", "dbutils": FakeDbutils()}
+        exec(compile(NOTEBOOK_PATH.read_text(encoding="utf-8"), str(NOTEBOOK_PATH), "exec"), ns)
+
+        argv = captured.get("argv")
+        assert argv is not None, "main() was not called"
+        assert "--tickers" in argv
+        assert "AAPL,MSFT" in argv
+        assert "--start-date" in argv
+        assert "2024-06-01" in argv
+        assert "--dry-run" in argv
+
+    def test_notebook_widget_argv_include_historical(self, monkeypatch):
+        """Executing notebook with include_historical=true passes the flag."""
+        captured = {}
+
+        def fake_main(argv=None):
+            captured["argv"] = argv
+
+        monkeypatch.setattr("pipelines.sec_rag_ingest.main", fake_main)
+
+        class FakeWidgets:
+            _vals = {"tickers": "NVDA", "include_historical": "true"}
+            def get(self, name):
+                return self._vals.get(name)
+
+        class FakeDbutils:
+            widgets = FakeWidgets()
+
+        ns = {"__name__": "__main__", "dbutils": FakeDbutils()}
+        exec(compile(NOTEBOOK_PATH.read_text(encoding="utf-8"), str(NOTEBOOK_PATH), "exec"), ns)
+
+        argv = captured.get("argv")
+        assert argv is not None
+        assert "--include-historical" in argv
+        assert "--tickers" in argv
+        assert "NVDA" in argv

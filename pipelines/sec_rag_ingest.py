@@ -1313,8 +1313,8 @@ class SparkCikMappingLogWriter:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    """CLI entry point."""
+def main(argv: Optional[List[str]] = None) -> None:
+    """CLI entry point.  *argv* is parsed instead of sys.argv when given."""
     parser = argparse.ArgumentParser(description="SEC EDGAR RAG Ingestion")
     parser.add_argument("--catalog", default=os.getenv("CATALOG", "bootcamp_students"))
     parser.add_argument("--schema", default=os.getenv("SCHEMA", "evangoh_capstone"))
@@ -1327,7 +1327,7 @@ def main() -> None:
     parser.add_argument("--refresh-cik-cache", action="store_true")
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     parser.add_argument("--run-id", default=None)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 

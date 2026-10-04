@@ -71,7 +71,7 @@ etl/slippage.py ───────────────► Cost Calculator
 | `services/financial_calc.py` | Deterministic financial calculations |
 | `00_project_setup` | Setup notebook (schema creation, file scaffolding) |
 | `01_ingest_market_data` | Bronze table creation for market data |
-| `02_ingest_sec_edgar` | Bronze table creation for SEC filings |
+| `02_ingest_sec_edgar` | Thin Databricks wrapper → delegates to `pipelines/sec_rag_ingest.py` |
 
 ---
 
@@ -79,7 +79,8 @@ etl/slippage.py ───────────────► Cost Calculator
 
 ```bash
 # 1. Run the setup notebook to create schema + tables
-#    Execute 00_project_setup, 01_ingest_market_data, 02_ingest_sec_edgar
+#    Execute 00_project_setup, 01_ingest_market_data
+#    Then run the sec_rag_ingest job (see resources/jobs.yml)
 
 # 2. Configure secrets
 #    Set POLYGON_API_KEY, EDGAR_EMAIL in Databricks Secrets
