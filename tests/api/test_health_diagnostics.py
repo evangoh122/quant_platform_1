@@ -523,3 +523,14 @@ def test_warehouse_query_timeout_enforced(monkeypatch):
     elapsed = time.monotonic() - start
 
     assert elapsed < 3.0, f"Query took {elapsed:.1f}s, expected < 3s (timeout=1)"
+
+
+# ── 10. /api/health/trace requires authentication ────────────────────────────
+
+def test_health_trace_requires_auth(client):
+    """health_trace returns 401 without auth in non-demo mode.
+
+    MUTATION THAT MUST FAIL: remove Depends(get_current_user) → 200 without auth.
+    """
+    resp = client.get("/api/health/trace")
+    assert resp.status_code == 401

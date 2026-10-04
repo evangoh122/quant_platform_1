@@ -15,7 +15,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from api.deps import AppUser, get_current_user
 
 from api.schemas import (
     DependencyStatus,
@@ -251,7 +253,9 @@ def health() -> HealthResponse:
 
 
 @router.get("/trace", response_model=HealthTraceResponse)
-def health_trace() -> HealthTraceResponse:
+def health_trace(
+    _user: AppUser = Depends(get_current_user),
+) -> HealthTraceResponse:
     from api.demo import is_public_demo
     if is_public_demo():
         return HealthTraceResponse(recent=[], slow=[])
