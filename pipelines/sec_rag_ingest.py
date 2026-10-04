@@ -1481,9 +1481,15 @@ class SparkDataWriter:
     duplicate rows.  Ownership conflicts (same accession, different CIK) raise
     AccessionOwnershipConflict.  Returns the actual inserted count from
     MERGE operationMetrics.
+
+    Concurrency: uses a process-wide lock so that only one MERGE + metrics-read
+    pair executes at a time on the same Delta table.  Each call creates a unique
+    temp view name (uuid) to avoid Spark session conflicts under
+    ``--max-workers 4``.
     """
 
     BRONZE_SCHEMA = None  # lazily built once (needs pyspark import)
+    _merge_lock = threading.Lock()  # process-wide, one writer at a time
 
     def __init__(self, spark_factory=None) -> None:
         self._spark_factory = spark_factory
@@ -1546,59 +1552,72 @@ class SparkDataWriter:
             else:
                 batch_accessions[acc] = cik
 
+        # Unique view name per call to avoid concurrent-view conflicts
+        view_name = f"_merge_src_{uuid.uuid4().hex[:12]}"
+
         df = spark.createDataFrame(rows, schema=SparkDataWriter.BRONZE_SCHEMA)
-        df.createOrReplaceTempView("_merge_src")
+        df.createOrReplaceTempView(view_name)
 
-        # Check for ownership conflicts with existing data
-        existing_check = spark.sql(f"""
-            SELECT accession_number, cik FROM {table}
-            WHERE accession_number IN (
-                SELECT DISTINCT accession_number FROM _merge_src
-            )
-        """).collect()
-        for r in existing_check:
-            acc = r["accession_number"]
-            existing_cik = r["cik"]
-            if acc in batch_accessions and existing_cik != batch_accessions[acc]:
-                raise AccessionOwnershipConflict(
-                    f"Accession ownership conflict: {acc} already owned by "
-                    f"CIK {existing_cik}, but batch has CIK {batch_accessions[acc]}"
-                )
-
-        # MERGE: insert-only when not matched
-        spark.sql(f"""
-            MERGE INTO {table} AS target
-            USING _merge_src AS source
-            ON target.accession_number = source.accession_number
-            WHEN NOT MATCHED THEN INSERT (
-                record_key, ticker, cik, company_name, form_type, filing_date,
-                accepted_ts, accession_number, primary_doc, filing_url,
-                chunk_id, filing_section, chunk_text, chunk_char_count,
-                source, ingest_ts, raw_payload
-            ) VALUES (
-                source.record_key, source.ticker, source.cik, source.company_name,
-                source.form_type, source.filing_date, source.accepted_ts,
-                source.accession_number, source.primary_doc, source.filing_url,
-                source.chunk_id, source.filing_section, source.chunk_text,
-                source.chunk_char_count, source.source, source.ingest_ts,
-                source.raw_payload
-            )
-        """)
-
-        # Get actual inserted count from the TARGET table's history
-        # (not the temp view, which has no history).
-        inserted = 0
         try:
-            hist = spark.sql(f"DESCRIBE HISTORY {table} LIMIT 1").collect()
-            if hist:
-                metrics = hist[0]["operationMetrics"]
-                if metrics and "numTargetRowsInserted" in metrics:
-                    inserted = int(metrics["numTargetRowsInserted"])
-        except Exception:
-            # Fallback: count rows that were NOT matched (new accessions)
-            inserted = len(rows)
+            # Serialize MERGE + ownership check + metrics read on the target
+            with SparkDataWriter._merge_lock:
+                # Check for ownership conflicts with existing data
+                existing_check = spark.sql(f"""
+                    SELECT accession_number, cik FROM {table}
+                    WHERE accession_number IN (
+                        SELECT DISTINCT accession_number FROM {view_name}
+                    )
+                """).collect()
+                for r in existing_check:
+                    acc = r["accession_number"]
+                    existing_cik = r["cik"]
+                    if acc in batch_accessions and existing_cik != batch_accessions[acc]:
+                        raise AccessionOwnershipConflict(
+                            f"Accession ownership conflict: {acc} already owned by "
+                            f"CIK {existing_cik}, but batch has CIK {batch_accessions[acc]}"
+                        )
 
-        return inserted
+                # MERGE: insert-only when not matched
+                spark.sql(f"""
+                    MERGE INTO {table} AS target
+                    USING {view_name} AS source
+                    ON target.accession_number = source.accession_number
+                    WHEN NOT MATCHED THEN INSERT (
+                        record_key, ticker, cik, company_name, form_type, filing_date,
+                        accepted_ts, accession_number, primary_doc, filing_url,
+                        chunk_id, filing_section, chunk_text, chunk_char_count,
+                        source, ingest_ts, raw_payload
+                    ) VALUES (
+                        source.record_key, source.ticker, source.cik, source.company_name,
+                        source.form_type, source.filing_date, source.accepted_ts,
+                        source.accession_number, source.primary_doc, source.filing_url,
+                        source.chunk_id, source.filing_section, source.chunk_text,
+                        source.chunk_char_count, source.source, source.ingest_ts,
+                        source.raw_payload
+                    )
+                """)
+
+                # Get actual inserted count from this MERGE's own metrics,
+                # read inside the lock so it cannot be attributed to another
+                # worker's MERGE.
+                inserted = 0
+                try:
+                    hist = spark.sql(f"DESCRIBE HISTORY {table} LIMIT 1").collect()
+                    if hist:
+                        metrics = hist[0]["operationMetrics"]
+                        if metrics and "numTargetRowsInserted" in metrics:
+                            inserted = int(metrics["numTargetRowsInserted"])
+                except Exception:
+                    # Fallback: count rows that were NOT matched (new accessions)
+                    inserted = len(rows)
+
+                return inserted
+        finally:
+            # Drop the unique temp view to avoid Spark catalog bloat
+            try:
+                spark.catalog.dropTempView(view_name)
+            except Exception:
+                pass
 
 
 class SparkLogWriter:

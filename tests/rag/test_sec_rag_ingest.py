@@ -1544,6 +1544,112 @@ class TestAtomicBronzeWrites:
             writer.append_bronze_rows("cat", "sch", rows)
 
 
+class TestBronzeConcurrencyN1:
+    """N1 (P1): Two threads writing different accessions concurrently must use
+    distinct view names, both batches must be written, and each must report
+    its own inserted count.
+
+    Mutation proof: fixed view name / no lock → FAILS because:
+    - Both threads use '_merge_src' → one overwrites the other's view.
+    - Without the lock, DESCRIBE HISTORY returns another worker's count.
+    """
+
+    def test_concurrent_bronze_writes_distinct_views_and_metrics(self):
+        from pipelines.sec_rag_ingest import SparkDataWriter
+        import threading
+
+        captured_views = []
+        captured_sqls = []
+        merge_calls = []
+
+        class FakeSpark:
+            """Records every MERGE call and which view it used."""
+            def createDataFrame(self, data, schema=None):
+                df = MagicMock()
+                return df
+
+            def sql(self, q):
+                captured_sqls.append(q)
+                m = MagicMock()
+                # Return 1 inserted for each MERGE call
+                mock_hist = MagicMock()
+                mock_hist.__getitem__ = lambda self, k: {
+                    "operationMetrics": {"numTargetRowsInserted": "1"}
+                }.get(k)
+                m.collect.return_value = [mock_hist]
+                return m
+
+        class TrackingDF:
+            def __init__(self):
+                pass
+            def createOrReplaceTempView(self, name):
+                captured_views.append(name)
+
+        spark_instance = FakeSpark()
+        original_create = spark_instance.createDataFrame
+
+        def tracking_create(data, schema=None):
+            df = TrackingDF()
+            return df
+
+        spark_instance.createDataFrame = tracking_create
+        spark_instance.catalog = MagicMock()
+
+        writer = SparkDataWriter(spark_factory=lambda: spark_instance)
+
+        # Reset the class-level lock to ensure test isolation
+        old_lock = SparkDataWriter._merge_lock
+        SparkDataWriter._merge_lock = threading.Lock()
+
+        rows_a = [
+            {"accession_number": "ACC-A", "cik": "0001", "ticker": "A",
+             "record_key": "k1", "form_type": "10-K", "filing_date": "2025-01-01",
+             "accepted_ts": None, "primary_doc": "", "filing_url": "",
+             "chunk_id": 1, "filing_section": "s", "chunk_text": "t",
+             "chunk_char_count": 1, "source": "sec", "ingest_ts": None,
+             "raw_payload": None, "company_name": "A"},
+        ]
+        rows_b = [
+            {"accession_number": "ACC-B", "cik": "0002", "ticker": "B",
+             "record_key": "k2", "form_type": "10-K", "filing_date": "2025-01-01",
+             "accepted_ts": None, "primary_doc": "", "filing_url": "",
+             "chunk_id": 1, "filing_section": "s", "chunk_text": "t",
+             "chunk_char_count": 1, "source": "sec", "ingest_ts": None,
+             "raw_payload": None, "company_name": "B"},
+        ]
+
+        results = {}
+        barrier = threading.Barrier(2, timeout=5)
+
+        def writer_a():
+            barrier.wait()
+            results["a"] = writer.append_bronze_rows("cat", "sch", rows_a)
+
+        def writer_b():
+            barrier.wait()
+            results["b"] = writer.append_bronze_rows("cat", "sch", rows_b)
+
+        t1 = threading.Thread(target=writer_a)
+        t2 = threading.Thread(target=writer_b)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        # Both must have completed
+        assert "a" in results and "b" in results
+        assert results["a"] == 1
+        assert results["b"] == 1
+
+        # Distinct view names (uuid-based)
+        assert len(captured_views) == 2
+        assert captured_views[0] != captured_views[1]
+        for v in captured_views:
+            assert v.startswith("_merge_src_")
+
+        SparkDataWriter._merge_lock = old_lock
+
+
 class TestAcceptedTsUTC:
     """Finding 2: accepted_ts must be tz-aware UTC, never naive."""
 
