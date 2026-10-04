@@ -332,32 +332,43 @@ def get_ticker_corpus(ticker: str) -> TickerCorpus:
             _ticker_cache.move_to_end(ticker)
             return _ticker_cache[ticker]
 
-    # Check if a load is already in-flight
+    # Check if a load is already in-flight (or become the loader).
+    # The lock is held only to look up / create the Future; the actual
+    # load runs outside so different tickers load in parallel and callers
+    # for the same ticker coalesce on the Future instead of serialising.
+    we_are_loader = False
     with _inflight_lock:
         if ticker in _inflight:
             future = _inflight[ticker]
         else:
             future = Future()
             _inflight[ticker] = future
+            we_are_loader = True
 
-            # We are the loader
-            try:
-                corpus = _load_ticker_corpus(ticker)
-                if not corpus.docs:
-                    raise NoCoverageError(ticker)
-                _insert_ticker_corpus(ticker, corpus)
-                future.set_result(corpus)
-            except NoCoverageError:
-                future.set_exception(NoCoverageError(ticker))
-                with _inflight_lock:
-                    _inflight.pop(ticker, None)
-                raise
-            except Exception as e:
-                future.set_exception(e)
-                # Remove in-flight marker so later requests can retry
-                with _inflight_lock:
-                    _inflight.pop(ticker, None)
-                raise
+    if we_are_loader:
+        try:
+            # Re-check cache: another thread may have finished between our
+            # first check and acquiring the inflight lock.
+            with _ticker_cache_lock:
+                if ticker in _ticker_cache:
+                    corpus = _ticker_cache[ticker]
+                    future.set_result(corpus)
+                    return corpus
+
+            corpus = _load_ticker_corpus(ticker)
+            if not corpus.docs:
+                raise NoCoverageError(ticker)
+            _insert_ticker_corpus(ticker, corpus)
+            future.set_result(corpus)
+        except NoCoverageError:
+            future.set_exception(NoCoverageError(ticker))
+            raise
+        except Exception as e:
+            future.set_exception(e)
+            raise
+        finally:
+            with _inflight_lock:
+                _inflight.pop(ticker, None)
 
     return future.result()
 
@@ -372,10 +383,6 @@ def _insert_ticker_corpus(ticker: str, corpus: TickerCorpus) -> None:
         while len(_ticker_cache) > _RAG_TICKER_CACHE_MAX:
             evicted_ticker, _ = _ticker_cache.popitem(last=False)
             logger.debug("Evicted ticker corpus: {}", evicted_ticker)
-
-    # Clean up in-flight marker
-    with _inflight_lock:
-        _inflight.pop(ticker, None)
 
 
 # -- Coverage lookup --

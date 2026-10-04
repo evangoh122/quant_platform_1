@@ -2704,39 +2704,145 @@ class TestLRUBoundAndEviction:
 class TestInflightLoadCoalescing:
     """Verify in-flight load coalescing: two threads, one load; spy count == 1."""
 
+    def _make_corpus(self, ticker):
+        """Build a minimal TickerCorpus for testing."""
+        from api.services import hybrid_retriever as hr
+        doc = _make_doc(f"{ticker} content", ticker=ticker, accession=f"{ticker}1",
+                        accepted_ts="2025-01-01")
+        return hr.TickerCorpus(
+            ticker=ticker,
+            docs=[doc],
+            tokenised=[hr.tokenize(doc.page_content)],
+            bm25_index=hr.BM25Okapi([hr.tokenize(doc.page_content)]),
+            embeddings_map={},
+            stored_model=None,
+            stored_dim=None,
+            load_ts=0.0,
+            approx_bytes=0,
+        )
+
     def test_two_threads_one_load(self, monkeypatch):
         """Two concurrent requests for the same ticker must trigger only one load."""
+        import threading
         from api.services import hybrid_retriever as hr
 
         load_count = [0]
+        barrier = threading.Barrier(2, timeout=5)
 
         def spy_load(ticker):
+            # Signal that the load has started; second thread should see
+            # the in-flight Future rather than starting its own load.
+            barrier.wait()
             load_count[0] += 1
-            doc = _make_doc(f"{ticker} content", ticker=ticker, accession=f"{ticker}1",
-                            accepted_ts="2025-01-01")
-            return hr.TickerCorpus(
-                ticker=ticker,
-                docs=[doc],
-                tokenised=[hr.tokenize(doc.page_content)],
-                bm25_index=hr.BM25Okapi([hr.tokenize(doc.page_content)]),
-                embeddings_map={},
-                stored_model=None,
-                stored_dim=None,
-                load_ts=0.0,
-                approx_bytes=0,
-            )
+            return self._make_corpus(ticker)
 
         monkeypatch.setattr(hr, "_load_ticker_corpus", spy_load)
 
-        # Load the first ticker to establish the pattern
-        corpus1 = hr.get_ticker_corpus("NVDA")
-        assert load_count[0] == 1
-        assert corpus1.ticker == "NVDA"
+        results = [None, None]
+        errors = [None, None]
 
-        # Second call for same ticker should use cache (no additional load)
-        corpus2 = hr.get_ticker_corpus("NVDA")
-        assert load_count[0] == 1, f"Expected 1 load (cached), got {load_count[0]}"
-        assert corpus2.ticker == "NVDA"
+        def worker(idx):
+            try:
+                results[idx] = hr.get_ticker_corpus("NVDA")
+            except Exception as e:
+                errors[idx] = e
+
+        t1 = threading.Thread(target=worker, args=(0,))
+        t2 = threading.Thread(target=worker, args=(1,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert errors[0] is None, f"Thread 0 error: {errors[0]}"
+        assert errors[1] is None, f"Thread 1 error: {errors[1]}"
+        assert results[0] is not None
+        assert results[1] is not None
+        assert results[0].ticker == "NVDA"
+        assert results[1].ticker == "NVDA"
+        assert load_count[0] == 1, f"Expected 1 coalesced load, got {load_count[0]}"
+
+    def test_four_threads_one_ticker_one_load(self, monkeypatch):
+        """4 concurrent callers for one ticker → exactly 1 load."""
+        import threading
+        from api.services import hybrid_retriever as hr
+
+        load_count = [0]
+        barrier = threading.Barrier(4, timeout=5)
+
+        def spy_load(ticker):
+            barrier.wait()
+            load_count[0] += 1
+            return self._make_corpus(ticker)
+
+        monkeypatch.setattr(hr, "_load_ticker_corpus", spy_load)
+
+        results = [None] * 4
+        errors = [None] * 4
+
+        def worker(idx):
+            try:
+                results[idx] = hr.get_ticker_corpus("NVDA")
+            except Exception as e:
+                errors[idx] = e
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        for i in range(4):
+            assert errors[i] is None, f"Thread {i} error: {errors[i]}"
+            assert results[i] is not None
+            assert results[i].ticker == "NVDA"
+        assert load_count[0] == 1, f"Expected 1 coalesced load, got {load_count[0]}"
+
+    def test_three_tickers_parallel(self, monkeypatch):
+        """3 distinct tickers in parallel finish in ~1 load time, not 3x."""
+        import threading
+        import time
+        from api.services import hybrid_retriever as hr
+
+        load_durations = []
+
+        def spy_load(ticker):
+            t0 = time.monotonic()
+            # Simulate a slow load (0.2s)
+            time.sleep(0.2)
+            load_durations.append(time.monotonic() - t0)
+            return self._make_corpus(ticker)
+
+        monkeypatch.setattr(hr, "_load_ticker_corpus", spy_load)
+
+        results = {}
+        errors = {}
+
+        def worker(ticker):
+            try:
+                results[ticker] = hr.get_ticker_corpus(ticker)
+            except Exception as e:
+                errors[ticker] = e
+
+        wall_start = time.monotonic()
+        threads = [
+            threading.Thread(target=worker, args=(t,))
+            for t in ["AAA", "BBB", "CCC"]
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+        wall_elapsed = time.monotonic() - wall_start
+
+        for t in ["AAA", "BBB", "CCC"]:
+            assert t not in errors, f"{t} error: {errors[t]}"
+            assert results[t].ticker == t
+
+        # 3 tickers at 0.2s each should run in parallel: wall time < 0.8s
+        # (generous margin vs 0.6s sequential)
+        assert wall_elapsed < 0.8, f"Expected parallel execution, took {wall_elapsed:.2f}s"
+        assert len(load_durations) == 3
 
 
 class TestPerTickerFailureIsolation:
@@ -2745,6 +2851,7 @@ class TestPerTickerFailureIsolation:
     def test_failure_isolation(self, monkeypatch):
         """A load failure for ticker AAA must not prevent loading BBB."""
         from api.services import hybrid_retriever as hr
+        from api.services.exceptions import CorpusUnavailableError
 
         call_log = []
 
@@ -2768,12 +2875,12 @@ class TestPerTickerFailureIsolation:
 
         monkeypatch.setattr(hr, "_load_ticker_corpus", load_side_effect)
 
-        # AAA should fail with RuntimeError from the mock
-        with pytest.raises(RuntimeError, match="Spark connection failed"):
-            hr._load_ticker_corpus("AAA")
+        # AAA should fail — the get_ticker_corpus path wraps in CorpusUnavailableError
+        with pytest.raises((RuntimeError, CorpusUnavailableError)):
+            hr.get_ticker_corpus("AAA")
 
-        # BBB should succeed (direct call, failure isolated)
-        corpus = hr._load_ticker_corpus("BBB")
+        # BBB should succeed via get_ticker_corpus (failure isolated)
+        corpus = hr.get_ticker_corpus("BBB")
         assert corpus.ticker == "BBB"
         assert len(corpus.docs) == 1
         assert call_log == ["AAA", "BBB"]
