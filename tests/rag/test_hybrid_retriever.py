@@ -2797,21 +2797,24 @@ class TestInflightLoadCoalescing:
         assert load_count[0] == 1, f"Expected 1 coalesced load, got {load_count[0]}"
 
     def test_three_tickers_parallel(self, monkeypatch):
-        """3 distinct tickers in parallel finish in ~1 load time, not 3x."""
+        """3 distinct tickers in parallel: barrier proves concurrent execution.
+
+        Each load waits at a Barrier(3) until all three have entered.
+        If loads are serialized, the third never enters while the first
+        is still waiting → Barrier timeout → test fails.
+        """
         import threading
-        import time
         from api.services import hybrid_retriever as hr
 
-        load_durations = []
+        barrier = threading.Barrier(3, timeout=2)
+        all_reached = [False]
 
-        def spy_load(ticker):
-            t0 = time.monotonic()
-            # Simulate a slow load (0.2s)
-            time.sleep(0.2)
-            load_durations.append(time.monotonic() - t0)
+        def barrier_load(ticker):
+            barrier.wait()  # blocks until all 3 loads are in-flight
+            all_reached[0] = True
             return self._make_corpus(ticker)
 
-        monkeypatch.setattr(hr, "_load_ticker_corpus", spy_load)
+        monkeypatch.setattr(hr, "_load_ticker_corpus", barrier_load)
 
         results = {}
         errors = {}
@@ -2822,7 +2825,6 @@ class TestInflightLoadCoalescing:
             except Exception as e:
                 errors[ticker] = e
 
-        wall_start = time.monotonic()
         threads = [
             threading.Thread(target=worker, args=(t,))
             for t in ["AAA", "BBB", "CCC"]
@@ -2831,16 +2833,12 @@ class TestInflightLoadCoalescing:
             t.start()
         for t in threads:
             t.join(timeout=5)
-        wall_elapsed = time.monotonic() - wall_start
 
         for t in ["AAA", "BBB", "CCC"]:
             assert t not in errors, f"{t} error: {errors[t]}"
             assert results[t].ticker == t
 
-        # 3 tickers at 0.2s each should run in parallel: wall time < 0.8s
-        # (generous margin vs 0.6s sequential)
-        assert wall_elapsed < 0.8, f"Expected parallel execution, took {wall_elapsed:.2f}s"
-        assert len(load_durations) == 3
+        assert all_reached[0], "Barrier was never satisfied — loads were serialized"
 
 
 class TestPerTickerFailureIsolation:
