@@ -313,8 +313,8 @@ class TestEmbeddingConcurrencyFixes:
     """Test round-8b fixes: unique view names, isin predicate, MERGE metrics."""
 
     def test_concurrent_batches_use_distinct_view_names(self, fake_pyspark):
-        """Two concurrent batches must create distinct temp view names."""
-        import re
+        """Two concurrent batches must create distinct view names,
+        and both batches' rows must reach the target table."""
         from pipelines.build_sec_embeddings import build
 
         new_chunks = [
@@ -330,28 +330,22 @@ class TestEmbeddingConcurrencyFixes:
 
         mock_spark = self._make_mock_spark_for_concurrency(new_chunks)
 
-        view_names = []
-        original_create = mock_spark.createDataFrame
-
-        def track_views(*args, **kwargs):
-            return original_create(*args, **kwargs)
-
-        original_or_replace = MagicMock()
         mock_spark.catalog = MagicMock()
 
-        # Capture createOrReplaceTempView calls
+        # Capture createOrReplaceTempView calls AND the row data per batch
         captured_view_names = []
-        original_create_or_replace = MagicMock()
+        captured_batch_rows = []
 
         class ViewTrackingDF:
-            def __init__(self, df):
-                self._df = df
+            def __init__(self, rows):
+                self._rows = rows
 
             def createOrReplaceTempView(self, name):
                 captured_view_names.append(name)
+                captured_batch_rows.append(self._rows)
 
         def mock_create_df(rows, schema=None):
-            return ViewTrackingDF(MagicMock())
+            return ViewTrackingDF(rows)
 
         mock_spark.createDataFrame.side_effect = mock_create_df
 
@@ -361,46 +355,106 @@ class TestEmbeddingConcurrencyFixes:
         # With 6 chunks / batch_size=3 → 2 batches → 2 distinct view names
         assert len(captured_view_names) == 2
         assert captured_view_names[0] != captured_view_names[1]
-        # Each must be unique (UUID-based)
         for name in captured_view_names:
             assert name.startswith("_embed_src_")
+
+        # Both batches' rows must have reached the write path
+        all_chunk_ids = set()
+        for batch_rows in captured_batch_rows:
+            for row in batch_rows:
+                all_chunk_ids.add(row[0])  # chunk_id is the first element
+        expected_ids = {f"c{i}" for i in range(6)}
+        assert all_chunk_ids == expected_ids, (
+            f"Expected all 6 chunk_ids in write path, got {all_chunk_ids}"
+        )
 
     def test_comma_separated_ticker_uses_isin(self, fake_pyspark):
         """Comma-separated ticker list must use isin predicate, not scalar equality."""
         from pipelines.build_sec_embeddings import build
+        import pyspark.sql.functions as F
 
-        mock_spark = MagicMock()
+        class _EvalCol:
+            """Evaluable Column spy: records isin vs == and can evaluate on dict rows."""
+            def __init__(self, name):
+                self._name = name
+                self._op = None
+                self._target = None
 
-        mock_anti_join_df = MagicMock()
-        mock_anti_join_df.filter.return_value = mock_anti_join_df
-        mock_anti_join_df.select.return_value = mock_anti_join_df
-        mock_anti_join_df.join.return_value = mock_anti_join_df
-        mock_anti_join_df.repartition.return_value = mock_anti_join_df
-        mock_anti_join_df.limit.return_value = mock_anti_join_df
-        mock_anti_join_df.toLocalIterator.return_value = iter([])
+            def isin(self, values):
+                self._op = "isin"
+                self._target = set(values)
+                return self
 
-        mock_embedded_df = MagicMock()
-        mock_embedded_df.filter.return_value = mock_embedded_df
-        mock_embedded_df.select.return_value = mock_embedded_df
+            def __eq__(self, other):
+                self._op = "eq"
+                self._target = other
+                return self
 
-        def table_side_effect(name):
-            if "embeddings" in name:
-                return mock_embedded_df
-            return mock_anti_join_df
+            def __ne__(self, other):
+                return self
 
-        mock_spark.table.side_effect = table_side_effect
+            def __getattr__(self, _name):
+                return self
 
-        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
-            build(mock_spark, batch_size=256, partitions=4, ticker="NVDA,AMD,INTC")
+            def __call__(self, *a, **kw):
+                return self
 
-        # Verify filter was called with isin
-        filter_calls = mock_anti_join_df.filter.call_args_list
-        assert len(filter_calls) >= 1
-        # The second filter call is the ticker filter (first is chunk_text IS NOT NULL)
-        ticker_filter = filter_calls[1] if len(filter_calls) > 1 else filter_calls[0]
-        # The filter should have been called — we can't easily inspect the isin
-        # but we can verify the mock was called
-        assert mock_anti_join_df.filter.called
+            def evaluate(self, row):
+                val = row.get(self._name)
+                if self._op == "isin":
+                    return val in self._target
+                if self._op == "eq":
+                    return val == self._target
+                return True
+
+        captured_filter_args = []
+        original_col = F.col
+        F.col = lambda name: _EvalCol(name)
+
+        try:
+            mock_spark = MagicMock()
+            mock_anti_join_df = MagicMock()
+
+            def capture_filter(expr):
+                captured_filter_args.append(expr)
+                return mock_anti_join_df
+
+            mock_anti_join_df.filter.side_effect = capture_filter
+            mock_anti_join_df.select.return_value = mock_anti_join_df
+            mock_anti_join_df.join.return_value = mock_anti_join_df
+            mock_anti_join_df.repartition.return_value = mock_anti_join_df
+            mock_anti_join_df.limit.return_value = mock_anti_join_df
+            mock_anti_join_df.toLocalIterator.return_value = iter([])
+
+            mock_embedded_df = MagicMock()
+            mock_embedded_df.filter.return_value = mock_embedded_df
+            mock_embedded_df.select.return_value = mock_embedded_df
+
+            def table_side_effect(name):
+                if "embeddings" in name:
+                    return mock_embedded_df
+                return mock_anti_join_df
+
+            mock_spark.table.side_effect = table_side_effect
+
+            with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+                build(mock_spark, batch_size=256, partitions=4, ticker="AAPL,MSFT")
+
+            # captured: [0] = string predicate, [1] = ticker Column
+            assert len(captured_filter_args) >= 2
+            ticker_filter = captured_filter_args[1]
+            assert isinstance(ticker_filter, _EvalCol)
+
+            # Evaluate on test rows: AAPL and MSFT kept, GOOG dropped
+            assert ticker_filter.evaluate({"ticker": "AAPL"}), "AAPL must be kept"
+            assert ticker_filter.evaluate({"ticker": "MSFT"}), "MSFT must be kept"
+            assert not ticker_filter.evaluate({"ticker": "GOOG"}), "GOOG must be dropped"
+
+            # Mutation proof: scalar F.col("ticker") == "AAPL,MSFT" would set
+            # _op="eq", _target="AAPL,MSFT" and evaluate({"ticker":"AAPL"})
+            # would return False — caught above.
+        finally:
+            F.col = original_col
 
     def test_single_ticker_uses_equality(self, fake_pyspark):
         """Single ticker must use equality predicate (not isin)."""
@@ -433,7 +487,11 @@ class TestEmbeddingConcurrencyFixes:
         assert mock_anti_join_df.filter.called
 
     def test_inserted_count_from_metrics(self, fake_pyspark):
-        """MERGE must report actual inserted rows from operationMetrics."""
+        """MERGE must report actual inserted rows from operationMetrics.
+
+        3 candidates sent but only 1 actually inserted (2 already existed).
+        rows_written must be 1, not len(out_rows)=3.
+        """
         from pipelines.build_sec_embeddings import build
 
         new_chunks = [
@@ -443,6 +501,20 @@ class TestEmbeddingConcurrencyFixes:
                 "accession_number": "ACC1",
                 "ticker": "NVDA",
                 "accepted_epoch": 1736899200,
+            },
+            {
+                "chunk_id": "c2",
+                "chunk_text": "Text 2",
+                "accession_number": "ACC2",
+                "ticker": "NVDA",
+                "accepted_epoch": 1736899201,
+            },
+            {
+                "chunk_id": "c3",
+                "chunk_text": "Text 3",
+                "accession_number": "ACC3",
+                "ticker": "NVDA",
+                "accepted_epoch": 1736899202,
             },
         ]
 
@@ -471,7 +543,7 @@ class TestEmbeddingConcurrencyFixes:
 
         mock_spark.table.side_effect = table_side_effect
 
-        # Mock DESCRIBE HISTORY to return operationMetrics
+        # Mock DESCRIBE HISTORY: only 1 of 3 candidates was actually inserted
         mock_hist_row = MagicMock()
         mock_hist_row.__getitem__ = lambda self, k: {
             "operationMetrics": {"numTargetRowsInserted": "1"}
@@ -483,6 +555,7 @@ class TestEmbeddingConcurrencyFixes:
         with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
             result = build(mock_spark, batch_size=256, partitions=4)
 
+        # 3 candidates but only 1 inserted — must use MERGE metric, not len(out_rows)
         assert result["rows_written"] == 1
 
     def _make_mock_spark_for_concurrency(self, new_chunks):
