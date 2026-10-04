@@ -161,11 +161,64 @@ class TestRegistryColumnsMatchViewOutput:
         re.DOTALL | re.IGNORECASE,
     )
 
+    _SQL_SELECT_KEYWORDS = frozenset({
+        "select", "distinct", "from", "where", "and", "or", "not", "as",
+        "on", "join", "over", "partition", "by", "order", "rows", "between",
+        "unbounded", "preceding", "following", "current", "row", "range",
+        "group", "having", "limit", "offset", "union", "all", "into",
+        "values", "case", "when", "then", "else", "end", "null", "is", "in",
+    })
+
+    def _extract_column_aliases_from_select(self, select_lines: list[str]) -> set[str]:
+        """Extract column aliases from SELECT lines.
+
+        Handles: expr AS alias, bare columns, functions with commas in parens,
+        column references like t.col.
+        """
+        columns: set[str] = set()
+        paren_depth = 0
+        for raw_line in select_lines:
+            stripped = raw_line.strip().rstrip(",").strip()
+            if not stripped:
+                continue
+
+            # Track parentheses depth (functions like GREATEST(a, b))
+            for ch in stripped:
+                if ch == "(":
+                    paren_depth += 1
+                elif ch == ")":
+                    paren_depth -= 1
+
+            # Skip if we're inside a function call's parentheses
+            if paren_depth > 0:
+                continue
+
+            # Skip ORDER BY / LIMIT lines that may follow the last SELECT
+            if re.match(r"^(ORDER|LIMIT|GROUP|HAVING)\b", stripped.upper()):
+                break
+
+            # Match AS alias (highest priority)
+            as_match = re.search(r"\bAS\s+(\w+)\s*$", stripped, re.IGNORECASE)
+            if as_match:
+                columns.add(as_match.group(1).lower())
+                continue
+
+            # Bare column reference: symbol, event_date, t.col
+            bare = stripped.split(",")[0].strip().lower()
+            if re.match(r"^[a-z_][a-z0-9_.]*$", bare):
+                # Strip table prefix: t.col → col
+                col_name = bare.rsplit(".", 1)[-1]
+                if col_name not in self._SQL_SELECT_KEYWORDS:
+                    columns.add(col_name)
+
+        return columns
+
     def _extract_view_select_columns(self, ddl_content: str, view_name: str) -> set[str]:
         """Extract the final SELECT column aliases from a view's DDL.
 
         Handles both 'expr AS alias' and bare column references.
-        Only extracts from the last SELECT in each SQL block (the final projection).
+        Handles SELECT on its own line (columns on following lines).
+        Only extracts from the primary DDL (first SQL block).
         """
         # Find the section for this view
         section_match = re.search(
@@ -198,50 +251,70 @@ class TestRegistryColumnsMatchViewOutput:
         if not sql_blocks:
             return set()
 
-        # Parse the last SQL block (primary DDL — first SQL block)
+        # Parse the first SQL block (primary DDL)
         sql = sql_blocks[0]
 
-        # Find the final SELECT ... FROM (the outermost SELECT)
-        # Strategy: find the last SELECT keyword that's not inside a subquery/CTE
-        # Simple approach: find lines between the last SELECT and FROM/JOIN/WHERE
-        lines = sql.splitlines()
-        select_columns = set()
+        # Strategy: track CTE boundaries with parenthesis depth, then find
+        # the final SELECT after all CTEs.
+        sql_lines = sql.splitlines()
         in_final_select = False
+        select_lines: list[str] = []
 
-        for line in lines:
-            stripped = line.strip().rstrip(",").strip()
-            upper = stripped.upper()
+        # Find CTEs to skip them — the final SELECT is after the last CTE
+        sql_upper = sql.upper()
+        cte_pattern = re.compile(r"(\w+)\s+AS\s*\(")
+        pos = 0
+        last_cte_end = 0
+        while pos < len(sql_upper):
+            m = cte_pattern.search(sql_upper, pos)
+            if not m:
+                break
+            depth = 0
+            i = m.end() - 1
+            while i < len(sql_upper):
+                ch = sql_upper[i]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            last_cte_end = i + 1
+            pos = i + 1
+            while pos < len(sql_upper) and sql_upper[pos] in " \t\n,":
+                pos += 1
 
-            # Detect start of final SELECT (not a CTE)
-            if re.match(r"^\s*SELECT\s", stripped, re.IGNORECASE):
+        # Now find the final SELECT in the SQL after the CTEs
+        # Convert byte offset to line number
+        chars_seen = 0
+        final_select_start_line = 0
+        for line_idx, line in enumerate(sql_lines):
+            if chars_seen >= last_cte_end:
+                final_select_start_line = line_idx
+                break
+            chars_seen += len(line) + 1  # +1 for newline
+
+        # Parse from the final SELECT
+        for line in sql_lines[final_select_start_line:]:
+            stripped = line.strip().upper()
+            if re.match(r"^SELECT(?:\s|$)", stripped):
                 in_final_select = True
                 # Check if columns are on the same line
-                after_select = re.sub(r"^\s*SELECT\s+", "", stripped, flags=re.IGNORECASE).strip()
-                if after_select and not after_select.upper().startswith("DISTINCT"):
-                    # Parse inline columns
-                    pass
+                after = re.sub(r"^SELECT\s*", "", line.strip(), flags=re.IGNORECASE).strip()
+                if after and not after.upper().startswith("DISTINCT"):
+                    select_lines.append(after)
                 continue
 
             if in_final_select:
-                # End of SELECT at FROM, WHERE, GROUP, ORDER, etc.
-                if re.match(r"^(FROM|WHERE|GROUP|ORDER|HAVING|LIMIT|JOIN)\b", upper):
-                    in_final_select = False
-                    continue
+                if re.match(r"^(FROM|WHERE|GROUP|ORDER|HAVING|LIMIT|JOIN)\b", stripped):
+                    break
+                select_lines.append(line)
 
-                # Parse column alias: 'expr AS alias' or bare column
-                as_match = re.search(r"\bAS\s+(\w+)\s*$", stripped, re.IGNORECASE)
-                if as_match:
-                    select_columns.add(as_match.group(1).lower())
-                elif stripped and not stripped.startswith("--") and stripped.upper() != "DISTINCT":
-                    # Bare column reference
-                    bare = stripped.split(",")[0].strip().lower()
-                    if re.match(r"^[a-z_][a-z0-9_]*$", bare):
-                        select_columns.add(bare)
-
-        return select_columns
+        return self._extract_column_aliases_from_select(select_lines)
 
     def test_registry_output_fields_match_view_columns(self, registry, ddl_content, source_schemas):
-        """Registry output_fields must exist in the VIEW's output columns.
+        """Registry output_fields must exist in the VIEW's actual output columns.
 
         Skip entries with non-trivial aggregation (e.g., mean, sum) because
         their output_fields like agg_value are computed results, not direct
@@ -253,8 +326,10 @@ class TestRegistryColumnsMatchViewOutput:
                 continue  # Computed aggregation — output_fields are derived at query time
             view_name = entry.serving_view
             view_cols = self._extract_view_select_columns(ddl_content, view_name)
-            if not view_cols:
-                continue  # Can't parse — skip
+            assert view_cols, (
+                f"Entry {pair_key}: could not parse any columns from view {view_name!r}. "
+                f"This test cannot verify output_fields — extraction must not be empty."
+            )
 
             # Also include derived columns from source_schemas
             derived = source_schemas.get("derived_columns", {}).get(view_name, {})
@@ -271,6 +346,24 @@ class TestRegistryColumnsMatchViewOutput:
                     f"Entry {pair_key}: output_field {field.name!r} not found in "
                     f"view {view_name!r} columns. Available: {sorted(all_view_cols)}"
                 )
+
+
+    def test_extracted_columns_for_daily_prices(self, ddl_content):
+        """The extracted columns for serve_daily_prices_v1 must match an explicit expected set."""
+        cols = self._extract_view_select_columns(ddl_content, "serve_daily_prices_v1")
+        expected = {"symbol", "event_date", "open_price", "high_price", "low_price",
+                    "close_price", "volume", "information_available_ts"}
+        assert cols == expected, (
+            f"Expected {sorted(expected)}, got {sorted(cols)}"
+        )
+
+    def test_mutation_close_price_bogus_fails(self, ddl_content):
+        """Mutation proof: renaming close_price → close_price_bogus in registry output_field must fail."""
+        cols = self._extract_view_select_columns(ddl_content, "serve_daily_prices_v1")
+        assert "close_price" in cols, "close_price must be extractable from DDL"
+        assert "close_price_bogus" not in cols, (
+            "close_price_bogus must NOT be extractable — proves the parser catches renames"
+        )
 
 
 class TestReintroduceAdjCloseFails:

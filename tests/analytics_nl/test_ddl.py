@@ -287,62 +287,120 @@ class TestDDLPITSafetyAsOfBeforeWindow:
                 lines.append(line)
         return blocks
 
+    def _parse_sql_ctes_and_final_select(self, sql: str):
+        """Parse SQL into (ctes, final_select) by tracking parenthesis depth.
+
+        ctes: list of (name, body) tuples
+        final_select: the SQL after the last CTE closes
+        """
+        sql_upper = sql.upper()
+        cte_pattern = re.compile(r"(\w+)\s+AS\s*\(")
+        pos = 0
+        ctes = []
+        while pos < len(sql_upper):
+            m = cte_pattern.search(sql_upper, pos)
+            if not m:
+                break
+            name = m.group(1)
+            depth = 0
+            i = m.end() - 1  # points at the '('
+            while i < len(sql_upper):
+                ch = sql_upper[i]
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            body = sql_upper[m.end():i]
+            ctes.append((name, body))
+            pos = i + 1
+            # skip comma and whitespace between CTEs
+            while pos < len(sql_upper) and sql_upper[pos] in ' \t\n,':
+                pos += 1
+        final_select = sql_upper[pos:] if pos < len(sql_upper) else ""
+        return ctes, final_select
+
     def _has_as_of_filter_before_window(self, sql: str) -> bool:
         """Check that as_of filtering appears in a CTE that feeds into window/aggregate.
 
-        Strategy: find the first CTE that uses window functions (ROW_NUMBER, STDDEV_SAMP,
-        MAX...OVER, LAG, EXP...SUM...LN) or aggregates. Verify that an earlier CTE
-        in the same SQL block contains 'information_available_ts <= :as_of'.
+        Strategy: split SQL into CTE list and final SELECT (track parenthesis depth).
+        Find CTEs that use window functions. Verify that some CTE read by the
+        window/aggregate CTE (directly or transitively) contains the as_of filter,
+        and the window/aggregate CTE itself does not read the unfiltered base table.
         """
-        import re
+        ctes, final_select = self._parse_sql_ctes_and_final_select(sql)
 
-        sql_upper = sql.upper()
-        # Normalize whitespace
-        sql_normalized = re.sub(r"\s+", " ", sql_upper)
-
-        # Window function patterns
         window_patterns = [
             r"ROW_NUMBER\s*\(\s*\)\s*OVER",
             r"STDDEV_SAMP\s*\(",
             r"MAX\s*\([^)]+\)\s*OVER",
             r"LAG\s*\(",
-            r"EXP\s*\(\s*SUM\s*\(\s*LN",
+            r"EXP\s*\(\s*SUM\s*\(\s*(?:LN|GREATEST)",
         ]
 
-        has_window = any(re.search(p, sql_normalized) for p in window_patterns)
+        has_window = False
+        for _, body in ctes:
+            if any(re.search(p, body) for p in window_patterns):
+                has_window = True
+                break
+        # Also check final SELECT for window functions (e.g. momentum LAG)
+        if not has_window and any(re.search(p, final_select) for p in window_patterns):
+            has_window = True
         if not has_window:
-            # No window functions — no PIT check needed
             return True
 
-        # Check that as_of filter exists somewhere in the SQL
-        # Pattern matches both direct column and function expressions:
-        #   information_available_ts <= :as_of
-        #   to_utc_timestamp(concat(event_date, ...), ...) <= :as_of
         as_of_pattern = r"(?:INFORMATION_AVAILABLE_TS|TO_UTC_TIMESTAMP)\b.*?<=\s*:AS_OF"
-        if not re.search(as_of_pattern, sql_normalized):
+
+        # Find CTEs with as_of filter
+        as_of_ctes = set()
+        for name, body in ctes:
+            if re.search(as_of_pattern, body):
+                as_of_ctes.add(name)
+
+        if not as_of_ctes:
             return False
 
-        # Verify as_of filter is in a CTE that appears BEFORE the window function CTEs
-        # by checking that the as_of filter is not only in the final SELECT
-        cte_pattern = r"(\w+)\s+AS\s*\("
-        ctes = list(re.finditer(cte_pattern, sql_normalized))
+        # Find CTEs with window functions (the ones that need as_of filtered input)
+        window_ctes = set()
+        for name, body in ctes:
+            if any(re.search(p, body) for p in window_patterns):
+                window_ctes.add(name)
 
-        # Find which CTEs have as_of filter
-        as_of_ctes = set()
-        for cte_match in ctes:
-            cte_name = cte_match.group(1)
-            # Find the CTE body (from this match to the next CTE or end)
-            start = cte_match.end()
-            next_cte = re.search(r"\)\s*,\s*\w+\s+AS\s*\(", sql_normalized[start:])
-            if next_cte:
-                body = sql_normalized[start:start + next_cte.start()]
-            else:
-                body = sql_normalized[start:]
+        # For each window CTE, check it reads from an as_of-filtered CTE
+        # (transitively). Build a simple read-graph: a CTE "reads" another if
+        # the other's name appears in its body.
+        cte_names = {name for name, _ in ctes}
+        cte_body_map = dict(ctes)
 
-            if re.search(as_of_pattern, body):
-                as_of_ctes.add(cte_name)
+        # Build read graph
+        read_graph: dict[str, set[str]] = {}
+        for name, body in ctes:
+            read_graph[name] = {n for n in cte_names if n != name and n in body.split()}
 
-        return len(as_of_ctes) > 0
+        # BFS: for each window CTE, check if any ancestor has as_of
+        for w_cte in window_ctes:
+            # BFS from w_cte through read_graph
+            visited: set[str] = set()
+            queue = [w_cte]
+            found_as_of = False
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                for dep in read_graph.get(current, set()):
+                    if dep in as_of_ctes:
+                        found_as_of = True
+                        break
+                    queue.append(dep)
+                if found_as_of:
+                    break
+            if not found_as_of:
+                return False
+
+        return True
 
     def test_all_views_have_as_of_before_window(self, ddl_content):
         """Every SQL block with window functions must have as-of filter in an earlier CTE."""
@@ -370,27 +428,59 @@ class TestDDLPITSafetyAsOfBeforeWindow:
         )
 
     def test_mutation_as_of_after_window_fails(self, ddl_content):
-        """Mutation proof: moving as-of filter after window must fail the PIT test."""
-        import re
+        """Mutation proof: moving as-of filter after window must fail the PIT test.
 
+        For serve_options_metrics_v1: remove the as_of WHERE from the as_of_filtered
+        CTE and add the filter to the final WHERE rn = 1 → test FAILS.
+        """
         blocks = self._extract_sql_blocks(ddl_content)
-        # Find a block with both as_of and window
+        # Find the serve_options_metrics_v1 block (has ROW_NUMBER + as_of)
         for sql in blocks:
             sql_upper = sql.upper()
             if "INFORMATION_AVAILABLE_TS" in sql_upper and "ROW_NUMBER" in sql_upper:
-                # Remove the as_of filter from the CTE
+                # Remove the as_of filter from the CTE WHERE clause
                 mutated = re.sub(
                     r"\s*WHERE\s+(?:information_available_ts|to_utc_timestamp)\b.*?<=\s*:as_of\s*",
                     " ",
                     sql,
                     flags=re.IGNORECASE,
                 )
+                # Add the filter to the final WHERE (after the window)
+                mutated = re.sub(
+                    r"(WHERE\s+rn\s*=\s*1)\s*",
+                    r"\1 AND information_available_ts <= :as_of ",
+                    mutated,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
                 # Now the mutation should fail the check
                 assert not self._has_as_of_filter_before_window(mutated), (
-                    "Mutation proof failed: removing as_of filter should break the check"
+                    "Mutation proof failed: moving as_of filter after window "
+                    "(into final WHERE) should break the check"
                 )
                 return
         pytest.skip("No SQL block found with both as_of filter and window functions")
+
+    def test_mutation_equity_metrics_as_of_after_window_fails(self, ddl_content):
+        """Mutation proof: removing as_of from serve_daily_equity_metrics_v1 input CTE fails."""
+        blocks = self._extract_sql_blocks(ddl_content)
+        # Find the equity metrics block (has STDDEV_SAMP + as_of)
+        for sql in blocks:
+            sql_upper = sql.upper()
+            if "SERVE_DAILY_PRICES_V1" in sql_upper and "STDDEV_SAMP" in sql_upper:
+                # Remove the as_of filter from the daily_prices CTE
+                mutated = re.sub(
+                    r"\s*WHERE\s+information_available_ts\s*<=\s*:as_of\s*",
+                    " ",
+                    sql,
+                    flags=re.IGNORECASE,
+                )
+                assert not self._has_as_of_filter_before_window(mutated), (
+                    "Mutation proof failed: removing as_of from equity metrics "
+                    "input CTE should break the check"
+                )
+                return
+        pytest.skip("No SQL block found with both equity metrics window and as_of filter")
 
 
 class TestDDLRelativePerformanceSemantics:
