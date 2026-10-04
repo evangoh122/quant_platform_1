@@ -171,11 +171,11 @@ databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4
 Record missing/ambiguous CIKs from the run summary. These symbols need manual investigation — they may be delisted, renamed, or not SEC-reporting entities.
 
 ### Failed Filings
-Check the `bronze_sec_ingest_log` table for `status = 'failed'` entries:
+Check the `sec_ingest_log` table for `status = 'failed'` entries:
 
 ```sql
 SELECT ticker, accession_number, error_code, error_message, attempt
-FROM ${catalog}.${schema}.bronze_sec_ingest_log
+FROM ${catalog}.${schema}.sec_ingest_log
 WHERE status = 'failed'
 ORDER BY completed_ts DESC
 LIMIT 50;
