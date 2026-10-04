@@ -1071,3 +1071,110 @@ class TestInsufficientData:
         )
         assert PolicyReasonCode.INSUFFICIENT_DATA not in result.reason_codes
         assert result.cost_class != CostClass.REJECT
+
+    def test_iv_trend_zero_total_rejected(self, registry, bounds):
+        """IV trend with (0, 0) stats → REJECT with INSUFFICIENT_DATA (fail closed)."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        coverage_stats = {"implied_volatility.trend": (0, 0)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_iv_compare_zero_total_rejected(self, registry, bounds):
+        """IV compare with (0, 0) stats → REJECT with INSUFFICIENT_DATA."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.compare,
+            entities=[TickerEntity(canonical_id="AAPL"), TickerEntity(canonical_id="MSFT")],
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        coverage_stats = {"implied_volatility.compare": (0, 0)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_iv_rank_zero_total_rejected(self, registry, bounds):
+        """IV rank with (0, 0) stats → REJECT with INSUFFICIENT_DATA."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.rank,
+            entities=[TickerEntity(canonical_id="AAPL")],
+        )
+        coverage_stats = {"implied_volatility.rank": (0, 0)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_iv_aggregate_zero_total_rejected(self, registry, bounds):
+        """IV aggregate with (0, 0) stats → REJECT with INSUFFICIENT_DATA."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.aggregate,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            grouping=Grouping.ticker,
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        coverage_stats = {"implied_volatility.aggregate": (0, 0)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_iv_sample_count_exceeds_total_rejected(self, registry, bounds):
+        """IV with sample_count > total_count → REJECT with INSUFFICIENT_DATA."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        coverage_stats = {"implied_volatility.trend": (20000, 19390)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_iv_negative_total_rejected(self, registry, bounds):
+        """IV with negative total_count → REJECT with INSUFFICIENT_DATA."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        coverage_stats = {"implied_volatility.trend": (0, -1)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes

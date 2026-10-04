@@ -265,7 +265,13 @@ def classify_intent(
                 reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
             else:
                 sample_count, total_count = stats
-                if total_count > 0:
+                if (
+                    total_count <= 0
+                    or sample_count < 0
+                    or sample_count > total_count
+                ):
+                    reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
+                else:
                     coverage_ratio = sample_count / total_count
                     if coverage_ratio < entry.coverage.min_coverage_ratio:
                         reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
