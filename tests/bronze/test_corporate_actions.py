@@ -1926,3 +1926,51 @@ class TestAdapterRateLimit:
             "Adapter must sleep between requests even with delay_seconds=0.0 "
             "(constructor clamps to 0.5)"
         )
+
+class TestCliApiKeyResolution:
+    """CLI mode: the Databricks SDK returns secrets BASE64-encoded; the key must be decoded before use."""
+
+    @staticmethod
+    def _load_nb():
+        import importlib.util
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions_keytest", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_sdk_secret_is_base64_decoded(self, monkeypatch):
+        import base64
+        import sys
+        import types
+
+        plaintext = "PLAINTEXT_KEY_123"
+        encoded = base64.b64encode(plaintext.encode()).decode()
+
+        class _Secret:
+            value = encoded
+
+        class _Secrets:
+            def get_secret(self, scope, key):
+                assert (scope, key) == ("evangoh_capstone", "massive_s3_secret_key")
+                return _Secret()
+
+        class _WS:
+            secrets = _Secrets()
+
+        fake_sdk = types.ModuleType("databricks.sdk")
+        fake_sdk.WorkspaceClient = _WS
+        fake_db = types.ModuleType("databricks")
+        fake_db.sdk = fake_sdk
+        monkeypatch.setitem(sys.modules, "databricks", fake_db)
+        monkeypatch.setitem(sys.modules, "databricks.sdk", fake_sdk)
+        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+
+        mod = self._load_nb()
+        assert mod._resolve_cli_api_key() == plaintext
+
+    def test_env_var_used_verbatim(self, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "ENV_PLAINTEXT")
+        mod = self._load_nb()
+        assert mod._resolve_cli_api_key() == "ENV_PLAINTEXT"

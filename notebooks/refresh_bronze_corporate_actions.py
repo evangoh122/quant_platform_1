@@ -25,6 +25,7 @@ returns, not historical adjusted levels.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import json
 import os
@@ -89,6 +90,25 @@ def _valid_source(source: str) -> str:
         raise ValueError(f"source must be one of {VALID_SOURCES}, got {source!r}")
     return source
 
+
+
+def _resolve_cli_api_key() -> str:
+    """CLI-mode Massive key: MASSIVE_API_KEY (plaintext) or the Databricks secret via the SDK.
+
+    ``WorkspaceClient().secrets.get_secret(...).value`` is BASE64-encoded (unlike ``dbutils.secrets.get``,
+    which returns plaintext), so it must be decoded before use or every request returns 401.
+    """
+    key = os.environ.get("MASSIVE_API_KEY", "")
+    if key:
+        return key
+    try:
+        from databricks.sdk import WorkspaceClient
+        raw = WorkspaceClient().secrets.get_secret("evangoh_capstone", "massive_s3_secret_key").value
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    return base64.b64decode(raw).decode("utf-8").strip()
 
 def _make_adapter(source: str, delay_seconds: float, max_retries: int, api_key: str = ""):
     """Create the appropriate adapter instance."""
@@ -495,16 +515,7 @@ def main() -> None:
             ) from exc
     else:
         # CLI mode: env var or Databricks SDK
-        massive_api_key = os.environ.get("MASSIVE_API_KEY", "")
-        if not massive_api_key:
-            try:
-                from databricks.sdk import WorkspaceClient
-                ws = WorkspaceClient()
-                massive_api_key = ws.secrets.get_secret(
-                    "evangoh_capstone", "massive_s3_secret_key"
-                ).value
-            except Exception:
-                pass
+        massive_api_key = _resolve_cli_api_key()
         if not massive_api_key:
             raise RuntimeError(
                 "Massive API key required: set MASSIVE_API_KEY env var "
