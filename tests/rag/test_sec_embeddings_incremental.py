@@ -9,14 +9,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Hide pyspark/databricks
-_pyspark_mock = MagicMock()
-sys.modules.setdefault("pyspark", _pyspark_mock)
-sys.modules.setdefault("pyspark.sql", _pyspark_mock.sql)
-sys.modules.setdefault("pyspark.sql.functions", _pyspark_mock.sql.functions)
-sys.modules.setdefault("databricks", MagicMock())
-sys.modules.setdefault("databricks.connect", MagicMock())
-
 
 class StubEmbeddings:
     def embed_documents(self, texts):
@@ -72,7 +64,7 @@ class TestEmbeddingBuild:
 
         return mock_spark
 
-    def test_only_anti_joined_chunks_embedded(self):
+    def test_only_anti_joined_chunks_embedded(self, fake_pyspark):
         """Only chunks NOT in the embeddings table should be processed."""
         from pipelines.build_sec_embeddings import build
 
@@ -103,7 +95,7 @@ class TestEmbeddingBuild:
 
         assert result["rows_written"] == 2
 
-    def test_second_run_writes_zero(self):
+    def test_second_run_writes_zero(self, fake_pyspark):
         """When all chunks are already embedded, 0 rows should be written."""
         from pipelines.build_sec_embeddings import build
 
@@ -114,7 +106,7 @@ class TestEmbeddingBuild:
 
         assert result["rows_written"] == 0
 
-    def test_dimension_validation(self):
+    def test_dimension_validation(self, fake_pyspark):
         """Embeddings with wrong dimension should raise ValueError."""
         from pipelines.build_sec_embeddings import build
 
@@ -138,7 +130,7 @@ class TestEmbeddingBuild:
             with pytest.raises(ValueError, match="dimension mismatch"):
                 build(mock_spark, batch_size=256, partitions=4)
 
-    def test_batch_size_bounded(self):
+    def test_batch_size_bounded(self, fake_pyspark):
         """Batch size should be respected."""
         from pipelines.build_sec_embeddings import build
 
@@ -167,7 +159,7 @@ class TestEmbeddingBuild:
         # 10 chunks / batch_size 3 = 4 batches
         assert embed_call_count[0] == 4
 
-    def test_ticker_filter_pushed(self):
+    def test_ticker_filter_pushed(self, fake_pyspark):
         """When --ticker is specified, filter should be pushed to Spark."""
         from pipelines.build_sec_embeddings import build
 
@@ -180,7 +172,7 @@ class TestEmbeddingBuild:
         chunks_table_call = mock_spark.table.call_args_list
         assert len(chunks_table_call) >= 2  # embeddings table + chunks table
 
-    def test_concurrent_embedding_workers(self):
+    def test_concurrent_embedding_workers(self, fake_pyspark):
         """Multiple batches should be embedded concurrently (spy on threads)."""
         import threading
         import time
@@ -224,7 +216,7 @@ class TestEmbeddingBuild:
             f"Expected concurrent workers, max_concurrent={max_concurrent[0]}"
         )
 
-    def test_sequential_output_matches_concurrent(self):
+    def test_sequential_output_matches_concurrent(self, fake_pyspark):
         """Concurrent embedding must produce the same result as sequential."""
         from pipelines.build_sec_embeddings import build
 

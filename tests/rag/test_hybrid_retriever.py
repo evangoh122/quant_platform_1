@@ -2889,7 +2889,7 @@ class TestPerTickerFailureIsolation:
 class TestPerTickerDimModelValidation:
     """Verify per-ticker dimension and model validation during load."""
 
-    def test_mixed_dims_raises_on_load(self, monkeypatch):
+    def test_mixed_dims_raises_on_load(self, monkeypatch, fake_pyspark):
         """A ticker with mixed embedding dimensions must raise CorpusUnavailableError on load."""
         from api.services import hybrid_retriever as hr
         from api.services.exceptions import CorpusUnavailableError
@@ -2935,7 +2935,7 @@ class TestPerTickerDimModelValidation:
         with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
             hr._load_ticker_corpus("NVDA")
 
-    def test_mixed_models_raises_on_load(self, monkeypatch):
+    def test_mixed_models_raises_on_load(self, monkeypatch, fake_pyspark):
         """A ticker with multiple embedding models must raise CorpusUnavailableError on load."""
         from api.services import hybrid_retriever as hr
         from api.services.exceptions import CorpusUnavailableError
