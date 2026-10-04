@@ -1,3 +1,4 @@
+# Databricks notebook source
 """notebooks/refresh_bronze_corporate_actions.py — Databricks notebook entry point.
 
 Append-only refresh of ``bronze_corporate_actions`` from the live Gold

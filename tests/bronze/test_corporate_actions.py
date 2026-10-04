@@ -2126,3 +2126,24 @@ class TestCliApiKeyResolution:
         monkeypatch.setenv("MASSIVE_API_KEY", "ENV_PLAINTEXT")
         mod = self._load_nb()
         assert mod._resolve_cli_api_key() == "ENV_PLAINTEXT"
+
+
+def test_notebook_task_targets_have_databricks_header():
+    """Every bundle notebook_task must point at a file whose first line is the Databricks notebook header,
+    otherwise bundle sync uploads it as a plain file and the job fails."""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    jobs = yaml.safe_load((root / "resources" / "jobs.yml").read_text(encoding="utf-8"))
+    paths = []
+    for job in (jobs.get("resources", {}).get("jobs", {}) or {}).values():
+        for task in job.get("tasks", []) or []:
+            nb = (task.get("notebook_task") or {}).get("notebook_path")
+            if nb:
+                paths.append((root / "resources" / nb).resolve())
+    assert paths, "expected at least one notebook_task in resources/jobs.yml"
+    for p in paths:
+        first = p.read_text(encoding="utf-8").splitlines()[0]
+        assert first.strip() == "# Databricks notebook source", f"{p} is a notebook_task target without the header"
