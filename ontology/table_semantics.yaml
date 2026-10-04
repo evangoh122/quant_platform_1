@@ -26,6 +26,7 @@ tables:
     keys: [contract_symbol, event_ts, timespan]
     pit_column: ingest_ts
     freshness: "Daily after the US session close"
+    right_rule: "The right field is case-insensitive; normalize it with UPPER(right) before comparing PUT and CALL values."
   bronze_fed_series:
     grain: "One observation vintage per (series_id, observation_date, vintage_date); changed values are appended as new vintages"
     keys: [series_id, observation_date, vintage_date]
@@ -63,13 +64,13 @@ tables:
     pit_column: logged_ts
     freshness: "Written as each SEC ingestion attempt completes; dry runs are logged only when explicitly requested"
     statuses: [planned, in_progress, succeeded, failed, skipped_existing]
-    status_note: "Unmapped tickers are not SEC filing attempts; missing or ambiguous mappings are recorded in sec_cik_mapping_log."
+    status_note: "Unmapped tickers are not SEC filing attempts; missing mappings are recorded in sec_cik_mapping_log."
   sec_cik_mapping_log:
     grain: "One ticker-to-CIK mapping result per (run_id, ticker)"
     keys: [run_id, ticker]
     pit_column: mapped_ts
     freshness: "Appended once per requested ticker during each SEC ingestion run"
-    statuses: [mapped, missing, ambiguous]
+    statuses: [mapped, missing]
 
   silver_ohlcv:
     grain: "One validated bar per (symbol, event_ts, timespan)"

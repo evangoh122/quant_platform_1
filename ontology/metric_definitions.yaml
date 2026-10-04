@@ -5,7 +5,7 @@ metrics:
     grain: "Daily per (symbol, event_date)"
     source_table: serve_daily_prices_v1
     price_adjustment: adjusted_primary_unadjusted_fallback
-    note: "Historical adjusted price levels are display values; the unadjusted fallback requires split-safety rejection."
+    note: "Historical adjusted price levels are display values; the unadjusted fallback requires split-safety rejection. The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
   return:
     status: proposed
     formula: "return_1d from silver_ohlcv_day_adjusted; NULL marks a masked data-quality break"
@@ -19,6 +19,7 @@ metrics:
     grain: "Daily per (symbol, event_date)"
     source_table: serve_daily_prices_v1
     price_adjustment: adjusted_primary_unadjusted_fallback
+    note: "The semantic registry currently defaults adjusted_source_available to false, so the unadjusted fallback remains active until silver_ohlcv_day_adjusted is live."
   realized_volatility:
     status: proposed
     formula: "On the adjusted path, first drop rows where return_1d is NULL, then compute STDDEV_SAMP(return_1d) over the current and previous 19 remaining daily rows * SQRT(252)"
@@ -56,13 +57,13 @@ metrics:
     formula: "iv_atm passed through from gold_options_features; upstream selects provider implied_volatility from the quote with maximum open_interest per (symbol, date), ordered by open_interest DESC NULLS LAST then strike ASC"
     grain: "Daily per (symbol, feature_ts)"
     source_table: serve_options_metrics_v1
-    note: "The name says ATM, but the upstream implementation selects maximum open interest; no underlying_price participates in the calculation."
+    note: "The name says ATM, but the upstream implementation selects maximum open interest; no underlying_price participates in the calculation. Data availability is limited to a single quote-snapshot date (12 populated iv_atm values among 19,390 current gold rows), so this metric is effectively unavailable historically."
   put_call_ratio:
     status: proposed
     formula: "SUM(put volume) / NULLIF(SUM(call volume), 0) by underlying and session, passed through from gold_options_features"
     grain: "Daily per (symbol, feature_ts)"
     source_table: serve_options_metrics_v1
-    note: "The current gold SQL compares uppercase PUT/CALL, while bronze ingestion emits lowercase call/put; normalize case before relying on the computed metric."
+    note: "bronze_options_day.right contains mixed-case values: uppercase PUT/CALL through 2026-09-04 and lowercase put/call from 2026-09-08 through 2026-10-01. The current gold SQL compares uppercase values only, so normalize with UPPER(right) before aggregation; current gold_options_features therefore ends at 2026-09-04."
 
   return_N:
     formula: "close[t] / NULLIF(close[t-N], 0) - 1"

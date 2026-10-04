@@ -1,8 +1,8 @@
 filters:
   point_in_time_universe:
-    sql: "EXISTS (SELECT 1 FROM gold_tradable_universe u WHERE u.symbol = source.symbol AND u.trade_date <= :as_of_date AND u.information_available_ts <= :as_of_ts)"
+    sql: "EXISTS (SELECT 1 FROM gold_tradable_universe u WHERE u.symbol = source.symbol AND u.trade_date = (SELECT MAX(snapshot.trade_date) FROM gold_tradable_universe snapshot WHERE snapshot.trade_date <= :as_of_date) AND u.information_available_ts <= :as_of_ts)"
     tables: [gold_tradable_universe]
-    rule: "Use the latest eligible universe snapshot; never use today's membership for historical queries."
+    rule: "Use membership from the snapshot whose trade_date is the maximum trade_date on or before as_of_date, and require that row to be available by as_of_ts; never use today's membership for historical queries."
   liquidity_rank:
     sql: "med_adv_60d >= :min_med_adv_60d AND adv_rank <= :max_adv_rank"
     tables: [gold_tradable_universe]
@@ -30,8 +30,9 @@ filters:
     sql: "is_regular_session = true"
     tables: [silver_ohlcv]
   exclude_bad_quotes:
-    sql: "is_stale = false AND is_locked = false AND is_crossed = false"
+    sql: "is_stale = false AND COALESCE(is_locked, false) = false AND COALESCE(is_crossed, false) = false"
     tables: [silver_options_quotes]
+    note: "bid and ask are absent in the current source snapshot, so is_locked and is_crossed are NULL; COALESCE treats those unknown flags as false rather than excluding every row."
   cot_forward_fill:
     tables: [silver_cot_positions, gold_cot_features]
     rule: "Forward-fill from release_ts only until the next release; never backward-fill."

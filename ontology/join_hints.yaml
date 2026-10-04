@@ -21,15 +21,17 @@ lineage:
     left_table: bronze_sec_filings_v2
     right_table: silver_sec_entities
     keys: [accession_number]
+    cardinality: one_to_many
+    grain: "One filing accession maps to many entity rows at the silver_sec_entities grain."
   silver_ohlcv_to_gold_ohlcv_features:
     left_table: silver_ohlcv
     right_table: gold_ohlcv_features
-    keys: [symbol]
+    keys: [symbol, "event_ts -> feature_ts"]
     temporal_rule: "feature information_available_ts is event_ts plus the bar interval"
   bronze_options_day_to_gold_options_features:
     left_table: bronze_options_day
     right_table: gold_options_features
-    keys: [underlying, symbol]
+    keys: ["underlying -> symbol", "event_date -> feature_ts"]
     temporal_rule: "Daily aggregates become available only after the session close plus publication buffer"
   silver_sec_sections_to_gold_sec_features:
     left_table: silver_sec_sections
@@ -61,7 +63,7 @@ lineage:
 
 joins:
   latest_feature_asof_prediction:
-    tables: [gold_ohlcv_features, gold_options_features, gold_regime_features, gold_cot_features, gold_sec_features, gold_model_features]
+    tables: [gold_ohlcv_features, gold_options_features, gold_cot_features, gold_sec_features, gold_model_features]
     condition: "source.information_available_ts <= target.prediction_ts"
     selection: "For each target row, choose the source row with maximum information_available_ts; use a deterministic key tie-breaker."
     critical: true
@@ -78,6 +80,6 @@ joins:
     additional_keys: [accession_number]
     rule: "Cast compatible chunk-id representations explicitly and retain accession_number to prevent cross-filing collisions."
   model_feature_assembly:
-    tables: [gold_model_features, gold_ohlcv_features, gold_options_features, gold_regime_features, gold_cot_features, gold_sec_features]
+    tables: [gold_model_features, gold_ohlcv_features, gold_options_features, gold_cot_features, gold_sec_features]
     condition: "Each source information_available_ts <= gold_model_features.prediction_ts"
     rule: "Retain every selected source availability timestamp for auditability."

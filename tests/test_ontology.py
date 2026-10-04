@@ -17,6 +17,9 @@ SEC_KG_ENUM_SNAPSHOT = ROOT / "tests" / "fixtures" / "sec_kg_enum_snapshot.yaml"
 SEC_INGEST_LOG_STATUS_SNAPSHOT = (
     ROOT / "tests" / "fixtures" / "sec_ingest_log_status_snapshot.yaml"
 )
+SEC_CIK_MAPPING_LOG_STATUS_SNAPSHOT = (
+    ROOT / "tests" / "fixtures" / "sec_cik_mapping_log_status_snapshot.yaml"
+)
 NL1_METRICS = {
     "price",
     "return",
@@ -54,6 +57,11 @@ def _documents():
         path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
         for path in sorted(ONTOLOGY.glob("*.yaml"))
     }
+
+
+def _normalize_business_term(value):
+    """Normalize names and aliases so conflicting spellings share one owner."""
+    return re.sub(r"[-\s]+", "_", value.casefold())
 
 
 def _table_references(value, parent_key=None):
@@ -244,6 +252,21 @@ def test_knowledge_graph_vocabulary_matches_canonical_sec_kg_enums():
     assert set(graph["edge_types"]) == canonical["edge_types"]
 
 
+def test_knowledge_graph_deterministic_counts_match_declared_types():
+    graph = _documents()["knowledge_graph.yaml"]["knowledge_graph"]
+    actual = {
+        "node_types": sum(
+            spec.get("populated_by") == "deterministic"
+            for spec in graph["node_types"].values()
+        ),
+        "edge_types": sum(
+            spec.get("populated_by") == "deterministic"
+            for spec in graph["edge_types"].values()
+        ),
+    }
+    assert graph["deterministic_counts"] == actual
+
+
 def test_sec_ingest_log_statuses_match_emitted_status_snapshot():
     """Keep ontology statuses equal to those assigned by the ingestion writer."""
     expected = set(
@@ -251,6 +274,21 @@ def test_sec_ingest_log_statuses_match_emitted_status_snapshot():
     )
     actual = set(
         _documents()["table_semantics.yaml"]["tables"]["sec_ingest_log"]["statuses"]
+    )
+    assert actual == expected
+
+
+def test_sec_cik_mapping_log_statuses_match_emitted_status_snapshot():
+    """Keep ontology statuses equal to build_cik_map's branch-reviewed outputs."""
+    expected = set(
+        yaml.safe_load(
+            SEC_CIK_MAPPING_LOG_STATUS_SNAPSHOT.read_text(encoding="utf-8")
+        )["statuses"]
+    )
+    actual = set(
+        _documents()["table_semantics.yaml"]["tables"]["sec_cik_mapping_log"][
+            "statuses"
+        ]
     )
     assert actual == expected
 
@@ -317,8 +355,20 @@ def test_price_return_metrics_are_adjusted_or_explicitly_unadjusted():
 
 def test_no_duplicate_terms():
     terms = list(_documents()["business_terms.yaml"]["terms"])
-    normalized = [term.casefold().replace("-", "_").replace(" ", "_") for term in terms]
+    normalized = [_normalize_business_term(term) for term in terms]
     assert len(normalized) == len(set(normalized))
+
+
+def test_business_term_aliases_have_one_owner():
+    terms = _documents()["business_terms.yaml"]["terms"]
+    owners = {}
+    for term, spec in terms.items():
+        for label in [term, *spec.get("aliases", [])]:
+            normalized = _normalize_business_term(label)
+            previous = owners.setdefault(normalized, term)
+            assert previous == term, (
+                f"{label!r} is owned by both {previous!r} and {term!r}"
+            )
 
 
 @pytest.mark.parametrize("table", sorted(_documents()["table_semantics.yaml"]["tables"]))
@@ -348,6 +398,16 @@ def test_join_columns_exist_in_sql_schema():
     joins = _documents()["join_hints.yaml"]
     for name, spec in joins["lineage"].items():
         left, right, keys = spec["left_table"], spec["right_table"], spec["keys"]
+        mapped_keys = [key for key in keys if " -> " in key]
+        common_keys = [key for key in keys if " -> " not in key]
+        if mapped_keys:
+            left_keys = common_keys + [key.split(" -> ", 1)[0] for key in mapped_keys]
+            right_keys = common_keys + [key.split(" -> ", 1)[1] for key in mapped_keys]
+            if left in schemas:
+                _assert_columns(left, left_keys, f"lineage {name}", schemas)
+            if right in schemas:
+                _assert_columns(right, right_keys, f"lineage {name}", schemas)
+            continue
         if left in schemas and right in schemas and not set(keys) <= schemas[left] & schemas[right]:
             # A two-name list represents differently named left/right columns.
             if not (len(keys) == 2 and keys[0] in schemas[left] and keys[1] in schemas[right]):
@@ -368,6 +428,27 @@ def test_join_columns_exist_in_sql_schema():
         for table in tables[:2]:
             if "additional_keys" in spec and table in schemas:
                 _assert_columns(table, spec["additional_keys"], f"join {name}", schemas)
+
+
+def test_join_availability_comparisons_do_not_look_ahead():
+    joins = _documents()["join_hints.yaml"]
+    availability_terms = re.compile(
+        r"information_available_ts|accepted_ts|release_ts|valid_from|prediction_ts"
+    )
+    comparison = re.compile(r"<=|>=|(?<![<>=])<(?![=>])|(?<![<>=])>(?![=>])")
+    safe_comparison = re.compile(r"<=|(?<![<>=])<(?![=>])")
+    for group in ("lineage", "joins"):
+        for name, spec in joins[group].items():
+            for field in ("condition", "temporal_rule"):
+                rule = spec.get(field, "")
+                if availability_terms.search(rule) and comparison.search(rule):
+                    assert not re.search(r">=|(?<![<>=])>(?![=>])", rule), (
+                        f"{group}.{name}.{field} uses a look-ahead comparison: {rule}"
+                    )
+                    assert safe_comparison.search(rule), (
+                        f"{group}.{name}.{field} must bound source availability "
+                        f"with < or <= against the as-of side: {rule}"
+                    )
 
 
 def test_external_schema_contracts_guard_missing_transforms():
