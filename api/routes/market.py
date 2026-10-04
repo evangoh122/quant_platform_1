@@ -59,8 +59,12 @@ def market_features(
 
         return get_options_features(symbol, limit=limit)
 
-    ohlcv_rows, ohlcv_state, ohlcv_detail = read_delta(_read_ohlcv)
-    opt_rows, opt_state, opt_detail = read_delta(_read_options)
+    from api.diagnostics import stage
+
+    with stage("delta_read", table="gold_ohlcv_features", symbol=symbol):
+        ohlcv_rows, ohlcv_state, ohlcv_detail = read_delta(_read_ohlcv)
+    with stage("delta_read", table="gold_options_features", symbol=symbol):
+        opt_rows, opt_state, opt_detail = read_delta(_read_options)
 
     ohlcv = Envelope(
         data=[

@@ -127,8 +127,11 @@ class _CircuitBreaker:
 
     def record_success(self) -> None:
         with self._lock:
+            was_open = self._consecutive_failures >= self._threshold
             self._consecutive_failures = 0
             self._opened_at = 0.0
+            if was_open:
+                logger.info("circuit breaker CLOSED (recovered)")
 
     def record_failure(self) -> None:
         with self._lock:
@@ -226,6 +229,8 @@ def _resolve_role(user_id: str) -> str:
 
     Returns the role string.  Raises on hard failure (breaker closed + DB error).
     """
+    from api.diagnostics import stage
+
     # 1. Cache hit
     cached = _role_cache.get(user_id)
     if cached is not None:
@@ -238,7 +243,8 @@ def _resolve_role(user_id: str) -> str:
 
     # 3. DB lookup
     try:
-        role = _ensure_user(user_id)
+        with stage("role_resolve", cache="miss"):
+            role = _ensure_user(user_id)
         _breaker.record_success()
         _role_cache.put(user_id, role)
         return role

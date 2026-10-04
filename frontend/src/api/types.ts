@@ -113,6 +113,16 @@ export interface DependencyStatus {
   name: string;
   ok: boolean;
   detail: string;
+  latency_ms: number | null;
+  last_error: string | null;
+  last_ok_at: number | null;
+  circuit_breaker_state: string | null;
+}
+
+export interface StartupStage {
+  name: string;
+  elapsed_ms: number;
+  ok: boolean;
 }
 
 export interface HealthResponse {
@@ -120,6 +130,22 @@ export interface HealthResponse {
   version: string;
   dependencies: DependencyStatus[];
   freshness: Freshness;
+  role_cache_size: number;
+  startup: StartupStage[];
+}
+
+export interface TraceEvent {
+  name: string;
+  elapsed_ms: number;
+  ok: boolean;
+  error: string | null;
+  extra: Record<string, unknown>;
+  ts: number;
+}
+
+export interface HealthTraceResponse {
+  recent: TraceEvent[];
+  slow: TraceEvent[];
 }
 
 export interface AnalyticsItem {

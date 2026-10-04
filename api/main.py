@@ -294,29 +294,31 @@ def create_app() -> FastAPI:
         validate_public_demo_environment,
         validate_render_environment,
     )
+    from api.diagnostics import stage
 
-    validate_render_environment()
+    with stage("startup_config_load"):
+        validate_render_environment()
+        _log.info("client_ip_source=%s (render=%s)", _CLIENT_IP_SOURCE, _IS_RENDER)
+        demo = is_public_demo()
+        if demo:
+            validate_public_demo_environment()
 
-    _log.info("client_ip_source=%s (render=%s)", _CLIENT_IP_SOURCE, _IS_RENDER)
-
-    demo = is_public_demo()
-
-    if demo:
-        validate_public_demo_environment()
-
-    application = FastAPI(
-        title="Mid-Frequency Quant Trading Platform",
-        version=APP_VERSION,
-        docs_url=None if demo else "/docs",
-        redoc_url=None if demo else "/redoc",
-        openapi_url=None if demo else "/openapi.json",
-        description="Paper-trading dashboard and research-agent API (Databricks App).",
-    )
+    with stage("startup_fastapi_init"):
+        application = FastAPI(
+            title="Mid-Frequency Quant Trading Platform",
+            version=APP_VERSION,
+            docs_url=None if demo else "/docs",
+            redoc_url=None if demo else "/redoc",
+            openapi_url=None if demo else "/openapi.json",
+            description="Paper-trading dashboard and research-agent API (Databricks App).",
+        )
 
     if demo:
         _register_demo_middleware(application)
     else:
         _register_standard_middleware(application)
+
+    _register_timing_middleware(application)
 
     # ── global exception handler ────────────────────────────────────────────
     # Catches any unhandled exception (including those raised outside the
@@ -334,10 +336,11 @@ def create_app() -> FastAPI:
         return resp
 
     # Read-only routers (always registered).
-    application.include_router(health.router, prefix="/api/health", tags=["health"])
-    application.include_router(signals.router, prefix="/api/signals", tags=["signals"])
-    application.include_router(market.router, prefix="/api/market", tags=["market"])
-    application.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
+    with stage("startup_router_mount"):
+        application.include_router(health.router, prefix="/api/health", tags=["health"])
+        application.include_router(signals.router, prefix="/api/signals", tags=["signals"])
+        application.include_router(market.router, prefix="/api/market", tags=["market"])
+        application.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
 
     if not demo:
         from api.routes import agent_chat, orders, portfolio, watchlists
@@ -348,63 +351,64 @@ def create_app() -> FastAPI:
         application.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
 
     # ── frontend static serving (production) ──────────────────────────────
-    if FRONTEND_DIST.is_dir():
-        _static_root = FRONTEND_DIST.resolve()
+    with stage("startup_frontend_dist_detect", found=str(FRONTEND_DIST.is_dir())):
+        if FRONTEND_DIST.is_dir():
+            _static_root = FRONTEND_DIST.resolve()
 
-        application.mount(
-            "/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets"
-        )
-
-        @application.get("/{full_path:path}", include_in_schema=False)
-        def _spa(full_path: str) -> FileResponse:
-            if not full_path:
-                return FileResponse(FRONTEND_DIST / "index.html")
-
-            # Reject any path whose decoded segments contain traversal,
-            # backslash, NUL, or an absolute/drive prefix.
-            decoded = urllib.parse.unquote(full_path)
-            for seg in decoded.split("/"):
-                if seg in ("..", ""):
-                    return FileResponse(FRONTEND_DIST / "index.html")
-                if "\\" in seg or "\x00" in seg:
-                    return FileResponse(FRONTEND_DIST / "index.html")
-                # Reject over-long segments (>255 bytes) before resolve()
-                # to avoid ENAMETOOLONG OSError from Path.resolve().
-                if len(seg.encode("utf-8")) > 255:
-                    return FileResponse(FRONTEND_DIST / "index.html")
-            # Reject over-long total path (>2048 bytes).
-            if len(decoded.encode("utf-8")) > 2048:
-                return FileResponse(FRONTEND_DIST / "index.html")
-            # Drive letter / absolute prefix (e.g. C:\, /etc)
-            if os.path.isabs(decoded):
-                return FileResponse(FRONTEND_DIST / "index.html")
-
-            try:
-                candidate = (_static_root / decoded).resolve()
-                if candidate.is_file() and candidate.is_relative_to(_static_root):
-                    return FileResponse(candidate)
-            except (OSError, RuntimeError, ValueError):
-                # OSError: ENAMETOOLONG (segment >255 bytes slipped past
-                #   the length check above, or OS-specific limits).
-                # RuntimeError: symlink loop inside dist.
-                # ValueError: malformed path on some platforms.
-                return FileResponse(FRONTEND_DIST / "index.html")
-            return FileResponse(FRONTEND_DIST / "index.html")
-    else:
-        _is_app_env = bool(os.environ.get("DATABRICKS_APP_PORT") or _IS_RENDER)
-        if _is_app_env:
-            _log.warning(
-                "frontend/dist not found — run scripts/build_frontend.sh before deploy"
+            application.mount(
+                "/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets"
             )
 
-        @application.get("/", include_in_schema=False)
-        def _no_frontend() -> JSONResponse:
-            return JSONResponse(
-                content={
-                    "detail": "frontend not built",
-                    "hint": "Run scripts/build_frontend.sh before deploy.",
-                },
-            )
+            @application.get("/{full_path:path}", include_in_schema=False)
+            def _spa(full_path: str) -> FileResponse:
+                if not full_path:
+                    return FileResponse(FRONTEND_DIST / "index.html")
+
+                # Reject any path whose decoded segments contain traversal,
+                # backslash, NUL, or an absolute/drive prefix.
+                decoded = urllib.parse.unquote(full_path)
+                for seg in decoded.split("/"):
+                    if seg in ("..", ""):
+                        return FileResponse(FRONTEND_DIST / "index.html")
+                    if "\\" in seg or "\x00" in seg:
+                        return FileResponse(FRONTEND_DIST / "index.html")
+                    # Reject over-long segments (>255 bytes) before resolve()
+                    # to avoid ENAMETOOLONG OSError from Path.resolve().
+                    if len(seg.encode("utf-8")) > 255:
+                        return FileResponse(FRONTEND_DIST / "index.html")
+                # Reject over-long total path (>2048 bytes).
+                if len(decoded.encode("utf-8")) > 2048:
+                    return FileResponse(FRONTEND_DIST / "index.html")
+                # Drive letter / absolute prefix (e.g. C:\, /etc)
+                if os.path.isabs(decoded):
+                    return FileResponse(FRONTEND_DIST / "index.html")
+
+                try:
+                    candidate = (_static_root / decoded).resolve()
+                    if candidate.is_file() and candidate.is_relative_to(_static_root):
+                        return FileResponse(candidate)
+                except (OSError, RuntimeError, ValueError):
+                    # OSError: ENAMETOOLONG (segment >255 bytes slipped past
+                    #   the length check above, or OS-specific limits).
+                    # RuntimeError: symlink loop inside dist.
+                    # ValueError: malformed path on some platforms.
+                    return FileResponse(FRONTEND_DIST / "index.html")
+                return FileResponse(FRONTEND_DIST / "index.html")
+        else:
+            _is_app_env = bool(os.environ.get("DATABRICKS_APP_PORT") or _IS_RENDER)
+            if _is_app_env:
+                _log.warning(
+                    "frontend/dist not found — run scripts/build_frontend.sh before deploy"
+                )
+
+            @application.get("/", include_in_schema=False)
+            def _no_frontend() -> JSONResponse:
+                return JSONResponse(
+                    content={
+                        "detail": "frontend not built",
+                        "hint": "Run scripts/build_frontend.sh before deploy.",
+                    },
+                )
 
     return application
 
@@ -497,6 +501,40 @@ def _register_standard_middleware(application: FastAPI) -> None:
             allow_methods=["GET", "HEAD", "OPTIONS"],
             allow_headers=["Content-Type"],
         )
+
+
+def _register_timing_middleware(application: FastAPI) -> None:
+    """Register per-request timing middleware for diagnostics.
+
+    Logs method, route template (not raw path with query), status, total ms,
+    and the slowest stage. Also logs a ``REQUEST`` summary line at INFO.
+    """
+
+    @application.middleware("http")
+    async def _timing_middleware(request: Request, call_next: Callable) -> Response:
+        from api.diagnostics import get_request_stages, reset_request_stages, slowest_stage
+
+        reset_request_stages()
+        t0 = time.monotonic()
+        response = await call_next(request)
+        elapsed = (time.monotonic() - t0) * 1000
+
+        route = request.scope.get("route")
+        route_template = getattr(route, "path", request.url.path) if route else request.url.path
+        method = request.method.upper()
+        status = response.status_code
+
+        stages = get_request_stages()
+        slowest = slowest_stage(stages)
+        slowest_info = ""
+        if slowest:
+            slowest_info = f" slowest={slowest.name}/{slowest.elapsed_ms:.0f}ms"
+
+        _log.info(
+            "REQUEST %s %s status=%d ms=%.1f%s",
+            method, route_template, status, elapsed, slowest_info,
+        )
+        return response
 
 
 app = create_app()

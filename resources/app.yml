@@ -11,8 +11,14 @@ resources:
             value: bootcamp_students
           - name: SCHEMA
             value: ${var.schema}
+          - name: DATABRICKS_WAREHOUSE_ID
+            value: b15d3d6f837ba428
       resources:
         - name: lakebase
           database:
             instance: evangoh-capstone-lakebase
             permission: CAN_CONNECT_AND_CREATE
+        - name: sql_warehouse
+          sql_warehouse:
+            id: b15d3d6f837ba428
+            permission: CAN_USE

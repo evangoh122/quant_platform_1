@@ -149,18 +149,21 @@ class Lakebase:
         conn.autocommit = False
 
     def _build_pool(self) -> ConnectionPool:
-        pool = ConnectionPool(
-            kwargs=self._conninfo(),
-            min_size=POOL_MIN_SIZE,
-            max_size=POOL_MAX_SIZE,
-            open=False,
-            configure=self._configure,
-            **self._pool_kwargs,
-        )
-        # Bound total connection establishment so a disabled/hanging endpoint
-        # raises promptly (within ~3-4 s) instead of retrying for 30+ s.
-        # PoolTimeout is raised if min_size connections are not ready in time.
-        pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT)
+        from api.diagnostics import stage
+
+        with stage("lakebase_pool_build"):
+            pool = ConnectionPool(
+                kwargs=self._conninfo(),
+                min_size=POOL_MIN_SIZE,
+                max_size=POOL_MAX_SIZE,
+                open=False,
+                configure=self._configure,
+                **self._pool_kwargs,
+            )
+            # Bound total connection establishment so a disabled/hanging endpoint
+            # raises promptly (within ~3-4 s) instead of retrying for 30+ s.
+            # PoolTimeout is raised if min_size connections are not ready in time.
+            pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT)
         return pool
 
     def _ensure_pool(self) -> ConnectionPool:

@@ -36,7 +36,10 @@ def list_signals(
         df = latest_signals(symbol, limit=limit)
         return [r.asDict() for r in df.collect()]
 
-    rows, state, detail = read_delta(_read)
+    from api.diagnostics import stage
+
+    with stage("delta_read", table="gold_trading_signals", symbol=symbol or "all"):
+        rows, state, detail = read_delta(_read)
     data = [
         Signal(
             signal_id=str(r.get("signal_id", "")),

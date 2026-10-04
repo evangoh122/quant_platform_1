@@ -140,6 +140,37 @@ GRANT SELECT, INSERT ON TABLE public.accounts TO "<app-database-role>";
 Replace `<app-database-role>` with the Lakebase database role for the app's
 service principal. Do **not** grant `CREATE` on the schema or `ALL` on any table.
 
+### SQL warehouse resource declaration (DABs)
+
+The app reads Delta/Unity Catalog tables via a SQL warehouse when pyspark is
+not available (i.e., in the Databricks Apps production environment). The
+warehouse is declared in `resources/app.yml`:
+
+```yaml
+resources:
+  apps:
+    quant_platform:
+      # ...
+      config:
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            value: b15d3d6f837ba428
+      resources:
+        - name: sql_warehouse
+          sql_warehouse:
+            id: b15d3d6f837ba428
+            permission: CAN_USE
+```
+
+The app's service principal needs `CAN USE` on the warehouse. Auth is handled
+by the Databricks SDK default chain (service principal credentials injected by
+the Databricks Apps runtime).
+
+| Env var | Purpose |
+| :-- | :-- |
+| `DATABRICKS_WAREHOUSE_ID` | SQL warehouse ID for Delta reads (default `b15d3d6f837ba428`) |
+| `DATABRICKS_WAREHOUSE_TIMEOUT` | Statement timeout in seconds (default `30`) |
+
 ## 6. Secrets — Databricks secrets only
 
 No secret, token, or connection string is ever committed. Every credential is

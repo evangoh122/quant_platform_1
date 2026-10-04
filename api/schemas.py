@@ -154,6 +154,16 @@ class DependencyStatus(BaseModel):
     name: str
     ok: bool
     detail: str = ""
+    latency_ms: Optional[float] = None
+    last_error: Optional[str] = None
+    last_ok_at: Optional[float] = None
+    circuit_breaker_state: Optional[str] = None
+
+
+class StartupStage(BaseModel):
+    name: str
+    elapsed_ms: float
+    ok: bool
 
 
 class HealthResponse(BaseModel):
@@ -161,6 +171,22 @@ class HealthResponse(BaseModel):
     version: str = ""
     dependencies: List[DependencyStatus] = Field(default_factory=list)
     freshness: Freshness = Field(default_factory=Freshness)
+    role_cache_size: int = 0
+    startup: List[StartupStage] = Field(default_factory=list)
+
+
+class TraceEvent(BaseModel):
+    name: str
+    elapsed_ms: float
+    ok: bool
+    error: Optional[str] = None
+    extra: Dict[str, Any] = Field(default_factory=dict)
+    ts: float = 0.0
+
+
+class HealthTraceResponse(BaseModel):
+    recent: List[TraceEvent] = Field(default_factory=list)
+    slow: List[TraceEvent] = Field(default_factory=list)
 
 
 class AnalyticsItem(BaseModel):
