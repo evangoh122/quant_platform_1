@@ -907,10 +907,12 @@ class TestMainEndToEnd:
         """Dry-run mode with fake adapters should write 0 rows."""
         from pipelines.sec_rag_ingest import main
 
-        clock = FakeClock()
         http = FakeHttpClient()
         submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
         http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        # Also set the company_tickers.json URL
+        company_tickers = json.loads((FIXTURES / "company_tickers.json").read_text())
+        http.set_json("https://www.sec.gov/files/company_tickers.json", company_tickers)
 
         writer = FakeDataWriter()
         log_writer = FakeLogWriter()
@@ -954,10 +956,11 @@ class TestMainEndToEnd:
         """Write mode with fake adapters should append rows."""
         from pipelines.sec_rag_ingest import main
 
-        clock = FakeClock()
         http = FakeHttpClient()
         submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
         http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        company_tickers = json.loads((FIXTURES / "company_tickers.json").read_text())
+        http.set_json("https://www.sec.gov/files/company_tickers.json", company_tickers)
 
         writer = FakeDataWriter()
         log_writer = FakeLogWriter()
