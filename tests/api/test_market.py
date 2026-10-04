@@ -14,7 +14,7 @@ import pytest
 
 
 @pytest.fixture
-def client():
+def client(fake_lakebase):
     from fastapi.testclient import TestClient
 
     from api.main import create_app
