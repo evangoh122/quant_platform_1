@@ -17,12 +17,15 @@ from typing import List, Optional
 import numpy as np
 from loguru import logger
 
-# ── Config (env-var driven, no secrets) ───────────────────────────────────────
+from api.config import config
+from api.services.exceptions import EmbeddingConfigError
 
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "sentence-transformers").lower()
-ST_EMBEDDING_MODEL = os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
-EMBEDDING_QUERY_PREFIX = os.getenv("EMBEDDING_QUERY_PREFIX", "")
+# ── Config (single source of truth: api.config) ──────────────────────────────
+
+EMBEDDING_PROVIDER = config.EMBEDDING_PROVIDER
+ST_EMBEDDING_MODEL = config.ST_EMBEDDING_MODEL
+EMBEDDING_DIM = config.EMBEDDING_DIM
+EMBEDDING_QUERY_PREFIX = config.EMBEDDING_QUERY_PREFIX
 EMBEDDING_MAX_SEQ_LEN = int(os.getenv("EMBEDDING_MAX_SEQ_LEN", "512"))
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "4"))
 
@@ -154,6 +157,9 @@ def get_embeddings():
     EMBEDDING_PROVIDER selects the backend:
       - sentence-transformers / local / st — in-process ST model
       - huggingface — HF Inference API
+
+    Reads the provider from config at call time (not module-level) so that
+    ``importlib.reload`` in tests always sees the current env-var value.
     """
     global _embeddings
     if _embeddings is not None:
@@ -163,25 +169,37 @@ def get_embeddings():
         if _embeddings is not None:
             return _embeddings
 
-        if EMBEDDING_PROVIDER in ("sentence-transformers", "sentence_transformers", "local", "st"):
+        # Read dynamically so importlib.reload + monkeypatch always works.
+        provider = config.EMBEDDING_PROVIDER
+        st_model = config.ST_EMBEDDING_MODEL
+
+        if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
             try:
-                _embeddings = LocalSTEmbeddings(ST_EMBEDDING_MODEL)
+                _embeddings = LocalSTEmbeddings(st_model)
                 return _embeddings
             except Exception as e:
-                logger.error("Failed to init local ST embeddings '{}': {}", ST_EMBEDDING_MODEL, e)
-                return None
+                raise EmbeddingConfigError(
+                    f"Failed to load embedding model '{st_model}': {e}"
+                ) from e
 
-        if EMBEDDING_PROVIDER == "huggingface":
-            model_name = os.getenv("HF_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
+        if provider == "huggingface":
+            model_name = config.HF_EMBEDDING_MODEL
+            hf_token = os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
+            if not hf_token:
+                raise EmbeddingConfigError(
+                    "EMBEDDING_PROVIDER is 'huggingface' but neither HF_TOKEN nor "
+                    "HUGGINGFACEHUB_API_TOKEN is set. Switch to 'sentence-transformers' "
+                    "or provide a HuggingFace API token."
+                )
             try:
                 _embeddings = HFInferenceEmbeddings(model_name)
                 return _embeddings
             except Exception as e:
-                logger.error("Failed to init HF embeddings '{}': {}", model_name, e)
-                return None
+                raise EmbeddingConfigError(
+                    f"Failed to init HuggingFace embeddings model '{model_name}': {e}"
+                ) from e
 
-        logger.error(
-            "Unsupported EMBEDDING_PROVIDER '{}'. Use 'sentence-transformers' or 'huggingface'.",
-            EMBEDDING_PROVIDER,
+        raise EmbeddingConfigError(
+            f"Unsupported EMBEDDING_PROVIDER '{provider}'. "
+            f"Use 'sentence-transformers' or 'huggingface'."
         )
-        return None

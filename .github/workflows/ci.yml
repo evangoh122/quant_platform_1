@@ -19,10 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
           cache: pip
@@ -39,7 +41,7 @@ jobs:
           if [[ -f requirements-app.txt ]]; then
             python -m pip install -r requirements-app.txt
           fi
-          python -m pip install pytest pytest-asyncio httpx numpy pandas polars duckdb scikit-learn pyyaml
+          python -m pip install pytest pytest-asyncio pytest-timeout httpx numpy pandas polars duckdb scikit-learn pyyaml
 
       - name: Run offline test suite
         run: pytest -q -m "not spark and not lakebase and not databricks"
@@ -53,7 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Detect frontend
         id: frontend
@@ -67,7 +71,7 @@ jobs:
 
       - name: Set up Node.js
         if: ${{ steps.frontend.outputs.exists == 'true' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -95,24 +99,27 @@ jobs:
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST || secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID || secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Explain skipped validation
-        if: ${{ env.DATABRICKS_HOST == '' }}
-        run: echo "DATABRICKS_HOST is not configured; skipping workspace-backed bundle validation."
+        if: ${{ env.DATABRICKS_HOST == '' || (env.DATABRICKS_CLIENT_ID == '' && env.DATABRICKS_TOKEN == '') }}
+        run: echo "Databricks credentials are incomplete; skipping workspace-backed bundle validation."
 
       - name: Set up Databricks CLI
-        if: ${{ env.DATABRICKS_HOST != '' }}
-        uses: databricks/setup-cli@v0.276.0
+        if: ${{ env.DATABRICKS_HOST != '' && (env.DATABRICKS_CLIENT_ID != '' || env.DATABRICKS_TOKEN != '') }}
+        uses: databricks/setup-cli@095d26a91ccd1ff8860b6832b0739d71f21ced75 # v0.276.0
 
       - name: Validate root bundle
-        if: ${{ env.DATABRICKS_HOST != '' }}
+        if: ${{ env.DATABRICKS_HOST != '' && (env.DATABRICKS_CLIENT_ID != '' || env.DATABRICKS_TOKEN != '') }}
         run: databricks bundle validate -t dev
 
       - name: Validate streaming bundle
-        if: ${{ env.DATABRICKS_HOST != '' && hashFiles('bundles/streaming/databricks.yml') != '' }}
+        if: ${{ env.DATABRICKS_HOST != '' && (env.DATABRICKS_CLIENT_ID != '' || env.DATABRICKS_TOKEN != '') && hashFiles('bundles/streaming/databricks.yml') != '' }}
         working-directory: bundles/streaming
         run: databricks bundle validate -t dev
 
@@ -124,11 +131,12 @@ jobs:
       pull-requests: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Scan for secrets
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

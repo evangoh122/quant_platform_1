@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from agent.guardrails import normalize_symbol
+from api.services.exceptions import EmbeddingConfigError
 from db.lakebase import get_lakebase
 
 _OPEN_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SUBMITTED", "PARTIALLY_FILLED")
@@ -87,22 +88,18 @@ def search_sec_filings(
 
     try:
         from api.services.hybrid_retriever import HybridRetriever
-        from api.services.reranker import rerank
 
         retriever = HybridRetriever(top_k=top_k)
-        docs = retriever.retrieve(
+        docs = retriever.retrieve_and_rerank(
             query=query or symbol,
             ticker=symbol,
             as_of=as_of,
             top_k=top_k,
         )
 
-        # Apply reranker if we have a query
-        if query and len(docs) > 1:
-            docs = rerank(query, docs, top_k=top_k)
-
         return [
             {
+                "chunk_id": d.metadata.get("chunk_id", ""),
                 "chunk_text": d.page_content,
                 "accession_number": d.metadata.get("accession", ""),
                 "form_type": d.metadata.get("form_type", ""),
@@ -113,10 +110,28 @@ def search_sec_filings(
                 "chunk_index": d.metadata.get("chunk_index", 0),
                 "similarity": d.metadata.get("similarity"),
                 "distance": d.metadata.get("distance"),
-                "retrieval_mode": "hybrid",
+                "rerank_score": d.metadata.get("rerank_score"),
+                "retrieval_mode": d.metadata.get("retrieval_mode", "hybrid"),
+                **({"_warning": d.metadata["_warning"]} if d.metadata.get("_warning") else {}),
             }
             for d in docs
         ]
+    except EmbeddingConfigError as e:
+        import logging
+        logging.error("Embedding config error: %s", e)
+        if getattr(e, "user_safe", False):
+            safe_msg = str(e)
+        else:
+            safe_msg = (
+                "Embedding configuration error — check EMBEDDING_PROVIDER, "
+                "HF_TOKEN, or HUGGINGFACEHUB_API_TOKEN settings."
+            )
+        return [{
+            "error": "retrieval_unavailable",
+            "reason": "embedding_config",
+            "message": safe_msg,
+            "ticker": symbol,
+        }]
     except CorpusUnavailableError as e:
         import logging
         logging.error("SEC filing retrieval unavailable: %s", e)
@@ -157,6 +172,7 @@ def search_sec_filings(
             mapped = []
             for r in results:
                 mapped.append({
+                    "chunk_id": r.get("chunk_id", ""),
                     "accession_number": r.get("accession_number", ""),
                     "form_type": r.get("form_type", ""),
                     "accepted_ts": r.get("accepted_ts", ""),

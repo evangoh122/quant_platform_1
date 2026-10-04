@@ -8,14 +8,14 @@ The `CI` workflow runs for every pull request and for pushes to `main`. Supersed
 
 - **Python tests** use Python 3.12 and run the offline suite with `pytest -q -m "not spark and not lakebase and not databricks"`. Because `ibapi` is unavailable from PyPI and is stubbed by `conftest.py`, CI filters that one entry from `requirements.txt`. If `requirements-app.txt` exists, CI installs it too. If `bundles/streaming/tests` exists, CI runs those tests as a separate step.
 - **Frontend** uses Node 20 to run `npm ci`, TypeScript checking, and the production build. The job is skipped when `frontend/package.json` is absent.
-- **Bundle validation** validates the root development target and, if present, the separate streaming bundle. Workspace-backed validation steps are skipped cleanly when `DATABRICKS_HOST` is not configured.
+- **Bundle validation** validates the root development target and, if present, the separate streaming bundle. Workspace-backed validation steps are skipped cleanly when `DATABRICKS_HOST` is not configured or when OIDC credentials (client ID) or a PAT token are missing.
 - **Secret scanning** runs Gitleaks against the checked-out history.
 
 CI never deploys any bundle.
 
 ## Manual deployment
 
-The `Deploy Databricks bundle` workflow has only a `workflow_dispatch` trigger. An operator chooses `dev` or `prod`; the workflow builds `frontend/dist` and runs `databricks bundle deploy` for that target. It does not run the deployed app, either job, or any pipeline.
+The `Deploy Databricks bundle` workflow has only a `workflow_dispatch` trigger. An operator chooses `dev` or `prod`; the workflow builds `frontend/dist` and runs `databricks bundle deploy` for that target. An optional `start_app` boolean input (default false) restarts the app after deploy by running `databricks bundle run quant_platform -t <target>`. It does not run any job or pipeline.
 
 The selected target is also the GitHub Environment name. Configure two repository environments:
 
@@ -34,7 +34,7 @@ Deployment uses GitHub OIDC (Databricks workload identity federation), not a sto
 
 The deployment job requests only `contents: read` and `id-token: write`; the latter lets GitHub mint the OIDC token consumed by the Databricks CLI.
 
-For CI bundle validation, configure `DATABRICKS_HOST` as a repository variable or secret. If authenticated validation is required, also configure `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`; omit them to keep validation skipped or use the authentication method approved for the repository. Forks without these settings remain green because workspace-backed validation is skipped.
+For CI bundle validation, configure `DATABRICKS_HOST` as a repository variable or secret. If authenticated validation is required, also configure `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`; omit them to keep validation skipped or use the authentication method approved for the repository. Forks without these settings remain green because workspace-backed validation is skipped. Validation requires `DATABRICKS_HOST` and either `DATABRICKS_CLIENT_ID` (for OIDC) or `DATABRICKS_TOKEN` (for PAT); all three are checked before any validation step runs.
 
 ### PAT fallback
 
@@ -44,7 +44,7 @@ If workload identity federation cannot be used, a repository administrator may a
 
 - Pushes and pull requests validate and test only; they never deploy.
 - Deployment requires a person to dispatch the workflow, and `prod` should require an environment reviewer.
-- Deployment creates or updates resource definitions but never invokes `databricks bundle run` or any equivalent start operation.
+- Deployment creates or updates resource definitions. The optional `start_app` input restarts the app; it is the only `bundle run` the workflow can invoke. Jobs and pipelines are never started from CD.
 - Both batch job schedules are absent or checked in as paused. The `silver_gold_refresh` schedule is explicitly `PAUSED`.
 - The root bundle excludes `bundles/streaming`; the CD workflow deploys only the root bundle. The streaming pipeline is never touched.
 - Credentials belong in GitHub variables/secrets and Databricks federation policies, never in repository files.
