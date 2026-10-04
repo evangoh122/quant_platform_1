@@ -360,15 +360,15 @@ def main() -> None:
         adapters = [(source, _make_adapter(source, delay_seconds, max_retries, api_key))]
 
     # --- Checkpoint log: check for already-completed symbols ---
-    completed_symbols: set[str] = set()
+    completed_keys: set[tuple[str, str]] = set()
     if mode == "write":
         try:
             log_rows = spark.sql(
-                f"SELECT DISTINCT symbol FROM {CHECKPOINT_TABLE} "
+                f"SELECT DISTINCT symbol, source FROM {CHECKPOINT_TABLE} "
                 f"WHERE run_id = '{run_id}' AND status IN ('SUCCESS', 'EMPTY')"
             ).collect()
-            completed_symbols = {r["symbol"] for r in log_rows}
-            report["resumed"] = len(completed_symbols)
+            completed_keys = {(r["symbol"], r["source"]) for r in log_rows}
+            report["resumed"] = len(completed_keys)
         except Exception:
             pass  # table may not exist yet
 
@@ -394,7 +394,7 @@ def main() -> None:
         pass  # table may not exist yet
 
     for sym in all_symbols:
-        if sym in completed_symbols:
+        if all((sym, src) in completed_keys for src, _ in adapters):
             continue
 
         report["attempted"] += 1
