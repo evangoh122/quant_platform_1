@@ -871,6 +871,32 @@ class TestAccessionConflict:
         assert result.skipped_existing_count == 2
         assert result.total_rows_appended == 0
 
+    def test_different_cik_accession_raises_value_error(self):
+        """Same accession owned by a different CIK must raise ValueError."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        # The accession is owned by a DIFFERENT CIK (9999999999, not 0001045810)
+        existing = {
+            "0001045810-25-000010": ("9999999999", "OTHER"),
+        }
+
+        with pytest.raises(ValueError, match="Accession ownership conflict"):
+            run_ingest(
+                catalog="test", schema="test",
+                start_date="2024-09-01",
+                tickers=["NVDA"],
+                universe_reader=FakeUniverseReader(universe),
+                accession_reader=FakeAccessionReader(existing),
+                data_writer=FakeDataWriter(),
+                http_client=http,
+                clock=clock,
+                cache_path=str(FIXTURES / "company_tickers.json"),
+            )
+
 
 # -- main() end-to-end tests --
 

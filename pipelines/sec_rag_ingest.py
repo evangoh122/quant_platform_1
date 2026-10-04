@@ -1125,6 +1125,9 @@ def run_ingest(
             if log_writer:
                 log_writer.append_log(catalog, schema, log_entry)
 
+        except ValueError:
+            # Accession ownership conflicts must fail loudly — do not swallow
+            raise
         except Exception as e:
             log_entry.status = "failed"
             log_entry.error_code = "exception"
