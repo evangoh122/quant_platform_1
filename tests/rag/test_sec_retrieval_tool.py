@@ -17,6 +17,14 @@ import pytest as _pytest
 @_pytest.fixture(autouse=True, scope="module")
 def _mock_pyspark():
     """Install pyspark/databricks/psycopg fakes for this module only."""
+    # Pre-import pyspark.sql.column so the classic Column class is in
+    # sys.modules before we replace pyspark.sql with a MagicMock.
+    # See test_sec_rag_ingest._mock_pyspark for the full explanation.
+    try:
+        import pyspark.sql.column  # noqa: F401
+    except (ImportError, Exception):
+        pass
+
     _pyspark_mock = MagicMock()
     _originals = {}
     _patches = {

@@ -59,8 +59,24 @@ def _mock_pyspark():
     Uses sys.modules patching scoped to this module so it does not leak
     into other test modules (e.g. tests/bronze/test_refresh_bronze_cot.py).
     """
+    # Pre-import pyspark.sql.connect.functions.builtin so its top-level
+    # ``from pyspark.sql import Column`` binds to the real classic Column
+    # *before* we replace pyspark.sql with a MagicMock.  Without this,
+    # a lazy first import of the connect builtin during the mock window
+    # would bind Column to a MagicMock, which then breaks
+    # isinstance(arg, Column) in _invoke_function after restore.
+    try:
+        import pyspark.sql.column  # noqa: F401
+    except (ImportError, Exception):
+        pass
+
     _pyspark_mock = MagicMock()
     _originals = {}
+    # Snapshot every pyspark*/databricks* module so submodules imported while
+    # the mocks are installed can be dropped again afterwards (otherwise they
+    # stay cached bound to the mocks and break later suites, e.g. tests/bronze).
+    _prefixes = ("pyspark", "databricks")
+    _snapshot = {k: v for k, v in sys.modules.items() if k.split(".")[0] in _prefixes}
     _patches = {
         "pyspark": _pyspark_mock,
         "pyspark.sql": _pyspark_mock.sql,
@@ -89,11 +105,13 @@ def _mock_pyspark():
 
     yield
 
-    for name in _patches:
-        if _originals[name] is None:
+    for name in [k for k in sys.modules if k.split(".")[0] in _prefixes]:
+        if name not in _snapshot:
             sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = _originals[name]
+    sys.modules.update(_snapshot)
+    for name in _patches:
+        if _originals[name] is None and name not in _snapshot:
+            sys.modules.pop(name, None)
 
 
 @pytest.fixture(autouse=True)
