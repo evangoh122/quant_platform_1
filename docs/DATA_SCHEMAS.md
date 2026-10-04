@@ -474,6 +474,39 @@
   status                             string NOT NULL
   processed_ts                       timestamp NOT NULL
 
+### gold_sec_kg_nodes  (7 cols)
+  node_id                            string NOT NULL
+  node_type                          string NOT NULL
+  label                              string NOT NULL
+  properties_json                    string NOT NULL
+  concept_norm                       string
+  provenance                         array<struct<accession_number:string,source_chunk_id:string,accepted_ts:timestamp>> NOT NULL
+  build_version                      string NOT NULL
+
+### gold_sec_kg_edges  (11 cols)
+  edge_id                            string NOT NULL
+  src_id                             string NOT NULL
+  edge_type                          string NOT NULL
+  dst_id                             string NOT NULL
+  valid_from                         timestamp NOT NULL
+  accession_number                   string NOT NULL
+  source_chunk_id                    string NOT NULL
+  accepted_ts                        timestamp NOT NULL
+  confidence                         double
+  properties_json                    string NOT NULL
+  build_version                      string NOT NULL
+
+### gold_sec_kg_build_runs  (9 cols)
+  run_id                             string NOT NULL
+  build_version                      string NOT NULL
+  run_ts                             timestamp NOT NULL
+  input_rows_by_entity_type          map<string,int> NOT NULL
+  accepted_rows                      int NOT NULL
+  rejected_rows                      int NOT NULL
+  rejection_reasons                  map<string,int> NOT NULL
+  node_count                         int NOT NULL
+  edge_count                         int NOT NULL
+
 ### gold_tradable_universe  (6 cols)
   trade_date                         date NOT NULL
   symbol                             string NOT NULL

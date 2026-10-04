@@ -83,6 +83,8 @@ Thumbs.db
 .agentlogs/
 *.agent.log
 
+# local RAG/KG data exports
+
 # RAG eval local data (corpus export, results)
 evals/data/
 evals/results/

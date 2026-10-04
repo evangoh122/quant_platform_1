@@ -45,6 +45,8 @@ Grant the **least privilege** that covers the API surface:
 | `gold_ohlcv_features` | `GET /api/market/{symbol}` |
 | `gold_options_features` | `GET /api/market/{symbol}` |
 | `silver_sec_sections` | agent `search_sec_filings` tool |
+| `gold_sec_kg_nodes` | agent `query_sec_facts` tool |
+| `gold_sec_kg_edges` | agent `query_sec_facts` tool |
 
 ```sql
 GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_trading_signals
@@ -54,6 +56,10 @@ GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_ohlcv_features
 GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_options_features
   TO `<app-service-principal>`;
 GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.silver_sec_sections
+  TO `<app-service-principal>`;
+GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_nodes
+  TO `<app-service-principal>`;
+GRANT SELECT ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_edges
   TO `<app-service-principal>`;
 ```
 
@@ -305,7 +311,74 @@ python -m db.migrate
 Forward-only, ordered by filename, re-runnable. Applied versions are recorded in
 `schema_migrations`.
 
-## 10. Render public demo
+## 11. SEC Knowledge Graph build (manual job)
+
+The SEC knowledge graph (`gold_sec_kg_nodes`, `gold_sec_kg_edges`) is built by
+an **unscheduled** job named `sec_knowledge_graph_build`. It must be triggered
+manually or via CI — it is not part of the scheduled `silver_gold_refresh` chain.
+
+### Running the build
+
+```bash
+# Offline (JSONL output)
+python scripts/build_sec_knowledge_graph.py \
+  --entities evals/data/sec_entities.jsonl \
+  --corpus evals/data/sec_corpus.jsonl \
+  --output-dir /tmp/sec-kg-output \
+  --format jsonl
+
+# Databricks (Delta tables)
+databricks jobs run-now --job-name sec_knowledge_graph_build \
+  --profile <PROFILE>
+```
+
+### Grants for the build job
+
+The build service principal needs `MODIFY` on the target tables:
+
+```sql
+GRANT MODIFY ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_nodes
+  TO `<build-service-principal>`;
+GRANT MODIFY ON TABLE bootcamp_students.evangoh_capstone.gold_sec_kg_edges
+  TO `<build-service-principal>`;
+```
+
+### Compaction / OPTIMIZE
+
+After significant data growth, run `OPTIMIZE` on the Delta tables:
+
+```sql
+OPTIMIZE bootcamp_students.evangoh_capstone.gold_sec_kg_nodes
+  ZORDER BY (node_type);
+OPTIMIZE bootcamp_students.evangoh_capstone.gold_sec_kg_edges
+  ZORDER BY (edge_type, valid_from);
+```
+
+Do not schedule `OPTIMIZE` in this task — document it for operator use.
+
+### concept_norm migration (round 12+)
+
+The `concept_norm` column on `gold_sec_kg_nodes` enables structured concept
+searches (NFKC-normalised, lower-cased).  Pre-round-12 tables lack this column.
+
+**Migration:** The build job automatically runs `ALTER TABLE ... ADD COLUMNS
+(concept_norm STRING)` if the column is missing (idempotent, re-runnable).
+A full rebuild then populates `concept_norm` for all rows via the MERGE
+`whenMatchedUpdateAll` path.
+
+**NULL handling:** If concept searches are attempted before a rebuild has run,
+the query path detects NULL `concept_norm` rows and raises a clear
+`RuntimeError` instead of silently omitting legacy rows.  This is a deliberate
+fail-fast: concept searches require a populated `concept_norm` column.
+
+**Operator action:** After upgrading to round 12+, trigger a full SEC knowledge
+graph build to backfill `concept_norm`:
+
+```bash
+databricks jobs run-now --job-name sec_knowledge_graph_build --profile <PROFILE>
+```
+
+## 12. Render public demo
 
 This section describes the **Render public demo** — a single-service snapshot
 demo that is separate from the Databricks deployment described in §1–§9 above.

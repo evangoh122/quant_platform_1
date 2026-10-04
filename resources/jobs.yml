@@ -44,3 +44,20 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+
+    sec_knowledge_graph_build:
+      name: quant-platform-sec-kg-build-${bundle.target}
+      tasks:
+        - task_key: build_sec_kg
+          spark_python_task:
+            python_file: ../pipelines/build_sec_knowledge_graph.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
