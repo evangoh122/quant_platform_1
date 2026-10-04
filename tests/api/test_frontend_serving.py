@@ -14,10 +14,22 @@ from unittest.mock import patch
 
 import pytest
 
+from api.demo import _is_unsafe_key
+
 
 @pytest.fixture(autouse=True)
 def _demo_env(monkeypatch):
-    """Run in public-demo mode so auth and lakebase are skipped."""
+    """Run in public-demo mode so auth and lakebase are skipped.
+
+    Strips any ambient env vars that ``api.demo._is_unsafe_key`` would reject
+    so the demo-mode validation is deterministic regardless of the caller's
+    shell (e.g. ``CLAUDE_CODE_MESSAGING_TOKEN``, ``DATABRICKS_WORKSPACE_ID``).
+    """
+    for key in list(os.environ):
+        if key == "PUBLIC_DEMO":
+            continue
+        if _is_unsafe_key(key, os.environ.get(key, "")):
+            monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PUBLIC_DEMO", "1")
     monkeypatch.setenv("APP_ENV", "demo")
     monkeypatch.delenv("DATABRICKS_APP_PORT", raising=False)
@@ -119,3 +131,38 @@ class TestFrontendMissing:
         client = TestClient(app)
         resp = client.get("/api/analytics")
         assert resp.status_code == 200
+
+
+class TestAmbientSecretsIsolation:
+    """Ambient secret-looking env vars must not break these fixtures."""
+
+    def test_secret_env_var_does_not_break_demo_app(self, app_with_dist):
+        """The _demo_env fixture strips ambient secrets, so the app starts.
+
+        This test proves the fixture works: even though the caller's shell may
+        carry secret-looking vars, the fixture removes them before create_app()
+        runs.  The app_with_dist fixture would have raised
+        PublicDemoConfigurationError if any leaked through.
+        """
+        app, dist = app_with_dist
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+
+    def test_safety_check_raises_when_own_env_has_secret(self, monkeypatch):
+        """The safety check still raises when the app's OWN env has a secret.
+
+        This proves the fixture is not accidentally disabling the guard — it
+        only strips *ambient* vars, not ones injected after the fixture.
+        """
+        monkeypatch.setenv("PUBLIC_DEMO", "1")
+        monkeypatch.setenv("APP_ENV", "demo")
+        monkeypatch.setenv("INJECTED_SECRET_TOKEN", "s3cret")
+
+        from api.main import create_app
+        from api.demo import PublicDemoConfigurationError
+
+        with pytest.raises(PublicDemoConfigurationError, match="INJECTED_SECRET_TOKEN"):
+            create_app()

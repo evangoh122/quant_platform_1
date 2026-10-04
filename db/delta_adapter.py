@@ -263,13 +263,15 @@ def check_warehouse_health() -> Tuple[bool, str]:
     """Probe the SQL warehouse with SELECT 1. Returns (ok, detail).
 
     Reports ``warming`` (ok=False) while the background connect is in flight.
+    The warming check runs first so that a background connect in progress is
+    never masked by a transient import-detection issue.
     """
     try:
-        if not _warehouse_available():
-            return False, "databricks-sql-connector not installed"
         state, detail = get_warm_state()
         if state == "warming":
             return False, "connecting"
+        if not _warehouse_available():
+            return False, "databricks-sql-connector not installed"
         rows = _warehouse_query("SELECT 1", timeout=5, limit=1)
         ok = len(rows) == 1
         return (ok, "reachable" if ok else "no response")

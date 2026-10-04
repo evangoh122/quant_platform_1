@@ -935,6 +935,15 @@ def test_health_probe_reports_warming_state(client, monkeypatch):
     assert delta_dep["detail"] == "connecting"
 
 
+def test_warehouse_available_detects_installed_connector():
+    """_warehouse_available returns True when databricks-sql-connector is installed."""
+    import db.delta_adapter as adapter
+
+    # The connector is installed in the test environment (4.6.0+).
+    # This test guards against a regression where import detection breaks.
+    assert adapter._warehouse_available() is True
+
+
 # ── 13. cursor.cancel() on timeout + bounded semaphore ───────────────────────
 
 def test_warehouse_query_calls_cancel_on_timeout(monkeypatch):
