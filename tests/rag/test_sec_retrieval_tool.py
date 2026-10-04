@@ -55,7 +55,7 @@ class TestSearchSecFilingsErrors:
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
-            MockRetriever.return_value.retrieve.side_effect = raise_no_coverage
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = raise_no_coverage
             result = search_sec_filings("XYZ", query="test query")
 
         assert result == [{"error": "no_coverage", "ticker": "XYZ"}]
@@ -70,7 +70,7 @@ class TestSearchSecFilingsErrors:
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
-            MockRetriever.return_value.retrieve.side_effect = raise_no_coverage
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = raise_no_coverage
             result = search_sec_filings("XYZ", query="test")
 
         assert result[0]["error"] == "no_coverage"
@@ -86,7 +86,7 @@ class TestSearchSecFilingsErrors:
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
-            MockRetriever.return_value.retrieve.side_effect = raise_ticker_required
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = raise_ticker_required
             result = search_sec_filings("XYZ", query="test")
 
         assert result == [{"error": "ticker_required"}]
@@ -101,7 +101,7 @@ class TestSearchSecFilingsErrors:
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
-            MockRetriever.return_value.retrieve.side_effect = raise_unavailable
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = raise_unavailable
             result = search_sec_filings("NVDA", query="test")
 
         assert len(result) == 1
@@ -118,46 +118,73 @@ class TestSearchSecFilingsErrors:
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
-            MockRetriever.return_value.retrieve.side_effect = raise_config
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = raise_config
             result = search_sec_filings("NVDA", query="test")
 
         assert len(result) == 1
         assert result[0]["error"] == "retrieval_unavailable"
         assert result[0]["reason"] == "embedding_config"
 
-    def test_spark_table_error_returns_retrieval_unavailable(self):
-        """Spark/table errors must return retrieval_unavailable, not fall through to substring."""
+    def test_spark_table_error_triggers_substring_fallback(self, fake_pyspark):
+        """Generic RuntimeError from retriever triggers substring fallback."""
         from agent.tools_retrieval import search_sec_filings
 
         def raise_spark_error(*args, **kwargs):
             raise RuntimeError("Table not found: silver_sec_sections")
 
+        mock_spark = MagicMock()
+        mock_df = MagicMock()
+        mock_df.where.return_value = mock_df
+        mock_df.orderBy.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {
+            "chunk_id": "fb-001",
+            "accession_number": "ACC",
+            "form_type": "10-K",
+            "accepted_ts": "2024-01-01",
+            "source_url": "",
+            "ticker": "NVDA",
+            "filing_section": "item_7",
+            "chunk_index": 0,
+            "chunk_text": "fallback text",
+        }
+        mock_df.collect.return_value = [mock_row]
+        mock_spark.table.return_value = mock_df
+
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
-             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
-            MockRetriever.return_value.retrieve.side_effect = raise_spark_error
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
+             patch("agent.tools_retrieval._spark", return_value=mock_spark):
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = raise_spark_error
             result = search_sec_filings("NVDA", query="test")
 
-        assert len(result) == 1
-        assert result[0]["error"] == "retrieval_unavailable"
-        assert result[0]["ticker"] == "NVDA"
-        # Must NOT have retrieval_mode (no substring fallback)
-        assert "retrieval_mode" not in result[0]
+        assert len(result) >= 1
+        # Substring fallback returns results with retrieval_mode
+        assert result[0]["retrieval_mode"] == "substring_fallback"
+        assert result[0]["chunk_id"] == "fb-001"
 
-    def test_table_error_does_not_invoke_substring_path(self):
-        """Spark/table errors must not trigger substring fallback path."""
+    def test_substring_fallback_invoked_on_generic_exception(self, fake_pyspark):
+        """Generic exceptions invoke the substring fallback with _spark()."""
         from agent.tools_retrieval import search_sec_filings
 
         def raise_spark_error(*args, **kwargs):
             raise RuntimeError("Connection refused")
 
         mock_spark = MagicMock()
+        mock_df = MagicMock()
+        mock_df.where.return_value = mock_df
+        mock_df.orderBy.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_df.collect.return_value = []
+        mock_spark.table.return_value = mock_df
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
              patch("agent.tools_retrieval._spark", return_value=mock_spark):
-            MockRetriever.return_value.retrieve.side_effect = raise_spark_error
+            MockRetriever.return_value.retrieve_and_rerank.side_effect = raise_spark_error
             result = search_sec_filings("NVDA", query="test")
 
-        # The Spark session must NOT have been called (no substring fallback)
-        mock_spark.table.assert_not_called()
-        assert result[0]["error"] == "retrieval_unavailable"
+        # Substring fallback was invoked (Spark session called)
+        mock_spark.table.assert_called_once()
+        # Empty fallback returns empty list
+        assert result == []

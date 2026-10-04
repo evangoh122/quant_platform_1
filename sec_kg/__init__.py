@@ -1,0 +1,1 @@
+"""sec_kg — point-in-time SEC knowledge graph."""

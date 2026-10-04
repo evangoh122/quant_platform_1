@@ -47,20 +47,25 @@ STEPS = [
     ("silver_sec_sections", "silver/05_silver_sec_sections.sql", "sql"),
     ("silver_sec_entities", "silver/06_silver_sec_entities.sql", "sql"),
     ("silver_cot_positions", "silver/07_silver_cot_positions.sql", "sql"),
+    ("silver_ohlcv_day_adjusted", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),
+    ("data_quality_breaks", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),
     ("gold_ohlcv_features", "gold/01_gold_ohlcv_features.sql", "sql"),
     ("gold_options_features", "gold/02_gold_options_features.sql", "sql"),
     ("gold_sec_features", "gold/gold_sec_features.py", "py"),
     ("gold_sec_coverage", "gold/07_gold_sec_coverage.sql", "sql"),
     ("gold_cot_features", "gold/04_gold_cot_features.sql", "sql"),
     ("gold_model_features", "gold/05_gold_model_features.sql", "sql"),
+    ("gold_tradable_universe", "gold/06_gold_tradable_universe.sql", "sql"),
+    ("gold_regime_features", "gold/07_gold_regime_features.sql", "sql"),
 ]
 
 TARGET_TABLES = [
     "silver_ohlcv", "silver_ohlcv_quarantine_batch", "silver_options_quotes",
     "silver_options_trades", "silver_sec_sections", "silver_sec_entities",
-    "silver_cot_positions",
+    "silver_cot_positions", "silver_ohlcv_day_adjusted", "data_quality_breaks",
     "gold_ohlcv_features", "gold_options_features", "gold_sec_features",
     "gold_sec_coverage", "gold_cot_features", "gold_model_features",
+    "gold_tradable_universe", "gold_regime_features",
 ]
 
 DATE_START = "1900-01-01"
@@ -94,8 +99,14 @@ def register_universe(spark) -> list[str]:
     return symbols
 
 
+_NO_TRUNCATE = {"data_quality_breaks"}  # preserves manual break reviews
+
+
 def truncate_targets(spark):
     for t in TARGET_TABLES:
+        if t in _NO_TRUNCATE:
+            print(f"  skipped truncate {t} (preserves manual reviews)")
+            continue
         try:
             spark.sql(f"TRUNCATE TABLE {FQN}.{t}")
             print(f"  truncated {t}")
@@ -299,6 +310,57 @@ def run_checks(spark):
     for label, sql in checks:
         v = spark.sql(sql).collect()[0][0]
         print(f"  {label}: {v}")
+
+    # --- Corporate-action checks ---
+    ca_checks = [
+        ("bronze_corporate_actions duplicate keys",
+         f"""SELECT COUNT(*) FROM (
+               SELECT symbol, CAST(ex_date AS STRING) AS ex_date, source, COUNT(*) AS cnt
+               FROM {FQN}.bronze_corporate_actions
+               GROUP BY symbol, CAST(ex_date AS STRING), source HAVING cnt > 1
+             )"""),
+        ("silver_ohlcv_day_adjusted duplicate keys",
+         f"""SELECT COUNT(*) FROM (
+               SELECT symbol, event_date, COUNT(*) AS cnt
+               FROM {FQN}.silver_ohlcv_day_adjusted
+               GROUP BY symbol, event_date HAVING cnt > 1
+             )"""),
+        ("data_quality_breaks duplicate keys",
+         f"""SELECT COUNT(*) FROM (
+               SELECT symbol, event_date, COUNT(*) AS cnt
+               FROM {FQN}.data_quality_breaks
+               GROUP BY symbol, event_date HAVING cnt > 1
+             )"""),
+        ("adjusted nonpositive split_ratio",
+         f"SELECT COUNT(*) FROM {FQN}.bronze_corporate_actions WHERE split_ratio <= 0 OR split_ratio IS NULL"),
+        ("adjusted nonfinite factors",
+         f"""SELECT COUNT(*) FROM {FQN}.silver_ohlcv_day_adjusted
+              WHERE cumulative_split_ratio <= 0 OR price_adjustment_factor <= 0
+                 OR cumulative_split_ratio IS NULL OR price_adjustment_factor IS NULL"""),
+        ("adjusted nonpositive prices",
+         f"""SELECT COUNT(*) FROM {FQN}.silver_ohlcv_day_adjusted
+              WHERE adj_close <= 0 OR adj_close IS NULL"""),
+        ("factor product != 1",
+         f"""SELECT COUNT(*) FROM {FQN}.silver_ohlcv_day_adjusted
+              WHERE ABS(price_adjustment_factor * cumulative_split_ratio - 1.0) > 0.001"""),
+        ("explained rows with split_error > 0.03",
+         f"""SELECT COUNT(*) FROM {FQN}.data_quality_breaks
+              WHERE classification = 'SPLIT_EXPLAINED' AND split_error > 0.03"""),
+        ("masked rows with return_1d NOT NULL",
+         f"""SELECT COUNT(*) FROM {FQN}.silver_ohlcv_day_adjusted
+              WHERE is_data_quality_break = TRUE AND return_1d IS NOT NULL"""),
+        ("masked return filled with zero",
+         f"""SELECT COUNT(*) FROM {FQN}.silver_ohlcv_day_adjusted
+              WHERE is_data_quality_break = TRUE AND return_1d = 0.0"""),
+    ]
+    if ca_checks:
+        print("\n=== corporate-action checks ===")
+        for label, sql in ca_checks:
+            try:
+                v = spark.sql(sql).collect()[0][0]
+                print(f"  {label}: {v}")
+            except Exception as e:
+                print(f"  {label}: ERROR {str(e)[:120]}")
 
     run_availability_invariant(spark)
     run_matrix_invariant(spark)

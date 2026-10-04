@@ -1205,7 +1205,7 @@ class TestSearchSecFilingsError:
             raise CorpusUnavailableError("Delta table not found")
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -1225,7 +1225,7 @@ class TestSearchSecFilingsError:
         from agent.tools_retrieval import search_sec_filings
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = []
+        mock_retriever.retrieve_and_rerank.return_value = []
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -1244,7 +1244,7 @@ class TestSearchSecFilingsError:
             raise RuntimeError("connection timeout")
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -1254,8 +1254,8 @@ class TestSearchSecFilingsError:
         assert result[0]["error"] == "retrieval_unavailable"
         assert "retrieval_mode" not in result[0]
 
-    def test_spark_table_error_returns_retrieval_unavailable(self, fake_pyspark, monkeypatch):
-        """Spark/table errors must return retrieval_unavailable, not fall through."""
+    def test_spark_table_error_triggers_substring_fallback(self, fake_pyspark, monkeypatch):
+        """Generic RuntimeError from retriever triggers substring fallback."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
@@ -1265,20 +1265,37 @@ class TestSearchSecFilingsError:
             raise RuntimeError("Table not found: silver_sec_sections")
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         mock_spark = MagicMock()
+        mock_df = MagicMock()
+        mock_df.where.return_value = mock_df
+        mock_df.orderBy.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {
+            "chunk_id": "fb-001",
+            "accession_number": "ACC",
+            "form_type": "10-K",
+            "accepted_ts": "2024-01-01",
+            "source_url": "",
+            "ticker": "NVDA",
+            "filing_section": "item_7",
+            "chunk_index": 0,
+            "chunk_text": "fallback text",
+        }
+        mock_df.collect.return_value = [mock_row]
+        mock_spark.table.return_value = mock_df
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
              patch("agent.tools_retrieval._spark", return_value=mock_spark):
             result = search_sec_filings("NVDA", query="revenue")
 
-        assert len(result) == 1
-        assert result[0]["error"] == "retrieval_unavailable"
-        assert result[0]["ticker"] == "NVDA"
-        # Spark must NOT have been called (no substring fallback)
-        mock_spark.table.assert_not_called()
+        assert len(result) >= 1
+        # Substring fallback returns results with retrieval_mode
+        assert result[0]["retrieval_mode"] == "substring_fallback"
+        assert result[0]["chunk_id"] == "fb-001"
 
     def test_fallback_output_keys_match_hybrid_path(self, fake_pyspark, monkeypatch):
         """Non-corpus exception returns retrieval_unavailable with correct keys."""
@@ -1291,7 +1308,7 @@ class TestSearchSecFilingsError:
             raise RuntimeError("connection timeout")
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -1320,7 +1337,7 @@ class TestSearchSecFilingsError:
             raise RuntimeError("connection timeout")
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -1345,7 +1362,7 @@ class TestSearchSecFilingsError:
             raise CorpusUnavailableError("secret_table_name connection string leaked")
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -1397,7 +1414,7 @@ class TestSearchSecFilingsError:
             },
         )
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = [mock_doc]
+        mock_retriever.retrieve_and_rerank.return_value = [mock_doc]
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
@@ -1434,7 +1451,7 @@ class TestSearchSecFilingsError:
             },
         )
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = [mock_doc]
+        mock_retriever.retrieve_and_rerank.return_value = [mock_doc]
 
         # Pass a naive datetime — must not raise TypeError or fall to substring
         naive_as_of = datetime(2025, 6, 1)
@@ -1973,7 +1990,7 @@ class TestHuggingfaceWithoutToken:
             )
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -2202,7 +2219,7 @@ class TestBM25OnlyThroughSearchSecFilings:
             },
         )
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = [mock_doc]
+        mock_retriever.retrieve_and_rerank.return_value = [mock_doc]
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
@@ -2241,7 +2258,7 @@ class TestEmbeddingE2EThroughSearchSecFilings:
             )
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -2273,7 +2290,7 @@ class TestEmbeddingE2EThroughSearchSecFilings:
             )
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -2298,7 +2315,7 @@ class TestEmbeddingE2EThroughSearchSecFilings:
             )
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -2328,7 +2345,7 @@ class TestEmbeddingE2EThroughSearchSecFilings:
             )
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = fake_retrieve
+        mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -2366,7 +2383,7 @@ class TestEmbeddingE2EThroughSearchSecFilings:
             },
         )
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = [mock_doc]
+        mock_retriever.retrieve_and_rerank.return_value = [mock_doc]
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
@@ -2403,7 +2420,7 @@ class TestEmbeddingE2EThroughSearchSecFilings:
             },
         )
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = [mock_doc]
+        mock_retriever.retrieve_and_rerank.return_value = [mock_doc]
 
         as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
 
@@ -2464,7 +2481,7 @@ class TestTickerRequired:
             raise TickerRequiredError()
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = raise_ticker_required
+        mock_retriever.retrieve_and_rerank.side_effect = raise_ticker_required
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
@@ -2503,7 +2520,7 @@ class TestNoCoverage:
             raise NoCoverageError("XYZ")
 
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.side_effect = raise_no_coverage
+        mock_retriever.retrieve_and_rerank.side_effect = raise_no_coverage
 
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):

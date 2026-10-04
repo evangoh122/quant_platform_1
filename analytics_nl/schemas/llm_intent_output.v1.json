@@ -1,0 +1,197 @@
+{
+  "$defs": {
+    "DateExpression": {
+      "additionalProperties": false,
+      "description": "Date expression from LLM — either explicit range or relative text.",
+      "properties": {
+        "explicit_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DateRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relative": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelativeDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "DateExpression",
+      "type": "object"
+    },
+    "DateRange": {
+      "additionalProperties": false,
+      "description": "Inclusive date range with start <= end.",
+      "properties": {
+        "end": {
+          "format": "date",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "DateRange",
+      "type": "object"
+    },
+    "Grouping": {
+      "description": "Allowed grouping values (daily-or-coarser).",
+      "enum": [
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year",
+        "ticker",
+        "sector"
+      ],
+      "title": "Grouping",
+      "type": "string"
+    },
+    "LLMEntityMention": {
+      "additionalProperties": false,
+      "description": "Short plain-text entity mention from LLM output.",
+      "properties": {
+        "text": {
+          "maxLength": 25,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 .&\\-/'_]{0,24}$",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "LLMEntityMention",
+      "type": "object"
+    },
+    "Metric": {
+      "description": "Supported analytics metrics.  Market capitalization is intentionally\nexcluded because there is no governed shares-outstanding source.",
+      "enum": [
+        "price",
+        "return",
+        "volume",
+        "realized_volatility",
+        "drawdown",
+        "momentum",
+        "relative_performance",
+        "implied_volatility",
+        "put_call_ratio"
+      ],
+      "title": "Metric",
+      "type": "string"
+    },
+    "Operation": {
+      "description": "Supported analytics operations.",
+      "enum": [
+        "trend",
+        "compare",
+        "rank",
+        "aggregate"
+      ],
+      "title": "Operation",
+      "type": "string"
+    },
+    "RelativeDate": {
+      "description": "Closed set of relative date expressions.\n\nEach value is a canonical wire value that ``resolve_relative_date`` accepts.\nAliases (e.g. \"last month\" → ``last_month``) are handled in the deterministic\nalias layer, NOT in the LLM schema.",
+      "enum": [
+        "last_week",
+        "last_month",
+        "last_quarter",
+        "last_year",
+        "ytd",
+        "mtd",
+        "qtd",
+        "last_5_days",
+        "last_30_days",
+        "last_90_days",
+        "last_252_days"
+      ],
+      "title": "RelativeDate",
+      "type": "string"
+    }
+  },
+  "$id": "https://analytics-nl/schemas/nl1-llm-intent-output-schema",
+  "additionalProperties": false,
+  "description": "LLM extraction output with unresolved entity mentions. Intentionally excludes SQL, code, table, view, column, predicate, order_by, expression, prompt, url, html, javascript fields.",
+  "properties": {
+    "date_expression": {
+      "$ref": "#/$defs/DateExpression"
+    },
+    "entity_mentions": {
+      "items": {
+        "$ref": "#/$defs/LLMEntityMention"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "title": "Entity Mentions",
+      "type": "array"
+    },
+    "grouping": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Grouping"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "limit": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 10000,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit"
+    },
+    "metric": {
+      "$ref": "#/$defs/Metric"
+    },
+    "operation": {
+      "$ref": "#/$defs/Operation"
+    },
+    "semantic_model_version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "title": "Semantic Model Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "semantic_model_version",
+    "operation",
+    "metric",
+    "entity_mentions",
+    "date_expression"
+  ],
+  "title": "NL1 LLM Intent Output Schema",
+  "type": "object"
+}

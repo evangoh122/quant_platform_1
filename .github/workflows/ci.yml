@@ -41,7 +41,7 @@ jobs:
           if [[ -f requirements-app.txt ]]; then
             python -m pip install -r requirements-app.txt
           fi
-          python -m pip install pytest pytest-asyncio httpx numpy pandas polars duckdb scikit-learn pyyaml
+          python -m pip install pytest pytest-asyncio pytest-timeout httpx numpy pandas polars duckdb scikit-learn pyyaml
 
       - name: Run offline test suite
         run: pytest -q -m "not spark and not lakebase and not databricks"
