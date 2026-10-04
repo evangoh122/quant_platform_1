@@ -970,3 +970,210 @@ class TestDDLAvailabilityContract:
                 )
             return
         pytest.skip("No relative performance SQL block found")
+
+
+class TestRelativePerformanceDuckDB:
+    """Semantic tests for relative-performance SQL using DuckDB.
+
+    Extract the cumulative-return + anomaly-propagation logic from
+    serve_relative_performance_v1 and verify:
+    - A −100% day → cumulative_return IS NULL, status = 'invalid_return'
+    - A normal window → numeric value, status = 'ok'
+    - Mutations: replace NULL arm with computed value → FAILS;
+      disable invalid_return status → FAILS.
+    """
+
+    _RELPERF_SQL = """
+    WITH entity_returns AS (
+        SELECT symbol, event_date, return_1d, information_available_ts
+        FROM base_returns
+        WHERE symbol = 'AAPL'
+          AND event_date >= '2024-01-01'
+    ),
+    benchmark_returns AS (
+        SELECT event_date, return_1d AS bench_return,
+               information_available_ts AS bench_info_ts
+        FROM base_returns
+        WHERE symbol = 'SPY'
+          AND event_date >= '2024-01-01'
+    ),
+    entity_cumulative AS (
+        SELECT
+            symbol, event_date, return_1d, information_available_ts,
+            BOOL_OR(return_1d <= -1) OVER (
+                PARTITION BY symbol ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS has_invalid_return,
+            CASE
+                WHEN BOOL_OR(return_1d <= -1) OVER (
+                    PARTITION BY symbol ORDER BY event_date
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) THEN NULL
+                ELSE EXP(SUM(LN(GREATEST(1 + return_1d, 0.0001))) OVER (
+                    PARTITION BY symbol ORDER BY event_date
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                )) - 1
+            END AS cumulative_return,
+            MAX(information_available_ts) OVER (
+                PARTITION BY symbol ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS entity_info_ts
+        FROM entity_returns
+        WHERE return_1d IS NOT NULL
+    ),
+    benchmark_cumulative AS (
+        SELECT
+            event_date, bench_return, bench_info_ts,
+            BOOL_OR(bench_return <= -1) OVER (
+                ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS has_invalid_bench,
+            CASE
+                WHEN BOOL_OR(bench_return <= -1) OVER (
+                    ORDER BY event_date
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) THEN NULL
+                ELSE EXP(SUM(LN(GREATEST(1 + bench_return, 0.0001))) OVER (
+                    ORDER BY event_date
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                )) - 1
+            END AS bench_cumulative_return,
+            MAX(bench_info_ts) OVER (
+                ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS bench_max_info_ts
+        FROM benchmark_returns
+        WHERE bench_return IS NOT NULL
+    )
+    SELECT
+        e.symbol, e.event_date, e.return_1d,
+        e.cumulative_return - b.bench_cumulative_return AS rel_perf,
+        'SPY' AS benchmark,
+        GREATEST(e.entity_info_ts, b.bench_max_info_ts) AS information_available_ts,
+        CASE
+            WHEN e.has_invalid_return OR b.has_invalid_bench THEN 'invalid_return'
+            ELSE 'ok'
+        END AS status
+    FROM entity_cumulative e
+    JOIN benchmark_cumulative b ON e.event_date = b.event_date
+    ORDER BY e.event_date;
+    """
+
+    def _run_relperf_sql(self, sql: str, rows: list[tuple]) -> list[tuple]:
+        """Run relative-performance SQL against a DuckDB in-memory fixture."""
+        import duckdb
+
+        con = duckdb.connect(":memory:")
+        con.execute("""
+            CREATE TABLE base_returns (
+                symbol VARCHAR,
+                event_date DATE,
+                return_1d DOUBLE,
+                information_available_ts TIMESTAMP
+            )
+        """)
+        con.executemany(
+            "INSERT INTO base_returns VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        result = con.execute(sql).fetchall()
+        con.close()
+        return result
+
+    def test_normal_window_returns_numeric_value(self):
+        """Normal 5-day window → cumulative_return is numeric, status = 'ok'."""
+        base_ts = "2024-01-01 16:30:00"
+        rows = []
+        for i in range(5):
+            d = f"2024-01-{1 + i:02d}"
+            ts = f"2024-01-{1 + i:02d} 16:30:00"
+            rows.append(("AAPL", d, 0.01, ts))  # +1% daily
+            rows.append(("SPY", d, 0.005, ts))   # +0.5% daily
+
+        result = self._run_relperf_sql(self._RELPERF_SQL, rows)
+        assert len(result) == 5
+        for row in result:
+            cumulative = row[3]  # rel_perf
+            status = row[6]
+            assert cumulative is not None, f"Expected numeric rel_perf, got NULL for {row[1]}"
+            assert status == "ok", f"Expected status='ok', got '{status}' for {row[1]}"
+
+    def test_minus_100_percent_day_gives_null_and_invalid_return(self):
+        """A −100% day (total loss) → cumulative_return IS NULL, status = 'invalid_return'."""
+        rows = [
+            ("AAPL", "2024-01-01", 0.05, "2024-01-01 16:30:00"),
+            ("AAPL", "2024-01-02", -1.0, "2024-01-02 16:30:00"),  # -100% wipeout
+            ("AAPL", "2024-01-03", 0.02, "2024-01-03 16:30:00"),
+            ("SPY", "2024-01-01", 0.01, "2024-01-01 16:30:00"),
+            ("SPY", "2024-01-02", 0.01, "2024-01-02 16:30:00"),
+            ("SPY", "2024-01-03", 0.01, "2024-01-03 16:30:00"),
+        ]
+        result = self._run_relperf_sql(self._RELPERF_SQL, rows)
+        # All rows after the -100% day should be NULL/invalid
+        for row in result:
+            d = str(row[1])
+            cumulative = row[3]
+            status = row[6]
+            if d >= "2024-01-02":
+                assert cumulative is None, (
+                    f"Expected NULL cumulative after -100% day, got {cumulative} on {d}"
+                )
+                assert status == "invalid_return", (
+                    f"Expected 'invalid_return' after -100% day, got '{status}' on {d}"
+                )
+            else:
+                assert cumulative is not None, f"Expected numeric before -100% day on {d}"
+                assert status == "ok", f"Expected 'ok' before -100% day on {d}"
+
+    def test_mutation_replace_null_arm_with_computed_value_fails(self):
+        """Mutation: replace the NULL arm in CASE with a computed value.
+
+        If we change 'WHEN has_invalid_return THEN NULL' to use a real
+        value, the test_minus_100_percent test would see a non-NULL value.
+        """
+        mutated_sql = re.sub(
+            r"THEN NULL\b",
+            "THEN -0.99",
+            self._RELPERF_SQL,
+        )
+        rows = [
+            ("AAPL", "2024-01-01", 0.05, "2024-01-01 16:30:00"),
+            ("AAPL", "2024-01-02", -1.0, "2024-01-02 16:30:00"),
+            ("SPY", "2024-01-01", 0.01, "2024-01-01 16:30:00"),
+            ("SPY", "2024-01-02", 0.01, "2024-01-02 16:30:00"),
+        ]
+        result = self._run_relperf_sql(mutated_sql, rows)
+        # After mutation, the -100% day should produce a non-NULL value
+        for row in result:
+            d = str(row[1])
+            cumulative = row[3]
+            if d >= "2024-01-02":
+                assert cumulative is not None, (
+                    "Mutation proof failed: replacing NULL arm with computed "
+                    "value should produce non-NULL cumulative"
+                )
+
+    def test_mutation_disable_invalid_return_status_fails(self):
+        """Mutation: change 'invalid_return' status to 'ok'.
+
+        The test_minus_100_percent test checks for 'invalid_return' status.
+        """
+        mutated_sql = self._RELPERF_SQL.replace(
+            "WHEN e.has_invalid_return OR b.has_invalid_bench THEN 'invalid_return'",
+            "WHEN FALSE THEN 'invalid_return'",
+        )
+        rows = [
+            ("AAPL", "2024-01-01", 0.05, "2024-01-01 16:30:00"),
+            ("AAPL", "2024-01-02", -1.0, "2024-01-02 16:30:00"),
+            ("SPY", "2024-01-01", 0.01, "2024-01-01 16:30:00"),
+            ("SPY", "2024-01-02", 0.01, "2024-01-02 16:30:00"),
+        ]
+        result = self._run_relperf_sql(mutated_sql, rows)
+        for row in result:
+            d = str(row[1])
+            status = row[6]
+            if d >= "2024-01-02":
+                assert status != "invalid_return", (
+                    "Mutation proof failed: disabling invalid_return status "
+                    "should change status away from 'invalid_return'"
+                )
