@@ -41,7 +41,7 @@ FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions;
 # Run the refresh with mode=dry-run, full lexical range, delay >= 0.5s
 python notebooks/refresh_bronze_corporate_actions.py \
     --mode dry-run \
-    --source yfinance \
+    --source massive \
     --delay-seconds 0.5
 
 # Save JSON output.  Require:
@@ -56,14 +56,14 @@ python notebooks/refresh_bronze_corporate_actions.py \
 # Run mode=write with a named run ID
 python notebooks/refresh_bronze_corporate_actions.py \
     --mode write \
-    --source yfinance \
+    --source massive \
     --run-id "manual-$(date +%Y%m%d)" \
     --delay-seconds 0.5
 
 # Resume after interruption (same run ID)
 python notebooks/refresh_bronze_corporate_actions.py \
     --mode write \
-    --source yfinance \
+    --source massive \
     --run-id "manual-$(date +%Y%m%d)" \
     --delay-seconds 0.5
 
@@ -75,7 +75,7 @@ FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions;
 # Rerun once — prove zero appended rows
 python notebooks/refresh_bronze_corporate_actions.py \
     --mode write \
-    --source yfinance \
+    --source massive \
     --run-id "manual-rerun-$(date +%Y%m%d)" \
     --delay-seconds 0.5
 ```

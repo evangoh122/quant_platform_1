@@ -24,7 +24,7 @@ resources:
             notebook_path: ../notebooks/refresh_bronze_corporate_actions.py
             base_parameters:
               mode: "dry-run"
-              source: "yfinance"
+              source: "massive"
               delay_seconds: "0.5"
           environment_key: serverless
       environments:

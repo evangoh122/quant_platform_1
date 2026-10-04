@@ -1094,3 +1094,68 @@ class TestApiKeyLeak:
             assert secret not in str(cause), \
                 f"Exception chain must not contain the secret: {cause}"
             cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+
+
+# ---------------------------------------------------------------------------
+# 16. Jobs YAML wiring — source must be in VALID_SOURCES
+# ---------------------------------------------------------------------------
+
+class TestJobsYmlSource:
+
+    def test_corporate_actions_job_source_is_valid(self):
+        """Every corporate-actions task's source param must be in VALID_SOURCES."""
+        import importlib.util
+        from pathlib import Path
+        import yaml
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        jobs_path = Path(__file__).resolve().parents[2] / "resources" / "jobs.yml"
+        with open(jobs_path, encoding="utf-8") as f:
+            jobs = yaml.safe_load(f)
+
+        for job_name, job_def in jobs.get("resources", {}).get("jobs", {}).items():
+            for task in job_def.get("tasks", []):
+                params = task.get("notebook_task", {}).get("base_parameters", {})
+                source = params.get("source")
+                if source is not None:
+                    assert source in mod.VALID_SOURCES, (
+                        f"Job '{job_name}' task '{task['task_key']}' has "
+                        f"source={source!r} which is not in VALID_SOURCES={mod.VALID_SOURCES}"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# 17. Runbook commands — --source must be valid
+# ---------------------------------------------------------------------------
+
+class TestRunbookSourceCommands:
+
+    def test_runbook_source_values_are_valid(self):
+        """Every --source value in the runbook must be in VALID_SOURCES."""
+        import importlib.util
+        import re
+        from pathlib import Path
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        runbook_path = Path(__file__).resolve().parents[2] / "docs" / "CORPORATE_ACTIONS_RUNBOOK.md"
+        text = runbook_path.read_text(encoding="utf-8")
+
+        # Match --source <value> in shell command blocks
+        source_pattern = re.compile(r"--source\s+(\S+)")
+        matches = source_pattern.findall(text)
+
+        for source_val in matches:
+            # Strip trailing backslash or quotes
+            source_val = source_val.rstrip("\\").strip("'\"")
+            assert source_val in mod.VALID_SOURCES, (
+                f"Runbook uses --source {source_val!r} which is not in "
+                f"VALID_SOURCES={mod.VALID_SOURCES}"
+            )
