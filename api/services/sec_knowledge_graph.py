@@ -183,7 +183,7 @@ class JsonlGraphStore:
                 continue
             if concept is not None:
                 node_concept = props.get("entity_key", props.get("metric", ""))
-                if normalize_unicode(node_concept).lower() != concept.lower():
+                if normalize_unicode(node_concept).lower() != normalize_unicode(concept).lower():
                     continue
             if period_start is not None and props.get("period_start", "") != period_start:
                 continue
@@ -441,17 +441,10 @@ class SparkGraphStore:
                 f'"ticker":"{ticker.upper()}"'
             ))
         if concept is not None:
-            # Case-insensitive match on structured fields (parity with JsonlGraphStore).
-            # Compare lower(concept) to lower() of JSON field values.
-            lowered = concept.lower()
-            df = df.where(
-                F.lower(F.col("properties_json")).contains(
-                    f'"entity_key":"{lowered}"'
-                ) |
-                F.lower(F.col("properties_json")).contains(
-                    f'"metric":"{lowered}"'
-                )
-            )
+            # Structured column equality on NFKC-normalised, lower-cased value.
+            # Parity with JsonlGraphStore: compare normalised input to concept_norm column.
+            norm_concept = normalize_unicode(concept).lower()
+            df = df.where(F.col("concept_norm") == norm_concept)
         if period_start is not None:
             df = df.where(F.col("properties_json").contains(
                 f'"period_start":"{period_start}"'

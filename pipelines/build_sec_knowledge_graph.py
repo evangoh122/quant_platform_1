@@ -20,7 +20,7 @@ from typing import Dict, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sec_kg.build import build_graph, validate_and_raise
-from sec_kg.model import BUILD_VERSION
+from sec_kg.model import BUILD_VERSION, normalize_unicode
 
 
 def _table_exists(spark, table_name: str) -> bool:
@@ -165,6 +165,7 @@ def build(
         StructField("node_type", StringType(), False),
         StructField("label", StringType(), False),
         StructField("properties_json", StringType(), False),
+        StructField("concept_norm", StringType(), True),
         StructField("provenance", provenance_schema, False),
         StructField("build_version", StringType(), False),
     ])
@@ -194,9 +195,13 @@ def build(
             }
             for p in node.provenance
         ]
+        # Compute concept_norm: NFKC-normalised, lower-cased entity_key or metric
+        props = json.loads(node.properties_json)
+        raw_concept = props.get("entity_key", props.get("metric", ""))
+        concept_norm = normalize_unicode(raw_concept).lower() if raw_concept else None
         nodes_data.append((
             node.node_id, node.node_type, node.label,
-            node.properties_json, prov_list, node.build_version,
+            node.properties_json, concept_norm, prov_list, node.build_version,
         ))
 
     nodes_df = spark.createDataFrame(nodes_data, nodes_schema)
@@ -224,6 +229,7 @@ def build(
             node_type STRING NOT NULL,
             label STRING NOT NULL,
             properties_json STRING NOT NULL,
+            concept_norm STRING,
             provenance ARRAY<STRUCT<accession_number:STRING,source_chunk_id:STRING,accepted_ts:TIMESTAMP>> NOT NULL,
             build_version STRING NOT NULL
         ) USING DELTA

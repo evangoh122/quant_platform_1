@@ -1536,8 +1536,13 @@ class TestSparkGraphStoreRoundTrip:
                 return T._eval(expr.left, row) or T._eval(expr.right, row)
             elif expr.op == "and":
                 return T._eval(expr.left, row) and T._eval(expr.right, row)
-        # Bare value (shouldn't happen in well-formed expressions)
-        return True
+            elif expr.op == "exists":
+                arr = getattr(row, expr.left, None) or []
+                return any(expr.right(e) for e in arr)
+            else:
+                raise ValueError(f"Unknown expression op: {expr.op!r}")
+        # Bare value — reject instead of silently returning True
+        raise ValueError(f"Cannot evaluate bare expression: {expr!r}")
 
     class _MockSparkGraphStore(SparkGraphStore):
         """SparkGraphStore with a fake Spark session for offline testing."""
@@ -1579,7 +1584,7 @@ class TestSparkGraphStoreRoundTrip:
         pyspark_sql_functions.struct = lambda *args, **kw: T._FakeCol("struct")
         pyspark_sql_functions.get_json_object = lambda col, path: T._FakeCol("json_val")
         pyspark_sql_functions.lower = lambda col: T._LoweredCol(col if isinstance(col, T._FakeCol) else T._FakeCol("lowered"))
-        pyspark_sql_functions.exists = lambda col, pred: T._FakeCol("exists")
+        pyspark_sql_functions.exists = lambda col, pred: T._Expr("exists", col._name if isinstance(col, T._FakeCol) else col, pred)
 
     # ── Build store with naive datetime rows ───────────────────────────────────
 
@@ -1624,11 +1629,15 @@ class TestSparkGraphStoreRoundTrip:
                 )
                 for p in node.provenance
             ]
+            props = json.loads(node.properties_json)
+            raw_concept = props.get("entity_key", props.get("metric", ""))
+            concept_norm = normalize_unicode(raw_concept).lower() if raw_concept else None
             node_rows.append(self._FakeRow(
                 node_id=node.node_id,
                 node_type=node.node_type,
                 label=node.label,
                 properties_json=node.properties_json,
+                concept_norm=concept_norm,
                 provenance=prov_list,
                 build_version=node.build_version,
             ))
@@ -2873,7 +2882,12 @@ class TestPredicatePushdown:
             elif condition.op == "lower_contains":
                 val = getattr(row, condition.left, None) or ""
                 return condition.right in val.lower()
-        return True
+            elif condition.op == "exists":
+                arr = getattr(row, condition.left, None) or []
+                return any(condition.right(e) for e in arr)
+            else:
+                raise ValueError(f"Unknown condition op: {condition.op!r}")
+        raise ValueError(f"Cannot evaluate bare condition: {condition!r}")
 
     def _make_spy_store(self, monkeypatch, node_rows, edge_rows):
         """Create a SparkGraphStore with spy DataFrames."""
@@ -2942,11 +2956,15 @@ class TestPredicatePushdown:
                 )
                 for p in node.provenance
             ]
+            props = json.loads(node.properties_json)
+            raw_concept = props.get("entity_key", props.get("metric", ""))
+            concept_norm = normalize_unicode(raw_concept).lower() if raw_concept else None
             node_rows.append(TestSparkGraphStoreRoundTrip._FakeRow(
                 node_id=node.node_id,
                 node_type=node.node_type,
                 label=node.label,
                 properties_json=node.properties_json,
+                concept_norm=concept_norm,
                 provenance=prov_list,
                 build_version=node.build_version,
             ))
@@ -3945,3 +3963,345 @@ class TestFunctionalStaleDelete:
             f"Expected stale nodes to persist ({run2_node_count} >= {run1_node_count}) — "
             "mutation confirms whenNotMatchedBySourceDelete is required"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 40. Concept matching parity via concept_norm column (round 12)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConceptNormParity:
+    """Spark and JSONL stores must return identical results for concept matching.
+
+    Tests edge cases: escaped chars, backslash, full-width unicode, injection, no-match.
+    """
+
+    def _make_stores(self, monkeypatch, concept_values):
+        """Build both Spark (mock) and JSONL stores with given concept values.
+
+        Args:
+            concept_values: list of (entity_key, entity_value) tuples
+        """
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+
+        entities = []
+        for i, (ek, ev) in enumerate(concept_values):
+            entities.append({
+                "cik": "0001045810", "ticker": "NVDA",
+                "accession_number": f"0001045810-24-{i:06d}",
+                "form_type": "10-K", "accepted_epoch": 1700000000,
+                "entity_type": "xbrl_fact", "entity_key": ek,
+                "entity_value": ev, "entity_unit": "USD",
+                "period_start": "", "period_end": "2024-01-28",
+                "confidence": 1.0, "source_chunk_id": f"c{i}",
+            })
+        # Always include a company entity
+        entities.append({
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000000",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c0",
+        })
+        corpus = {}
+        for i in range(len(concept_values)):
+            corpus[f"c{i}"] = {
+                "chunk_id": f"c{i}", "ticker": "NVDA",
+                "accession_number": f"0001045810-24-{i:06d}",
+                "form_type": "10-K", "accepted_epoch": 1700000000,
+                "filing_section": "item1", "chunk_index": 0,
+                "chunk_text": "text",
+            }
+        corpus["c0"] = {
+            "chunk_id": "c0", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000000",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "filing_section": "item1", "chunk_index": 0,
+            "chunk_text": "text",
+        }
+
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        # JSONL store
+        jsonl_store = JsonlGraphStore()
+        jsonl_store.load_from_build(nodes, edges)
+
+        # Spark mock store
+        from datetime import timedelta
+        node_rows = []
+        for node in nodes:
+            prov_list = [
+                T._FakeRow(
+                    accession_number=p.accession_number,
+                    source_chunk_id=p.source_chunk_id,
+                    accepted_ts=p.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=int(p.accepted_ts.timestamp()),
+                )
+                for p in node.provenance
+            ]
+            props = json.loads(node.properties_json)
+            raw_concept = props.get("entity_key", props.get("metric", ""))
+            concept_norm = normalize_unicode(raw_concept).lower() if raw_concept else None
+            node_rows.append(T._FakeRow(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                label=node.label,
+                properties_json=node.properties_json,
+                concept_norm=concept_norm,
+                provenance=prov_list,
+                build_version=node.build_version,
+            ))
+
+        edge_rows = []
+        for edge in edges:
+            edge_rows.append(T._FakeRow(
+                edge_id=edge.edge_id,
+                src_id=edge.src_id,
+                edge_type=edge.edge_type,
+                dst_id=edge.dst_id,
+                valid_from=edge.valid_from.replace(tzinfo=None) + timedelta(hours=8),
+                valid_from_epoch=int(edge.valid_from.timestamp()),
+                accession_number=edge.accession_number,
+                source_chunk_id=edge.source_chunk_id,
+                accepted_ts=edge.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                accepted_epoch=int(edge.accepted_ts.timestamp()),
+                confidence=edge.confidence,
+                properties_json=edge.properties_json,
+                build_version=edge.build_version,
+            ))
+
+        spark_store = T._MockSparkGraphStore("test_cat", "test_sch", node_rows, edge_rows)
+
+        return jsonl_store, spark_store
+
+    def test_escaped_quote_concept(self, monkeypatch):
+        """concept='a"b' matches on both stores."""
+        jsonl_store, spark_store = self._make_stores(monkeypatch, [("a\"b", "val1")])
+        jsonl_results = jsonl_store.find_nodes("XbrlFact", concept='a"b')
+        spark_results = spark_store.find_nodes("XbrlFact", concept='a"b')
+        assert len(jsonl_results) == len(spark_results) == 1
+
+    def test_backslash_concept(self, monkeypatch):
+        """concept with backslash matches on both stores."""
+        jsonl_store, spark_store = self._make_stores(monkeypatch, [("back\\slash", "val1")])
+        jsonl_results = jsonl_store.find_nodes("XbrlFact", concept='back\\slash')
+        spark_results = spark_store.find_nodes("XbrlFact", concept='back\\slash')
+        assert len(jsonl_results) == len(spark_results) == 1
+
+    def test_fullwidth_vs_ascii(self, monkeypatch):
+        """Full-width 'Ｒｅｖｅｎｕｅ' matches 'revenue' on both stores (NFKC)."""
+        jsonl_store, spark_store = self._make_stores(monkeypatch, [("Ｒｅｖｅｎｕｅ", "val1")])
+        jsonl_results = jsonl_store.find_nodes("XbrlFact", concept="revenue")
+        spark_results = spark_store.find_nodes("XbrlFact", concept="revenue")
+        assert len(jsonl_results) == len(spark_results) == 1
+
+    def test_injection_no_match(self, monkeypatch):
+        """Injection attempt 'revenue","metric":"netincome' matches NOTHING on both stores."""
+        jsonl_store, spark_store = self._make_stores(monkeypatch, [("revenue", "val1")])
+        injection = 'revenue","metric":"netincome'
+        jsonl_results = jsonl_store.find_nodes("XbrlFact", concept=injection)
+        spark_results = spark_store.find_nodes("XbrlFact", concept=injection)
+        assert len(jsonl_results) == len(spark_results) == 0
+
+    def test_revenue_vs_revenues_no_match(self, monkeypatch):
+        """'revenue' does NOT match 'revenues' on both stores."""
+        jsonl_store, spark_store = self._make_stores(monkeypatch, [("revenues", "val1")])
+        jsonl_results = jsonl_store.find_nodes("XbrlFact", concept="revenue")
+        spark_results = spark_store.find_nodes("XbrlFact", concept="revenue")
+        assert len(jsonl_results) == len(spark_results) == 0
+
+    def test_metric_field_concept_norm(self, monkeypatch):
+        """concept_norm uses 'metric' when entity_key is absent (e.g. Metric node type)."""
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "2943719000", "entity_unit": "USD",
+            "period_start": "2023-01-29", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        # Metric nodes have "concept" in properties_json, not "entity_key"
+        metric_nodes = [n for n in nodes if n.node_type == "Metric"]
+        assert len(metric_nodes) >= 1
+        props = json.loads(metric_nodes[0].properties_json)
+        assert "concept" in props
+
+    def test_mutation_spark_json_substring_fails(self, monkeypatch):
+        """Mutation: if Spark uses JSON substring instead of concept_norm, this test fails."""
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+
+        # Build with a concept containing a quote
+        jsonl_store, spark_store = self._make_stores(monkeypatch, [("a\"b", "val1")])
+
+        # With concept_norm column: matches
+        spark_results = spark_store.find_nodes("XbrlFact", concept='a"b')
+        assert len(spark_results) == 1, (
+            "concept_norm column should match 'a\"b' — "
+            "if this fails, Spark may still be using JSON substring"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 41. Spark as-of-before-LIMIT with real F.exists evaluation (round 12)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSparkAsOfBeforeLimit:
+    """As-of filter via F.exists must apply BEFORE limit on the Spark path.
+
+    The fake Spark now evaluates F.exists(array, lambda) for real, so the
+    provenance predicate is functional.  A future-only row followed by an
+    eligible row, with limit=1, must return the eligible row.
+    """
+
+    def _make_future_and_eligible_spark_store(self, monkeypatch):
+        """Two XbrlFact nodes: one future-only, one eligible."""
+        from datetime import timedelta
+
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1800000000,  # future (2027)
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "999", "entity_unit": "USD",
+            "period_start": "2026-01-01", "period_end": "2026-12-31",
+            "confidence": 1.0, "source_chunk_id": "c_future",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000002",
+            "form_type": "10-K", "accepted_epoch": 1700000000,  # past (2023)
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "100", "entity_unit": "USD",
+            "period_start": "2023-01-01", "period_end": "2023-12-31",
+            "confidence": 1.0, "source_chunk_id": "c_past",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c_past",
+        }]
+        corpus = {
+            "c_future": {"chunk_id": "c_future", "ticker": "NVDA",
+                         "accession_number": "0001045810-24-000001",
+                         "form_type": "10-K", "accepted_epoch": 1800000000,
+                         "filing_section": "item1", "chunk_index": 0,
+                         "chunk_text": "text"},
+            "c_past": {"chunk_id": "c_past", "ticker": "NVDA",
+                       "accession_number": "0001045810-24-000002",
+                       "form_type": "10-K", "accepted_epoch": 1700000000,
+                       "filing_section": "item1", "chunk_index": 0,
+                       "chunk_text": "text"},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        node_rows = []
+        for node in nodes:
+            prov_list = [
+                T._FakeRow(
+                    accession_number=p.accession_number,
+                    source_chunk_id=p.source_chunk_id,
+                    accepted_ts=p.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=int(p.accepted_ts.timestamp()),
+                )
+                for p in node.provenance
+            ]
+            props = json.loads(node.properties_json)
+            raw_concept = props.get("entity_key", props.get("metric", ""))
+            concept_norm = normalize_unicode(raw_concept).lower() if raw_concept else None
+            node_rows.append(T._FakeRow(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                label=node.label,
+                properties_json=node.properties_json,
+                concept_norm=concept_norm,
+                provenance=prov_list,
+                build_version=node.build_version,
+            ))
+
+        edge_rows = []
+        for edge in edges:
+            edge_rows.append(T._FakeRow(
+                edge_id=edge.edge_id,
+                src_id=edge.src_id,
+                edge_type=edge.edge_type,
+                dst_id=edge.dst_id,
+                valid_from=edge.valid_from.replace(tzinfo=None) + timedelta(hours=8),
+                valid_from_epoch=int(edge.valid_from.timestamp()),
+                accession_number=edge.accession_number,
+                source_chunk_id=edge.source_chunk_id,
+                accepted_ts=edge.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                accepted_epoch=int(edge.accepted_ts.timestamp()),
+                confidence=edge.confidence,
+                properties_json=edge.properties_json,
+                build_version=edge.build_version,
+            ))
+
+        return T._MockSparkGraphStore("test_cat", "test_sch", node_rows, edge_rows)
+
+    def test_spark_limit_1_returns_eligible(self, monkeypatch):
+        """limit=1 with as-of returns the eligible row, not the future one."""
+        store = self._make_future_and_eligible_spark_store(monkeypatch)
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        results = store.find_nodes("XbrlFact", concept="Revenues",
+                                   accepted_before=as_of, limit=1)
+        assert len(results) == 1
+        props = json.loads(results[0].properties_json)
+        assert props.get("value_text") == "100", (
+            f"Expected eligible row (100), got {props.get('value_text')} — "
+            "F.exists provenance filter may not be working"
+        )
+
+    def test_spark_mutation_remove_exists_filter_fails(self, monkeypatch):
+        """Mutation: remove the F.exists where → future row leaks through limit."""
+        store = self._make_future_and_eligible_spark_store(monkeypatch)
+
+        # Monkeypatch find_nodes to skip the F.exists where clause
+        original_find = store.find_nodes
+
+        def _no_exists_find(*args, **kwargs):
+            # Temporarily patch: remove accepted_before to skip F.exists
+            kwargs.pop("accepted_before", None)
+            return original_find(*args, **kwargs)
+
+        # With as-of filter: 1 result (eligible)
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        with_filter = store.find_nodes("XbrlFact", concept="Revenues",
+                                       accepted_before=as_of, limit=1)
+        assert len(with_filter) == 1
+        props = json.loads(with_filter[0].properties_json)
+        assert props.get("value_text") == "100"
+
+        # Without as-of filter (mutation): could return future row
+        without_filter = store.find_nodes("XbrlFact", concept="Revenues", limit=1)
+        assert len(without_filter) == 1
+        # The key test: with_filter must return the eligible row
+        # If F.exists were removed, limit=1 could pick the future row first

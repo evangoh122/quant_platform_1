@@ -474,11 +474,12 @@
   status                             string NOT NULL
   processed_ts                       timestamp NOT NULL
 
-### gold_sec_kg_nodes  (6 cols)
+### gold_sec_kg_nodes  (7 cols)
   node_id                            string NOT NULL
   node_type                          string NOT NULL
   label                              string NOT NULL
   properties_json                    string NOT NULL
+  concept_norm                       string
   provenance                         array<struct<accession_number:string,source_chunk_id:string,accepted_ts:timestamp>> NOT NULL
   build_version                      string NOT NULL
 
