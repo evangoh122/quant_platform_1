@@ -757,6 +757,30 @@ class TestDDLAvailabilityContract:
                 return m.group(1).strip()
         return None
 
+    def _detect_lag_offset(self, info_token: str, ctes: list[tuple[str, str]]):
+        """Detect if the companion metric uses LAG(alias, N) and return N.
+
+        For info tokens like 'momentum_20d_info_ts', find the companion
+        metric 'momentum_20d' and check if it uses LAG(alias, N). Returns N
+        if found, None otherwise.
+        """
+        # Derive the companion metric name
+        base_name = info_token
+        if base_name.endswith("_INFO_TS"):
+            base_name = base_name[:-8]
+        if base_name.endswith("_MAX"):
+            base_name = base_name[:-4]
+
+        for _cte_name, body in ctes:
+            # Look for LAG(..., N) OVER (...) AS base_name
+            # The LAG might be inside an expression like (close / LAG(close, 20) OVER (...)) - 1
+            # Search for LAG followed by the alias
+            alias_pattern = rf"\bLAG\s*\([^)]+,\s*(\d+)\s*\)\s+OVER\s*\([^)]*\).*?\bAS\s+{re.escape(base_name)}\b"
+            m = re.search(alias_pattern, body, re.DOTALL | re.IGNORECASE)
+            if m:
+                return int(m.group(1))
+        return None
+
     def _extract_metric_window_frame(self, info_token: str, ctes: list[tuple[str, str]]):
         """Extract the window frame of the metric that accompanies an info token.
 
@@ -925,7 +949,28 @@ class TestDDLAvailabilityContract:
                     # Normalize whitespace for comparison
                     info_frame_norm = re.sub(r'\s+', ' ', info_frame.strip()).upper()
                     metric_frame_norm = re.sub(r'\s+', ' ', metric_frame.strip()).upper()
-                    assert info_frame_norm == metric_frame_norm, (
+                    frames_match = info_frame_norm == metric_frame_norm
+                    # Special case: LAG-based metrics (e.g. momentum_20d)
+                    # use LAG(alias, N) OVER (ORDER BY ...) without explicit
+                    # ROWS BETWEEN. The info_ts frame of
+                    # "ROWS BETWEEN N PRECEDING AND CURRENT ROW" is correct
+                    # for such metrics because it covers the LAG lookback.
+                    if not frames_match:
+                        lag_offset = self._detect_lag_offset(token, ctes)
+                        if lag_offset is not None:
+                            lag_frame_pattern = (
+                                f"ROWS BETWEEN {lag_offset} PRECEDING AND CURRENT ROW"
+                            )
+                            lag_frame_norm = re.sub(
+                                r'\s+', ' ',
+                                f"PARTITION BY ... ORDER BY ... {lag_frame_pattern}"
+                            ).upper()
+                            # Check that info frame ends with the LAG pattern
+                            if info_frame_norm.endswith(
+                                re.sub(r'\s+', ' ', lag_frame_pattern).upper()
+                            ):
+                                frames_match = True
+                    assert frames_match, (
                         f"SQL block {i + 1}: availability token '{token_raw}' "
                         f"window frame does not match companion metric. "
                         f"Info frame: {info_frame_norm}, "

@@ -15,7 +15,7 @@ This document proposes `CREATE VIEW` DDL for every approved serving view named b
 - **Return formula (unadjusted fallback):** `return_1d = (close - LAG(close) OVER (PARTITION BY symbol ORDER BY event_date)) / LAG(close) OVER (PARTITION BY symbol ORDER BY event_date)` — NOTE: this uses unadjusted prices; split-safety rejection applies.
 - **Realized volatility:** 20-day rolling standard deviation of daily returns, annualized by `* SQRT(252)`.
 - **Drawdown:** Running drawdown from peak: `(close - MAX(close) OVER (PARTITION BY symbol ORDER BY event_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)) / MAX(close) OVER (PARTITION BY symbol ORDER BY event_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`
-- **Momentum:** 20-day price momentum: `(close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1`
+- **Momentum:** 20-day price momentum: `(close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1`. Computed on the full date-ordered series (before null-return filtering in adjusted mode) so that LAG spans exactly 20 trading-day rows. Availability window: `MAX(information_available_ts) OVER (ROWS BETWEEN 20 PRECEDING AND CURRENT ROW)`.
 - **Relative performance:** Difference between entity cumulative return and benchmark cumulative return over the same window.
 - **iv_atm:** At-the-money implied volatility from options chain, as reported in `gold_options_features`.
 - **Daily PIT availability:** For daily bronze bars, `information_available_ts` is derived as `to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York')` — i.e., 16:30 ET on the bar date, with DST handled by the timezone function.
@@ -178,6 +178,25 @@ returns_from_source AS (
         WHERE information_available_ts <= :as_of
     ) adj ON dp.symbol = adj.symbol AND dp.event_date = adj.event_date AND adj.rn = 1
 ),
+-- Momentum on full series (before null-return filter) so that LAG(close, 20)
+-- spans exactly 20 trading-day rows regardless of data-quality gaps.
+with_momentum AS (
+    SELECT
+        symbol,
+        event_date,
+        close,
+        information_available_ts,
+        return_1d,
+        (close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1
+            AS momentum_20d,
+        MAX(information_available_ts) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN 20 PRECEDING AND CURRENT ROW
+        ) AS momentum_20d_info_ts
+    FROM returns_from_source
+),
+-- Filter null returns AFTER momentum computation so LAG sees full series
 with_vol AS (
     SELECT
         symbol,
@@ -185,6 +204,8 @@ with_vol AS (
         close,
         information_available_ts,
         return_1d,
+        momentum_20d,
+        momentum_20d_info_ts,
         STDDEV_SAMP(return_1d) OVER (
             PARTITION BY symbol
             ORDER BY event_date
@@ -195,7 +216,7 @@ with_vol AS (
             ORDER BY event_date
             ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
         ) AS realized_vol_20d_info_ts
-    FROM returns_from_source
+    FROM with_momentum
     WHERE return_1d IS NOT NULL  -- exclude data-quality breaks
 ),
 with_drawdown AS (
@@ -207,6 +228,8 @@ with_drawdown AS (
         return_1d,
         realized_vol_20d,
         realized_vol_20d_info_ts,
+        momentum_20d,
+        momentum_20d_info_ts,
         (close - MAX(close) OVER (
             PARTITION BY symbol
             ORDER BY event_date
@@ -230,12 +253,12 @@ SELECT
     return_1d,
     realized_vol_20d,
     drawdown,
-    (close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1
-        AS momentum_20d,
+    momentum_20d,
     GREATEST(
         information_available_ts,
         realized_vol_20d_info_ts,
-        drawdown_info_ts
+        drawdown_info_ts,
+        momentum_20d_info_ts
     ) AS information_available_ts
 FROM with_drawdown;
 ```
@@ -264,6 +287,24 @@ with_returns AS (
             AS return_1d
     FROM daily_prices
 ),
+-- Momentum on full series (before null-return filter) so that LAG(close, 20)
+-- spans exactly 20 trading-day rows regardless of data-quality gaps.
+with_momentum AS (
+    SELECT
+        symbol,
+        event_date,
+        close,
+        information_available_ts,
+        return_1d,
+        (close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1
+            AS momentum_20d,
+        MAX(information_available_ts) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN 20 PRECEDING AND CURRENT ROW
+        ) AS momentum_20d_info_ts
+    FROM with_returns
+),
 with_vol AS (
     SELECT
         symbol,
@@ -271,6 +312,8 @@ with_vol AS (
         close,
         information_available_ts,
         return_1d,
+        momentum_20d,
+        momentum_20d_info_ts,
         STDDEV_SAMP(return_1d) OVER (
             PARTITION BY symbol
             ORDER BY event_date
@@ -281,7 +324,7 @@ with_vol AS (
             ORDER BY event_date
             ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
         ) AS realized_vol_20d_info_ts
-    FROM with_returns
+    FROM with_momentum
 ),
 with_drawdown AS (
     SELECT
@@ -292,6 +335,8 @@ with_drawdown AS (
         return_1d,
         realized_vol_20d,
         realized_vol_20d_info_ts,
+        momentum_20d,
+        momentum_20d_info_ts,
         (close - MAX(close) OVER (
             PARTITION BY symbol
             ORDER BY event_date
@@ -315,12 +360,12 @@ SELECT
     return_1d,
     realized_vol_20d,
     drawdown,
-    (close / LAG(close, 20) OVER (PARTITION BY symbol ORDER BY event_date)) - 1
-        AS momentum_20d,
+    momentum_20d,
     GREATEST(
         information_available_ts,
         realized_vol_20d_info_ts,
-        drawdown_info_ts
+        drawdown_info_ts,
+        momentum_20d_info_ts
     ) AS information_available_ts
 FROM with_drawdown;
 ```
@@ -330,6 +375,7 @@ FROM with_drawdown;
 **Column notes:**
 - In adjusted mode, `return_1d` is sourced from `silver_ohlcv_day_adjusted.return_1d`. NULL values (data-quality breaks) are excluded from the CTE before volatility/drawdown computation.
 - In fallback mode, `return_1d` is computed from unadjusted `close` prices. Split-safety rejection (policy layer) prevents queries over known/suspected splits.
+- `momentum_20d` is computed on the full date-ordered series (before null-return filtering) so that LAG counts exactly 20 trading-day rows. `momentum_20d_info_ts` tracks the MAX availability over the 21-row momentum window (20 lag + current).
 
 ---
 

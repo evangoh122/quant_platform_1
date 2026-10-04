@@ -94,7 +94,7 @@ derived_columns:
       - return_1d           # from silver_ohlcv_day_adjusted.return_1d (NULL on data-quality break) or computed: (close - LAG(close)) / LAG(close)
       - realized_vol_20d    # computed: STDDEV_SAMP(return_1d) * SQRT(252), excludes NULL return_1d
       - drawdown            # computed: (close - MAX(close)) / MAX(close)
-      - momentum_20d        # computed: (close / LAG(close, 20)) - 1
+      - momentum_20d        # computed on full series (before null-return filter): (close / LAG(close, 20)) - 1
       - information_available_ts
 
   serve_relative_performance_v1:
