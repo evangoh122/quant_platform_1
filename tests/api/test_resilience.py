@@ -285,3 +285,41 @@ def test_cache_ttl_expiry(monkeypatch):
     # Cache miss — hits DB again
     deps._resolve_role("ttl@test.com")
     assert fake.call_count > count_after_first
+
+
+def test_first_request_bounded_when_pool_hangs(client, monkeypatch):
+    """First request against a hanging pool returns < 5 s (degraded mode).
+
+    Exercises the bounded pool establishment path: _build_pool calls
+    pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT). If the pool cannot
+    establish min_size connections within that window, PoolTimeout is raised,
+    the circuit breaker records a failure, and the read route degrades to
+    viewer. Without the timeout bound (open=True, no wait), this test would
+    hang for 30+ s and fail.
+    """
+    import db.lakebase as lb
+    from psycopg_pool import PoolTimeout
+
+    class BlockingPool:
+        """Simulates a pool that cannot establish connections in time."""
+
+        def __init__(self, **kwargs):
+            pass
+
+        def wait(self, timeout=None):
+            raise PoolTimeout("pool could not connect in time")
+
+        def close(self):
+            pass
+
+        def connection(self):
+            raise RuntimeError("pool not open")
+
+    monkeypatch.setattr(lb, "ConnectionPool", BlockingPool)
+
+    start = time.monotonic()
+    resp = client.get("/api/signals", headers={"x-forwarded-email": "hang@test.com"})
+    elapsed = time.monotonic() - start
+
+    assert resp.status_code == 200
+    assert elapsed < 5.0, f"First request took {elapsed:.1f}s, expected < 5s"

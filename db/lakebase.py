@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterator, Optional
 
 import psycopg
 from psycopg_pool import ConnectionPool
+from psycopg_pool import PoolTimeout
 
 # ── configuration (env-var driven; names only — no secrets in this file) ─────
 LAKEBASE_INSTANCE = os.getenv("LAKEBASE_INSTANCE", "evangoh-capstone-lakebase")
@@ -152,10 +153,14 @@ class Lakebase:
             kwargs=self._conninfo(),
             min_size=POOL_MIN_SIZE,
             max_size=POOL_MAX_SIZE,
-            open=True,
+            open=False,
             configure=self._configure,
             **self._pool_kwargs,
         )
+        # Bound total connection establishment so a disabled/hanging endpoint
+        # raises promptly (within ~3-4 s) instead of retrying for 30+ s.
+        # PoolTimeout is raised if min_size connections are not ready in time.
+        pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT)
         return pool
 
     def _ensure_pool(self) -> ConnectionPool:
