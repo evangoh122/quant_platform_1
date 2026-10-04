@@ -22,8 +22,15 @@ Sources:
   ``(symbol, ex_date, source)``).
 
 Precedence in Silver: massive rows take priority over yfinance for the same
-(symbol, ex_date).  Source disagreements are logged to data_quality_breaks
-with reason ``split_source_mismatch``.
+(symbol, ex_date).  A yfinance row within ±3 calendar days of a massive row
+for the same symbol is suppressed (same corporate action).  Source
+disagreements are logged to data_quality_breaks with classification
+``SPLIT_SOURCE_MISMATCH``.  yfinance-only splits with no massive counterpart
+within ±3 days are applied and reported as ``SPLIT_SINGLE_SOURCE``.
+
+Adjusted prices are back-adjusted — historical levels change when a later
+split is loaded; returns are unaffected.  PIT consumers must use returns,
+not historical adjusted levels.
 """
 from __future__ import annotations
 

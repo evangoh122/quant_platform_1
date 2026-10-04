@@ -495,8 +495,16 @@
 
   Silver precedence: when both sources report a split for the same (symbol, ex_date),
   massive takes priority.  The resolved-splits CTE picks one row per key using this
-  precedence.  Source disagreements are logged to data_quality_breaks with
-  classification 'SPLIT_SOURCE_MISMATCH'.
+  precedence.  Additionally, a yfinance row within ±3 calendar days of a massive row
+  for the same symbol is suppressed (same corporate action; massive wins on both date
+  and ratio).  Source disagreements are logged to data_quality_breaks with
+  classification 'SPLIT_SOURCE_MISMATCH'.  yfinance-only splits with no massive
+  counterpart within ±3 days are applied and reported with reason 'SPLIT_SINGLE_SOURCE'
+  so they can be audited.
+
+  Important: adjusted prices are back-adjusted — historical levels change when a later
+  split is loaded.  Returns are unaffected.  PIT consumers must use returns (return_1d),
+  not historical adjusted levels (adj_close).
 
 ### silver_ohlcv_day_adjusted  (24 cols)
   symbol                             string NOT NULL
@@ -563,6 +571,8 @@
                              |ratio_m/ratio_y - 1| > 0.001, OR a split present in one
                              source with no counterpart in the other within ±3 calendar
                              days; not masked (informational)
+    SPLIT_SINGLE_SOURCE    — yfinance-only split with no massive counterpart within ±3
+                             days; applied but flagged for audit; not masked
   Manual review decisions (reviewed_by IS NOT NULL) are preserved on rerun.
   is_masked = TRUE for UNEXPLAINED_PENDING and CONFIRMED_DATA_BREAK.
   Masking sets return_1d = NULL (never 0) in silver_ohlcv_day_adjusted.
