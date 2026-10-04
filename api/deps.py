@@ -91,6 +91,10 @@ class _RoleCache:
         with self._lock:
             self._store.clear()
 
+    def size(self) -> int:
+        with self._lock:
+            return len(self._store)
+
 
 _role_cache = _RoleCache()
 
@@ -158,7 +162,7 @@ def lakebase_status() -> dict:
     return {
         "circuit_breaker_open": _breaker.is_open,
         "consecutive_failures": _breaker.failure_count,
-        "cache_entries": len(_role_cache._store),
+        "cache_entries": _role_cache.size(),
     }
 
 

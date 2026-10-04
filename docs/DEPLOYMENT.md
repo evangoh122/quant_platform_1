@@ -104,10 +104,14 @@ provisioning connects the app to the correct instance:
 
 ```yaml
 resources:
-  - name: lakebase
-    database:
-      instance: evangoh-capstone-lakebase
-      permission: CAN_CONNECT_AND_CREATE
+  apps:
+    quant_platform:
+      # ...
+      resources:
+        - name: lakebase
+          database:
+            instance: evangoh-capstone-lakebase
+            permission: CAN_CONNECT_AND_CREATE
 ```
 
 ### Required Postgres grants
