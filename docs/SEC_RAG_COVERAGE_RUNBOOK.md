@@ -50,8 +50,14 @@ Validate the ingestion plan without fetching any filing bodies:
 ```bash
 databricks bundle validate -t dev
 databricks bundle deploy -t dev
-databricks bundle run -t dev sec_rag_ingest -- --dry-run --start-date 2024-09-01 --forms 10-K,10-Q
+databricks bundle run -t dev sec_rag_ingest -- --dry-run --start-date 2024-09-01 --forms 10-K,10-Q --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent
 ```
+
+> **Important:** `databricks bundle run <job> -- <args>` sends `<args>` as
+> `python_params`, which **replace** the task `parameters` in `resources/jobs.yml`.
+> Every command must repeat `--catalog`, `--schema`, `--user-agent-secret-scope`,
+> and `--user-agent-secret-key` (or move them to job-level parameters in
+> `resources/jobs.yml`).
 
 ## Ten-New-Ticker Pilot
 
@@ -75,7 +81,7 @@ Run the ingestion job with the comma-separated result:
 export RUN_ID="pilot-$(date +%Y%m%d_%H%M%S)"
 
 # Ingest pilot tickers
-databricks bundle run -t dev sec_rag_ingest -- --tickers "$PILOT_TICKERS" --start-date 2024-09-01 --forms 10-K,10-Q --run-id "$RUN_ID"
+databricks bundle run -t dev sec_rag_ingest -- --tickers "$PILOT_TICKERS" --start-date 2024-09-01 --forms 10-K,10-Q --run-id "$RUN_ID" --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent
 
 # Refresh silver and coverage
 databricks bundle run -t dev silver_gold_refresh
@@ -110,9 +116,12 @@ GROUP BY chunk_id,embedding_model HAVING n>1;
 
 -- PIT sanity: accepted time is present, not backfilled from filing date
 SELECT count(*) AS null_accepted FROM ${catalog}.${schema}.silver_sec_sections WHERE accepted_ts IS NULL;
+-- After-hours filings get the next business day as filing_date, so
+-- accepted_ts < filing_date is expected for a small number of rows.
+-- A 4-day tolerance rules out legitimate multi-day delays.
 SELECT count(*) AS accepted_before_filing
 FROM ${catalog}.${schema}.silver_sec_sections
-WHERE accepted_ts < cast(filing_date AS timestamp);
+WHERE accepted_ts < cast(filing_date AS timestamp) - INTERVAL 4 DAYS;
 SELECT count(*) AS pit_mismatch
 FROM ${catalog}.${schema}.silver_sec_sections s
 JOIN ${catalog}.${schema}.bronze_sec_filings_v2 b ON s.chunk_id=b.record_key
@@ -149,7 +158,7 @@ assert results[0]["error"] == "no_coverage"
 export RUN_ID="phase1-$(date +%Y%m%d_%H%M%S)"
 
 # Ingest all current-universe tickers (phase 1)
-databricks bundle run -t dev sec_rag_ingest -- --start-date 2024-09-01 --forms 10-K,10-Q --run-id "$RUN_ID"
+databricks bundle run -t dev sec_rag_ingest -- --start-date 2024-09-01 --forms 10-K,10-Q --run-id "$RUN_ID" --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent
 
 # Refresh silver and coverage
 databricks bundle run -t dev silver_gold_refresh
@@ -166,7 +175,7 @@ Re-run all verification SQL and retrieval smoke test.
 export RUN_ID="phase2-$(date +%Y%m%d_%H%M%S)"
 
 # Ingest with historical universe
-databricks bundle run -t dev sec_rag_ingest -- --include-historical --start-date 2024-09-01 --forms 10-K,10-Q --run-id "$RUN_ID"
+databricks bundle run -t dev sec_rag_ingest -- --include-historical --start-date 2024-09-01 --forms 10-K,10-Q --run-id "$RUN_ID" --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent
 
 # Refresh and rebuild
 databricks bundle run -t dev silver_gold_refresh
@@ -178,7 +187,7 @@ databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4
 A final identical ingestion rerun must report zero bronze rows appended:
 
 ```bash
-databricks bundle run -t dev sec_rag_ingest -- --start-date 2024-09-01 --forms 10-K,10-Q --run-id "idempotency-check"
+databricks bundle run -t dev sec_rag_ingest -- --start-date 2024-09-01 --forms 10-K,10-Q --run-id "idempotency-check" --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent
 # Expected: rows_appended = 0
 ```
 
