@@ -326,3 +326,60 @@ class TestRecursiveRedaction:
         report = build_report(rr)
         assert report["cli_args"]["files"][0] == "relative/path.jsonl"
         assert report["cli_args"]["files"][1] == "abs.jsonl"
+
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "rag_eval"
+
+
+class TestCliEndToEndReport:
+    """End-to-end: drive cli.main with real absolute Path args, verify no path leaks."""
+
+    def test_report_no_path_leaks(self, tmp_path):
+        """JSON and Markdown reports must contain no absolute paths or PosixPath repr."""
+        from evals.rag_eval.cli import main
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        golden_path = FIXTURE_DIR / "golden_smoke.jsonl"
+
+        # Use absolute paths for output_dir (real absolute Path args)
+        output_dir = tmp_path / "results"
+        exit_code = main([
+            "--golden", str(golden_path),
+            "--corpus", str(corpus_path),
+            "--embeddings", str(emb_path),
+            "--adapter", "jsonl",
+            "--mode", "bm25",
+            "--ticker-filter", "off",
+            "--top-k", "5",
+            "--output-dir", str(output_dir),
+        ])
+
+        assert exit_code == 0, f"Harness must exit 0, got {exit_code}"
+
+        # Read JSON report
+        json_files = list(output_dir.glob("*.json"))
+        assert len(json_files) >= 1, f"No JSON report in {output_dir}"
+        json_content = json_files[0].read_text(encoding="utf-8")
+
+        # Read Markdown report
+        md_files = list(output_dir.glob("*.md"))
+        assert len(md_files) >= 1, f"No Markdown report in {output_dir}"
+        md_content = md_files[0].read_text(encoding="utf-8")
+
+        # Assert no path leaks in either report
+        tmp_str = str(tmp_path)
+
+        for content, label in [(json_content, "JSON"), (md_content, "Markdown")]:
+            # No tmp_path leaked
+            assert tmp_str not in content, (
+                f"{label} report contains tmp_path: {tmp_str}"
+            )
+            # No "/home" path component
+            assert "/home" not in content, (
+                f"{label} report contains '/home' path"
+            )
+            # No PosixPath repr
+            assert "PosixPath" not in content, (
+                f"{label} report contains 'PosixPath' repr"
+            )
