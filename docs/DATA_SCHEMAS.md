@@ -488,19 +488,12 @@
   information_available_ts is ex-date 09:30 America/New_York converted to naive UTC.
   A same-key correction with different split_ratio is a conflict and is not silently applied.
 
-  Sources:
-    massive  — Massive REST API (default).  Key via Databricks secret scope
-               evangoh_capstone/massive_s3_secret_key or env var MASSIVE_API_KEY.
-    yfinance — Yahoo Finance via yfinance library.
+  Source: Massive REST API only (source='massive').  Key via Databricks secret scope
+          evangoh_capstone/massive_s3_secret_key or env var MASSIVE_API_KEY.
 
-  Silver precedence: when both sources report a split for the same (symbol, ex_date),
-  massive takes priority.  The resolved-splits CTE picks one row per key using this
-  precedence.  Additionally, a yfinance row within ±3 calendar days of a massive row
-  for the same symbol is suppressed (same corporate action; massive wins on both date
-  and ratio).  Source disagreements are logged to data_quality_breaks with
-  classification 'SPLIT_SOURCE_MISMATCH'.  yfinance-only splits with no massive
-  counterpart within ±3 days are applied and reported with reason 'SPLIT_SINGLE_SOURCE'
-  so they can be audited.
+  Silver: only source='massive' rows are used for adjustment.  Deduplication to one
+  row per (symbol, ex_date) — latest fetched_ts wins (Massive can return the same
+  split twice across runs).  Other sources are ignored (not deleted).
 
   Important: adjusted prices are back-adjusted — historical levels change when a later
   split is loaded.  Returns are unaffected.  PIT consumers must use returns (return_1d),
@@ -567,12 +560,6 @@
     UNEXPLAINED_PENDING    — no matching split or residual > 3%; masked until reviewed
     CONFIRMED_DATA_BREAK   — human-verified data error (e.g. META ticker reuse); masked
     ALLOW_REAL_MOVE        — human-verified genuine move; not masked, return restored
-    SPLIT_SOURCE_MISMATCH  — same (symbol, ex_date) in both massive and yfinance with
-                             |ratio_m/ratio_y - 1| > 0.001, OR a split present in one
-                             source with no counterpart in the other within ±3 calendar
-                             days; not masked (informational)
-    SPLIT_SINGLE_SOURCE    — yfinance-only split with no massive counterpart within ±3
-                             days; applied but flagged for audit; not masked
   Manual review decisions (reviewed_by IS NOT NULL) are preserved on rerun.
   is_masked = TRUE for UNEXPLAINED_PENDING and CONFIRMED_DATA_BREAK.
   Masking sets return_1d = NULL (never 0) in silver_ohlcv_day_adjusted.

@@ -18,7 +18,6 @@ from etl.corporate_actions import (
     CorporateActionSplit,
     CorporateActionsSource,
     MassiveCorporateActionsSource,
-    YFinanceCorporateActionsSource,
     information_available_ts_for,
 )
 
@@ -26,20 +25,6 @@ from etl.corporate_actions import (
 # ---------------------------------------------------------------------------
 # Helpers / fakes
 # ---------------------------------------------------------------------------
-
-class _FakeTicker:
-    """Minimal yfinance-like ticker for testing."""
-
-    def __init__(self, splits=None, history_df=None):
-        self._splits = splits  # pandas-like Series or None
-        self._history_df = history_df
-
-    def get_splits(self):
-        return self._splits
-
-    def history(self, **kwargs):
-        return self._history_df
-
 
 class _NoOpSleeper:
     def __call__(self, secs):
@@ -59,7 +44,7 @@ class TestCorporateActionSplit:
     def test_forward_split_20to1(self):
         s = CorporateActionSplit(
             symbol="AMZN", ex_date=dt.date(2022, 6, 6),
-            split_ratio=20.0, source="yfinance",
+            split_ratio=20.0, source="massive",
             fetched_ts=dt.datetime(2025, 1, 1, 12, 0, 0),
             information_available_ts=dt.datetime(2022, 6, 6, 13, 30, 0),
         )
@@ -68,7 +53,7 @@ class TestCorporateActionSplit:
     def test_reverse_split_1to10(self):
         s = CorporateActionSplit(
             symbol="SQQQ", ex_date=dt.date(2024, 1, 1),
-            split_ratio=0.1, source="yfinance",
+            split_ratio=0.1, source="massive",
             fetched_ts=dt.datetime(2025, 1, 1, 12, 0, 0),
             information_available_ts=dt.datetime(2024, 1, 1, 14, 30, 0),
         )
@@ -77,7 +62,7 @@ class TestCorporateActionSplit:
     def test_fractional_ratio(self):
         s = CorporateActionSplit(
             symbol="TEST", ex_date=dt.date(2024, 1, 1),
-            split_ratio=1.5, source="yfinance",
+            split_ratio=1.5, source="massive",
             fetched_ts=dt.datetime(2025, 1, 1, 12, 0, 0),
             information_available_ts=dt.datetime(2024, 1, 1, 14, 30, 0),
         )
@@ -87,7 +72,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="split_ratio"):
             CorporateActionSplit(
                 symbol="X", ex_date=dt.date(2024, 1, 1),
-                split_ratio=0.0, source="yfinance",
+                split_ratio=0.0, source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1),
                 information_available_ts=dt.datetime(2025, 1, 1),
             )
@@ -96,7 +81,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="split_ratio"):
             CorporateActionSplit(
                 symbol="X", ex_date=dt.date(2024, 1, 1),
-                split_ratio=1.0, source="yfinance",
+                split_ratio=1.0, source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1),
                 information_available_ts=dt.datetime(2025, 1, 1),
             )
@@ -105,7 +90,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="split_ratio"):
             CorporateActionSplit(
                 symbol="X", ex_date=dt.date(2024, 1, 1),
-                split_ratio=-2.0, source="yfinance",
+                split_ratio=-2.0, source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1),
                 information_available_ts=dt.datetime(2025, 1, 1),
             )
@@ -114,7 +99,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="split_ratio"):
             CorporateActionSplit(
                 symbol="X", ex_date=dt.date(2024, 1, 1),
-                split_ratio=float("nan"), source="yfinance",
+                split_ratio=float("nan"), source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1),
                 information_available_ts=dt.datetime(2025, 1, 1),
             )
@@ -123,7 +108,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="split_ratio"):
             CorporateActionSplit(
                 symbol="X", ex_date=dt.date(2024, 1, 1),
-                split_ratio=float("inf"), source="yfinance",
+                split_ratio=float("inf"), source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1),
                 information_available_ts=dt.datetime(2025, 1, 1),
             )
@@ -132,7 +117,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="symbol"):
             CorporateActionSplit(
                 symbol="", ex_date=dt.date(2024, 1, 1),
-                split_ratio=2.0, source="yfinance",
+                split_ratio=2.0, source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1),
                 information_available_ts=dt.datetime(2025, 1, 1),
             )
@@ -141,7 +126,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="fetched_ts"):
             CorporateActionSplit(
                 symbol="X", ex_date=dt.date(2024, 1, 1),
-                split_ratio=2.0, source="yfinance",
+                split_ratio=2.0, source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc),
                 information_available_ts=dt.datetime(2025, 1, 1),
             )
@@ -150,7 +135,7 @@ class TestCorporateActionSplit:
         with pytest.raises(ValueError, match="information_available_ts"):
             CorporateActionSplit(
                 symbol="X", ex_date=dt.date(2024, 1, 1),
-                split_ratio=2.0, source="yfinance",
+                split_ratio=2.0, source="massive",
                 fetched_ts=dt.datetime(2025, 1, 1),
                 information_available_ts=dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc),
             )
@@ -158,7 +143,7 @@ class TestCorporateActionSplit:
     def test_frozen(self):
         s = CorporateActionSplit(
             symbol="X", ex_date=dt.date(2024, 1, 1),
-            split_ratio=2.0, source="yfinance",
+            split_ratio=2.0, source="massive",
             fetched_ts=dt.datetime(2025, 1, 1),
             information_available_ts=dt.datetime(2025, 1, 1),
         )
@@ -210,200 +195,9 @@ class TestSourceProtocol:
         assert hasattr(src, "fetch_splits")
         assert callable(src.fetch_splits)
 
-    def test_yfinance_source_satisfies_protocol(self):
-        src = YFinanceCorporateActionsSource(
-            ticker_factory=lambda sym: _FakeTicker(),
-            clock=_fixed_clock(),
-            sleeper=_NoOpSleeper(),
-            delay_seconds=0.0,
-        )
-        assert hasattr(src, "fetch_splits")
-
 
 # ---------------------------------------------------------------------------
-# 4. YFinanceCorporateActionsSource normalization
-# ---------------------------------------------------------------------------
-
-class TestYFinanceNormalization:
-
-    def _make_source(self, ticker_factory, clock=None):
-        return YFinanceCorporateActionsSource(
-            ticker_factory=ticker_factory,
-            clock=clock or _fixed_clock(),
-            sleeper=_NoOpSleeper(),
-            delay_seconds=0.0,
-            max_retries=0,
-        )
-
-    def test_forward_20to1_normalizes(self):
-        import pandas as pd
-        splits = pd.Series(
-            [20.0],
-            index=pd.DatetimeIndex([dt.datetime(2022, 6, 6)]),
-            name="Stock Splits",
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("AMZN")
-        assert len(results) == 1
-        assert results[0].split_ratio == 20.0
-        assert results[0].ex_date == dt.date(2022, 6, 6)
-        assert results[0].symbol == "AMZN"
-        assert results[0].source == "yfinance"
-
-    def test_reverse_1to10_normalizes(self):
-        import pandas as pd
-        splits = pd.Series(
-            [0.1],
-            index=pd.DatetimeIndex([dt.datetime(2024, 3, 1)]),
-            name="Stock Splits",
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("SQQQ")
-        assert len(results) == 1
-        assert results[0].split_ratio == 0.1
-
-    def test_zero_ratio_rejected(self):
-        import pandas as pd
-        splits = pd.Series(
-            [0.0],
-            index=pd.DatetimeIndex([dt.datetime(2024, 1, 1)]),
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("X")
-        assert len(results) == 0
-
-    def test_one_ratio_rejected(self):
-        import pandas as pd
-        splits = pd.Series(
-            [1.0],
-            index=pd.DatetimeIndex([dt.datetime(2024, 1, 1)]),
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("X")
-        assert len(results) == 0
-
-    def test_negative_ratio_rejected(self):
-        import pandas as pd
-        splits = pd.Series(
-            [-2.0],
-            index=pd.DatetimeIndex([dt.datetime(2024, 1, 1)]),
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("X")
-        assert len(results) == 0
-
-    def test_nan_ratio_rejected(self):
-        import pandas as pd
-        splits = pd.Series(
-            [float("nan")],
-            index=pd.DatetimeIndex([dt.datetime(2024, 1, 1)]),
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("X")
-        assert len(results) == 0
-
-    def test_empty_splits(self):
-        import pandas as pd
-        splits = pd.Series([], dtype=float)
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("X")
-        assert len(results) == 0
-
-    def test_fetched_ts_captured(self):
-        import pandas as pd
-        clock = _fixed_clock(2025, 6, 15, 10, 30, 0)
-        splits = pd.Series(
-            [2.0],
-            index=pd.DatetimeIndex([dt.datetime(2024, 1, 1)]),
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker, clock=clock)
-        results = src.fetch_splits("X")
-        assert results[0].fetched_ts == dt.datetime(2025, 6, 15, 10, 30, 0)
-
-    def test_information_available_ts_is_ex_date_0930_et(self):
-        import pandas as pd
-        # EDT date: 2024-07-15 -> 13:30 UTC
-        splits = pd.Series(
-            [2.0],
-            index=pd.DatetimeIndex([dt.datetime(2024, 7, 15)]),
-        )
-        ticker = _FakeTicker(splits=splits)
-        src = self._make_source(lambda sym: ticker)
-        results = src.fetch_splits("X")
-        assert results[0].information_available_ts == dt.datetime(2024, 7, 15, 13, 30, 0)
-
-
-# ---------------------------------------------------------------------------
-# 5. Retry / error handling
-# ---------------------------------------------------------------------------
-
-class TestRetryBehavior:
-
-    def test_transient_failure_retries(self):
-        call_count = 0
-        def factory(sym):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise ConnectionError("transient")
-            return _FakeTicker()  # empty on success
-
-        src = YFinanceCorporateActionsSource(
-            ticker_factory=factory,
-            clock=_fixed_clock(),
-            sleeper=_NoOpSleeper(),
-            delay_seconds=0.0,
-            max_retries=1,
-        )
-        results = src.fetch_splits("X")
-        assert call_count == 2
-        assert results == []
-
-    def test_permanent_empty_returns_empty(self):
-        """Empty response is permanent — do not retry."""
-        call_count = 0
-        def factory(sym):
-            nonlocal call_count
-            call_count += 1
-            import pandas as pd
-            return _FakeTicker(splits=pd.Series([], dtype=float))
-
-        src = YFinanceCorporateActionsSource(
-            ticker_factory=factory,
-            clock=_fixed_clock(),
-            sleeper=_NoOpSleeper(),
-            delay_seconds=0.0,
-            max_retries=2,
-        )
-        results = src.fetch_splits("X")
-        assert call_count == 1  # no retry for empty
-        assert results == []
-
-    def test_max_retries_exhausted_raises(self):
-        def factory(sym):
-            raise RuntimeError("always fails")
-
-        src = YFinanceCorporateActionsSource(
-            ticker_factory=factory,
-            clock=_fixed_clock(),
-            sleeper=_NoOpSleeper(),
-            delay_seconds=0.0,
-            max_retries=1,
-        )
-        with pytest.raises(RuntimeError, match="always fails"):
-            src.fetch_splits("X")
-
-
-# ---------------------------------------------------------------------------
-# 6. Bronze idempotency logic (pure Python reference)
+# 4. Bronze idempotency logic (pure Python reference)
 # ---------------------------------------------------------------------------
 
 class TestBronzeIdempotency:
@@ -411,10 +205,10 @@ class TestBronzeIdempotency:
     def test_duplicate_rows_produce_one_key(self):
         """Duplicate (symbol, ex_date, source) rows collapse to one."""
         rows = [
-            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "yfinance",
+            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "massive",
              "split_ratio": 20.0, "fetched_ts": "2025-01-01T00:00:00",
              "information_available_ts": "2022-06-06T13:30:00"},
-            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "yfinance",
+            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "massive",
              "split_ratio": 20.0, "fetched_ts": "2025-01-02T00:00:00",
              "information_available_ts": "2022-06-06T13:30:00"},
         ]
@@ -430,9 +224,9 @@ class TestBronzeIdempotency:
     def test_different_fetched_ts_same_key_one_row(self):
         """Same natural key with different fetched_ts is one row."""
         rows = [
-            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "yfinance",
+            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "massive",
              "fetched_ts": "2025-01-01T00:00:00"},
-            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "yfinance",
+            {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "massive",
              "fetched_ts": "2025-06-01T00:00:00"},
         ]
         keys = set()
@@ -442,8 +236,8 @@ class TestBronzeIdempotency:
 
     def test_same_key_different_ratio_is_conflict(self):
         """Same key with different ratio should be flagged as conflict."""
-        existing = {("AMZN", "2022-06-06", "yfinance")}
-        new_row = {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "yfinance",
+        existing = {("AMZN", "2022-06-06", "massive")}
+        new_row = {"symbol": "AMZN", "ex_date": "2022-06-06", "source": "massive",
                     "split_ratio": 15.0}  # different ratio
         key = (new_row["symbol"], new_row["ex_date"], new_row["source"])
         is_conflict = key in existing
@@ -461,7 +255,6 @@ class TestImportSafety:
         import importlib
         mod = importlib.import_module("etl.corporate_actions")
         assert hasattr(mod, "CorporateActionSplit")
-        assert hasattr(mod, "YFinanceCorporateActionsSource")
         assert hasattr(mod, "MassiveCorporateActionsSource")
         assert hasattr(mod, "information_available_ts_for")
 
@@ -506,7 +299,7 @@ class TestImportSafety:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         assert "massive" in mod.VALID_SOURCES
-        assert "yfinance" in mod.VALID_SOURCES
+        assert "yfinance" not in mod.VALID_SOURCES
 
     def test_notebook_default_source_is_massive(self):
         """The notebook default source must be 'massive'."""
@@ -515,16 +308,17 @@ class TestImportSafety:
         text = nb_path.read_text(encoding="utf-8")
         assert 'source = "massive"' in text
 
-    def test_notebook_source_both_accepted(self):
-        """The notebook must accept 'both' as a source value."""
+    def test_notebook_source_both_rejected(self):
+        """The notebook must reject 'both' as a source value (massive-only)."""
         import importlib.util
         from pathlib import Path
         nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
         spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        # _valid_source should accept "both"
-        assert mod._valid_source("both") == "both"
+        # _valid_source should reject "both"
+        with pytest.raises(ValueError, match="source must be one of"):
+            mod._valid_source("both")
 
     def test_notebook_has_secret_scope_reference(self):
         """The notebook must reference the Databricks secret scope for the API key."""
@@ -712,7 +506,7 @@ class TestNotebookMode:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
-        fake_dbutils, _ = self._make_fake_dbutils({"mode": "dry-run", "source": "yfinance"})
+        fake_dbutils, _ = self._make_fake_dbutils({"mode": "dry-run", "source": "massive"})
         mod.__dict__["dbutils"] = fake_dbutils
 
         with patch("sys.argv", [
@@ -736,7 +530,7 @@ class TestNotebookMode:
         spec.loader.exec_module(mod)
 
         fake_dbutils, _ = self._make_fake_dbutils({
-            "mode": "write", "source": "yfinance",
+            "mode": "write", "source": "massive",
             "symbol_start": "", "symbol_end": "", "delay_seconds": "0.5",
             "max_retries": "2", "run_id": "test-run",
         })
@@ -809,50 +603,40 @@ class TestNotebookMode:
 
 
 # ---------------------------------------------------------------------------
-# 10. Resume per source (both mode)
+# 10. Resume checkpoint (massive-only)
 # ---------------------------------------------------------------------------
 
-class TestResumePerSource:
+class TestResumeCheckpoint:
 
-    def test_notebook_checkpoint_query_includes_source(self):
-        """The checkpoint query must include source in SELECT, not just symbol."""
+    def test_notebook_checkpoint_query_uses_symbol_only(self):
+        """The checkpoint query must use symbol, not (symbol, source)."""
         from pathlib import Path
         nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
         text = nb_path.read_text(encoding="utf-8")
-        # Must query both symbol and source
-        assert "SELECT DISTINCT symbol, source FROM" in text, \
-            "Checkpoint query must include source for per-source resume"
+        # Must query just symbol (no source differentiation needed)
+        assert "SELECT DISTINCT symbol FROM" in text, \
+            "Checkpoint query must use symbol only (massive-only)"
 
-    def test_notebook_checkpoint_uses_completed_keys_tuple(self):
-        """The checkpoint set must be (symbol, source) tuples, not just symbols."""
+    def test_notebook_checkpoint_uses_completed_keys_set(self):
+        """The checkpoint set must be a set of symbols."""
         from pathlib import Path
         nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
         text = nb_path.read_text(encoding="utf-8")
-        assert "completed_keys" in text, "Must use completed_keys (not completed_symbols)"
-        assert "(r[\"symbol\"], r[\"source\"])" in text, \
-            "Checkpoint key must be (symbol, source) tuple"
+        assert "completed_keys" in text, "Must use completed_keys"
 
-    def test_resume_skips_only_completed_source(self):
-        """In 'both' mode, if massive completed but yfinance didn't,
-        only massive should be skipped."""
-        # This is a logic test: the check should be per (sym, source)
-        completed_keys = {("AAPL", "massive")}  # massive done, yfinance not
-        adapters = [("massive", None), ("yfinance", None)]
+    def test_resume_skips_completed_symbol(self):
+        """When a symbol is completed, skip it."""
+        completed_keys = {"AAPL"}
         sym = "AAPL"
+        should_skip = sym in completed_keys
+        assert should_skip, "Should skip AAPL because it is completed"
 
-        # The new logic: skip only if ALL adapters for this symbol are done
-        should_skip = all((sym, src) in completed_keys for src, _ in adapters)
-        assert not should_skip, \
-            "Should NOT skip AAPL because yfinance is not completed"
-
-    def test_resume_skips_when_all_sources_done(self):
-        """When both sources are completed for a symbol, skip it."""
-        completed_keys = {("AAPL", "massive"), ("AAPL", "yfinance")}
-        adapters = [("massive", None), ("yfinance", None)]
-        sym = "AAPL"
-
-        should_skip = all((sym, src) in completed_keys for src, _ in adapters)
-        assert should_skip, "Should skip AAPL because both sources are completed"
+    def test_resume_does_not_skip_incomplete_symbol(self):
+        """When a symbol is not completed, don't skip it."""
+        completed_keys = {"AAPL"}
+        sym = "MSFT"
+        should_skip = sym in completed_keys
+        assert not should_skip, "Should NOT skip MSFT because it is not completed"
 
 
 # ---------------------------------------------------------------------------

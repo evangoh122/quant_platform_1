@@ -1,7 +1,7 @@
 """notebooks/refresh_bronze_corporate_actions.py — Databricks notebook entry point.
 
 Append-only refresh of ``bronze_corporate_actions`` from the live Gold
-universe + SPY/RSP/QQQ using the source-neutral adapter in
+universe + SPY/RSP/QQQ using the Massive adapter in
 ``etl/corporate_actions.py``.
 
 Import-safe: pure helpers at module scope, all Spark / network setup inside
@@ -13,24 +13,14 @@ Dual mode:
   argparse).
 - CLI / spark_python_task (no dbutils): strict argparse, parse-before-Spark.
 
-Sources:
-- ``yfinance``: Yahoo Finance split data via yfinance library.
-- ``massive``: Massive REST API split data (default). API key read from
-  Databricks secret scope ``evangoh_capstone``/``massive_s3_secret_key``
-  (notebook mode) or env var ``MASSIVE_API_KEY`` (CLI mode).
-- ``both``: fetch from both sources into bronze (rows coexist by natural key
-  ``(symbol, ex_date, source)``).
+Source: Massive REST API only (source='massive').  API key read from
+Databricks secret scope ``evangoh_capstone``/``massive_s3_secret_key``
+(notebook mode) or env var ``MASSIVE_API_KEY`` (CLI mode).
 
-Precedence in Silver: massive rows take priority over yfinance for the same
-(symbol, ex_date).  A yfinance row within ±3 calendar days of a massive row
-for the same symbol is suppressed (same corporate action).  Source
-disagreements are logged to data_quality_breaks with classification
-``SPLIT_SOURCE_MISMATCH``.  yfinance-only splits with no massive counterpart
-within ±3 days are applied and reported as ``SPLIT_SINGLE_SOURCE``.
-
-Adjusted prices are back-adjusted — historical levels change when a later
-split is loaded; returns are unaffected.  PIT consumers must use returns,
-not historical adjusted levels.
+Deduplication: one row per (symbol, ex_date) — latest fetched_ts wins.
+Back-adjusted (split-only, not dividends): historical levels change when a
+later split is loaded; returns are unaffected.  PIT consumers must use
+returns, not historical adjusted levels.
 """
 from __future__ import annotations
 
@@ -60,7 +50,7 @@ FQN = f"{CATALOG}.{SCHEMA}"
 BRONZE_TABLE = f"{FQN}.bronze_corporate_actions"
 CHECKPOINT_TABLE = f"{FQN}.corporate_actions_ingestion_log"
 
-VALID_SOURCES = {"massive", "yfinance"}
+VALID_SOURCES = {"massive"}
 VALID_MODES = {"dry-run", "write"}
 
 MIN_DELAY_SECONDS = 0.5
@@ -95,19 +85,13 @@ def _valid_mode(mode: str) -> str:
 
 
 def _valid_source(source: str) -> str:
-    if source not in VALID_SOURCES and source != "both":
-        raise ValueError(f"source must be one of {VALID_SOURCES} or 'both', got {source!r}")
+    if source not in VALID_SOURCES:
+        raise ValueError(f"source must be one of {VALID_SOURCES}, got {source!r}")
     return source
 
 
 def _make_adapter(source: str, delay_seconds: float, max_retries: int, api_key: str = ""):
     """Create the appropriate adapter instance."""
-    if source == "yfinance":
-        from etl.corporate_actions import YFinanceCorporateActionsSource
-        return YFinanceCorporateActionsSource(
-            delay_seconds=delay_seconds,
-            max_retries=max_retries,
-        )
     if source == "massive":
         from etl.corporate_actions import MassiveCorporateActionsSource
         return MassiveCorporateActionsSource(
@@ -220,7 +204,7 @@ def main() -> None:
             allow_abbrev=False,
         )
         parser.add_argument("--mode", default=None, help="dry-run or write")
-        parser.add_argument("--source", default=None, help="Data source (massive, yfinance, or both)")
+        parser.add_argument("--source", default=None, help="Data source (massive)")
         parser.add_argument("--symbol-start", default=None, help="Inclusive lower bound for symbol range")
         parser.add_argument("--symbol-end", default=None, help="Inclusive upper bound for symbol range")
         parser.add_argument("--delay-seconds", type=float, default=None, help="Min delay between fetches")
@@ -249,37 +233,36 @@ def main() -> None:
     source = _valid_source(source)
     delay_seconds = max(delay_seconds, MIN_DELAY_SECONDS)
 
-    # --- Read Massive API key (required if source includes massive) ---
+    # --- Read Massive API key (required) ---
     massive_api_key = ""
-    if source in ("massive", "both"):
-        if dbutils_obj is not None:
-            # Notebook mode: read from Databricks secret scope
+    if dbutils_obj is not None:
+        # Notebook mode: read from Databricks secret scope
+        try:
+            massive_api_key = dbutils_obj.secrets.get(
+                "evangoh_capstone", "massive_s3_secret_key"
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to read Massive API key from Databricks secret "
+                "scope 'evangoh_capstone' key 'massive_s3_secret_key'"
+            ) from exc
+    else:
+        # CLI mode: env var or Databricks SDK
+        massive_api_key = os.environ.get("MASSIVE_API_KEY", "")
+        if not massive_api_key:
             try:
-                massive_api_key = dbutils_obj.secrets.get(
+                from databricks.sdk import WorkspaceClient
+                ws = WorkspaceClient()
+                massive_api_key = ws.secrets.get_secret(
                     "evangoh_capstone", "massive_s3_secret_key"
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    "Failed to read Massive API key from Databricks secret "
-                    "scope 'evangoh_capstone' key 'massive_s3_secret_key'"
-                ) from exc
-        else:
-            # CLI mode: env var or Databricks SDK
-            massive_api_key = os.environ.get("MASSIVE_API_KEY", "")
-            if not massive_api_key:
-                try:
-                    from databricks.sdk import WorkspaceClient
-                    ws = WorkspaceClient()
-                    massive_api_key = ws.secrets.get_secret(
-                        "evangoh_capstone", "massive_s3_secret_key"
-                    ).value
-                except Exception:
-                    pass
-            if not massive_api_key:
-                raise RuntimeError(
-                    "Massive API key required: set MASSIVE_API_KEY env var "
-                    "or configure Databricks SDK credentials"
-                )
+                ).value
+            except Exception:
+                pass
+        if not massive_api_key:
+            raise RuntimeError(
+                "Massive API key required: set MASSIVE_API_KEY env var "
+                "or configure Databricks SDK credentials"
+            )
 
     # --- Spark (after argparse/widgets so --help and bad flags fail fast) ---
     try:
@@ -356,25 +339,18 @@ def main() -> None:
             dbutils_obj.notebook.exit(json.dumps(report, default=str))
         return
 
-    # --- Adapter(s) ---
-    if source == "both":
-        adapters = [
-            ("massive", _make_adapter("massive", delay_seconds, max_retries, massive_api_key)),
-            ("yfinance", _make_adapter("yfinance", delay_seconds, max_retries)),
-        ]
-    else:
-        api_key = massive_api_key if source == "massive" else ""
-        adapters = [(source, _make_adapter(source, delay_seconds, max_retries, api_key))]
+    # --- Adapter ---
+    adapter = _make_adapter("massive", delay_seconds, max_retries, massive_api_key)
 
     # --- Checkpoint log: check for already-completed symbols ---
-    completed_keys: set[tuple[str, str]] = set()
+    completed_keys: set[str] = set()
     if mode == "write":
         try:
             log_rows = spark.sql(
-                f"SELECT DISTINCT symbol, source FROM {CHECKPOINT_TABLE} "
+                f"SELECT DISTINCT symbol FROM {CHECKPOINT_TABLE} "
                 f"WHERE run_id = '{run_id}' AND status IN ('SUCCESS', 'EMPTY')"
             ).collect()
-            completed_keys = {(r["symbol"], r["source"]) for r in log_rows}
+            completed_keys = {r["symbol"] for r in log_rows}
             report["resumed"] = len(completed_keys)
         except Exception:
             pass  # table may not exist yet
@@ -401,48 +377,46 @@ def main() -> None:
         pass  # table may not exist yet
 
     for sym in all_symbols:
-        if all((sym, src) in completed_keys for src, _ in adapters):
+        if sym in completed_keys:
             continue
 
         report["attempted"] += 1
         try:
-            for adapter_source, adapter in adapters:
-                splits = adapter.fetch_splits(sym)
-                rows = [_split_to_row(s) for s in splits]
+            splits = adapter.fetch_splits(sym)
+            rows = [_split_to_row(s) for s in splits]
 
-                # Validate
-                valid_rows = []
-                for r in rows:
-                    err = _validate_row(r)
-                    if err:
-                        print(f"  WARN {sym} ({adapter_source}): {err}")
-                        continue
-                    valid_rows.append(r)
-
-                if not valid_rows:
-                    if adapter_source == adapters[0][0]:
-                        report["empty"] += 1
-                    if mode == "write":
-                        _log_checkpoint(spark, run_id, sym, adapter_source, "EMPTY", 0, 0)
+            # Validate
+            valid_rows = []
+            for r in rows:
+                err = _validate_row(r)
+                if err:
+                    print(f"  WARN {sym}: {err}")
                     continue
+                valid_rows.append(r)
 
-                # Deduplicate within batch by natural key
-                seen_keys: set[tuple] = set()
-                deduped = []
-                for r in valid_rows:
-                    k = _row_to_key(r)
-                    if k not in seen_keys:
-                        seen_keys.add(k)
-                        deduped.append(r)
-
-                all_candidate_rows.extend(deduped)
-                report["success"] += 1
-                report["candidate_rows"] += len(valid_rows)
-                report["deduped_rows"] += len(deduped)
-
+            if not valid_rows:
+                report["empty"] += 1
                 if mode == "write":
-                    _log_checkpoint(spark, run_id, sym, adapter_source, "SUCCESS",
-                                    len(valid_rows), len(deduped))
+                    _log_checkpoint(spark, run_id, sym, "massive", "EMPTY", 0, 0)
+                continue
+
+            # Deduplicate within batch by natural key
+            seen_keys: set[tuple] = set()
+            deduped = []
+            for r in valid_rows:
+                k = _row_to_key(r)
+                if k not in seen_keys:
+                    seen_keys.add(k)
+                    deduped.append(r)
+
+            all_candidate_rows.extend(deduped)
+            report["success"] += 1
+            report["candidate_rows"] += len(valid_rows)
+            report["deduped_rows"] += len(deduped)
+
+            if mode == "write":
+                _log_checkpoint(spark, run_id, sym, "massive", "SUCCESS",
+                                len(valid_rows), len(deduped))
 
         except Exception as exc:
             report["failed"] += 1
@@ -450,7 +424,7 @@ def main() -> None:
             report["failures"][sym] = safe_msg
             print(f"  FAILED {sym}: {safe_msg}")
             if mode == "write":
-                _log_checkpoint(spark, run_id, sym, adapters[0][0], "FAILED", 0, 0,
+                _log_checkpoint(spark, run_id, sym, "massive", "FAILED", 0, 0,
                                 error=safe_msg)
 
         _time.sleep(delay_seconds)
