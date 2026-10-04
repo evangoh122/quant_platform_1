@@ -158,15 +158,15 @@ FROM (
                 END,
                 fetched_ts DESC
         ) AS rn
-    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions
+    FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions ca
     WHERE NOT (
-        source = 'yfinance'
+        ca.source = 'yfinance'
         AND EXISTS (
             SELECT 1
             FROM bootcamp_students.evangoh_capstone.bronze_corporate_actions m
-            WHERE m.symbol = bronze_corporate_actions.symbol
+            WHERE m.symbol = ca.symbol
               AND m.source = 'massive'
-              AND ABS(DATEDIFF(m.ex_date, bronze_corporate_actions.ex_date)) <= 3
+              AND ABS(DATEDIFF(m.ex_date, ca.ex_date)) <= 3
         )
     )
 ) sub
