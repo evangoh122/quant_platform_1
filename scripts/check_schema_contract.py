@@ -24,11 +24,17 @@ from db.schema_contract import TABLE_COLUMNS
 
 
 def _get_warehouse_columns(fqn_table: str) -> FrozenSet[str]:
-    """Run DESCRIBE and return the set of column names."""
+    """Run DESCRIBE and return the set of column names.
+
+    Filters out partition-description rows (lines starting with '#').
+    """
     from db.delta_adapter import _warehouse_query
 
     rows = _warehouse_query(f"DESCRIBE {fqn_table}", limit=1000)
-    return frozenset(r["col_name"] for r in rows if "col_name" in r)
+    return frozenset(
+        r["col_name"] for r in rows
+        if "col_name" in r and not r["col_name"].startswith("#")
+    )
 
 
 def main() -> int:

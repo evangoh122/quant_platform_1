@@ -78,7 +78,7 @@ export function MarketDashboard() {
             <StatTile label="Skew" value={data?.options.data[0]?.iv_skew?.toFixed(4) ?? '—'} />
           </div>
 
-          <Card title="OHLCV Features" subtitle="gold_ohlcv_features" actions={<FreshnessBadge freshness={data ? data.ohlcv.freshness : { state: 'empty', table: '', detail: '' }} />}>
+          <Card title="OHLCV Features" subtitle="silver_ohlcv_day_adjusted" actions={<FreshnessBadge freshness={data ? data.ohlcv.freshness : { state: 'empty', table: '', detail: '' }} />}>
             {data && data.ohlcv.empty ? (
               <EmptyState
                 title="No market features yet"

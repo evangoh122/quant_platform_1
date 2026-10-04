@@ -110,7 +110,7 @@ TICKER_TO_ASSET_CLASS: Dict[str, str] = {
     "TLT": "rate", "IEF": "rate", "SHY": "rate", "BND": "rate",
     "AGG": "rate", "TIP": "rate", "LQD": "rate", "HYG": "rate",
     # FX proxies
-    "UUP": "FX", "FXE": "fx", "FXY": "fx", "FXB": "fx",
+    "UUP": "fx", "FXE": "fx", "FXY": "fx", "FXB": "fx",
     "EWJ": "fx", "EEM": "fx",
     # Crypto proxies
     "BITO": "crypto", "COIN": "crypto",
