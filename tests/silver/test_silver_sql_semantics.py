@@ -70,7 +70,15 @@ def _setup_duckdb(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS _deduped_daily (
             symbol VARCHAR,
-            event_date DATE
+            event_ts TIMESTAMP,
+            event_date DATE,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            volume BIGINT,
+            vwap DOUBLE,
+            trade_count INT
         )
     """)
     conn.execute("""
@@ -84,9 +92,9 @@ def _setup_duckdb(conn: duckdb.DuckDBPyConnection) -> None:
 
 def _populate_daily(conn: duckdb.DuckDBPyConnection, symbol: str,
                     start: str = "2022-06-01", end: str = "2022-06-10") -> None:
-    """Generate daily rows for a symbol."""
+    """Generate daily rows for a symbol with NULL price columns."""
     conn.execute(f"""
-        INSERT INTO _deduped_daily
+        INSERT INTO _deduped_daily (symbol, event_date)
         SELECT '{symbol}' symbol, d::date event_date
         FROM generate_series(DATE '{start}', DATE '{end}', INTERVAL 1 DAY) t(d)
     """)
@@ -318,9 +326,11 @@ class TestYfinanceRowIgnored:
             assert row[1] == pytest.approx(20.0, rel=1e-6), \
                 f"Factor for {row[0]} should be 20 (yfinance ignored), got {row[1]}"
 
-    def test_mutation_drop_source_filter_fails(self, duckdb_conn):
+    def test_mutation_drop_source_filter_fails(self, duckdb_conn, resolved_sql, factors_sql):
         """Mutation: remove WHERE source = 'massive' from _massive_splits.
-        This would let yfinance rows through, potentially doubling the factor."""
+        Fixtures: massive AMZN 20:1 (fetched_ts 2026-01-01) and yfinance AMZN 15.0
+        (fetched_ts 2026-02-01, LATER). Positive: real SQL → factor 20.0.
+        Mutation: source filter removed → dedup picks yfinance (later ts) → factor 15.0."""
         # Mutated: no source filter
         mutated = """
 CREATE OR REPLACE TEMP VIEW _massive_splits AS
@@ -341,35 +351,36 @@ FROM (
 ) sub
 WHERE rn = 1;
 """
-        factors_sql = _shim_for_duckdb(_extract_cte(
+        factors_sql_text = _shim_for_duckdb(_extract_cte(
             _SQL_PATH.read_text(encoding="utf-8"), "_split_factors"
         ))
 
-        # Setup: both sources with different ratios to detect the issue
+        # Setup: massive with earlier fetched_ts, yfinance with LATER fetched_ts + different ratio
         duckdb_conn.execute("""
             INSERT INTO bronze_corporate_actions VALUES
             ('AMZN', '2022-06-06', 20.0, 'massive', '2026-01-01'),
-            ('AMZN', '2022-06-06', 15.0, 'yfinance', '2026-01-01')
+            ('AMZN', '2022-06-06', 15.0, 'yfinance', '2026-02-01')
         """)
 
-        # Run mutated SQL (no source filter, but dedup by fetched_ts → latest wins)
+        # Positive test: real SQL (with source filter) → factor exactly 20.0
+        pos_results = _run_resolved_and_factors(duckdb_conn, resolved_sql, factors_sql)
+        pre_split_pos = [r for r in pos_results if r[0] < datetime.date(2022, 6, 6)]
+        assert len(pre_split_pos) > 0, "Should have pre-split rows"
+        for row in pre_split_pos:
+            assert row[1] == pytest.approx(20.0, rel=1e-6), \
+                f"Positive: factor for {row[0]} should be 20, got {row[1]}"
+
+        # Mutation test: source filter removed → dedup picks yfinance (later fetched_ts) → factor 15.0
         duckdb_conn.execute(_shim_for_duckdb(mutated))
-        duckdb_conn.execute(factors_sql)
-        results = duckdb_conn.execute(
+        duckdb_conn.execute(factors_sql_text)
+        mut_results = duckdb_conn.execute(
             "SELECT event_date, cumulative_split_ratio FROM _split_factors ORDER BY 1"
         ).fetchall()
 
-        # With source filter removed and dedup, the latest fetched_ts wins
-        # (yfinance '2026-01-01' vs massive '2026-01-01' → same, one survives)
-        # But the key point: massive-only filter prevents yfinance from ever being selected.
-        # Without filter, dedup picks one — but it might pick yfinance's ratio (15).
-        pre_split = [r for r in results if r[0] < datetime.date(2022, 6, 6)]
-        # With the mutation, the factor could be 15 (yfinance) instead of 20 (massive)
-        # or still 20 if massive has later fetched_ts. Either way, the mutation
-        # introduces risk. We verify that the CORRECT behavior gives 20.
-        # For a proper mutation test, we'd need to ensure yfinance has later fetched_ts.
-        # This test documents the risk; the main protection is the WHERE source = 'massive' filter.
-        assert len(pre_split) > 0, "Should have pre-split rows"
+        pre_split_mut = [r for r in mut_results if r[0] < datetime.date(2022, 6, 6)]
+        for row in pre_split_mut:
+            assert row[1] == pytest.approx(15.0, rel=1e-6), \
+                f"Mutation proof: without source filter, factor for {row[0]} should be 15 (yfinance), got {row[1]}"
 
 
 # ---------------------------------------------------------------------------
@@ -457,3 +468,183 @@ class TestKeyLeak:
             assert "SECRET123" not in str(cause), \
                 f"API key leaked in cause: {cause}"
             cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+
+
+# ---------------------------------------------------------------------------
+# 7. Price-jump break detection against real SQL
+# ---------------------------------------------------------------------------
+
+def _run_break_ctes(conn: duckdb.DuckDBPyConnection,
+                    sql_text: str,
+                    resolved_sql: str,
+                    factors_sql: str):
+    """Execute the full break-detection CTE pipeline and return _classified_breaks rows."""
+    adjusted_sql = _shim_for_duckdb(_extract_cte(sql_text, "_adjusted"))
+    break_cand_sql = _shim_for_duckdb(_extract_cte(sql_text, "_break_candidates"))
+    class_breaks_sql = _shim_for_duckdb(_extract_cte(sql_text, "_classified_breaks"))
+
+    conn.execute(resolved_sql)
+    conn.execute(factors_sql)
+    conn.execute(adjusted_sql)
+    conn.execute(break_cand_sql)
+    conn.execute(class_breaks_sql)
+
+    return conn.execute(
+        "SELECT symbol, event_date, classification, split_error, is_masked "
+        "FROM _classified_breaks ORDER BY 1, 2"
+    ).fetchall()
+
+
+@pytest.fixture
+def break_conn(sql_text):
+    """DuckDB connection with break-detection fixtures:
+    - AMZN: 20:1 split on 2022-06-06, adjusted move ~+2% → SPLIT_EXPLAINED
+    - MEME: -50% drop, no split → UNEXPLAINED_PENDING
+    - SPLITBAD: 20:1 split but raw move doesn't match → UNEXPLAINED_PENDING
+    """
+    conn = duckdb.connect()
+    _setup_duckdb(conn)
+    conn.execute("DELETE FROM _universe")
+    conn.execute("INSERT INTO _universe VALUES ('AMZN'), ('MEME'), ('SPLITBAD')")
+
+    # AMZN daily bars
+    conn.execute("""
+        INSERT INTO _deduped_daily VALUES
+        ('AMZN', '2022-06-01 00:00:00', '2022-06-01', 2400, 2450, 2380, 2430, 5000000, 2420, 50000),
+        ('AMZN', '2022-06-02 00:00:00', '2022-06-02', 2440, 2460, 2410, 2440, 4800000, 2435, 48000),
+        ('AMZN', '2022-06-03 00:00:00', '2022-06-03', 2450, 2460, 2430, 2447, 5200000, 2445, 52000),
+        ('AMZN', '2022-06-06 00:00:00', '2022-06-06', 122, 126, 121, 124.79, 100000000, 123, 100000),
+        ('AMZN', '2022-06-07 00:00:00', '2022-06-07', 125, 127, 123, 126, 95000000, 125, 95000),
+        ('AMZN', '2022-06-08 00:00:00', '2022-06-08', 126, 128, 124, 127, 90000000, 126, 90000),
+        ('AMZN', '2022-06-09 00:00:00', '2022-06-09', 127, 129, 125, 128, 88000000, 127, 88000),
+        ('AMZN', '2022-06-10 00:00:00', '2022-06-10', 128, 130, 126, 129, 85000000, 128, 85000)
+    """)
+
+    # MEME: -50% drop, no split
+    conn.execute("""
+        INSERT INTO _deduped_daily VALUES
+        ('MEME', '2024-01-01 00:00:00', '2024-01-01', 100, 105, 95, 100, 1000000, 100, 100),
+        ('MEME', '2024-01-02 00:00:00', '2024-01-02', 55, 55, 45, 50, 2000000, 50, 200)
+    """)
+
+    # SPLITBAD: 20:1 split but raw move doesn't match (close=100 vs expected ~124.79)
+    conn.execute("""
+        INSERT INTO _deduped_daily VALUES
+        ('SPLITBAD', '2024-03-01 00:00:00', '2024-03-01', 2500, 2550, 2450, 2500, 3000000, 2490, 30000),
+        ('SPLITBAD', '2024-03-04 00:00:00', '2024-03-04', 100, 110, 90, 100, 50000000, 100, 50000),
+        ('SPLITBAD', '2024-03-05 00:00:00', '2024-03-05', 101, 103, 99, 101, 45000000, 101, 45000)
+    """)
+
+    # Massive splits
+    conn.execute("""
+        INSERT INTO bronze_corporate_actions VALUES
+        ('AMZN', '2022-06-06', 20.0, 'massive', '2026-01-01'),
+        ('SPLITBAD', '2024-03-04', 20.0, 'massive', '2026-01-01')
+    """)
+
+    yield conn
+    conn.close()
+
+
+class TestPriceJumpBreakSQL:
+
+    def test_unexplained_50pct_move_with_no_split(self, break_conn, sql_text):
+        """(a) Unexplained -50% move, no split → exactly one break row.
+        Classification: UNEXPLAINED_PENDING, is_masked=True."""
+        resolved_sql = _shim_for_duckdb(_extract_cte(sql_text, "_massive_splits"))
+        factors_sql = _shim_for_duckdb(_extract_cte(sql_text, "_split_factors"))
+        results = _run_break_ctes(break_conn, sql_text, resolved_sql, factors_sql)
+
+        meme_breaks = [r for r in results if r[0] == "MEME"]
+        assert len(meme_breaks) == 1, f"Expected 1 MEME break, got {len(meme_breaks)}"
+        row = meme_breaks[0]
+        assert row[1] == datetime.date(2024, 1, 2)
+        assert row[2] == "UNEXPLAINED_PENDING"
+        assert row[3] == pytest.approx(0.5, abs=1e-6)  # split_error
+        assert row[4] is True  # is_masked
+
+    def test_split_day_adjusted_move_matches_no_break(self, break_conn, sql_text):
+        """(b) AMZN split day with matching ~+2% adjusted move → SPLIT_EXPLAINED (not a break)."""
+        resolved_sql = _shim_for_duckdb(_extract_cte(sql_text, "_massive_splits"))
+        factors_sql = _shim_for_duckdb(_extract_cte(sql_text, "_split_factors"))
+        results = _run_break_ctes(break_conn, sql_text, resolved_sql, factors_sql)
+
+        amzn_breaks = [r for r in results if r[0] == "AMZN"]
+        assert len(amzn_breaks) == 1, f"Expected 1 AMZN break, got {len(amzn_breaks)}"
+        row = amzn_breaks[0]
+        assert row[1] == datetime.date(2022, 6, 6)
+        assert row[2] == "SPLIT_EXPLAINED"
+        assert row[3] <= 0.03  # split_error within tolerance
+        assert row[4] is False  # is_masked = False
+
+    def test_split_day_raw_move_mismatch_flagged(self, break_conn, sql_text):
+        """(c) Split day whose raw move doesn't match ratio → UNEXPLAINED_PENDING."""
+        resolved_sql = _shim_for_duckdb(_extract_cte(sql_text, "_massive_splits"))
+        factors_sql = _shim_for_duckdb(_extract_cte(sql_text, "_split_factors"))
+        results = _run_break_ctes(break_conn, sql_text, resolved_sql, factors_sql)
+
+        bad_breaks = [r for r in results if r[0] == "SPLITBAD"]
+        assert len(bad_breaks) == 1, f"Expected 1 SPLITBAD break, got {len(bad_breaks)}"
+        row = bad_breaks[0]
+        assert row[1] == datetime.date(2024, 3, 4)
+        assert row[2] == "UNEXPLAINED_PENDING"
+        assert row[3] > 0.03  # split_error exceeds tolerance
+        assert row[4] is True  # is_masked = True
+
+    def test_mutation_break_candidate_predicate_required(self, break_conn, sql_text):
+        """Mutation: remove the abs(raw_gross_return - 1) >= 0.40 predicate.
+        Without it, AMZN's small ~2% daily moves become false break candidates."""
+        resolved_sql = _shim_for_duckdb(_extract_cte(sql_text, "_massive_splits"))
+        factors_sql = _shim_for_duckdb(_extract_cte(sql_text, "_split_factors"))
+
+        # Run correct pipeline first
+        _run_break_ctes(break_conn, sql_text, resolved_sql, factors_sql)
+
+        # Verify correct: only AMZN 2022-06-06 is a break (the split day)
+        correct_breaks = break_conn.execute(
+            "SELECT symbol, event_date FROM _break_candidates ORDER BY 1, 2"
+        ).fetchall()
+        assert ("AMZN", datetime.date(2022, 6, 6)) in correct_breaks
+        assert ("MEME", datetime.date(2024, 1, 2)) in correct_breaks
+        # AMZN small-move days must NOT be break candidates
+        amzn_dates = [r[1] for r in correct_breaks if r[0] == "AMZN"]
+        assert datetime.date(2022, 6, 2) not in amzn_dates
+        assert datetime.date(2022, 6, 3) not in amzn_dates
+
+        # Mutate: remove the 40% threshold predicate
+        mutated_sql = _shim_for_duckdb("""CREATE OR REPLACE TEMP VIEW _break_candidates AS
+SELECT
+    a.symbol,
+    a.event_date,
+    a.previous_event_date,
+    a.previous_close,
+    a.close,
+    a.raw_gross_return - 1.0 AS raw_overnight_return,
+    a.raw_gross_return,
+    COALESCE(day_splits.day_split_ratio, 1.0) AS day_split_ratio,
+    a.raw_gross_return * COALESCE(day_splits.day_split_ratio, 1.0) AS post_split_gross_return,
+    ABS(a.raw_gross_return * COALESCE(day_splits.day_split_ratio, 1.0) - 1.0) AS split_error
+FROM _adjusted a
+LEFT JOIN (
+    SELECT symbol, ex_date, EXP(SUM(LN(split_ratio))) AS day_split_ratio
+    FROM _massive_splits
+    GROUP BY symbol, ex_date
+) day_splits
+    ON  day_splits.symbol = a.symbol
+    AND day_splits.ex_date = a.event_date
+WHERE a.raw_gross_return IS NOT NULL
+  AND a.previous_close IS NOT NULL;""")
+        class_breaks_sql = _shim_for_duckdb(_extract_cte(sql_text, "_classified_breaks"))
+        break_conn.execute(mutated_sql)
+        break_conn.execute(class_breaks_sql)
+
+        # Without the predicate, AMZN small moves become false break candidates
+        mut_breaks = break_conn.execute(
+            "SELECT symbol, event_date, classification FROM _classified_breaks ORDER BY 1, 2"
+        ).fetchall()
+        amzn_false_positives = [
+            r for r in mut_breaks if r[0] == "AMZN"
+            and r[1] != datetime.date(2022, 6, 6)
+        ]
+        assert len(amzn_false_positives) > 0, \
+            "Mutation proof: removing 40% predicate must produce AMZN false positives"
