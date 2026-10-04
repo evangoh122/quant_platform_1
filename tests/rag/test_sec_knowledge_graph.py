@@ -2313,6 +2313,14 @@ class TestPipelineValidation:
 
         import pipelines.build_sec_knowledge_graph as pipeline_mod
 
+        # Spy on validate_and_raise so test fails under Mutation A (dict replacement)
+        validate_called = []
+        original_validate = pipeline_mod.validate_and_raise
+        def _spy_validate(*args, **kwargs):
+            validate_called.append(True)
+            return original_validate(*args, **kwargs)
+        monkeypatch.setattr(pipeline_mod, "validate_and_raise", _spy_validate)
+
         pipeline_mod.build(
             fake_spark,
             catalog="test_cat",
@@ -2366,6 +2374,11 @@ class TestPipelineValidation:
         assert row_dict["build_version"] is not None
         assert row_dict["run_id"] is not None
         assert row_dict["run_ts"] is not None
+
+        # validate_and_raise must have been called (Mutation A guard)
+        assert len(validate_called) >= 1, (
+            "validate_and_raise was never called — manifest was built without validation"
+        )
 
     def test_manifest_schema_explicit_9_columns(self, monkeypatch):
         """Manifest createDataFrame is called with explicit StructType of 9 columns."""
