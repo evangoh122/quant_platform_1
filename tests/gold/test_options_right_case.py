@@ -166,27 +166,37 @@ def day_fixture(duckdb_conn):
             ('AAPL', '2026-09-01', 'CALL', 200, TIMESTAMP '2026-09-01 04:00:00'),
             ('AAPL', '2026-09-02', 'put',  150, TIMESTAMP '2026-09-02 04:00:00'),
             ('AAPL', '2026-09-02', 'call', 250, TIMESTAMP '2026-09-02 04:00:00'),
+            ('AAPL', '2026-09-03', 'P',     50, TIMESTAMP '2026-09-03 04:00:00'),
+            ('AAPL', '2026-09-03', 'C',     75, TIMESTAMP '2026-09-03 04:00:00'),
             ('SPY',  '2026-09-01', 'PUT',  300, TIMESTAMP '2026-09-01 04:00:00'),
             ('SPY',  '2026-09-01', 'put',  100, TIMESTAMP '2026-09-01 04:00:00'),
             ('SPY',  '2026-09-01', 'CALL', 400, TIMESTAMP '2026-09-01 04:00:00'),
-            ('SPY',  '2026-09-01', 'call',  50, TIMESTAMP '2026-09-01 04:00:00')
+            ('SPY',  '2026-09-01', 'call',  50, TIMESTAMP '2026-09-01 04:00:00'),
+            ('SPY',  '2026-09-02', 'P',    120, TIMESTAMP '2026-09-02 04:00:00'),
+            ('SPY',  '2026-09-02', 'C',    180, TIMESTAMP '2026-09-02 04:00:00')
     """)
     return duckdb_conn
 
 
 def test_day_cte_counts_all_case_variants(duckdb_conn, day_fixture):
-    """The day CTE must count all case variants (PUT/put/CALL/call)."""
+    """The day CTE must count all case variants (PUT/put/P/CALL/call/C)."""
     result = duckdb_conn.execute(_DAY_QUERY).fetchall()
     # AAPL 2026-09-01: put_volume=100, call_volume=200, total=300
     # AAPL 2026-09-02: put_volume=150, call_volume=250, total=400
+    # AAPL 2026-09-03: put_volume=50,  call_volume=75,  total=125  (P/C)
     # SPY  2026-09-01: put_volume=400, call_volume=450, total=850
+    # SPY  2026-09-02: put_volume=120, call_volume=180, total=300  (P/C)
     rows = {r[0] + "|" + str(r[1]): r for r in result}
     assert rows["AAPL|2026-09-01"][2] == 100   # put_volume
     assert rows["AAPL|2026-09-01"][3] == 200   # call_volume
     assert rows["AAPL|2026-09-02"][2] == 150   # put_volume (lowercase)
     assert rows["AAPL|2026-09-02"][3] == 250   # call_volume (lowercase)
+    assert rows["AAPL|2026-09-03"][2] == 50    # put_volume (P)
+    assert rows["AAPL|2026-09-03"][3] == 75    # call_volume (C)
     assert rows["SPY|2026-09-01"][2] == 400    # put_volume (PUT+put)
     assert rows["SPY|2026-09-01"][3] == 450    # call_volume (CALL+call)
+    assert rows["SPY|2026-09-02"][2] == 120    # put_volume (P)
+    assert rows["SPY|2026-09-02"][3] == 180    # call_volume (C)
 
 
 def test_extracted_day_cte_contains_upper(duckdb_conn, day_fixture):
@@ -333,4 +343,24 @@ def test_repo_wide_no_case_sensitive_right_comparisons():
     assert violations == [], (
         f"Found {len(violations)} case-sensitive `right` comparison(s):\n"
         + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. No CRLF in sql/maintenance/*.sql
+# ---------------------------------------------------------------------------
+
+def test_no_crlf_in_maintenance_sql():
+    """All sql/maintenance/*.sql files must use LF line endings, not CRLF."""
+    maint_dir = REPO_ROOT / "sql" / "maintenance"
+    if not maint_dir.exists():
+        return
+    crlf_files = []
+    for sql_file in maint_dir.glob("*.sql"):
+        raw = sql_file.read_bytes()
+        if b"\r\n" in raw:
+            crlf_files.append(str(sql_file.relative_to(REPO_ROOT)))
+    assert crlf_files == [], (
+        f"Found CRLF line endings in: {', '.join(crlf_files)}. "
+        "Convert to LF (e.g. `sed -i s/\\r$// file.sql`)."
     )

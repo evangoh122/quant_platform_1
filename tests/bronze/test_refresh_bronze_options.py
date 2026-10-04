@@ -58,6 +58,82 @@ def test_parse_opra_symbol_rejects_bad_expiry():
 
 
 # ---------------------------------------------------------------------------
+# canonical_day_right: single source of truth for day-agg right encoding
+# ---------------------------------------------------------------------------
+
+def test_canonical_day_right_call_variants():
+    assert m.canonical_day_right("C") == "CALL"
+    assert m.canonical_day_right("CALL") == "CALL"
+    assert m.canonical_day_right("call") == "CALL"
+
+
+def test_canonical_day_right_put_variants():
+    assert m.canonical_day_right("P") == "PUT"
+    assert m.canonical_day_right("PUT") == "PUT"
+    assert m.canonical_day_right("put") == "PUT"
+
+
+def test_canonical_day_right_rejects_unknown():
+    assert m.canonical_day_right("X") is None
+    assert m.canonical_day_right("") is None
+    assert m.canonical_day_right(None) is None
+
+
+# ---------------------------------------------------------------------------
+# _shape_day: emits uppercase PUT/CALL via canonical_day_right
+# ---------------------------------------------------------------------------
+
+def test_shape_day_emits_uppercase_right():
+    """_shape_day must emit uppercase 'PUT'/'CALL' via canonical_day_right.
+
+    Mutation proof: if _shape_day() is reverted to inline F.when('C', 'CALL')
+    without going through canonical_day_right, the UDF mock below would not be
+    invoked and the assertion on the mock call count would fail.
+
+    We mock Spark's DataFrame chain (read → csv → select → filter) because
+    this environment uses Databricks Connect (no local SparkSession).
+    """
+    pytest.importorskip("pyspark")
+    from unittest.mock import MagicMock, patch, call
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import StringType
+
+    # Build a mock DataFrame chain that records .select() column expressions.
+    mock_df_raw = MagicMock()
+    mock_df_shaped = MagicMock()
+    mock_df_filtered = MagicMock()
+
+    mock_spark = MagicMock()
+    mock_spark.read.option.return_value.csv.return_value = mock_df_raw
+    mock_df_raw.select.return_value = mock_df_shaped
+    mock_df_shaped.filter.return_value = mock_df_filtered
+
+    # Patch F.udf so we can verify canonical_day_right is wrapped as a UDF.
+    captured_udf_fn = None
+    orig_udf = F.udf
+
+    def _capture_udf(fn, returnType):
+        nonlocal captured_udf_fn
+        captured_udf_fn = fn
+        return orig_udf(fn, returnType)
+
+    with patch.object(F, "udf", side_effect=_capture_udf):
+        m._shape_day(mock_spark, "/fake/file.csv", "test.csv",
+                     "2026-10-04T00:00:00")
+
+    # Verify canonical_day_right was passed to F.udf.
+    assert captured_udf_fn is m.canonical_day_right, (
+        "_shape_day did not wrap canonical_day_right as a UDF"
+    )
+
+    # Verify the UDF produces uppercase for OPRA right letters.
+    assert captured_udf_fn("C") == "CALL"
+    assert captured_udf_fn("P") == "PUT"
+    assert captured_udf_fn("c") == "CALL"
+    assert captured_udf_fn("p") == "PUT"
+
+
+# ---------------------------------------------------------------------------
 # Field conversion helpers
 # ---------------------------------------------------------------------------
 

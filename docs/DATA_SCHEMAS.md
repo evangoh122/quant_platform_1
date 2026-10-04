@@ -37,7 +37,7 @@
   underlying                         string NOT NULL
   expiry                             date
   strike                             double
-  right                              string
+  right                              string            -- allowed: 'call'/'put' (quotes path), 'C'/'P' (Quick Start); consumers MUST normalise via CASE WHEN
   bid                                double
   ask                                double
   bid_size                           int
@@ -62,7 +62,7 @@
   underlying                         string NOT NULL
   expiry                             date
   strike                             double
-  right                              string
+  right                              string            -- allowed: 'call'/'put' (quotes path), 'C'/'P' (Quick Start); consumers MUST normalise via CASE WHEN
   price                              double
   size                               int
   exchange                           string
@@ -85,7 +85,7 @@
   underlying                         string
   expiry                             date
   strike                             double
-  right                              string
+  right                              string            -- allowed: 'PUT'/'CALL' (day-agg path), 'put'/'call' (quotes path leakage), 'P'/'C' (Quick Start); consumers MUST normalise via CASE WHEN UPPER(right) IN ('PUT','P') THEN 'PUT' WHEN UPPER(right) IN ('CALL','C') THEN 'CALL' END
   event_ts                           timestamp
   event_date                         date
   event_year                         int
