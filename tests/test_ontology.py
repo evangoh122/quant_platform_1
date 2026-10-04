@@ -73,6 +73,7 @@ def _table_references(value, parent_key=None):
                 "adjusted_source_table",
                 "left_table",
                 "right_table",
+                "output_table",
                 "evidence_table",
             }:
                 yield child
@@ -201,7 +202,17 @@ def _enum_values(source, enum_name):
 
 
 def _canonical_kg_vocabulary():
-    """Prefer readable source; fall back to the documented reviewed snapshot."""
+    """Always assert against the reviewed snapshot as the fixed baseline.
+
+    Separately, when the canonical sec_kg source is importable/available,
+    compare the snapshot with the canonical enums to detect drift.
+    """
+    snapshot = {
+        name: set(values)
+        for name, values in yaml.safe_load(
+            SEC_KG_ENUM_SNAPSHOT.read_text(encoding="utf-8")
+        ).items()
+    }
     local_model = ROOT / "sec_kg" / "model.py"
     source = local_model.read_text(encoding="utf-8") if local_model.is_file() else None
     if source is None:
@@ -215,12 +226,15 @@ def _canonical_kg_vocabulary():
         if result.returncode == 0:
             source = result.stdout
     if source is not None:
-        return {
+        canonical = {
             "node_types": _enum_values(source, "NodeType"),
             "edge_types": _enum_values(source, "EdgeType"),
         }
-    snapshot = yaml.safe_load(SEC_KG_ENUM_SNAPSHOT.read_text(encoding="utf-8"))
-    return {name: set(values) for name, values in snapshot.items()}
+        assert snapshot == canonical, (
+            "sec_kg_enum_snapshot.yaml drifted from canonical sec_kg/model.py; "
+            "refresh the snapshot"
+        )
+    return snapshot
 
 
 def _create_table_columns(path):
