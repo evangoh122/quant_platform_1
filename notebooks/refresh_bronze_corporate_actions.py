@@ -31,6 +31,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 import time as _time
 import uuid
@@ -56,6 +57,13 @@ VALID_SOURCES = {"massive", "yfinance"}
 VALID_MODES = {"dry-run", "write"}
 
 MIN_DELAY_SECONDS = 0.5
+
+_APIKEY_RE = re.compile(r"(apiKey=)[^&\s]+")
+
+
+def _redact_api_key(text: str) -> str:
+    """Redact apiKey values in text for safe logging."""
+    return _APIKEY_RE.sub(r"\g<1>***REDACTED***", text)
 
 # Required Bronze columns (natural key excludes fetched_ts).
 KEY_COLUMNS = ("symbol", "ex_date", "source")
@@ -431,11 +439,12 @@ def main() -> None:
 
         except Exception as exc:
             report["failed"] += 1
-            report["failures"][sym] = str(exc)[:200]
-            print(f"  FAILED {sym}: {exc}")
+            safe_msg = _redact_api_key(str(exc))[:200]
+            report["failures"][sym] = safe_msg
+            print(f"  FAILED {sym}: {safe_msg}")
             if mode == "write":
                 _log_checkpoint(spark, run_id, sym, adapters[0][0], "FAILED", 0, 0,
-                                error=str(exc)[:200])
+                                error=safe_msg)
 
         _time.sleep(delay_seconds)
 

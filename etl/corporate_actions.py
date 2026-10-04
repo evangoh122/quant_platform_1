@@ -358,6 +358,7 @@ class MassiveCorporateActionsSource:
 
     def _request_with_retry(self, url: str) -> dict:
         """Execute GET with retry on 429/5xx.  Raise on 401/403."""
+        redacted_url = _redact_api_key(url)
         last_exc: Optional[Exception] = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -376,20 +377,23 @@ class MassiveCorporateActionsSource:
                         self._sleeper(backoff)
                         continue
                     raise last_exc
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Massive API HTTP {resp.status_code} from {redacted_url}"
+                    )
                 return resp.json()
             except (PermissionError, RuntimeError):
                 raise
-            except Exception as exc:
-                last_exc = exc
+            except Exception:
                 if attempt < self._max_retries:
                     backoff = min(2 ** attempt * 1.0, 30.0)
                     self._sleeper(backoff)
                     continue
                 raise RuntimeError(
                     f"Massive API request failed after "
-                    f"{self._max_retries + 1} attempts: {last_exc}"
-                ) from last_exc
+                    f"{self._max_retries + 1} attempts: "
+                    f"HTTP error from {redacted_url}"
+                ) from None
         return {}  # unreachable
 
     def _append_api_key(self, url: str) -> str:
