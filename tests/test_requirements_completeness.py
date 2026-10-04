@@ -105,9 +105,24 @@ def _scan_top_level_imports(dirs: list[str]) -> set[str]:
 
 
 def _import_to_dist(import_name: str) -> str:
-    """Map an import name to its likely PyPI distribution name."""
+    """Map an import name to its likely PyPI distribution name.
+
+    For dotted imports (e.g. ``fastapi.middleware.cors``), checks the full name
+    first, then each prefix, so sub-modules of mapped packages resolve correctly.
+    """
+    # Check full name first
     if import_name in _IMPORT_TO_DIST:
         return _IMPORT_TO_DIST[import_name]
+    # Check each prefix (e.g. "fastapi.middleware.cors" → "fastapi")
+    parts = import_name.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        prefix = ".".join(parts[:i])
+        if prefix in _IMPORT_TO_DIST:
+            return _IMPORT_TO_DIST[prefix]
+    # For dotted imports, the distribution is usually the top-level package
+    # (e.g. "fastapi.staticfiles" → "fastapi", "langgraph.graph" → "langgraph")
+    if len(parts) > 1:
+        return parts[0].replace("_", "-")
     # Best guess: underscores → hyphens (common convention)
     return import_name.replace("_", "-")
 
@@ -121,8 +136,8 @@ def test_all_top_level_imports_declared_in_requirements():
 
     missing: list[str] = []
     for imp in sorted(top_imports):
-        # Skip standard library
-        if imp in _STDLIB_MODULES:
+        # Skip standard library (check both full name and top-level package)
+        if imp in _STDLIB_MODULES or imp.split(".")[0] in _STDLIB_MODULES:
             continue
         # Skip local packages
         if _is_local_module(imp):
