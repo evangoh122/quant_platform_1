@@ -65,7 +65,7 @@ def _fetch(w: WorkspaceClient, sql: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
-def fetch_data(w: WorkspaceClient) -> Dict[str, pd.DataFrame]:
+def fetch_data(w: WorkspaceClient, price_table: str = "silver_ohlcv_day_adjusted") -> Dict[str, pd.DataFrame]:
     universe = _fetch(w, f"""
         SELECT trade_date, symbol, med_adv_60d, adv_rank
         FROM {FQN}.gold_tradable_universe
@@ -75,9 +75,22 @@ def fetch_data(w: WorkspaceClient) -> Dict[str, pd.DataFrame]:
         med_adv_60d=pd.to_numeric(universe["med_adv_60d"], errors="coerce"),
     )
 
+    is_adjusted = price_table == "silver_ohlcv_day_adjusted"
+    if is_adjusted:
+        close_col = "adj_close AS close"
+    else:
+        import warnings
+        warnings.warn(
+            f"Using UNADJUSTED prices from {price_table}. "
+            "Split events will contaminate returns and signals. "
+            "Use silver_ohlcv_day_adjusted for production runs.",
+            stacklevel=2,
+        )
+        close_col = "close"
+
     closes = _fetch(w, f"""
-        SELECT symbol, event_date, close
-        FROM {FQN}.bronze_ohlcv_day
+        SELECT symbol, event_date, {close_col}
+        FROM {FQN}.{price_table}
         WHERE symbol IN (
             SELECT DISTINCT symbol FROM {FQN}.gold_tradable_universe
             UNION ALL SELECT 'SPY' UNION ALL SELECT 'RSP' UNION ALL SELECT 'QQQ'
@@ -95,7 +108,23 @@ def fetch_data(w: WorkspaceClient) -> Dict[str, pd.DataFrame]:
     """)
     regime = regime.assign(trade_date=pd.to_datetime(regime["trade_date"]))
 
-    return {"universe": universe, "closes": closes, "regime": regime}
+    return {"universe": universe, "closes": closes, "regime": regime, "price_table": price_table}
+
+
+def fetch_masked_breaks(w: WorkspaceClient) -> set:
+    """Return set of (symbol, event_date) tuples where returns are masked.
+
+    A masked break is a (symbol, event_date) pair where `return_1d IS NULL`
+    in `silver_ohlcv_day_adjusted` (i.e. `is_masked=true` in
+    `data_quality_breaks`).  Returns on these days must not be used as signal
+    inputs or P&L; positions held across a masked day earn 0 that day.
+    """
+    rows = _fetch(w, f"""
+        SELECT symbol, event_date
+        FROM {FQN}.data_quality_breaks
+        WHERE is_masked = true
+    """)
+    return set(zip(rows["symbol"], pd.to_datetime(rows["event_date"])))
 
 
 def build_wide(closes: pd.DataFrame) -> pd.DataFrame:
@@ -137,6 +166,7 @@ def build_signals(
     entry: float,
     exit_thresh: float,
     max_hold: int,
+    masked_breaks: Optional[set] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Compute residual s-scores and desired positions for the tradable set."""
     industry_map = load_industry_map()
@@ -157,6 +187,14 @@ def build_signals(
     )
     tradeable_returns = returns[tradeable].where(mask)
 
+    # Masked break days: set returns to NaN so no signal or P&L is generated.
+    # Positions held across a masked day earn 0 that day (the return is NaN,
+    # which .sum() skips in the backtest gross calculation).
+    if masked_breaks:
+        for sym, dt in masked_breaks:
+            if sym in tradeable_returns.columns and dt in tradeable_returns.index:
+                tradeable_returns.loc[dt, sym] = np.nan
+
     market = returns["SPY"]
     industry = pd.Series(
         {s: industry_map.get(s, "__unknown__") for s in tradeable}, dtype=object,
@@ -167,9 +205,16 @@ def build_signals(
                             window=window, lookback=lookback)
     positions = generate_signals(res["s_score"], entry=entry, exit_thresh=exit_thresh,
                                  max_hold=max_hold)
+    # valuation_returns: unmasked for universe (so exit-day P&L is preserved),
+    # but masked for break days (so masked days contribute 0 P&L).
+    valuation_returns = returns[tradeable].copy()
+    if masked_breaks:
+        for sym, dt in masked_breaks:
+            if sym in valuation_returns.columns and dt in valuation_returns.index:
+                valuation_returns.loc[dt, sym] = np.nan
     return {
         "returns": tradeable_returns,
-        "valuation_returns": returns[tradeable],
+        "valuation_returns": valuation_returns,
         "market": market,
         "industry": industry,
         "beta_mkt": res["beta_mkt"],
@@ -311,6 +356,18 @@ CHANGELOG = {
             "rationale": "`build_signals` masked returns to the PIT universe for signal construction, but the same masked frame was passed to `run_backtest` where `gross = (weights.shift(1) * returns).sum()` skipped NaN. When a held name left the universe on day t, the P&L of the position held from t-1 was silently dropped. Now returns unmasked `valuation_returns` for the backtest while keeping masked `returns` for signals",
         },
     ],
+    12: [
+        {
+            "fix": "Split-adjusted prices from silver_ohlcv_day_adjusted",
+            "files": "`strategies/run_residual_reversion.py`, `strategies/config.yaml`",
+            "rationale": "bronze_ohlcv_day is NOT split-adjusted (AMZN 2022-06-06 shows −94.9%). Now uses `adj_close` from `silver_ohlcv_day_adjusted` by default; `--price-table bronze_ohlcv_day` falls back to raw prices with a loud WARNING",
+        },
+        {
+            "fix": "Masked break days excluded from signals and P&L",
+            "files": "`strategies/run_residual_reversion.py`",
+            "rationale": "Returns on (symbol, event_date) where `return_1d IS NULL` in silver or `data_quality_breaks.is_masked` are set to NaN — no signal or P&L contribution on masked days. Positions held across a masked day earn 0 that day",
+        },
+    ],
 }
 
 
@@ -331,13 +388,16 @@ def main() -> None:
     ap.add_argument("--output", default="strategies/results/residual_reversion_r4.md")
     ap.add_argument("--round", type=int, default=None)
     ap.add_argument("--book-capital", type=float, default=10_000_000.0)
+    ap.add_argument("--price-table", default="silver_ohlcv_day_adjusted",
+                    help="Price source table (default: silver_ohlcv_day_adjusted)")
     args = ap.parse_args()
 
     if args.round is None:
         args.round = parse_round_from_output(args.output)
 
     w = WorkspaceClient(profile=os.getenv("DATABRICKS_PROFILE", "evangohsg"))
-    data = fetch_data(w)
+    data = fetch_data(w, price_table=args.price_table)
+    masked_breaks = fetch_masked_breaks(w)
 
     closes = data["closes"]
     universe = data["universe"]
@@ -353,7 +413,8 @@ def main() -> None:
     # Signals per max-hold candidate (shared s-scores).
     signals = {}
     for h in hold_candidates:
-        signals[h] = build_signals(closes, universe, WINDOW, LOOKBACK, ENTRY, EXIT, h)
+        signals[h] = build_signals(closes, universe, WINDOW, LOOKBACK, ENTRY, EXIT, h,
+                                   masked_breaks=masked_breaks)
 
     industry = signals[hold_candidates[0]]["industry"]
     beta_mkt = signals[hold_candidates[0]]["beta_mkt"]
@@ -410,7 +471,8 @@ def main() -> None:
     lines = _render(
         base_res, gated_res, oos_net, n_trials, capacity, args.book_capital,
         WINDOW, LOOKBACK, ENTRY, EXIT, dates[0], dates[-1], len(dates), len(splits),
-        round_num=args.round,
+        round_num=args.round, price_table=data.get("price_table", "silver_ohlcv_day_adjusted"),
+        n_masked_breaks=len(masked_breaks),
     )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
@@ -420,12 +482,18 @@ def main() -> None:
 
 def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
             window, lookback, entry, exit_thresh, date_start, date_end, n_dates, n_folds,
-            round_num: int = 3) -> List[str]:
+            round_num: int = 3, price_table: str = "silver_ohlcv_day_adjusted",
+            n_masked_breaks: int = 0) -> List[str]:
     bm = base_res["metrics"]
     gm = gated_res["metrics"]
     prev = round_num - 1
     L = []
     L.append(f"# Residual mean-reversion — round {round_num} (real data)")
+    L.append("")
+    L.append(f"**Price source:** `{price_table}`" +
+             (" (split-adjusted)" if "adjusted" in price_table else " (**UNADJUSTED — splits contaminate results**)"))
+    if n_masked_breaks > 0:
+        L.append(f"**Masked breaks:** {n_masked_breaks} (symbol, date) pairs excluded from signals and P&L")
     L.append("")
     L.append("Market/industry residual mean-reversion on the point-in-time top-300")
     L.append(f"tradable universe (`gold_tradable_universe`), {date_start:%Y-%m-%d} → {date_end:%Y-%m-%d}.")
@@ -491,6 +559,13 @@ def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
     L.append(f"- median total 1%-of-ADV budget across the universe: ${capacity:,.0f}")
     L.append("- shorts pay an explicit borrow haircut by liquidity bucket (no borrow data exists;")
     L.append("  liquid 0.25 bps/day, medium 0.75, illiquid 2.00 — a stated assumption, never zero).")
+    L.append("")
+    L.append("## Limitations")
+    L.append("")
+    L.append("- Masked break days (unexplained jumps such as ticker reuse, renames, leveraged ETFs)")
+    L.append("  have `return_1d IS NULL` in silver. Positions held across a masked day earn **0** that")
+    L.append("  day — the return is NaN and skipped by the P&L summation. No signal is generated on")
+    L.append("  masked days.")
     L.append("")
     return L
 

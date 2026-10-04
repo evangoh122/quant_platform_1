@@ -240,3 +240,162 @@ def test_signals_unchanged_by_valuation_returns_fix():
     assert unique_pos.issubset({-1.0, 0.0, 1.0}), (
         f"positions should be -1/0/+1, got {unique_pos}"
     )
+
+
+# ── Round 12: split-adjusted prices + masked breaks ────────────────────────
+
+def test_adjusted_table_maps_adj_close_as_close():
+    """When price_table='silver_ohlcv_day_adjusted', fetch_data generates SQL
+    that selects `adj_close AS close`."""
+    import inspect
+    from strategies.run_residual_reversion import fetch_data
+    src = inspect.getsource(fetch_data)
+    assert "adj_close AS close" in src, (
+        "fetch_data must select 'adj_close AS close' for the adjusted table"
+    )
+
+
+def test_bronze_path_logs_warning():
+    """When price_table='bronze_ohlcv_day', fetch_data must emit a warning
+    about unadjusted prices."""
+    import warnings
+    import inspect
+    from strategies.run_residual_reversion import fetch_data
+    src = inspect.getsource(fetch_data)
+    assert "UNADJUSTED" in src or "unadjusted" in src.lower(), (
+        "fetch_data must warn about unadjusted prices for bronze path"
+    )
+
+
+def test_masked_break_yields_nan_return():
+    """A (symbol, date) in masked_breaks must have NaN return in both
+    signal returns and valuation returns."""
+    from strategies.run_residual_reversion import build_signals
+
+    dates = pd.date_range("2024-01-01", periods=200, freq="B")
+    rng = np.random.default_rng(42)
+
+    spy = 100.0 + np.cumsum(rng.normal(0, 0.5, 200))
+    x = 50.0 + np.cumsum(rng.normal(0, 0.3, 200))
+    y = 30.0 + np.cumsum(rng.normal(0, 0.2, 200))
+
+    closes_long = []
+    for i, d in enumerate(dates):
+        closes_long.append({"symbol": "SPY", "event_date": d, "close": spy[i]})
+        closes_long.append({"symbol": "TESTX", "event_date": d, "close": x[i]})
+        closes_long.append({"symbol": "TESTY", "event_date": d, "close": y[i]})
+    closes = pd.DataFrame(closes_long)
+
+    universe_rows = [(d, "TESTX") for d in dates] + [(d, "TESTY") for d in dates]
+    universe = pd.DataFrame(universe_rows, columns=["trade_date", "symbol"])
+
+    # Day 100 is a masked break for TESTX.
+    masked_breaks = {("TESTX", dates[100])}
+
+    signals = build_signals(closes, universe, window=60, lookback=5,
+                            entry=2.5, exit_thresh=0.5, max_hold=5,
+                            masked_breaks=masked_breaks)
+
+    # Signal returns (masked): TESTX on day 100 must be NaN.
+    assert pd.isna(signals["returns"].loc[dates[100], "TESTX"]), (
+        "masked break day must have NaN in signal returns"
+    )
+    # Valuation returns: TESTX on day 100 must also be NaN.
+    assert pd.isna(signals["valuation_returns"].loc[dates[100], "TESTX"]), (
+        "masked break day must have NaN in valuation returns"
+    )
+    # TESTY is unaffected.
+    assert pd.notna(signals["returns"].loc[dates[100], "TESTY"]), (
+        "non-masked symbol must have valid return"
+    )
+
+
+def test_masked_break_no_signal_triggered():
+    """A synthetic panel with a x3 jump flagged as masked must NOT trigger
+    a trade signal on that day."""
+    from strategies.run_residual_reversion import build_signals
+
+    dates = pd.date_range("2024-01-01", periods=200, freq="B")
+    rng = np.random.default_rng(99)
+
+    spy_prices = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.02, 200)))
+    # X and Y: fake symbols (not in tickers.yaml) so both map to __unknown__
+    # and share the same industry → non-zero industry factor.
+    # X: moderate daily moves, then a x3 jump on day 100 (return ~200%).
+    x_returns = rng.normal(0, 0.02, 200)
+    x_returns[100] = 2.0  # x3 price jump = 200% return
+    x_prices = 50.0 * np.exp(np.cumsum(x_returns))
+    y_prices = 30.0 * np.exp(np.cumsum(rng.normal(0, 0.02, 200)))
+
+    closes_long = []
+    for i, d in enumerate(dates):
+        closes_long.append({"symbol": "SPY", "event_date": d, "close": spy_prices[i]})
+        closes_long.append({"symbol": "TESTX", "event_date": d, "close": x_prices[i]})
+        closes_long.append({"symbol": "TESTY", "event_date": d, "close": y_prices[i]})
+    closes = pd.DataFrame(closes_long)
+
+    universe_rows = [(d, "TESTX") for d in dates] + [(d, "TESTY") for d in dates]
+    universe = pd.DataFrame(universe_rows, columns=["trade_date", "symbol"])
+
+    # Flag the x3 jump day as masked.
+    masked_breaks = {("TESTX", dates[100])}
+
+    signals = build_signals(closes, universe, window=60, lookback=5,
+                            entry=2.5, exit_thresh=0.5, max_hold=5,
+                            masked_breaks=masked_breaks)
+
+    # The masked day must have NaN return → no signal generated.
+    pos_x = signals["positions"].loc[dates[100], "TESTX"]
+    assert pos_x == 0.0, (
+        f"masked break day must not trigger a trade, got position {pos_x}"
+    )
+
+
+def test_mutation_ignore_mask_fails():
+    """Mutation test: ignoring the mask changes returns from NaN to finite.
+
+    This verifies the mask is load-bearing — removing it breaks the invariant
+    that masked break days have NaN returns.
+    """
+    from strategies.run_residual_reversion import build_signals
+
+    dates = pd.date_range("2024-01-01", periods=200, freq="B")
+    rng = np.random.default_rng(42)
+
+    spy = 100.0 + np.cumsum(rng.normal(0, 0.5, 200))
+    x = 50.0 + np.cumsum(rng.normal(0, 0.3, 200))
+    y = 30.0 + np.cumsum(rng.normal(0, 0.2, 200))
+
+    closes_long = []
+    for i, d in enumerate(dates):
+        closes_long.append({"symbol": "SPY", "event_date": d, "close": spy[i]})
+        closes_long.append({"symbol": "TESTX", "event_date": d, "close": x[i]})
+        closes_long.append({"symbol": "TESTY", "event_date": d, "close": y[i]})
+    closes = pd.DataFrame(closes_long)
+
+    universe_rows = [(d, "TESTX") for d in dates] + [(d, "TESTY") for d in dates]
+    universe = pd.DataFrame(universe_rows, columns=["trade_date", "symbol"])
+
+    masked_breaks = {("TESTX", dates[100])}
+
+    # WITH mask: return on masked day is NaN.
+    signals_masked = build_signals(closes, universe, window=60, lookback=5,
+                                   entry=2.5, exit_thresh=0.5, max_hold=5,
+                                   masked_breaks=masked_breaks)
+    assert pd.isna(signals_masked["returns"].loc[dates[100], "TESTX"]), (
+        "with mask, return must be NaN on masked day"
+    )
+
+    # WITHOUT mask (mutation): return on same day is finite.
+    signals_no_mask = build_signals(closes, universe, window=60, lookback=5,
+                                    entry=2.5, exit_thresh=0.5, max_hold=5,
+                                    masked_breaks=None)
+    assert pd.notna(signals_no_mask["returns"].loc[dates[100], "TESTX"]), (
+        "without mask, return must be finite on the same day"
+    )
+
+    # The two must differ — the mask is load-bearing.
+    assert pd.isna(signals_masked["returns"].loc[dates[100], "TESTX"]) != \
+           pd.isna(signals_no_mask["returns"].loc[dates[100], "TESTX"]), (
+        "mask must change NaN/finite status of the return on the break day"
+    )

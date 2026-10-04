@@ -1,4 +1,8 @@
-# Residual mean-reversion — round 9 (real data)
+# SUPERSEDED — Residual mean-reversion — round 9 (real data)
+
+> **SUPERSEDED by r10** — used unadjusted prices from `bronze_ohlcv_day`.
+> Split events (e.g. AMZN 2022-06-06) contaminated returns. See r10 for
+> split-adjusted results from `silver_ohlcv_day_adjusted`.
 
 Market/industry residual mean-reversion on the point-in-time top-300
 tradable universe (`gold_tradable_universe`), 2023-01-04 → 2026-10-01.
