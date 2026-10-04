@@ -17,6 +17,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Import real databricks SDK types before the module-scoped mock patches databricks
+try:
+    from databricks.sdk.service.workspace import SecretsAPI, GetSecretResponse
+except ImportError:
+    SecretsAPI = None
+    GetSecretResponse = None
+
 # pyspark/databricks fakes installed via module-scoped fixture below
 
 from pipelines.sec_rag_ingest import (  # noqa: E402
@@ -2940,24 +2947,34 @@ class TestResolveUserAgent:
     def test_env_empty_falls_through(self, monkeypatch):
         """Empty env var falls through to secret path (or raises)."""
         from pipelines.sec_rag_ingest import _resolve_user_agent
+        from unittest.mock import MagicMock, patch
 
         monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
 
         # No dbutils or SDK available → should raise ValueError
-        with pytest.raises(ValueError, match="SEC_EDGAR_USER_AGENT not found"):
-            _resolve_user_agent()
+        with patch.dict("sys.modules", {
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
+            "databricks.sdk": MagicMock(),
+        }):
+            with pytest.raises(ValueError, match="SEC_EDGAR_USER_AGENT not found"):
+                _resolve_user_agent()
 
     def test_missing_both_raises_clear_error_naming_secret(self, monkeypatch):
         """Missing env and no secret → error names the scope and key."""
         from pipelines.sec_rag_ingest import _resolve_user_agent
+        from unittest.mock import MagicMock, patch
 
         monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
 
-        with pytest.raises(ValueError, match="evangoh_capstone"):
-            _resolve_user_agent(secret_scope="evangoh_capstone", secret_key="sec_edgar_user_agent")
+        with patch.dict("sys.modules", {
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
+            "databricks.sdk": MagicMock(),
+        }):
+            with pytest.raises(ValueError, match="evangoh_capstone"):
+                _resolve_user_agent(secret_scope="evangoh_capstone", secret_key="sec_edgar_user_agent")
 
-        with pytest.raises(ValueError, match="sec_edgar_user_agent"):
-            _resolve_user_agent(secret_scope="evangoh_capstone", secret_key="sec_edgar_user_agent")
+            with pytest.raises(ValueError, match="sec_edgar_user_agent"):
+                _resolve_user_agent(secret_scope="evangoh_capstone", secret_key="sec_edgar_user_agent")
 
     def test_placeholder_rejected(self, monkeypatch):
         """Value containing 'example' is rejected by _validate_user_agent."""
@@ -2987,7 +3004,9 @@ class TestResolveUserAgent:
         assert "source=env" in caplog.text
 
     def test_sdk_base64_decode(self, monkeypatch):
-        """WorkspaceClient secret value is base64-decoded."""
+        """WorkspaceClient secret value is base64-decoded via get_secret()."""
+        if SecretsAPI is None:
+            pytest.skip("databricks.sdk not available")
         import base64
         from unittest.mock import MagicMock, patch
 
@@ -2996,21 +3015,20 @@ class TestResolveUserAgent:
         raw_value = "MyAgent my@email.com"
         encoded_value = base64.b64encode(raw_value.encode("utf-8")).decode("utf-8")
 
-        mock_response = MagicMock()
-        mock_response.value = encoded_value
+        mock_response = GetSecretResponse(key="sec_edgar_user_agent", value=encoded_value)
+
+        mock_secrets = MagicMock(spec=SecretsAPI)
+        mock_secrets.get_secret.return_value = mock_response
 
         mock_client = MagicMock()
-        mock_client.secrets.get_secret_value.return_value = mock_response
+        mock_client.secrets = mock_secrets
 
         mock_ws_module = MagicMock()
         mock_ws_module.WorkspaceClient.return_value = mock_client
 
-        mock_ipython = MagicMock()
-        mock_ipython.get_ipython.return_value.user_ns = {}
-
         with patch.dict("sys.modules", {
-            "IPython": mock_ipython,
             "databricks.sdk": mock_ws_module,
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
         }):
             from pipelines.sec_rag_ingest import _resolve_user_agent
             result = _resolve_user_agent()
@@ -3022,6 +3040,8 @@ class TestResolveUserAgent:
 
     def test_sdk_base64_decode_mutation_skip_fails(self, monkeypatch):
         """Mutation: skip base64 decode → result is the encoded value (test FAILS)."""
+        if SecretsAPI is None:
+            pytest.skip("databricks.sdk not available")
         import base64
         from unittest.mock import MagicMock, patch
 
@@ -3030,21 +3050,20 @@ class TestResolveUserAgent:
         raw_value = "MyAgent my@email.com"
         encoded_value = base64.b64encode(raw_value.encode("utf-8")).decode("utf-8")
 
-        mock_response = MagicMock()
-        mock_response.value = encoded_value
+        mock_response = GetSecretResponse(key="sec_edgar_user_agent", value=encoded_value)
+
+        mock_secrets = MagicMock(spec=SecretsAPI)
+        mock_secrets.get_secret.return_value = mock_response
 
         mock_client = MagicMock()
-        mock_client.secrets.get_secret_value.return_value = mock_response
+        mock_client.secrets = mock_secrets
 
         mock_ws_module = MagicMock()
         mock_ws_module.WorkspaceClient.return_value = mock_client
 
-        mock_ipython = MagicMock()
-        mock_ipython.get_ipython.return_value.user_ns = {}
-
         with patch.dict("sys.modules", {
-            "IPython": mock_ipython,
             "databricks.sdk": mock_ws_module,
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
         }):
             from pipelines.sec_rag_ingest import _resolve_user_agent
             result = _resolve_user_agent()
@@ -3055,6 +3074,24 @@ class TestResolveUserAgent:
             "Mutation detected: base64 decode was skipped. "
             "Result is the raw base64-encoded value, not the decoded string."
         )
+
+    def test_sdk_wrong_method_name_fails(self, monkeypatch):
+        """Mutation: rename get_secret back to get_secret_value → FAIL.
+
+        MagicMock(spec=SecretsAPI) constrains to the real API.
+        get_secret_value does not exist on SecretsAPI — accessing it
+        raises AttributeError, proving production code MUST use get_secret.
+        """
+        if SecretsAPI is None:
+            pytest.skip("databricks.sdk not available")
+        from unittest.mock import MagicMock
+
+        mock_secrets = MagicMock(spec=SecretsAPI)
+        # get_secret exists (this is the correct method)
+        assert hasattr(mock_secrets, "get_secret")
+        # get_secret_value does NOT exist on the real API
+        with pytest.raises(AttributeError, match="get_secret_value"):
+            mock_secrets.get_secret_value
 
     def test_log_value_leak_mutation_fails(self, monkeypatch, caplog):
         """Mutation: if the value is logged, this test FAILS."""
@@ -3072,21 +3109,54 @@ class TestResolveUserAgent:
                 f"Value leaked in log record: {record.getMessage()}"
             )
 
+    def test_sdk_exception_logs_type_not_value(self, monkeypatch, caplog):
+        """SDK exception: WARNING logs exception TYPE only, never the value."""
+        if SecretsAPI is None:
+            pytest.skip("databricks.sdk not available")
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        mock_secrets = MagicMock()
+        mock_secrets.get_secret.side_effect = RuntimeError("secret-value-leaked-here")
+
+        mock_client = MagicMock()
+        mock_client.secrets = mock_secrets
+
+        mock_ws_module = MagicMock()
+        mock_ws_module.WorkspaceClient.return_value = mock_client
+
+        with patch.dict("sys.modules", {
+            "databricks.sdk": mock_ws_module,
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
+        }):
+            from pipelines.sec_rag_ingest import _resolve_user_agent
+            with pytest.raises(ValueError, match="SEC_EDGAR_USER_AGENT not found"):
+                with caplog.at_level("WARNING", logger="pipelines.sec_rag_ingest"):
+                    _resolve_user_agent()
+
+        # Must log exception TYPE (RuntimeError), never the value
+        assert any("RuntimeError" in r.getMessage() for r in caplog.records), (
+            "Expected exception TYPE in WARNING log"
+        )
+        assert not any("secret-value-leaked-here" in r.getMessage() for r in caplog.records), (
+            "Secret value leaked into logs"
+        )
+
     def test_custom_scope_key_passed_through(self, monkeypatch):
-        """Custom scope/key are used when env is not set."""
+        """Custom scope/key are used when env is not set (via sdk_runtime dbutils)."""
         from pipelines.sec_rag_ingest import _resolve_user_agent
         from unittest.mock import MagicMock, patch
 
         monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
 
-        mock_ipython = MagicMock()
-        mock_ipython.get_ipython.return_value.user_ns = {
-            "dbutils": MagicMock(),
-        }
-        mock_dbutils = mock_ipython.get_ipython.return_value.user_ns["dbutils"]
+        mock_dbutils = MagicMock()
         mock_dbutils.secrets.get.return_value = "CustomAgent custom@test.com"
 
-        with patch.dict("sys.modules", {"IPython": mock_ipython}):
+        mock_runtime = MagicMock()
+        mock_runtime.dbutils = mock_dbutils
+
+        with patch.dict("sys.modules", {"databricks.sdk.runtime": mock_runtime}):
             result = _resolve_user_agent(
                 secret_scope="my_custom_scope",
                 secret_key="my_custom_key",
@@ -3188,22 +3258,28 @@ class TestRunIngestUserAgentResolution:
 
     def test_run_ingest_missing_env_raises(self, monkeypatch):
         """run_ingest raises when SEC_EDGAR_USER_AGENT is not set and no secret available."""
+        from unittest.mock import MagicMock, patch
+
         monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
 
         clock = FakeClock()
         http = FakeHttpClient()
 
-        with pytest.raises(ValueError, match="SEC_EDGAR_USER_AGENT not found"):
-            run_ingest(
-                catalog="test", schema="test",
-                start_date="2024-09-01",
-                universe_reader=FakeUniverseReader([]),
-                accession_reader=FakeAccessionReader(),
-                data_writer=FakeDataWriter(),
-                http_client=http,
-                clock=clock,
-                cache_path=str(FIXTURES / "company_tickers.json"),
-            )
+        with patch.dict("sys.modules", {
+            "databricks.sdk.runtime": MagicMock(dbutils=None),
+            "databricks.sdk": MagicMock(),
+        }):
+            with pytest.raises(ValueError, match="SEC_EDGAR_USER_AGENT not found"):
+                run_ingest(
+                    catalog="test", schema="test",
+                    start_date="2024-09-01",
+                    universe_reader=FakeUniverseReader([]),
+                    accession_reader=FakeAccessionReader(),
+                    data_writer=FakeDataWriter(),
+                    http_client=http,
+                    clock=clock,
+                    cache_path=str(FIXTURES / "company_tickers.json"),
+                )
 
     def test_run_ingest_placeholder_raises(self, monkeypatch):
         """run_ingest raises when SEC_EDGAR_USER_AGENT contains 'example'."""

@@ -92,7 +92,7 @@ def _resolve_user_agent(
     Resolution order:
       1. Environment variable ``SEC_EDGAR_USER_AGENT``
       2. Databricks secret via ``dbutils.secrets.get`` (cluster notebooks)
-      3. Databricks secret via ``WorkspaceClient().secrets.get_secret_value`` (SDK)
+      3. Databricks secret via ``WorkspaceClient().secrets.get_secret`` (SDK)
 
     The SDK returns a base64-encoded value — decoded automatically.
     Never logs/prints the actual value; logs only the source.
@@ -104,10 +104,22 @@ def _resolve_user_agent(
         logger.info("SEC_EDGAR_USER_AGENT resolved from source=env")
         return env_val
 
-    # Try dbutils (available on Databricks clusters)
+    # Try dbutils (serverless spark_python_task has no IPython kernel)
     try:
-        import IPython  # noqa: F811
-        dbutils = IPython.get_ipython().user_ns.get("dbutils")  # type: ignore[union-attr]
+        from databricks.sdk.runtime import dbutils as sdk_dbutils  # type: ignore[import-not-found]
+        if sdk_dbutils is not None:
+            secret_val = sdk_dbutils.secrets.get(scope=secret_scope, key=secret_key)
+            if secret_val:
+                logger.info(
+                    "SEC_EDGAR_USER_AGENT resolved from source=secret (sdk_runtime, scope=%s)",
+                    secret_scope,
+                )
+                return secret_val
+    except Exception as exc:
+        logger.warning("sdk_runtime dbutils unavailable: %s", type(exc).__name__)
+
+    try:
+        dbutils = globals().get("dbutils")
         if dbutils is not None:
             secret_val = dbutils.secrets.get(scope=secret_scope, key=secret_key)
             if secret_val:
@@ -116,15 +128,15 @@ def _resolve_user_agent(
                     secret_scope,
                 )
                 return secret_val
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("globals dbutils unavailable: %s", type(exc).__name__)
 
     # Try WorkspaceClient SDK (base64-encoded response)
     try:
         from databricks.sdk import WorkspaceClient
 
         client = WorkspaceClient()
-        resp = client.secrets.get_secret_value(scope=secret_scope, key=secret_key)
+        resp = client.secrets.get_secret(scope=secret_scope, key=secret_key)
         if resp.value is not None:
             decoded = base64.b64decode(resp.value).decode("utf-8")
             logger.info(
@@ -132,8 +144,8 @@ def _resolve_user_agent(
                 secret_scope,
             )
             return decoded
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("SDK secret resolution failed: %s", type(exc).__name__)
 
     raise ValueError(
         f"SEC_EDGAR_USER_AGENT not found. Set the environment variable or create "
