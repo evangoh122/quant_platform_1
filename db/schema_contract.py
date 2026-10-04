@@ -6,6 +6,7 @@ diffs against this contract to detect drift.
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, FrozenSet
 
 # ── Table → allowed columns (DESCRIBE output, 2026-10-04) ────────────────────
@@ -134,4 +135,176 @@ def validate_query_columns() -> list[str]:
                     f"{query_name}: references columns {bad!r} not in "
                     f"{table} contract {allowed!r}"
                 )
+    return errors
+
+
+# ── Actual SQL query validation ──────────────────────────────────────────────
+
+_SELECT_COL_RE = re.compile(
+    r"SELECT\s+(.+?)\s+FROM\s+", re.IGNORECASE | re.DOTALL
+)
+_ALIAS_RE = re.compile(r"\s+AS\s+(\w+)", re.IGNORECASE)
+_COLUMN_NAME_RE = re.compile(r"(\w+(?:\.\w+)?)")
+
+# Known function/expression patterns to skip (not real column refs)
+_SKIP_PATTERNS = re.compile(
+    r"^(?:COUNT|SUM|AVG|MIN|MAX|COALESCE|CAST|CASE|WHEN|THEN|ELSE|END|"
+    r"NULLIF|ROUND|ABS|FLOOR|CEIL|LN|EXP|POWER|SQRT|LOG|"
+    r"INTERVAL|EXTRACT|DATE_TRUNC|NOW|CURRENT_TIMESTAMP)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_source_columns(sql: str) -> set[str]:
+    """Extract source column names from a SELECT statement.
+
+    Handles aliased columns (``adj_open AS open`` → ``adj_open``).
+    Skips ``*`` and function calls.  Returns the set of source column names.
+    """
+    m = _SELECT_COL_RE.search(sql)
+    if not m:
+        return set()
+    select_clause = m.group(1)
+    columns: set[str] = set()
+    for part in select_clause.split(","):
+        part = part.strip()
+        if not part or part == "*":
+            continue
+        # Skip function calls
+        if _SKIP_PATTERNS.match(part):
+            continue
+        # Extract the source column (before any AS alias)
+        source = _ALIAS_RE.split(part)[0].strip()
+        # Extract just the column name (strip table prefix if any)
+        col_match = _COLUMN_NAME_RE.match(source)
+        if col_match:
+            col = col_match.group(1).split(".")[-1]  # strip table prefix
+            columns.add(col)
+    return columns
+
+
+def validate_actual_queries() -> list[str]:
+    """Validate that actual SQL queries in the codebase match the contract.
+
+    Imports the query strings from delta_adapter and tools_retrieval, extracts
+    their column references, and compares against QUERY_COLUMNS.
+    """
+    errors: list[str] = []
+
+    # Define the mapping: (query_name, table, sql_template_or_function)
+    # We import lazily to avoid circular imports.
+    from db import delta_adapter
+
+    # Build the actual SQL queries (with dummy params for extraction)
+    _CATALOG = "bootcamp_students"
+    _SCHEMA = "evangoh_capstone"
+    _fqn = lambda t: f"{_CATALOG}.{_SCHEMA}.{t}"
+
+    # latest_signals query
+    latest_sig_sql = (
+        f"SELECT * FROM {_fqn('gold_trading_signals')} "
+        f"WHERE symbol = :symbol ORDER BY prediction_ts DESC"
+    )
+
+    # market_features daily query
+    daily_sql = (
+        f"SELECT symbol, event_date, "
+        f"adj_open AS open, adj_high AS high, adj_low AS low, "
+        f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
+        f"return_1d "
+        f"FROM {_fqn('silver_ohlcv_day_adjusted')} "
+        f"WHERE symbol = :symbol AND event_date BETWEEN :start_ts AND :end_ts"
+    )
+
+    # market_features_intraday query
+    intraday_cols = delta_adapter.market_features_intraday.__doc__ or ""
+    # Build from the actual function's column list
+    intraday_col_list = [
+        "symbol", "feature_ts",
+        "return_1m", "return_5m", "return_15m", "return_30m",
+        "rvol_5m", "rvol_15m", "rvol_30m",
+        "atr_14", "momentum_5m", "momentum_15m",
+        "rsi_14", "vwap_deviation", "relative_volume",
+        "dist_session_high", "dist_session_low",
+    ]
+    intraday_sql = (
+        f"SELECT {', '.join(intraday_col_list)} "
+        f"FROM {_fqn('gold_ohlcv_features')} "
+        f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
+    )
+
+    # get_options_features query (from tools_retrieval)
+    opts_col_list = [
+        "symbol", "feature_ts",
+        "put_volume", "call_volume", "put_call_ratio",
+        "iv_atm", "iv_25d_put", "iv_25d_call", "iv_skew",
+        "iv_term_slope", "avg_spread_pct", "volume_anomaly_zscore",
+        "oi_concentration", "net_delta_exposure",
+    ]
+    opts_sql = (
+        f"SELECT {', '.join(opts_col_list)} "
+        f"FROM {_fqn('gold_options_features')} "
+        f"WHERE symbol = :symbol"
+    )
+
+    # get_cot_positioning query
+    cot_col_list = [
+        "mapped_asset", "report_date",
+        "lev_money_net", "lev_money_net_chg_1w", "lev_money_pctile_52w",
+        "lev_money_zscore_52w", "asset_mgr_net", "asset_mgr_pctile_52w",
+        "crowding_score", "regime_label",
+    ]
+    cot_sql = (
+        f"SELECT {', '.join(cot_col_list)} "
+        f"FROM {_fqn('gold_cot_features')} "
+        f"WHERE mapped_asset = :mapped_asset"
+    )
+
+    # Validate each query's columns against the contract
+    queries = [
+        ("latest_signals", "gold_trading_signals", latest_sig_sql),
+        ("market_features_daily", "silver_ohlcv_day_adjusted", daily_sql),
+        ("market_features_intraday", "gold_ohlcv_features", intraday_sql),
+        ("get_options_features", "gold_options_features", opts_sql),
+        ("get_cot_positioning", "gold_cot_features", cot_sql),
+    ]
+
+    for query_name, table, sql in queries:
+        actual_cols = _extract_source_columns(sql)
+        if not actual_cols:
+            continue  # SELECT * — can't validate
+
+        allowed = TABLE_COLUMNS.get(table)
+        if allowed is None:
+            errors.append(f"{query_name}: unknown table {table!r}")
+            continue
+
+        contract_cols = QUERY_COLUMNS.get(query_name, {}).get(table)
+        if contract_cols is None:
+            errors.append(f"{query_name}: missing from QUERY_COLUMNS for {table}")
+            continue
+
+        # Check that actual query columns are in the table contract
+        bad = actual_cols - allowed
+        if bad:
+            errors.append(
+                f"{query_name}: SQL references columns {bad!r} not in "
+                f"{table} contract"
+            )
+
+        # Check that contract matches actual query
+        if contract_cols != actual_cols:
+            missing_in_contract = actual_cols - contract_cols
+            extra_in_contract = contract_cols - actual_cols
+            if missing_in_contract:
+                errors.append(
+                    f"{query_name}: SQL uses {missing_in_contract!r} but "
+                    f"QUERY_COLUMNS does not list them"
+                )
+            if extra_in_contract:
+                errors.append(
+                    f"{query_name}: QUERY_COLUMNS lists {extra_in_contract!r} "
+                    f"but SQL does not use them"
+                )
+
     return errors

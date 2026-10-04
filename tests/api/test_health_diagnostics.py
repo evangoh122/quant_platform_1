@@ -1025,6 +1025,33 @@ def test_schema_contract_rejects_bad_column():
         sc.QUERY_COLUMNS["market_features_intraday"]["gold_ohlcv_features"] = original
 
 
+def test_actual_queries_match_contract():
+    """Actual SQL queries in delta_adapter/tools_retrieval match the contract.
+
+    MUTATION: change intraday query to select 'open' → FAIL because 'open' is
+    not in the gold_ohlcv_features contract.
+    """
+    from db.schema_contract import validate_actual_queries
+
+    errors = validate_actual_queries()
+    assert errors == [], f"Actual query contract errors: {errors}"
+
+
+def test_actual_queries_catch_bad_intraday_column():
+    """Mutation: add 'open' to intraday column list → contract fails."""
+    from db.schema_contract import validate_actual_queries, QUERY_COLUMNS
+    import db.schema_contract as sc
+
+    # Mutate: add 'open' to the intraday contract (simulates a bad SQL change)
+    original = sc.QUERY_COLUMNS["market_features_intraday"]["gold_ohlcv_features"]
+    sc.QUERY_COLUMNS["market_features_intraday"]["gold_ohlcv_features"] = original | {"open"}
+    try:
+        errors = validate_actual_queries()
+        assert any("open" in e for e in errors), f"Expected 'open' error, got {errors}"
+    finally:
+        sc.QUERY_COLUMNS["market_features_intraday"]["gold_ohlcv_features"] = original
+
+
 # ── 16. Signals: no_signals_published explicit state ──────────────────────────
 
 def test_signals_empty_table_returns_no_signals_published(client, monkeypatch):
