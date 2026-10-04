@@ -103,9 +103,10 @@ derived_columns:
       - symbol
       - event_date
       - return_1d
-      - rel_perf            # computed: entity return - benchmark return
-      - benchmark           # hardcoded 'SPY'
-      - information_available_ts
+      - cumulative_return      # computed: EXP(SUM(LN(1 + return_1d))) over window
+      - rel_perf               # computed: entity cumulative_return - benchmark cumulative_return
+      - benchmark              # parameterized: :benchmark bind parameter (SPY, QQQ, RSP)
+      - information_available_ts  # GREATEST of entity and benchmark availability
 
   serve_options_metrics_v1:
     input_from: gold_options_features

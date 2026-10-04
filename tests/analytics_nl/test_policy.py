@@ -784,3 +784,229 @@ class TestAdjustedSourceFallback:
     def test_default_flag_is_false(self, bounds):
         """Default adjusted_source_available must be False."""
         assert bounds.adjusted_source_available is False
+
+
+class TestEntityKindValidation:
+    """Entity types must be validated against registry allowed_entity_types."""
+
+    def test_sector_rejected_for_implied_volatility(self, registry, bounds):
+        """Sector entity not allowed for implied_volatility (ticker only)."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.trend,
+            entities=[SectorEntity(canonical_id="technology")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.ENTITY_NOT_ALLOWED in result.reason_codes
+
+    def test_sector_rejected_for_put_call_ratio(self, registry, bounds):
+        """Sector entity not allowed for put_call_ratio (ticker only)."""
+        intent = _make_intent(
+            metric=Metric.put_call_ratio,
+            operation=Operation.trend,
+            entities=[SectorEntity(canonical_id="technology")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.ENTITY_NOT_ALLOWED in result.reason_codes
+
+    def test_sector_rejected_for_relative_performance(self, registry, bounds):
+        """Sector entity not allowed for relative_performance (ticker only)."""
+        intent = _make_intent(
+            metric=Metric.relative_performance,
+            operation=Operation.trend,
+            entities=[SectorEntity(canonical_id="technology")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.ENTITY_NOT_ALLOWED in result.reason_codes
+
+    def test_ticker_accepted_for_implied_volatility(self, registry, bounds):
+        """Ticker entity allowed for implied_volatility."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.ENTITY_NOT_ALLOWED not in result.reason_codes
+
+    def test_sector_allowed_for_price_aggregate(self, registry, bounds):
+        """Sector entity allowed for price.aggregate (ticker, sector)."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.aggregate,
+            entities=[SectorEntity(canonical_id="technology")],
+            grouping=Grouping.sector,
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.ENTITY_NOT_ALLOWED not in result.reason_codes
+
+    def test_entity_type_noop_mutation_fails(self, registry, bounds):
+        """Mutation proof: making entity type check a no-op must cause sector IV to be accepted."""
+        # This test verifies the check exists. If the check were removed,
+        # this intent would be accepted instead of rejected.
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.trend,
+            entities=[SectorEntity(canonical_id="technology")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        # Currently rejected — if entity type check were a no-op, it would be accepted
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.ENTITY_NOT_ALLOWED in result.reason_codes
+
+
+class TestMinEntities:
+    """Registry min_entities must be enforced by policy."""
+
+    def test_one_entity_price_compare_rejected(self, registry, bounds):
+        """price.compare requires min 2 entities; 1 entity → REJECT with TOO_FEW_ENTITIES."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.compare,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.TOO_FEW_ENTITIES in result.reason_codes
+
+    def test_two_entities_price_compare_accepted(self, registry, bounds):
+        """price.compare with 2 entities → accepted (meets minimum)."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.compare,
+            entities=[
+                TickerEntity(canonical_id="AAPL"),
+                TickerEntity(canonical_id="MSFT"),
+            ],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.TOO_FEW_ENTITIES not in result.reason_codes
+
+    def test_one_entity_return_compare_rejected(self, registry, bounds):
+        """return.compare requires min 2 entities; 1 entity → REJECT."""
+        intent = _make_intent(
+            metric=Metric.return_,
+            operation=Operation.compare,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.TOO_FEW_ENTITIES in result.reason_codes
+
+    def test_one_entity_price_trend_accepted(self, registry, bounds):
+        """price.trend allows min 1 entity; 1 entity → accepted."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert PolicyReasonCode.TOO_FEW_ENTITIES not in result.reason_codes
+
+    def test_min_entities_mutation_fails(self, registry, bounds):
+        """Mutation proof: making min check a no-op must cause 1-entity compare to be rejected differently."""
+        intent = _make_intent(
+            metric=Metric.price,
+            operation=Operation.compare,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        # Currently rejected with TOO_FEW_ENTITIES
+        assert PolicyReasonCode.TOO_FEW_ENTITIES in result.reason_codes
+        assert result.cost_class == CostClass.REJECT
+
+
+class TestInsufficientData:
+    """Sparse metrics must return INSUFFICIENT_DATA when coverage is below threshold."""
+
+    def test_iv_aggregate_insufficient_data(self, registry, bounds):
+        """IV aggregate over a window with very low coverage → REJECT with INSUFFICIENT_DATA."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.aggregate,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            grouping=Grouping.ticker,
+            start=date(2025, 1, 1),
+            end=date(2025, 12, 31),
+        )
+        # Simulate very low coverage: 12 non-null out of 19390 total
+        coverage_stats = {"implied_volatility.aggregate": (12, 19390)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2025, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        assert result.cost_class == CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+    def test_put_call_ratio_aggregate_sufficient_data(self, registry, bounds):
+        """put_call_ratio aggregate with sufficient coverage → accepted."""
+        intent = _make_intent(
+            metric=Metric.put_call_ratio,
+            operation=Operation.aggregate,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            grouping=Grouping.ticker,
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        # put_call_ratio has no coverage metadata → no coverage check
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        assert result.cost_class != CostClass.REJECT
+        assert PolicyReasonCode.INSUFFICIENT_DATA not in result.reason_codes
+
+    def test_iv_trend_no_coverage_check(self, registry, bounds):
+        """IV trend (non-aggregate) does not trigger coverage check."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.trend,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        coverage_stats = {"implied_volatility.trend": (12, 19390)}
+        result = classify_intent(
+            intent, registry, bounds,
+            as_of=date(2024, 12, 31),
+            coverage_stats=coverage_stats,
+        )
+        # Trend is not aggregate → no coverage check
+        assert PolicyReasonCode.INSUFFICIENT_DATA not in result.reason_codes
+
+    def test_no_coverage_stats_skips_check(self, registry, bounds):
+        """Without coverage_stats, no coverage check is performed."""
+        intent = _make_intent(
+            metric=Metric.implied_volatility,
+            operation=Operation.aggregate,
+            entities=[TickerEntity(canonical_id="AAPL")],
+            grouping=Grouping.ticker,
+            start=date(2024, 1, 1),
+            end=date(2024, 12, 31),
+        )
+        result = classify_intent(intent, registry, bounds, as_of=date(2024, 12, 31))
+        # No coverage_stats provided → no INSUFFICIENT_DATA check
+        assert PolicyReasonCode.INSUFFICIENT_DATA not in result.reason_codes

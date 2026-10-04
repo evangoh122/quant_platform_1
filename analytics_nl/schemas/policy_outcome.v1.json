@@ -28,7 +28,9 @@
         "ENTITY_NOT_ALLOWED",
         "FUTURE_DATE",
         "END_BEFORE_START",
-        "UNADJUSTED_CORPORATE_ACTION"
+        "UNADJUSTED_CORPORATE_ACTION",
+        "TOO_FEW_ENTITIES",
+        "INSUFFICIENT_DATA"
       ],
       "title": "PolicyReasonCode",
       "type": "string"

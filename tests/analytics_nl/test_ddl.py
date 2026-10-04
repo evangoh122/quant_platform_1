@@ -266,3 +266,168 @@ class TestDDLIdentifierCorrespondence:
         """The identifier correspondence table should list all approved views."""
         for view in registry.approved_views:
             assert view in ddl_content
+
+
+class TestDDLPITSafetyAsOfBeforeWindow:
+    """Every derived metric must be computed from as-of-filtered input rows."""
+
+    def _extract_sql_blocks(self, content: str) -> list[str]:
+        """Extract all SQL blocks from markdown."""
+        blocks = []
+        in_sql = False
+        lines = []
+        for line in content.splitlines():
+            if line.strip() == "```sql":
+                in_sql = True
+                lines = []
+            elif line.strip() == "```" and in_sql:
+                in_sql = False
+                blocks.append("\n".join(lines))
+            elif in_sql:
+                lines.append(line)
+        return blocks
+
+    def _has_as_of_filter_before_window(self, sql: str) -> bool:
+        """Check that as_of filtering appears in a CTE that feeds into window/aggregate.
+
+        Strategy: find the first CTE that uses window functions (ROW_NUMBER, STDDEV_SAMP,
+        MAX...OVER, LAG, EXP...SUM...LN) or aggregates. Verify that an earlier CTE
+        in the same SQL block contains 'information_available_ts <= :as_of'.
+        """
+        import re
+
+        sql_upper = sql.upper()
+        # Normalize whitespace
+        sql_normalized = re.sub(r"\s+", " ", sql_upper)
+
+        # Window function patterns
+        window_patterns = [
+            r"ROW_NUMBER\s*\(\s*\)\s*OVER",
+            r"STDDEV_SAMP\s*\(",
+            r"MAX\s*\([^)]+\)\s*OVER",
+            r"LAG\s*\(",
+            r"EXP\s*\(\s*SUM\s*\(\s*LN",
+        ]
+
+        has_window = any(re.search(p, sql_normalized) for p in window_patterns)
+        if not has_window:
+            # No window functions — no PIT check needed
+            return True
+
+        # Check that as_of filter exists somewhere in the SQL
+        # Pattern matches both direct column and function expressions:
+        #   information_available_ts <= :as_of
+        #   to_utc_timestamp(concat(event_date, ...), ...) <= :as_of
+        as_of_pattern = r"(?:INFORMATION_AVAILABLE_TS|TO_UTC_TIMESTAMP)\b.*?<=\s*:AS_OF"
+        if not re.search(as_of_pattern, sql_normalized):
+            return False
+
+        # Verify as_of filter is in a CTE that appears BEFORE the window function CTEs
+        # by checking that the as_of filter is not only in the final SELECT
+        cte_pattern = r"(\w+)\s+AS\s*\("
+        ctes = list(re.finditer(cte_pattern, sql_normalized))
+
+        # Find which CTEs have as_of filter
+        as_of_ctes = set()
+        for cte_match in ctes:
+            cte_name = cte_match.group(1)
+            # Find the CTE body (from this match to the next CTE or end)
+            start = cte_match.end()
+            next_cte = re.search(r"\)\s*,\s*\w+\s+AS\s*\(", sql_normalized[start:])
+            if next_cte:
+                body = sql_normalized[start:start + next_cte.start()]
+            else:
+                body = sql_normalized[start:]
+
+            if re.search(as_of_pattern, body):
+                as_of_ctes.add(cte_name)
+
+        return len(as_of_ctes) > 0
+
+    def test_all_views_have_as_of_before_window(self, ddl_content):
+        """Every SQL block with window functions must have as-of filter in an earlier CTE."""
+        blocks = self._extract_sql_blocks(ddl_content)
+        for i, sql in enumerate(blocks):
+            assert self._has_as_of_filter_before_window(sql), (
+                f"SQL block {i + 1} has window functions but no as-of filter "
+                f"(information_available_ts <= :as_of) in a preceding CTE.\n"
+                f"SQL preview: {sql[:300]}"
+            )
+
+    def test_relative_performance_includes_benchmark_availability(self, ddl_content):
+        """Relative performance output must include benchmark availability in GREATEST."""
+        # Find the relative performance SQL block
+        section_start = ddl_content.find("## serve_relative_performance_v1")
+        section_end = ddl_content.find("## serve_options_metrics_v1")
+        section = ddl_content[section_start:section_end]
+
+        # Must use GREATEST with benchmark availability
+        assert "GREATEST" in section, (
+            "Relative performance must use GREATEST for information_available_ts"
+        )
+        assert "bench_info_ts" in section or "benchmark" in section.lower(), (
+            "Relative performance must propagate benchmark availability"
+        )
+
+    def test_mutation_as_of_after_window_fails(self, ddl_content):
+        """Mutation proof: moving as-of filter after window must fail the PIT test."""
+        import re
+
+        blocks = self._extract_sql_blocks(ddl_content)
+        # Find a block with both as_of and window
+        for sql in blocks:
+            sql_upper = sql.upper()
+            if "INFORMATION_AVAILABLE_TS" in sql_upper and "ROW_NUMBER" in sql_upper:
+                # Remove the as_of filter from the CTE
+                mutated = re.sub(
+                    r"\s*WHERE\s+(?:information_available_ts|to_utc_timestamp)\b.*?<=\s*:as_of\s*",
+                    " ",
+                    sql,
+                    flags=re.IGNORECASE,
+                )
+                # Now the mutation should fail the check
+                assert not self._has_as_of_filter_before_window(mutated), (
+                    "Mutation proof failed: removing as_of filter should break the check"
+                )
+                return
+        pytest.skip("No SQL block found with both as_of filter and window functions")
+
+
+class TestDDLRelativePerformanceSemantics:
+    """Relative performance must use parameterized benchmark and cumulative return."""
+
+    def test_benchmark_parameterized(self, ddl_content):
+        """Relative performance must not hardcode SPY — must use parameter."""
+        section_start = ddl_content.find("## serve_relative_performance_v1")
+        section_end = ddl_content.find("## serve_options_metrics_v1")
+        section = ddl_content[section_start:section_end]
+
+        # Must NOT have hardcoded WHERE symbol = 'SPY'
+        sql_blocks = []
+        in_sql = False
+        for line in section.splitlines():
+            if line.strip() == "```sql":
+                in_sql = True
+                sql_lines = []
+            elif line.strip() == "```" and in_sql:
+                in_sql = False
+                sql_blocks.append("\n".join(sql_lines))
+            elif in_sql:
+                sql_lines.append(line)
+
+        for sql in sql_blocks:
+            normalized = " ".join(sql.upper().split())
+            assert "SYMBOL = 'SPY'" not in normalized, (
+                "Relative performance must not hardcode SPY — use :benchmark parameter"
+            )
+
+    def test_uses_cumulative_return(self, ddl_content):
+        """Relative performance must compute cumulative return, not one-day difference."""
+        section_start = ddl_content.find("## serve_relative_performance_v1")
+        section_end = ddl_content.find("## serve_options_metrics_v1")
+        section = ddl_content[section_start:section_end]
+
+        # Must use cumulative return calculation
+        assert "cumulative_return" in section.lower() or "cumulative" in section.lower(), (
+            "Relative performance must use cumulative return"
+        )

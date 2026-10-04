@@ -40,6 +40,13 @@ class ParameterDef:
 
 
 @dataclass(frozen=True)
+class CoverageMeta:
+    """Coverage metadata for a metric."""
+    availability: str
+    min_coverage_ratio: float
+
+
+@dataclass(frozen=True)
 class RegistryEntry:
     pair_key: str
     layer: str
@@ -56,6 +63,9 @@ class RegistryEntry:
     max_entities: int
     row_limit: int
     entry_version: str
+    min_entities: int = 1
+    allowed_entity_types: tuple[str, ...] = ("ticker", "sector", "index")
+    coverage: CoverageMeta | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,16 @@ def _parse_entry(pair_key: str, raw: dict[str, Any]) -> RegistryEntry:
     row_limit = raw.get("row_limit", 10000)
     entry_version = raw.get("entry_version", "1.0.0")
     description = raw.get("description", "")
+    min_entities = raw.get("min_entities", 1)
+    allowed_entity_types = tuple(raw.get("allowed_entity_types", ["ticker", "sector", "index"]))
+
+    coverage_raw = raw.get("coverage")
+    coverage: CoverageMeta | None = None
+    if coverage_raw is not None:
+        coverage = CoverageMeta(
+            availability=coverage_raw.get("availability", "full"),
+            min_coverage_ratio=coverage_raw.get("min_coverage_ratio", 0.0),
+        )
 
     return RegistryEntry(
         pair_key=pair_key,
@@ -128,6 +148,9 @@ def _parse_entry(pair_key: str, raw: dict[str, Any]) -> RegistryEntry:
         max_entities=max_entities,
         row_limit=row_limit,
         entry_version=entry_version,
+        min_entities=min_entities,
+        allowed_entity_types=allowed_entity_types,
+        coverage=coverage,
     )
 
 
@@ -226,6 +249,31 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
         re_max = entry_raw.get("row_limit", 10000)
         if re_max > 10000:
             errors.append(f"Entry {pair_key}: row_limit {re_max} exceeds policy bound 10000")
+
+        # min_entities
+        min_e = entry_raw.get("min_entities", 1)
+        max_e = entry_raw.get("max_entities", 100)
+        if min_e < 1:
+            errors.append(f"Entry {pair_key}: min_entities {min_e} must be >= 1")
+        if min_e > max_e:
+            errors.append(f"Entry {pair_key}: min_entities {min_e} > max_entities {max_e}")
+
+        # allowed_entity_types
+        valid_entity_types = {"ticker", "sector", "index"}
+        for et in entry_raw.get("allowed_entity_types", ["ticker", "sector", "index"]):
+            if et not in valid_entity_types:
+                errors.append(f"Entry {pair_key}: invalid allowed_entity_type {et!r}")
+
+        # coverage
+        cov = entry_raw.get("coverage")
+        if cov is not None:
+            valid_avail = {"full", "snapshot_only", "sparse"}
+            avail = cov.get("availability", "full")
+            if avail not in valid_avail:
+                errors.append(f"Entry {pair_key}: invalid coverage.availability {avail!r}")
+            mcr = cov.get("min_coverage_ratio", 0.0)
+            if not (0.0 <= mcr <= 1.0):
+                errors.append(f"Entry {pair_key}: coverage.min_coverage_ratio {mcr} must be in [0.0, 1.0]")
 
     # Coverage: check all 9 metrics × 4 operations
     from analytics_nl.contracts import Metric, Operation

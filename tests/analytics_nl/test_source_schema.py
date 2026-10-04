@@ -150,6 +150,129 @@ class TestDDLColumnReferences:
         pass  # Covered by TestSourceSchemaColumns.test_registry_columns_exist_in_source
 
 
+class TestRegistryColumnsMatchViewOutput:
+    """Registry output_fields must match the VIEW's actual output columns."""
+
+    _VIEW_SECTION_RE = re.compile(
+        r"##\s+(serve_\w+)\s.*?(?=##\s+serve_|\Z)", re.DOTALL
+    )
+    _CREATE_VIEW_RE = re.compile(
+        r"CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS.*?AS\s+(.*?)(?:```|\Z)",
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    def _extract_view_select_columns(self, ddl_content: str, view_name: str) -> set[str]:
+        """Extract the final SELECT column aliases from a view's DDL.
+
+        Handles both 'expr AS alias' and bare column references.
+        Only extracts from the last SELECT in each SQL block (the final projection).
+        """
+        # Find the section for this view
+        section_match = re.search(
+            rf"##\s+{re.escape(view_name)}\s", ddl_content
+        )
+        if not section_match:
+            return set()
+
+        # Find the next section or end
+        next_section = re.search(r"##\s+serve_", ddl_content[section_match.end():])
+        if next_section:
+            section = ddl_content[section_match.start():section_match.end() + next_section.start()]
+        else:
+            section = ddl_content[section_match.start():]
+
+        # Extract SQL blocks
+        sql_blocks = []
+        in_sql = False
+        lines = []
+        for line in section.splitlines():
+            if line.strip() == "```sql":
+                in_sql = True
+                lines = []
+            elif line.strip() == "```" and in_sql:
+                in_sql = False
+                sql_blocks.append("\n".join(lines))
+            elif in_sql:
+                lines.append(line)
+
+        if not sql_blocks:
+            return set()
+
+        # Parse the last SQL block (primary DDL — first SQL block)
+        sql = sql_blocks[0]
+
+        # Find the final SELECT ... FROM (the outermost SELECT)
+        # Strategy: find the last SELECT keyword that's not inside a subquery/CTE
+        # Simple approach: find lines between the last SELECT and FROM/JOIN/WHERE
+        lines = sql.splitlines()
+        select_columns = set()
+        in_final_select = False
+
+        for line in lines:
+            stripped = line.strip().rstrip(",").strip()
+            upper = stripped.upper()
+
+            # Detect start of final SELECT (not a CTE)
+            if re.match(r"^\s*SELECT\s", stripped, re.IGNORECASE):
+                in_final_select = True
+                # Check if columns are on the same line
+                after_select = re.sub(r"^\s*SELECT\s+", "", stripped, flags=re.IGNORECASE).strip()
+                if after_select and not after_select.upper().startswith("DISTINCT"):
+                    # Parse inline columns
+                    pass
+                continue
+
+            if in_final_select:
+                # End of SELECT at FROM, WHERE, GROUP, ORDER, etc.
+                if re.match(r"^(FROM|WHERE|GROUP|ORDER|HAVING|LIMIT|JOIN)\b", upper):
+                    in_final_select = False
+                    continue
+
+                # Parse column alias: 'expr AS alias' or bare column
+                as_match = re.search(r"\bAS\s+(\w+)\s*$", stripped, re.IGNORECASE)
+                if as_match:
+                    select_columns.add(as_match.group(1).lower())
+                elif stripped and not stripped.startswith("--") and stripped.upper() != "DISTINCT":
+                    # Bare column reference
+                    bare = stripped.split(",")[0].strip().lower()
+                    if re.match(r"^[a-z_][a-z0-9_]*$", bare):
+                        select_columns.add(bare)
+
+        return select_columns
+
+    def test_registry_output_fields_match_view_columns(self, registry, ddl_content, source_schemas):
+        """Registry output_fields must exist in the VIEW's output columns.
+
+        Skip entries with non-trivial aggregation (e.g., mean, sum) because
+        their output_fields like agg_value are computed results, not direct
+        view columns.
+        """
+        _AGGREGATION_TOKENS = {"none", "latest"}
+        for pair_key, entry in registry.entries.items():
+            if entry.aggregation not in _AGGREGATION_TOKENS:
+                continue  # Computed aggregation — output_fields are derived at query time
+            view_name = entry.serving_view
+            view_cols = self._extract_view_select_columns(ddl_content, view_name)
+            if not view_cols:
+                continue  # Can't parse — skip
+
+            # Also include derived columns from source_schemas
+            derived = source_schemas.get("derived_columns", {}).get(view_name, {})
+            derived_cols = set(derived.get("derived", []))
+            # Clean derived column names (remove comments)
+            derived_clean = {c.split("#")[0].strip() for c in derived_cols}
+
+            all_view_cols = view_cols | derived_clean
+
+            for field in entry.output_fields:
+                if field.name == "symbol":
+                    continue  # Always available from grouping
+                assert field.name in all_view_cols, (
+                    f"Entry {pair_key}: output_field {field.name!r} not found in "
+                    f"view {view_name!r} columns. Available: {sorted(all_view_cols)}"
+                )
+
+
 class TestReintroduceAdjCloseFails:
     """Prove that reintroducing adj_close as a source column fails the schema-truth test."""
 

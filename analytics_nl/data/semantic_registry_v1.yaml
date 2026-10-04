@@ -20,7 +20,7 @@ entries:
     serving_view: serve_bounded_daily_bars_v1
     description: "Daily unadjusted close price over time for up to 10 named tickers (Silver bounded drill-down)"
     price_adjustment: unadjusted
-    input_columns: [symbol, event_date, close]
+    input_columns: [symbol, event_date, close_price]
     aggregation: none
     required_slots: [entities, date_range]
     allowed_grouping: [day, week, month, quarter, year]
@@ -31,7 +31,7 @@ entries:
     output_fields:
       - {name: symbol, type: string, nullable: false}
       - {name: event_date, type: date, nullable: false}
-      - {name: close, type: number, nullable: false}
+      - {name: close_price, type: number, nullable: false}
     chart_families: [line, table]
     max_entities: 10
     row_limit: 10000
@@ -42,7 +42,7 @@ entries:
     serving_view: serve_daily_prices_v1
     description: "Aligned daily unadjusted prices for named entities over a shared date range"
     price_adjustment: unadjusted
-    input_columns: [symbol, event_date, close]
+    input_columns: [symbol, event_date, close_price]
     aggregation: none
     required_slots: [entities, date_range]
     allowed_grouping: [day, ticker]
@@ -54,9 +54,10 @@ entries:
     output_fields:
       - {name: symbol, type: string, nullable: false}
       - {name: event_date, type: date, nullable: false}
-      - {name: close, type: number, nullable: false}
+      - {name: close_price, type: number, nullable: false}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
 
@@ -65,19 +66,19 @@ entries:
     serving_view: serve_daily_prices_v1
     description: "Latest/as-of unadjusted price for entities ordered by price"
     price_adjustment: unadjusted
-    input_columns: [symbol, event_date, close]
+    input_columns: [symbol, event_date, close_price]
     aggregation: latest
     required_slots: [entities]
     allowed_grouping: [ticker]
     allowed_ordering:
-      - [close, desc]
+      - [close_price, desc]
     parameters:
       entity_count: {type: integer, min: 1, max: 100, default: 10}
       as_of: {type: date, required: false}
     output_fields:
       - {name: symbol, type: string, nullable: false}
       - {name: event_date, type: date, nullable: false}
-      - {name: close, type: number, nullable: false}
+      - {name: close_price, type: number, nullable: false}
     chart_families: [bar, table]
     max_entities: 100
     row_limit: 1000
@@ -88,7 +89,7 @@ entries:
     serving_view: serve_daily_prices_v1
     description: "Period aggregation of unadjusted prices (mean, min, max over date range)"
     price_adjustment: unadjusted
-    input_columns: [symbol, event_date, close]
+    input_columns: [symbol, event_date, close_price]
     aggregation: mean_min_max
     required_slots: [entities, date_range]
     allowed_grouping: [ticker, sector]
@@ -146,6 +147,7 @@ entries:
       - {name: return_1d, type: number, nullable: false}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
 
@@ -233,6 +235,7 @@ entries:
       - {name: volume, type: number, nullable: false}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
 
@@ -320,6 +323,7 @@ entries:
       - {name: realized_vol_20d, type: number, nullable: false}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
 
@@ -407,6 +411,7 @@ entries:
       - {name: drawdown, type: number, nullable: false}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
 
@@ -494,6 +499,7 @@ entries:
       - {name: momentum_20d, type: number, nullable: false}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
 
@@ -563,6 +569,7 @@ entries:
     max_entities: 50
     row_limit: 5000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
 
   relative_performance.compare:
     layer: gold
@@ -585,8 +592,10 @@ entries:
       - {name: benchmark, type: string, nullable: false}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
 
   relative_performance.rank:
     layer: gold
@@ -611,6 +620,7 @@ entries:
     max_entities: 100
     row_limit: 1000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
 
   relative_performance.aggregate:
     layer: gold
@@ -634,6 +644,7 @@ entries:
     max_entities: 100
     row_limit: 1000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
 
   # ── implied_volatility × operations ─────────────────────────────────
   implied_volatility.trend:
@@ -656,6 +667,8 @@ entries:
     max_entities: 50
     row_limit: 5000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
 
   implied_volatility.compare:
     layer: gold
@@ -676,8 +689,11 @@ entries:
       - {name: iv_atm, type: number, nullable: true}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
 
   implied_volatility.rank:
     layer: gold
@@ -700,6 +716,8 @@ entries:
     max_entities: 100
     row_limit: 1000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
 
   implied_volatility.aggregate:
     layer: gold
@@ -716,11 +734,16 @@ entries:
       agg_function: {type: string, enum: [mean, max], default: mean}
     output_fields:
       - {name: symbol, type: string, nullable: false}
-      - {name: agg_value, type: number, nullable: false}
+      - {name: agg_value, type: number, nullable: true}
+      - {name: sample_count, type: integer, nullable: false}
+      - {name: coverage_ratio, type: number, nullable: false}
+      - {name: status, type: string, nullable: false}
     chart_families: [bar, table]
     max_entities: 100
     row_limit: 1000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.001}
 
   # ── put_call_ratio × operations ─────────────────────────────────────
   put_call_ratio.trend:
@@ -743,6 +766,7 @@ entries:
     max_entities: 50
     row_limit: 5000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
 
   put_call_ratio.compare:
     layer: gold
@@ -763,8 +787,10 @@ entries:
       - {name: put_call_ratio, type: number, nullable: true}
     chart_families: [line, table]
     max_entities: 20
+    min_entities: 2
     row_limit: 5000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
 
   put_call_ratio.rank:
     layer: gold
@@ -787,6 +813,7 @@ entries:
     max_entities: 100
     row_limit: 1000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
 
   put_call_ratio.aggregate:
     layer: gold
@@ -808,3 +835,4 @@ entries:
     max_entities: 100
     row_limit: 1000
     entry_version: "1.0.0"
+    allowed_entity_types: [ticker]

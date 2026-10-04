@@ -13,6 +13,7 @@ import yaml
 from analytics_nl.contracts import (
     CanonicalIntent,
     CostClass,
+    CoverageStatus,
     Grouping,
     Metric,
     Operation,
@@ -144,11 +145,15 @@ def classify_intent(
     bounds: PolicyBounds,
     *,
     as_of: date,
+    coverage_stats: dict[str, tuple[int, int]] | None = None,
 ) -> PolicyOutcome:
     """Classify a canonical intent against policy bounds.
 
     Pure function: no network, clock, SQL, logging, environment, or mutable globals.
     Returns a PolicyOutcome that gates NL2 compilation.
+
+    coverage_stats: optional dict mapping pair_key to (sample_count, total_count).
+        Used to check coverage for metrics with coverage metadata.
     """
     reasons: list[PolicyReasonCode] = []
     pair_key = f"{intent.metric.value}.{intent.operation.value}"
@@ -160,8 +165,10 @@ def classify_intent(
         return _reject(intent, bounds, reasons)
 
     # 2. Validate entity types against registry
-    allowed_entity_types = {e.entity_type for e in intent.entities}
-    # All entities must be valid types (already enforced by contract)
+    allowed_types = set(entry.allowed_entity_types)
+    for e in intent.entities:
+        if e.entity_type.value not in allowed_types:
+            reasons.append(PolicyReasonCode.ENTITY_NOT_ALLOWED)
 
     # 2b. Corporate-action safety: reject unadjusted-price metrics over known splits
     # When adjusted source is available, skip rejection — adjusted returns are safe.
@@ -180,6 +187,8 @@ def classify_intent(
     entity_count = len(intent.entities)
     if entity_count > entry.max_entities:
         reasons.append(PolicyReasonCode.TICKER_LIMIT_EXCEEDED)
+    if entity_count < entry.min_entities:
+        reasons.append(PolicyReasonCode.TOO_FEW_ENTITIES)
 
     # 4. Check date range
     if intent.date_range.end > as_of:
@@ -242,6 +251,20 @@ def classify_intent(
         # date_range is always present in CanonicalIntent
         pass
 
+    # 11. Coverage check for sparse metrics (aggregate operations only)
+    if (
+        intent.operation == Operation.aggregate
+        and entry.coverage is not None
+        and coverage_stats is not None
+    ):
+        stats = coverage_stats.get(pair_key)
+        if stats is not None:
+            sample_count, total_count = stats
+            if total_count > 0:
+                coverage_ratio = sample_count / total_count
+                if coverage_ratio < entry.coverage.min_coverage_ratio:
+                    reasons.append(PolicyReasonCode.INSUFFICIENT_DATA)
+
     # If any hard violations, reject
     hard_violations = {
         PolicyReasonCode.PAIR_NOT_REGISTERED,
@@ -254,6 +277,8 @@ def classify_intent(
         PolicyReasonCode.MISSING_REQUIRED_SLOT,
         PolicyReasonCode.GROUPING_NOT_ALLOWED,
         PolicyReasonCode.ENTITY_NOT_ALLOWED,
+        PolicyReasonCode.TOO_FEW_ENTITIES,
+        PolicyReasonCode.INSUFFICIENT_DATA,
     }
     if any(r in hard_violations for r in reasons):
         return _reject(intent, bounds, reasons)

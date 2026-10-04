@@ -41,16 +41,21 @@ Daily adjusted (or unadjusted fallback) close, OHLC, and volume.
 
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_daily_prices_v1 AS
-SELECT
-    symbol,
-    event_date,
-    adj_open AS open_price,
-    adj_high AS high_price,
-    adj_low AS low_price,
-    adj_close AS close_price,
-    adj_volume AS volume,
-    information_available_ts
-FROM (
+WITH as_of_filtered AS (
+    SELECT
+        symbol,
+        event_date,
+        adj_open,
+        adj_high,
+        adj_low,
+        adj_close,
+        adj_volume,
+        information_available_ts,
+        processed_ts
+    FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
+    WHERE information_available_ts <= :as_of
+),
+deduped AS (
     SELECT
         symbol,
         event_date,
@@ -64,8 +69,18 @@ FROM (
             PARTITION BY symbol, event_date
             ORDER BY processed_ts DESC
         ) AS rn
-    FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
-) deduped
+    FROM as_of_filtered
+)
+SELECT
+    symbol,
+    event_date,
+    adj_open AS open_price,
+    adj_high AS high_price,
+    adj_low AS low_price,
+    adj_close AS close_price,
+    adj_volume AS volume,
+    information_available_ts
+FROM deduped
 WHERE rn = 1;
 ```
 
@@ -73,16 +88,20 @@ WHERE rn = 1;
 
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_daily_prices_v1 AS
-SELECT
-    symbol,
-    event_date,
-    open AS open_price,
-    high AS high_price,
-    low AS low_price,
-    close AS close_price,
-    volume,
-    information_available_ts
-FROM (
+WITH as_of_filtered AS (
+    SELECT
+        symbol,
+        event_date,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        ingest_ts
+    FROM ${catalog}.${schema}.bronze_ohlcv_day
+    WHERE to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York') <= :as_of
+),
+deduped AS (
     SELECT
         symbol,
         event_date,
@@ -97,8 +116,18 @@ FROM (
             PARTITION BY symbol, event_date
             ORDER BY ingest_ts DESC
         ) AS rn
-    FROM ${catalog}.${schema}.bronze_ohlcv_day
-) deduped
+    FROM as_of_filtered
+)
+SELECT
+    symbol,
+    event_date,
+    open AS open_price,
+    high AS high_price,
+    low AS low_price,
+    close AS close_price,
+    volume,
+    information_available_ts
+FROM deduped
 WHERE rn = 1;
 ```
 
@@ -130,6 +159,7 @@ WITH daily_prices AS (
         volume,
         information_available_ts
     FROM ${catalog}.${schema}.serve_daily_prices_v1
+    WHERE information_available_ts <= :as_of
 ),
 -- return_1d comes from the adjusted source; NULL = data-quality break
 -- For views that need return_1d, join back to the adjusted source
@@ -145,6 +175,7 @@ returns_from_source AS (
         SELECT symbol, event_date, return_1d,
                ROW_NUMBER() OVER (PARTITION BY symbol, event_date ORDER BY processed_ts DESC) AS rn
         FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
+        WHERE information_available_ts <= :as_of
     ) adj ON dp.symbol = adj.symbol AND dp.event_date = adj.event_date AND adj.rn = 1
 ),
 with_vol AS (
@@ -205,6 +236,7 @@ WITH daily_prices AS (
         close_price AS close,
         information_available_ts
     FROM ${catalog}.${schema}.serve_daily_prices_v1
+    WHERE information_available_ts <= :as_of
 ),
 with_returns AS (
     SELECT
@@ -284,26 +316,55 @@ WITH entity_returns AS (
         return_1d,
         information_available_ts
     FROM ${catalog}.${schema}.serve_daily_equity_metrics_v1
+    WHERE information_available_ts <= :as_of
 ),
 benchmark_returns AS (
     SELECT
         event_date,
-        return_1d AS bench_return
+        return_1d AS bench_return,
+        information_available_ts AS bench_info_ts
     FROM ${catalog}.${schema}.serve_daily_equity_metrics_v1
-    WHERE symbol = 'SPY'
+    WHERE symbol = :benchmark
+      AND information_available_ts <= :as_of
+),
+entity_cumulative AS (
+    SELECT
+        symbol,
+        event_date,
+        return_1d,
+        information_available_ts,
+        EXP(SUM(LN(1 + return_1d)) OVER (
+            PARTITION BY symbol
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )) - 1 AS cumulative_return
+    FROM entity_returns
+    WHERE return_1d IS NOT NULL
+),
+benchmark_cumulative AS (
+    SELECT
+        event_date,
+        bench_return,
+        bench_info_ts,
+        EXP(SUM(LN(1 + bench_return)) OVER (
+            ORDER BY event_date
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )) - 1 AS bench_cumulative_return
+    FROM benchmark_returns
+    WHERE bench_return IS NOT NULL
 )
 SELECT
     e.symbol,
     e.event_date,
     e.return_1d,
-    e.return_1d - b.bench_return AS rel_perf,
-    'SPY' AS benchmark,
-    e.information_available_ts
-FROM entity_returns e
-JOIN benchmark_returns b ON e.event_date = b.event_date;
+    e.cumulative_return - b.bench_cumulative_return AS rel_perf,
+    :benchmark AS benchmark,
+    GREATEST(e.information_available_ts, b.bench_info_ts) AS information_available_ts
+FROM entity_cumulative e
+JOIN benchmark_cumulative b ON e.event_date = b.event_date;
 ```
 
-**Source:** Derived from `serve_daily_equity_metrics_v1`. Benchmark is a typed bounded parameter (SPY, QQQ, or RSP); the view defaults to SPY. Parameterized queries should substitute the benchmark symbol at query time.
+**Source:** Derived from `serve_daily_equity_metrics_v1`. Benchmark is a typed bounded parameter (SPY, QQQ, or RSP); the view takes the benchmark as a `:benchmark` bind parameter. Cumulative return is computed as `EXP(SUM(LN(1 + return_1d)))` over the window, and relative performance is entity cumulative minus benchmark cumulative. Output `information_available_ts` is the GREATEST of entity and benchmark availability to ensure PIT safety.
 
 ---
 
@@ -313,13 +374,17 @@ Daily implied volatility (iv_atm) and put/call ratio for options-capable underly
 
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_options_metrics_v1 AS
-SELECT
-    symbol,
-    feature_ts,
-    iv_atm,
-    put_call_ratio,
-    information_available_ts
-FROM (
+WITH as_of_filtered AS (
+    SELECT
+        symbol,
+        feature_ts,
+        iv_atm,
+        put_call_ratio,
+        information_available_ts
+    FROM ${catalog}.${schema}.gold_options_features
+    WHERE information_available_ts <= :as_of
+),
+deduped AS (
     SELECT
         symbol,
         feature_ts,
@@ -330,8 +395,15 @@ FROM (
             PARTITION BY symbol, feature_ts
             ORDER BY information_available_ts DESC
         ) AS rn
-    FROM ${catalog}.${schema}.gold_options_features
-) deduped
+    FROM as_of_filtered
+)
+SELECT
+    symbol,
+    feature_ts,
+    iv_atm,
+    put_call_ratio,
+    information_available_ts
+FROM deduped
 WHERE rn = 1;
 ```
 
@@ -351,17 +423,21 @@ Bounded Silver daily bars for price/volume drill-downs on ≤10 named tickers ov
 
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_bounded_daily_bars_v1 AS
-SELECT
-    symbol,
-    event_date,
-    adj_open AS open_price,
-    adj_high AS high_price,
-    adj_low AS low_price,
-    adj_close AS close_price,
-    adj_volume AS volume,
-    information_available_ts,
-    FALSE AS suspected_split
-FROM (
+WITH as_of_filtered AS (
+    SELECT
+        symbol,
+        event_date,
+        adj_open,
+        adj_high,
+        adj_low,
+        adj_close,
+        adj_volume,
+        information_available_ts,
+        processed_ts
+    FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
+    WHERE information_available_ts <= :as_of
+),
+deduped AS (
     SELECT
         symbol,
         event_date,
@@ -375,8 +451,19 @@ FROM (
             PARTITION BY symbol, event_date
             ORDER BY processed_ts DESC
         ) AS rn
-    FROM ${catalog}.${schema}.silver_ohlcv_day_adjusted
-) deduped
+    FROM as_of_filtered
+)
+SELECT
+    symbol,
+    event_date,
+    adj_open AS open_price,
+    adj_high AS high_price,
+    adj_low AS low_price,
+    adj_close AS close_price,
+    adj_volume AS volume,
+    information_available_ts,
+    FALSE AS suspected_split
+FROM deduped
 WHERE rn = 1;
 ```
 
@@ -384,17 +471,20 @@ WHERE rn = 1;
 
 ```sql
 CREATE VIEW IF NOT EXISTS ${catalog}.${schema}.serve_bounded_daily_bars_v1 AS
-SELECT
-    symbol,
-    event_date,
-    open AS open_price,
-    high AS high_price,
-    low AS low_price,
-    close AS close_price,
-    volume,
-    information_available_ts,
-    suspected_split
-FROM (
+WITH as_of_filtered AS (
+    SELECT
+        symbol,
+        event_date,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        ingest_ts
+    FROM ${catalog}.${schema}.bronze_ohlcv_day
+    WHERE to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York') <= :as_of
+),
+deduped AS (
     SELECT
         symbol,
         event_date,
@@ -429,8 +519,19 @@ FROM (
             PARTITION BY symbol, event_date
             ORDER BY ingest_ts DESC
         ) AS rn
-    FROM ${catalog}.${schema}.bronze_ohlcv_day
-) deduped
+    FROM as_of_filtered
+)
+SELECT
+    symbol,
+    event_date,
+    open AS open_price,
+    high AS high_price,
+    low AS low_price,
+    close AS close_price,
+    volume,
+    information_available_ts,
+    suspected_split
+FROM deduped
 WHERE rn = 1;
 ```
 

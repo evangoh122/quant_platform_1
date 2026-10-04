@@ -102,6 +102,8 @@ class PolicyReasonCode(str, Enum):
     FUTURE_DATE = "FUTURE_DATE"
     END_BEFORE_START = "END_BEFORE_START"
     UNADJUSTED_CORPORATE_ACTION = "UNADJUSTED_CORPORATE_ACTION"
+    TOO_FEW_ENTITIES = "TOO_FEW_ENTITIES"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 
 
 class CacheStatus(str, Enum):
@@ -110,6 +112,13 @@ class CacheStatus(str, Enum):
     hit = "hit"
     miss = "miss"
     bypass = "bypass"
+
+
+class CoverageStatus(str, Enum):
+    """Status for metric coverage in aggregate/rank/compare responses."""
+
+    ok = "ok"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 
 
 class RelativeDate(str, Enum):
