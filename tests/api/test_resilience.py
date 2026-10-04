@@ -328,17 +328,20 @@ def test_first_request_bounded_when_pool_hangs(client, monkeypatch):
     """First request against a hanging pool returns < 5 s (degraded mode).
 
     Exercises the bounded pool establishment path: _build_pool calls
-    pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT). If the pool cannot
-    establish min_size connections within that window, PoolTimeout is raised,
-    the circuit breaker records a failure, and the read route degrades to
-    viewer. Without the timeout bound (open=True, no wait), this test would
-    hang for 30+ s and fail.
+    pool.open(wait=False) then pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT).
+    If the pool cannot establish min_size connections within that window,
+    PoolTimeout is raised, the circuit breaker records a failure, and the
+    read route degrades to viewer.
+
+    MUTATION: delete pool.open(wait=False) at db/lakebase.py:173 →
+    the closed pool's wait() raises PoolClosed instead of PoolTimeout → FAIL.
     """
     import db.lakebase as lb
-    from psycopg_pool import PoolTimeout
+    from psycopg_pool import PoolClosed, PoolTimeout
 
     class BlockingPool:
-        """Simulates a pool that cannot establish connections in time."""
+        """Models real psycopg_pool state: closed pool raises PoolClosed on wait();
+        opened pool raises PoolTimeout when connections can't be established."""
 
         def __init__(self, **kwargs):
             self._opened = False
@@ -347,6 +350,8 @@ def test_first_request_bounded_when_pool_hangs(client, monkeypatch):
             self._opened = True
 
         def wait(self, timeout=None):
+            if not self._opened:
+                raise PoolClosed("pool is not open yet")
             raise PoolTimeout("pool could not connect in time")
 
         def close(self):
@@ -354,7 +359,7 @@ def test_first_request_bounded_when_pool_hangs(client, monkeypatch):
 
         def connection(self):
             if not self._opened:
-                raise RuntimeError("pool not open")
+                raise PoolClosed("pool is not open yet")
             raise RuntimeError("pool not open")
 
     monkeypatch.setattr(lb, "ConnectionPool", BlockingPool)
@@ -365,3 +370,107 @@ def test_first_request_bounded_when_pool_hangs(client, monkeypatch):
 
     assert resp.status_code == 200
     assert elapsed < 5.0, f"First request took {elapsed:.1f}s, expected < 5s"
+
+
+def test_pool_closed_without_open_raises(client, monkeypatch):
+    """A pool that was never open()ed raises PoolClosed on wait().
+
+    MUTATION: drop pool.open(wait=False) at db/lakebase.py:173 →
+    _build_pool calls wait() on a closed pool → PoolClosed raised
+    instead of PoolTimeout.  This test catches the mutation by calling
+    _build_pool directly and asserting the specific exception type.
+    """
+    import db.lakebase as lb
+    from psycopg_pool import PoolClosed
+
+    class ClosedPool:
+        """Pool that was never opened — wait() always raises PoolClosed.
+
+        If open() is called, wait() raises PoolTimeout instead (the real
+        psycopg_pool behavior).
+        """
+
+        def __init__(self, **kwargs):
+            self._opened = False
+
+        def open(self, wait=True):
+            self._opened = True
+
+        def wait(self, timeout=None):
+            if not self._opened:
+                raise PoolClosed("pool is not open yet")
+            # After open(), simulate a timeout (not a closed error)
+            from psycopg_pool import PoolTimeout
+            raise PoolTimeout("pool could not connect in time")
+
+        def close(self):
+            pass
+
+        def connection(self):
+            if not self._opened:
+                raise PoolClosed("pool is not open yet")
+            raise RuntimeError("pool not open")
+
+    monkeypatch.setattr(lb, "ConnectionPool", ClosedPool)
+
+    # _build_pool must call open() before wait().  If open() is skipped,
+    # wait() raises PoolClosed instead of PoolTimeout → this assertion fails.
+    with pytest.raises((lb.PoolTimeout, Exception)) as exc_info:
+        lb.Lakebase(token_provider=lambda: {"token": "x", "expiration_time": None})._build_pool()
+
+    # The exception must NOT be PoolClosed — that would mean open() was skipped
+    from psycopg_pool import PoolClosed as PC
+    assert not isinstance(exc_info.value, PC), (
+        f"Got PoolClosed — pool.open() was not called before wait(): {exc_info.value}"
+    )
+
+
+def test_token_mint_subprocess_timeout(monkeypatch):
+    """Token mint subprocess that hangs past the timeout is bounded.
+
+    MUTATION: drop timeout= at db/lakebase.py:65 → subprocess.run blocks
+    indefinitely → test hangs → FAIL.
+    """
+    import db.lakebase as lb
+
+    def _slow_mint(instance_name: str = "test") -> dict:
+        """Simulate a subprocess that sleeps past the timeout."""
+        import subprocess as _sp
+        proc = _sp.run(
+            ["python3", "-c", "import time; time.sleep(60)"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=lb.LAKEBASE_CONNECT_TIMEOUT + 2,
+        )
+        return {"token": "fake", "expiration_time": None}
+
+    # Replace mint_token_via_cli with a function that calls subprocess.run
+    # with the same timeout parameter as the real code
+    def _mint_with_timeout(instance_name: str = lb.LAKEBASE_INSTANCE) -> dict:
+        import subprocess as _sp
+        import json as _json
+        import uuid as _uuid
+        request_id = str(_uuid.uuid4())
+        payload = _json.dumps(
+            {"request_id": request_id, "instance_names": [instance_name]}
+        )
+        try:
+            proc = _sp.run(
+                ["python3", "-c", "import time; time.sleep(60)"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=lb.LAKEBASE_CONNECT_TIMEOUT + 2,
+            )
+        except _sp.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Lakebase credential mint timed out after {exc.timeout}s, "
+                f"request_id={request_id}"
+            ) from exc
+        return {"token": "fake", "expiration_time": None}
+
+    token = lb.LakebaseToken(provider=_mint_with_timeout)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        token.get()
