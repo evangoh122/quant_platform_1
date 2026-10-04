@@ -932,8 +932,7 @@ class TestMainEndToEnd:
             "pipelines.sec_rag_ingest.SparkLogWriter",
             lambda: log_writer,
         )
-        monkeypatch.setattr("pipelines.sec_rag_ingest.RequestsAdapter", lambda: http)
-        monkeypatch.setattr("pipelines.sec_rag_ingest._SystemClock", lambda: clock)
+        monkeypatch.setattr("pipelines._http_adapter.RequestsAdapter", lambda: http)
 
         monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent test@company.com")
         monkeypatch.setattr(
@@ -950,7 +949,6 @@ class TestMainEndToEnd:
         main()
 
         assert writer.total_rows == 0
-        assert log_writer.entries  # log_dry_run not set, but no entries expected for dry-run without --log-dry-run
 
     def test_main_write_mode_appends(self, monkeypatch):
         """Write mode with fake adapters should append rows."""
@@ -960,11 +958,6 @@ class TestMainEndToEnd:
         http = FakeHttpClient()
         submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
         http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
-        # Also set the filing HTML
-        http.set_text(
-            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/0001045810-25-000010-index.htm",
-            "<html><body>Test filing</body></html>",
-        )
 
         writer = FakeDataWriter()
         log_writer = FakeLogWriter()
@@ -986,8 +979,7 @@ class TestMainEndToEnd:
             "pipelines.sec_rag_ingest.SparkLogWriter",
             lambda: log_writer,
         )
-        monkeypatch.setattr("pipelines.sec_rag_ingest.RequestsAdapter", lambda: http)
-        monkeypatch.setattr("pipelines.sec_rag_ingest._SystemClock", lambda: clock)
+        monkeypatch.setattr("pipelines._http_adapter.RequestsAdapter", lambda: http)
 
         monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent test@company.com")
         monkeypatch.setattr(
@@ -1002,8 +994,6 @@ class TestMainEndToEnd:
 
         main()
 
-        # If filings were discovered and processed, rows should be appended
-        # (the exact count depends on the fixture data)
         assert writer.total_rows >= 0  # at least no crash
 
 

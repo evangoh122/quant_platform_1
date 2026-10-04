@@ -14,13 +14,20 @@ from loguru import logger
 from api.config import TICKER_TO_CIK
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-_user_agent_raw = os.getenv("EDGAR_USER_AGENT", "")
-if not _user_agent_raw or "example" in _user_agent_raw.lower():
-    raise ValueError(
-        "EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
-        "Set it from environment or Databricks secret."
-    )
-_USER_AGENT = _user_agent_raw
+_USER_AGENT = None  # Lazy-initialized on first use
+
+
+def _get_user_agent() -> str:
+    global _USER_AGENT
+    if _USER_AGENT is None:
+        raw = os.getenv("EDGAR_USER_AGENT", "")
+        if not raw or "example" in raw.lower():
+            raise ValueError(
+                "EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
+                "Set it from environment or Databricks secret."
+            )
+        _USER_AGENT = raw
+    return _USER_AGENT
 _rate_lock = threading.Lock()
 _last_call: float = 0.0
 _MIN_INTERVAL = 0.11  # ~9 req/s to stay under 10/s
@@ -42,7 +49,7 @@ def _rate_limited_get(url: str) -> dict:
         elapsed = time.time() - _last_call
         if elapsed < _MIN_INTERVAL:
             time.sleep(_MIN_INTERVAL - elapsed)
-        resp = requests.get(url, headers={"User-Agent": _USER_AGENT}, timeout=15)
+        resp = requests.get(url, headers={"User-Agent": _get_user_agent()}, timeout=15)
         _last_call = time.time()
     resp.raise_for_status()
     return resp.json()

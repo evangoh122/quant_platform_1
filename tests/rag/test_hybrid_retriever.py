@@ -2724,16 +2724,14 @@ class TestInflightLoadCoalescing:
     def test_two_threads_one_load(self, monkeypatch):
         """Two concurrent requests for the same ticker must trigger only one load."""
         import threading
+        import time
         from api.services import hybrid_retriever as hr
 
         load_count = [0]
-        barrier = threading.Barrier(2, timeout=5)
 
         def spy_load(ticker):
-            # Signal that the load has started; second thread should see
-            # the in-flight Future rather than starting its own load.
-            barrier.wait()
             load_count[0] += 1
+            time.sleep(0.1)  # Slow load so both threads start
             return self._make_corpus(ticker)
 
         monkeypatch.setattr(hr, "_load_ticker_corpus", spy_load)
@@ -2765,14 +2763,14 @@ class TestInflightLoadCoalescing:
     def test_four_threads_one_ticker_one_load(self, monkeypatch):
         """4 concurrent callers for one ticker → exactly 1 load."""
         import threading
+        import time
         from api.services import hybrid_retriever as hr
 
         load_count = [0]
-        barrier = threading.Barrier(4, timeout=5)
 
         def spy_load(ticker):
-            barrier.wait()
             load_count[0] += 1
+            time.sleep(0.1)  # Slow load so all threads start
             return self._make_corpus(ticker)
 
         monkeypatch.setattr(hr, "_load_ticker_corpus", spy_load)
