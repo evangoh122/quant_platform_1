@@ -360,5 +360,45 @@ USING (
         AND br.classification IN ('UNEXPLAINED_PENDING', 'CONFIRMED_DATA_BREAK')
 ) AS src
 ON tgt.symbol = src.symbol AND tgt.event_date = src.event_date
-WHEN MATCHED THEN UPDATE SET *
-WHEN NOT MATCHED THEN INSERT *
+WHEN MATCHED THEN UPDATE SET
+    tgt.symbol                      = src.symbol,
+    tgt.event_date                  = src.event_date,
+    tgt.event_ts                    = src.event_ts,
+    tgt.open                        = src.open,
+    tgt.high                        = src.high,
+    tgt.low                         = src.low,
+    tgt.close                       = src.close,
+    tgt.volume                      = src.volume,
+    tgt.vwap                        = src.vwap,
+    tgt.trade_count                 = src.trade_count,
+    tgt.cumulative_split_ratio      = src.cumulative_split_ratio,
+    tgt.price_adjustment_factor     = src.price_adjustment_factor,
+    tgt.adj_open                    = src.adj_open,
+    tgt.adj_high                    = src.adj_high,
+    tgt.adj_low                     = src.adj_low,
+    tgt.adj_close                   = src.adj_close,
+    tgt.adj_vwap                    = src.adj_vwap,
+    tgt.adj_volume                  = src.adj_volume,
+    tgt.raw_overnight_return        = src.raw_overnight_return,
+    tgt.adjusted_return_1d_unmasked = src.adjusted_return_1d_unmasked,
+    tgt.return_1d                   = src.return_1d,
+    tgt.is_data_quality_break       = src.is_data_quality_break,
+    tgt.information_available_ts    = src.information_available_ts,
+    tgt.processed_ts                = src.processed_ts
+WHEN NOT MATCHED THEN INSERT (
+    symbol, event_date, event_ts,
+    open, high, low, close,
+    volume, vwap, trade_count,
+    cumulative_split_ratio, price_adjustment_factor,
+    adj_open, adj_high, adj_low, adj_close, adj_vwap, adj_volume,
+    raw_overnight_return, adjusted_return_1d_unmasked, return_1d,
+    is_data_quality_break, information_available_ts, processed_ts
+) VALUES (
+    src.symbol, src.event_date, src.event_ts,
+    src.open, src.high, src.low, src.close,
+    src.volume, src.vwap, src.trade_count,
+    src.cumulative_split_ratio, src.price_adjustment_factor,
+    src.adj_open, src.adj_high, src.adj_low, src.adj_close, src.adj_vwap, src.adj_volume,
+    src.raw_overnight_return, src.adjusted_return_1d_unmasked, src.return_1d,
+    src.is_data_quality_break, src.information_available_ts, src.processed_ts
+)

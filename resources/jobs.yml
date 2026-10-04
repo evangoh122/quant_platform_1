@@ -20,13 +20,12 @@ resources:
       name: quant-platform-corporate-action-refresh-${bundle.target}
       tasks:
         - task_key: refresh_bronze_corporate_actions
-          spark_python_task:
-            python_file: ../notebooks/refresh_bronze_corporate_actions.py
-            parameters:
-              - "--mode"
-              - "dry-run"
-              - "--delay-seconds"
-              - "0.5"
+          notebook_task:
+            notebook_path: ../notebooks/refresh_bronze_corporate_actions.py
+            base_parameters:
+              mode: "dry-run"
+              source: "yfinance"
+              delay_seconds: "0.5"
           environment_key: serverless
       environments:
         - environment_key: serverless

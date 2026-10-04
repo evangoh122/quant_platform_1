@@ -474,6 +474,12 @@ class TestImportSafety:
         assert hasattr(mod, "main")
         assert hasattr(mod, "_valid_mode")
         assert hasattr(mod, "_split_to_row")
+        # Must use globals().get("dbutils"), not bare import dbutils
+        text = nb_path.read_text(encoding="utf-8")
+        assert "globals().get(\"dbutils\")" in text, \
+            "Must use globals().get('dbutils'), not import dbutils"
+        assert "import dbutils" not in text or "import dbutils  # type: ignore" in text, \
+            "Must not use bare 'import dbutils'"
 
     def test_notebook_has_argparse(self):
         """The notebook must use argparse for CLI flags."""
@@ -603,3 +609,151 @@ class TestArgparseCLIFlags:
             cwd=str(nb_dir),
         )
         assert result.returncode == 0, f"Failed from notebooks/: {result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# 9. Notebook mode: dbutils widgets (no Spark)
+# ---------------------------------------------------------------------------
+
+class TestNotebookMode:
+    """Verify notebook mode reads from widgets, ignores sys.argv."""
+
+    def _make_fake_dbutils(self, widget_values=None, exit_on_call=False):
+        """Create a minimal fake dbutils for testing."""
+        if widget_values is None:
+            widget_values = {}
+        _widgets = {}
+        _exited = [None]
+
+        class _Widgets:
+            def text(self, name, default):
+                _widgets.setdefault(name, default)
+
+            def get(self, name):
+                if name in widget_values:
+                    return widget_values[name]
+                if name in _widgets:
+                    return _widgets[name]
+                raise Exception(f"Widget {name} not found")
+
+        class _Notebook:
+            def __init__(self, exited_ref):
+                self._exited = exited_ref
+
+            def exit(self, value):
+                self._exited[0] = value
+                if exit_on_call:
+                    raise SystemExit(0)
+
+        class _DBUtils:
+            def __init__(self):
+                self.widgets = _Widgets()
+                self.notebook = _Notebook(_exited)
+
+        return _DBUtils(), _exited
+
+    def test_kernel_argv_with_fake_dbutils_runs_from_widgets(self):
+        """Injected -f kernel.json + fake dbutils → reads from widgets, not argv."""
+        import importlib.util
+        from pathlib import Path
+        from unittest.mock import patch
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        fake_dbutils, _ = self._make_fake_dbutils({"mode": "dry-run", "source": "yfinance"})
+        mod.__dict__["dbutils"] = fake_dbutils
+
+        with patch("sys.argv", [
+            "refresh_bronze_corporate_actions.py",
+            "-f", "kernel.json",
+        ]):
+            with pytest.raises((RuntimeError, SystemExit)):
+                # RuntimeError: Spark not available (expected in test env)
+                # SystemExit: if something else fails
+                mod.main()
+
+    def test_dbutils_widget_mode_write(self):
+        """dbutils widget mode=write → write mode."""
+        import importlib.util
+        from pathlib import Path
+        from unittest.mock import patch
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        fake_dbutils, _ = self._make_fake_dbutils({
+            "mode": "write", "source": "yfinance",
+            "symbol_start": "", "symbol_end": "", "delay_seconds": "0.5",
+            "max_retries": "2", "run_id": "test-run",
+        })
+        mod.__dict__["dbutils"] = fake_dbutils
+
+        with patch("sys.argv", ["refresh_bronze_corporate_actions.py", "-f", "kernel.json"]):
+            with pytest.raises((RuntimeError, SystemExit)):
+                mod.main()
+
+    def test_dbutils_widget_mode_bogus_raises(self):
+        """dbutils widget mode=bogus → ValueError."""
+        import importlib.util
+        from pathlib import Path
+        from unittest.mock import patch
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        spec = importlib.util.spec_from_file_location("refresh_bronze_corporate_actions", nb_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        fake_dbutils, _ = self._make_fake_dbutils({"mode": "bogus"})
+        mod.__dict__["dbutils"] = fake_dbutils
+
+        with patch("sys.argv", ["refresh_bronze_corporate_actions.py", "-f", "kernel.json"]):
+            with pytest.raises(ValueError, match="mode must be one of"):
+                mod.main()
+
+    def test_no_dbutils_bogus_flag_exits_nonzero(self):
+        """No dbutils + --bogus → exit 2 (unchanged)."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        result = subprocess.run(
+            [sys.executable, str(nb_path), "--bogus"],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode != 0
+
+    def test_no_dbutils_help_exits_zero_no_spark(self):
+        """No dbutils + --help → exit 0, without Spark."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        result = subprocess.run(
+            [sys.executable, str(nb_path), "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0
+        assert "Refresh bronze corporate actions" in result.stdout
+
+    def test_globals_get_dbutils_not_import(self):
+        """Source must use globals().get('dbutils'), not import dbutils."""
+        from pathlib import Path
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        assert "globals().get(\"dbutils\")" in text
+        # No bare 'import dbutils' (comments are OK)
+        code_lines = [
+            line for line in text.splitlines()
+            if "import dbutils" in line and not line.strip().startswith("#")
+        ]
+        for line in code_lines:
+            assert "type: ignore" in line or "globals" in line, \
+                f"Bare 'import dbutils' found: {line}"

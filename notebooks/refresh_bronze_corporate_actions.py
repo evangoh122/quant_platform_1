@@ -4,8 +4,14 @@ Append-only refresh of ``bronze_corporate_actions`` from the live Gold
 universe + SPY/RSP/QQQ using the source-neutral adapter in
 ``etl/corporate_actions.py``.
 
-Import-safe: pure helpers at module scope, all Spark / dbutils / network
-setup inside ``main()``.  ``if __name__ == "__main__": main()``.
+Import-safe: pure helpers at module scope, all Spark / network setup inside
+``main()``.  ``if __name__ == "__main__": main()``.
+
+Dual mode:
+- Notebook / notebook-job (dbutils present): reads params from widgets,
+  ignores sys.argv entirely (kernel-injected flags like ``-f`` would break
+  argparse).
+- CLI / spark_python_task (no dbutils): strict argparse, parse-before-Spark.
 """
 from __future__ import annotations
 
@@ -128,31 +134,8 @@ def _is_finite_positive_nonone(v: Any) -> bool:
 
 def main() -> None:
     """Entry point — all Spark/dbutils/network setup lives here."""
-    # --- Parameters: argparse first (CLI/job), BEFORE Spark ---
-    parser = argparse.ArgumentParser(
-        description="Refresh bronze corporate actions from live universe.",
-        allow_abbrev=False,
-    )
-    parser.add_argument("--mode", default=None, help="dry-run or write")
-    parser.add_argument("--source", default=None, help="Data source (yfinance)")
-    parser.add_argument("--symbol-start", default=None, help="Inclusive lower bound for symbol range")
-    parser.add_argument("--symbol-end", default=None, help="Inclusive upper bound for symbol range")
-    parser.add_argument("--delay-seconds", type=float, default=None, help="Min delay between fetches")
-    parser.add_argument("--max-retries", type=int, default=None, help="Max retries per symbol")
-    parser.add_argument("--run-id", default=None, help="Resume run id")
-    args = parser.parse_args()
-
-    # --- Spark / dbutils (after argparse so --help and bad flags fail fast) ---
-    try:
-        from pyspark.sql import SparkSession
-        spark = SparkSession.builder.getOrCreate()
-    except ImportError:
-        spark = None
-
-    try:
-        import dbutils  # type: ignore[import-not-found]
-    except ImportError:
-        dbutils = None
+    # --- Detect notebook context BEFORE any argument parsing ---
+    dbutils_obj = globals().get("dbutils")
 
     # Defaults
     mode = "dry-run"
@@ -163,63 +146,81 @@ def main() -> None:
     max_retries = 2
     run_id = _new_run_id()
 
-    # Argparse overrides defaults
-    if args.mode is not None:
-        mode = args.mode
-    if args.source is not None:
-        source = args.source
-    if args.symbol_start is not None:
-        symbol_start = args.symbol_start
-    if args.symbol_end is not None:
-        symbol_end = args.symbol_end
-    if args.delay_seconds is not None:
-        delay_seconds = args.delay_seconds
-    if args.max_retries is not None:
-        max_retries = args.max_retries
-    if args.run_id is not None:
-        run_id = args.run_id
+    if dbutils_obj is not None:
+        # ---- Notebook / notebook-job path ----
+        # Declare widgets with defaults; Databricks injects overrides.
+        # IGNORE sys.argv entirely — kernel-injected flags like -f would
+        # cause argparse to exit 2.
+        _widget_defaults = {
+            "mode": mode,
+            "source": source,
+            "symbol_start": symbol_start,
+            "symbol_end": symbol_end,
+            "delay_seconds": str(delay_seconds),
+            "max_retries": str(max_retries),
+            "run_id": run_id,
+        }
+        for name, default in _widget_defaults.items():
+            try:
+                dbutils_obj.widgets.text(name, default)
+            except Exception:
+                pass  # widget may already exist
 
-    # Widgets override defaults only when argparse didn't supply a value
-    if dbutils is not None:
-        if args.mode is None:
-            try:
-                mode = dbutils.widgets.get("mode")
-            except Exception:
-                pass
-        if args.source is None:
-            try:
-                source = dbutils.widgets.get("source")
-            except Exception:
-                pass
-        if args.symbol_start is None:
-            try:
-                symbol_start = dbutils.widgets.get("symbol_start")
-            except Exception:
-                pass
-        if args.symbol_end is None:
-            try:
-                symbol_end = dbutils.widgets.get("symbol_end")
-            except Exception:
-                pass
-        if args.delay_seconds is None:
-            try:
-                delay_seconds = float(dbutils.widgets.get("delay_seconds"))
-            except Exception:
-                pass
-        if args.max_retries is None:
-            try:
-                max_retries = int(dbutils.widgets.get("max_retries"))
-            except Exception:
-                pass
-        if args.run_id is None:
-            try:
-                run_id = dbutils.widgets.get("run_id")
-            except Exception:
-                pass
+        mode = dbutils_obj.widgets.get("mode")
+        source = dbutils_obj.widgets.get("source")
+        symbol_start = dbutils_obj.widgets.get("symbol_start")
+        symbol_end = dbutils_obj.widgets.get("symbol_end")
+        try:
+            delay_seconds = float(dbutils_obj.widgets.get("delay_seconds"))
+        except (TypeError, ValueError):
+            pass
+        try:
+            max_retries = int(dbutils_obj.widgets.get("max_retries"))
+        except (TypeError, ValueError):
+            pass
+        run_id = dbutils_obj.widgets.get("run_id")
+    else:
+        # ---- CLI / spark_python_task path ----
+        parser = argparse.ArgumentParser(
+            description="Refresh bronze corporate actions from live universe.",
+            allow_abbrev=False,
+        )
+        parser.add_argument("--mode", default=None, help="dry-run or write")
+        parser.add_argument("--source", default=None, help="Data source (yfinance)")
+        parser.add_argument("--symbol-start", default=None, help="Inclusive lower bound for symbol range")
+        parser.add_argument("--symbol-end", default=None, help="Inclusive upper bound for symbol range")
+        parser.add_argument("--delay-seconds", type=float, default=None, help="Min delay between fetches")
+        parser.add_argument("--max-retries", type=int, default=None, help="Max retries per symbol")
+        parser.add_argument("--run-id", default=None, help="Resume run id")
+        # parse_args before Spark so --help and bad flags fail fast
+        args = parser.parse_args()
 
+        if args.mode is not None:
+            mode = args.mode
+        if args.source is not None:
+            source = args.source
+        if args.symbol_start is not None:
+            symbol_start = args.symbol_start
+        if args.symbol_end is not None:
+            symbol_end = args.symbol_end
+        if args.delay_seconds is not None:
+            delay_seconds = args.delay_seconds
+        if args.max_retries is not None:
+            max_retries = args.max_retries
+        if args.run_id is not None:
+            run_id = args.run_id
+
+    # --- Validate (both paths converge here) ---
     mode = _valid_mode(mode)
     source = _valid_source(source)
     delay_seconds = max(delay_seconds, MIN_DELAY_SECONDS)
+
+    # --- Spark (after argparse/widgets so --help and bad flags fail fast) ---
+    try:
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
+    except ImportError:
+        spark = None
 
     # --- Report accumulator ---
     report: dict[str, Any] = {
@@ -285,8 +286,8 @@ def main() -> None:
         report["end_time"] = _now_utc().isoformat()
         report["duration_seconds"] = round(_time.time() - t0, 2)
         print(json.dumps(report, indent=2, default=str))
-        if dbutils is not None:
-            dbutils.notebook.exit(json.dumps(report, default=str))
+        if dbutils_obj is not None:
+            dbutils_obj.notebook.exit(json.dumps(report, default=str))
         return
 
     # --- Adapter ---
@@ -431,8 +432,8 @@ def main() -> None:
         report["effective_rate"] = round(report["attempted"] / elapsed, 2)
 
     print(json.dumps(report, indent=2, default=str))
-    if dbutils is not None:
-        dbutils.notebook.exit(json.dumps(report, default=str))
+    if dbutils_obj is not None:
+        dbutils_obj.notebook.exit(json.dumps(report, default=str))
 
 
 def _log_checkpoint(

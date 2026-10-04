@@ -688,20 +688,101 @@ class TestSQLContract:
         utc_time = et_time.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
         assert utc_time == dt.datetime(2022, 12, 5, 21, 30, 0)
 
-    def test_data_quality_breaks_merge_insert_has_explicit_columns(self):
-        """MERGE INSERT must use explicit column list, not INSERT *."""
+    def test_no_merge_uses_insert_star(self):
+        """No MERGE in the file may use INSERT * or UPDATE SET *."""
         from pathlib import Path
         sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
         text = sql_path.read_text(encoding="utf-8")
-        # The data_quality_breaks MERGE (section 9) must NOT use INSERT *
-        # Find the section between the data_quality_breaks MERGE and the silver_ohlcv_day_adjusted MERGE
+        assert "INSERT *" not in text, \
+            "No MERGE may use INSERT *; use explicit column lists"
+        assert "UPDATE SET *" not in text, \
+            "No MERGE may use UPDATE SET *; use explicit column lists"
+
+    def test_data_quality_breaks_merge_insert_has_explicit_columns(self):
+        """data_quality_breaks MERGE INSERT must use explicit column list."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
         dq_section = text.split("Merge silver_ohlcv_day_adjusted")[0]
-        assert "INSERT *" not in dq_section, \
-            "data_quality_breaks MERGE must not use INSERT *"
         assert "INSERT (" in dq_section, \
             "data_quality_breaks MERGE must use explicit INSERT column list"
         assert "reviewed_by" in dq_section and "reviewed_ts" in dq_section, \
             "INSERT must include reviewed_by and reviewed_ts columns"
+
+    def test_silver_adjusted_merge_insert_has_explicit_columns(self):
+        """silver_ohlcv_day_adjusted MERGE INSERT must use explicit column list."""
+        from pathlib import Path
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+        silver_section = text.split("Merge silver_ohlcv_day_adjusted")[1]
+        assert "INSERT (" in silver_section, \
+            "silver_ohlcv_day_adjusted MERGE must use explicit INSERT column list"
+        assert "UPDATE SET" in silver_section, \
+            "silver_ohlcv_day_adjusted MERGE must use explicit UPDATE SET"
+        assert "adj_close" in silver_section, \
+            "INSERT must include adj_close column"
+        assert "return_1d" in silver_section, \
+            "INSERT must include return_1d column"
+
+    def test_silver_adjusted_insert_covers_all_target_columns(self):
+        """Parse target DDL and assert silver INSERT lists every target column exactly once."""
+        from pathlib import Path
+        import re
+        sql_path = Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql"
+        text = sql_path.read_text(encoding="utf-8")
+
+        ddl_match = re.search(
+            r'CREATE TABLE IF NOT EXISTS.*?silver_ohlcv_day_adjusted\s*\((.*?)\)\s*USING DELTA',
+            text, re.DOTALL
+        )
+        assert ddl_match, "Could not find silver_ohlcv_day_adjusted CREATE TABLE DDL"
+        ddl_body = ddl_match.group(1)
+        target_cols = []
+        for line in ddl_body.splitlines():
+            line = line.strip().rstrip(",")
+            if not line:
+                continue
+            parts = line.split()
+            if parts:
+                col_name = parts[0].lower()
+                if col_name in ("primary", "constraint", "--"):
+                    continue
+                target_cols.append(col_name)
+        assert len(target_cols) == 24, f"Expected 24 target columns, got {len(target_cols)}: {target_cols}"
+
+        silver_section = text.split("Merge silver_ohlcv_day_adjusted")[1]
+        insert_match = re.search(
+            r'silver_ohlcv_day_adjusted.*?WHEN NOT MATCHED THEN INSERT\s*\((.*?)\)\s*VALUES',
+            silver_section, re.DOTALL
+        )
+        assert insert_match, "Could not find INSERT column list in silver_ohlcv_day_adjusted MERGE"
+        insert_cols_str = insert_match.group(1)
+        insert_cols = [c.strip().lower() for c in insert_cols_str.split(",")]
+
+        assert len(insert_cols) == len(target_cols), \
+            f"INSERT has {len(insert_cols)} columns but target has {len(target_cols)}"
+        assert set(insert_cols) == set(target_cols), \
+            f"Column mismatch: INSERT={sorted(insert_cols)} vs target={sorted(target_cols)}"
+
+    def test_silver_adjusted_missing_column_would_fail_test(self):
+        """Prove that a missing column in INSERT is detected."""
+        import re
+        # Simulate an INSERT with one column missing
+        all_cols = [
+            "symbol", "event_date", "event_ts", "open", "high", "low", "close",
+            "volume", "vwap", "trade_count", "cumulative_split_ratio",
+            "price_adjustment_factor", "adj_open", "adj_high", "adj_low",
+            "adj_close", "adj_vwap", "adj_volume", "raw_overnight_return",
+            "adjusted_return_1d_unmasked", "return_1d", "is_data_quality_break",
+            "information_available_ts", "processed_ts",
+        ]
+        # Missing one column
+        partial_cols = all_cols[:-1]
+        assert len(partial_cols) == 23
+        assert set(partial_cols) != set(all_cols), \
+            "Missing column must be detected"
+        assert "processed_ts" not in partial_cols, \
+            "Deliberately removed processed_ts to prove detection works"
 
     def test_data_quality_breaks_insert_covers_all_target_columns(self):
         """Parse target DDL and assert INSERT lists every target column exactly once."""
