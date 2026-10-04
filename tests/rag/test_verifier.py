@@ -80,3 +80,35 @@ def test_no_cross_encoder_constructed():
         assert isinstance(verifier.model, MagicMock), (
             f"Real CrossEncoder model loaded: {type(verifier.model)}"
         )
+
+def test_concurrent_first_use_waits_for_model(monkeypatch):
+    """Two threads racing on the lazy load must both get the real verdict, never a spurious SKIPPED."""
+    import threading
+    import time
+
+    import api.services.verifier as verifier_mod
+
+    class _SlowCrossEncoder:
+        def __init__(self, name):
+            time.sleep(0.3)  # slow model load widens the race window
+
+        def predict(self, pairs):
+            import numpy as np
+            return np.array([[0.0, 0.0, 5.0] for _ in pairs])  # strong entailment
+
+    monkeypatch.setattr(verifier_mod, "CrossEncoder", _SlowCrossEncoder)
+    v = verifier_mod.Verifier()
+    results = []
+    start = threading.Barrier(2)
+
+    def _call():
+        start.wait()
+        results.append(v.verify_entailment("Revenue grew.", "Revenue grew 10%.")[0])
+
+    threads = [threading.Thread(target=_call) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert "SKIPPED" not in results, f"concurrent first use returned {results}"
+    assert len(results) == 2

@@ -4,6 +4,7 @@ verifier.py — Numeric and Semantic Entailment Verification logic.
 This service implements the verification layer as described in the Prompt Plan.
 It provides numeric cross-check with tolerance and NLI-based entailment verification.
 """
+import threading
 from typing import Tuple
 
 from loguru import logger
@@ -19,17 +20,23 @@ class Verifier:
         self.model_name = model_name
         self.failed_to_load = False
         self._model_initialised = False
+        self._init_lock = threading.Lock()
 
     def _ensure_model(self):
+        # Double-checked locking: the flag is set only after the load attempt finishes,
+        # so a concurrent caller waits for the model instead of seeing a half-initialised state.
         if self._model_initialised:
             return
-        self._model_initialised = True
-        if CrossEncoder:
-            try:
-                self.model = CrossEncoder(self.model_name)
-            except Exception as e:
-                logger.error(f"Failed to load CrossEncoder model {self.model_name}: {e}")
-                self.failed_to_load = True
+        with self._init_lock:
+            if self._model_initialised:
+                return
+            if CrossEncoder:
+                try:
+                    self.model = CrossEncoder(self.model_name)
+                except Exception as e:
+                    logger.error(f"Failed to load CrossEncoder model {self.model_name}: {e}")
+                    self.failed_to_load = True
+            self._model_initialised = True
 
     def verify_numeric(self, llm_value: float, xbrl_fact_value: float, tolerance: float = 0.005) -> bool:
         """
