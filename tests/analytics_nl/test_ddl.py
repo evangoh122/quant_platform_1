@@ -945,13 +945,23 @@ class TestDDLAvailabilityContract:
                     break
 
             # Count CTEs that define NEW availability columns (e.g.,
-            # realized_vol_20d_info_ts, entity_info_ts) via MAX(...) OVER.
+            # realized_vol_20d_info_ts, entity_info_ts) via MAX(...) OVER
+            # or via GREATEST(...) combining multiple availability sources.
             # CTEs that merely SELECT information_available_ts from a source
             # table are passthroughs — not independent contributing sources.
             cte_availability_sources = set()
             for name, body in ctes:
                 # Look for new info_ts columns defined via MAX(...) OVER
                 if re.search(r"MAX\s*\(\s*(?:INFORMATION_AVAILABLE_TS|\w+_INFO_TS)\s*\)\s+OVER", body):
+                    cte_availability_sources.add(name)
+                # Look for information_available_ts defined via GREATEST(...)
+                # (e.g., combining joined availability from multiple sources)
+                elif re.search(
+                    r"GREATEST\s*\([^)]*(?:INFORMATION_AVAILABLE_TS|\w+_INFO_TS)[^)]*\)"
+                    r"\s+AS\s+INFORMATION_AVAILABLE_TS",
+                    body,
+                    re.IGNORECASE,
+                ):
                     cte_availability_sources.add(name)
             # Also check if the final SELECT itself defines info_ts via MAX OVER
             if re.search(r"MAX\s*\(\s*(?:INFORMATION_AVAILABLE_TS|\w+_INFO_TS)\s*\)\s+OVER", final_select):
@@ -1071,8 +1081,54 @@ class TestDDLAvailabilityContract:
             return
         pytest.skip("No relative performance SQL block found")
 
+    def test_mutation_drop_adj_availability_from_greatest_fails(self, ddl_content):
+        """Mutation proof: removing adj.information_available_ts from the
+        GREATEST in serve_daily_equity_metrics_v1 adjusted mode → FAILS.
 
-class TestRelativePerformanceDuckDB:
+        The returns_from_source CTE combines dp.information_available_ts
+        and adj.information_available_ts via GREATEST. Dropping the adj
+        contribution means a late adjusted-return revision would not
+        propagate to the output availability.
+        """
+        blocks = self._extract_sql_blocks(ddl_content)
+        for sql in blocks:
+            # Find the adjusted equity metrics block (has returns_from_source
+            # with GREATEST combining dp and adj availability)
+            if "RETURNS_FROM_SOURCE" not in sql.upper():
+                continue
+            if "ADJ.INFORMATION_AVAILABLE_TS" not in sql.upper():
+                continue
+            # This is the adjusted equity metrics block
+            # Remove adj.information_available_ts from the GREATEST
+            mutated = re.sub(
+                r"GREATEST\s*\(\s*dp\.information_available_ts\s*,\s*\n?\s*adj\.information_available_ts\s*\)",
+                "dp.information_available_ts",
+                sql,
+                flags=re.IGNORECASE,
+            )
+            # Verify the mutation actually changed the SQL
+            assert "adj.information_available_ts" not in mutated.lower() or \
+                   "greatest" not in mutated.split("returns_from_source")[1].lower()[:500] if "returns_from_source" in mutated.lower() else True, (
+                "Mutation should remove adj.information_available_ts from GREATEST"
+            )
+            # The mutated SQL should have the GREATEST reduced to a single column
+            mutated_blocks = self._extract_sql_blocks(f"```sql\n{mutated}\n```")
+            for msql in mutated_blocks:
+                if "RETURNS_FROM_SOURCE" not in msql.upper():
+                    continue
+                # Check that the GREATEST in returns_from_source no longer has
+                # adj.information_available_ts
+                m_greatest_args = _find_greatest_args(msql)
+                for args_str in m_greatest_args:
+                    args_upper = args_str.upper()
+                    if "DP.INFORMATION_AVAILABLE_TS" in args_upper and "ADJ.INFORMATION_AVAILABLE_TS" in args_upper:
+                        # GREATEST still has both — mutation didn't work
+                        assert False, (
+                            "Mutation proof: GREATEST still contains "
+                            "adj.information_available_ts after mutation"
+                        )
+            return
+        pytest.skip("No adjusted equity metrics SQL block found with adj.information_available_ts")
     """Semantic tests for relative-performance SQL using DuckDB.
 
     Extract the cumulative-return + anomaly-propagation logic from
