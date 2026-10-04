@@ -999,6 +999,77 @@ class TestMainEndToEnd:
         with pytest.raises(SystemExit, match="1"):
             main()
 
+    def test_main_write_mode_writes_filings_and_log(self, monkeypatch):
+        """main() in write mode with working HTTP writes rows to writer and log.
+
+        Mutation proof: remove the four adapter kwargs from the run_ingest()
+        call in main() → this test FAILS (real Spark adapters hit mocked
+        modules that return MagicMock, causing TypeError downstream).
+        """
+        from pipelines.sec_rag_ingest import main
+
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        company_tickers = json.loads((FIXTURES / "company_tickers.json").read_text())
+        http.set_json("https://www.sec.gov/files/company_tickers.json", company_tickers)
+
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        # Both 10-K and 10-Q filings resolve to the same sample HTML
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000020/nvda-20241027.htm",
+            filing_html,
+        )
+
+        writer = FakeDataWriter()
+        log_writer = FakeLogWriter()
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+
+        monkeypatch.setattr(
+            "pipelines.sec_rag_ingest.SparkUniverseReader",
+            lambda: FakeUniverseReader(universe),
+        )
+        monkeypatch.setattr(
+            "pipelines.sec_rag_ingest.SparkAccessionReader",
+            lambda: FakeAccessionReader(),
+        )
+        monkeypatch.setattr(
+            "pipelines.sec_rag_ingest.SparkDataWriter",
+            lambda: writer,
+        )
+        monkeypatch.setattr(
+            "pipelines.sec_rag_ingest.SparkLogWriter",
+            lambda: log_writer,
+        )
+        monkeypatch.setattr("pipelines._http_adapter.RequestsAdapter", lambda: http)
+
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent test@company.com")
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "sec_rag_ingest",
+                "--catalog", "test",
+                "--schema", "test",
+                "--tickers", "NVDA",
+                "--start-date", "2024-09-01",
+            ],
+        )
+
+        main()
+
+        # Exactly 2 filings processed (10-K + 10-Q); 8-K is before start_date
+        assert writer.total_rows > 0, "Expected filing chunks to be written"
+        assert len(writer.appended) == 2, f"Expected 2 append calls, got {len(writer.appended)}"
+
+        # Log entries: 2 succeeded filings
+        succeeded = [e for e in log_writer.entries if e.status == "succeeded"]
+        assert len(succeeded) == 2, f"Expected 2 succeeded log entries, got {len(succeeded)}"
+        assert all(e.ticker == "NVDA" for e in succeeded)
+
 
 # -- Grep-style test: no example.com in production User-Agent --
 
