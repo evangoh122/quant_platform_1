@@ -17,11 +17,11 @@
 -- Universe: all symbols ever in gold_tradable_universe (CTE) unioned with
 --   the 16 SEC-hardcoded tickers. Do NOT filter by config/universe.yaml.
 
-MERGE INTO bootcamp_students.evangoh_capstone.silver_sec_sections AS tgt
+MERGE INTO {catalog}.{schema}.silver_sec_sections AS tgt
 USING (
   WITH sec_universe AS (
     SELECT DISTINCT upper(trim(symbol)) AS ticker
-    FROM bootcamp_students.evangoh_capstone.gold_tradable_universe
+    FROM {catalog}.{schema}.gold_tradable_universe
     UNION
     SELECT ticker FROM (VALUES
       ('NVDA'),('TSM'),('AVGO'),('MU'),('AMD'),('ASML'),('ADI'),('TXN'),
@@ -45,10 +45,10 @@ USING (
     CAST(COALESCE(src.chunk_char_count, length(coalesce(src.chunk_text, ''))) AS INT) AS chunk_char_count,
     src.filing_url                  AS source_url,
     current_timestamp()             AS processed_ts
-  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2 src
+  FROM {catalog}.{schema}.bronze_sec_filings_v2 src
   LEFT JOIN (
     SELECT DISTINCT accession_number
-    FROM bootcamp_students.evangoh_capstone.silver_sec_sections
+    FROM {catalog}.{schema}.silver_sec_sections
   ) existing ON src.accession_number = existing.accession_number
   WHERE existing.accession_number IS NULL
     AND src.ticker IN (SELECT ticker FROM sec_universe)

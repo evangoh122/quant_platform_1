@@ -19,11 +19,11 @@
 -- Universe: all symbols ever in gold_tradable_universe (CTE) unioned with
 --   the 16 SEC-hardcoded tickers. Do NOT filter by config/universe.yaml.
 
-MERGE INTO bootcamp_students.evangoh_capstone.silver_sec_entities AS tgt
+MERGE INTO {catalog}.{schema}.silver_sec_entities AS tgt
 USING (
   WITH sec_universe AS (
     SELECT DISTINCT upper(trim(symbol)) AS ticker
-    FROM bootcamp_students.evangoh_capstone.gold_tradable_universe
+    FROM {catalog}.{schema}.gold_tradable_universe
     UNION
     SELECT ticker FROM (VALUES
       ('NVDA'),('TSM'),('AVGO'),('MU'),('AMD'),('ASML'),('ADI'),('TXN'),
@@ -46,10 +46,10 @@ USING (
     1.0                                                          AS confidence,
     src.record_key                                               AS source_chunk_id,
     current_timestamp()                                          AS processed_ts
-  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2 src
+  FROM {catalog}.{schema}.bronze_sec_filings_v2 src
   LEFT JOIN (
     SELECT DISTINCT accession_number
-    FROM bootcamp_students.evangoh_capstone.silver_sec_entities
+    FROM {catalog}.{schema}.silver_sec_entities
   ) existing ON src.accession_number = existing.accession_number
   WHERE existing.accession_number IS NULL
     AND src.filing_section LIKE 'xbrl_fact_%'
@@ -79,10 +79,10 @@ USING (
   FROM (
     SELECT src.cik, src.ticker, src.accession_number, src.form_type, src.accepted_ts, src.company_name,
            ROW_NUMBER() OVER (PARTITION BY src.accession_number ORDER BY src.cik) AS rn
-    FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2 src
+    FROM {catalog}.{schema}.bronze_sec_filings_v2 src
     LEFT JOIN (
       SELECT DISTINCT accession_number
-      FROM bootcamp_students.evangoh_capstone.silver_sec_entities
+      FROM {catalog}.{schema}.silver_sec_entities
     ) existing ON src.accession_number = existing.accession_number
     WHERE existing.accession_number IS NULL
       AND src.company_name IS NOT NULL
@@ -108,10 +108,10 @@ USING (
     0.9                                          AS confidence,
     src.record_key                               AS source_chunk_id,
     current_timestamp()                          AS processed_ts
-  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2 src
+  FROM {catalog}.{schema}.bronze_sec_filings_v2 src
   LEFT JOIN (
     SELECT DISTINCT accession_number
-    FROM bootcamp_students.evangoh_capstone.silver_sec_entities
+    FROM {catalog}.{schema}.silver_sec_entities
   ) existing ON src.accession_number = existing.accession_number
   WHERE existing.accession_number IS NULL
     AND src.filing_section = 'item1a_risk_factors'
@@ -141,10 +141,10 @@ USING (
   FROM (
     SELECT src.cik, src.ticker, src.accession_number, src.form_type, src.accepted_ts,
            ROW_NUMBER() OVER (PARTITION BY src.accession_number ORDER BY src.cik) AS rn
-    FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2 src
+    FROM {catalog}.{schema}.bronze_sec_filings_v2 src
     LEFT JOIN (
       SELECT DISTINCT accession_number
-      FROM bootcamp_students.evangoh_capstone.silver_sec_entities
+      FROM {catalog}.{schema}.silver_sec_entities
     ) existing ON src.accession_number = existing.accession_number
     WHERE existing.accession_number IS NULL
       AND src.form_type = '8-K'
