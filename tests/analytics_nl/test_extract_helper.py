@@ -126,8 +126,9 @@ class TestToDuckdb:
         assert ":as_of" not in duckdb_sql
         # Production SQL structure preserved
         assert "BOOL_OR" in duckdb_sql
-        assert "COALESCE" in duckdb_sql
         assert "GREATEST" in duckdb_sql
+        # Shim adds GREATEST guard for LN() — no COALESCE in reverted DOC
+        assert "LN(GREATEST" in duckdb_sql
 
     def test_bounded_bars_fallback_extraction(self):
         """Bounded bars fallback: extract, convert, verify to_utc_timestamp is gone."""

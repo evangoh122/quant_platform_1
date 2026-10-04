@@ -134,10 +134,18 @@ def to_duckdb(sql: str, params: dict[str, str] | None = None) -> str:
 
     # DuckDB evaluates both branches of CASE eagerly, so LN(0) errors even
     # when the WHEN condition would skip the ELSE branch. Guard with GREATEST.
-    # Pattern: LN(1 + COALESCE(col, 0)) → LN(GREATEST(1 + COALESCE(col, 0), 1e-10))
+    # Pattern A (reverted DOC): LN(1 + col) → LN(GREATEST(1 + col, 1e-10))
+    # Pattern B (legacy COALESCE): LN(1 + COALESCE(col, 0)) → LN(GREATEST(1 + COALESCE(col, 0), 1e-10))
+    # This is a DuckDB evaluation-order workaround; production keeps its CASE/NULL semantics.
     result = re.sub(
         r"LN\(1\s*\+\s*COALESCE\((\w+),\s*0\)\)",
         r"LN(GREATEST(1 + COALESCE(\1, 0), 1e-10))",
+        result,
+        flags=re.IGNORECASE,
+    )
+    result = re.sub(
+        r"LN\(1\s*\+\s*(\w+)\)",
+        r"LN(GREATEST(1 + \1, 1e-10))",
         result,
         flags=re.IGNORECASE,
     )

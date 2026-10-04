@@ -1194,6 +1194,78 @@ class TestRelativePerformanceDuckDB:
                     "value should produce non-NULL cumulative"
                 )
 
+    def test_null_return_day_is_excluded(self):
+        """A masked NULL return_1d day must be EXCLUDED from the output.
+
+        The production DDL filters WHERE return_1d IS NOT NULL in
+        entity_returns and benchmark_returns. A NULL-return day must:
+        (a) produce NO output row for that day
+        (b) not be counted as 0% (no silent interpolation)
+        (c) surrounding rows remain valid with status='ok'
+        """
+        rows = [
+            ("AAPL", "2024-01-01", 0.05, "2024-01-01 16:30:00"),
+            ("AAPL", "2024-01-02", None, "2024-01-02 16:30:00"),  # data-quality break
+            ("AAPL", "2024-01-03", 0.02, "2024-01-03 16:30:00"),
+            ("SPY", "2024-01-01", 0.01, "2024-01-01 16:30:00"),
+            ("SPY", "2024-01-02", 0.01, "2024-01-02 16:30:00"),
+            ("SPY", "2024-01-03", 0.01, "2024-01-03 16:30:00"),
+        ]
+        result = self._run_relperf_sql(self._get_prod_sql(), rows)
+        aapl_dates = [str(r[1]) for r in result if r[0] == "AAPL"]
+        # The NULL-return day (2024-01-02) must NOT appear in the output
+        assert "2024-01-02" not in aapl_dates, (
+            "NULL-return day 2024-01-02 must be excluded from output, "
+            "not silently interpolated as 0%"
+        )
+        # The non-NULL days must still be present
+        assert "2024-01-01" in aapl_dates, "Day 01 must be present"
+        assert "2024-01-03" in aapl_dates, "Day 03 must be present"
+        # The output AAPL rows must have status='ok'
+        for row in result:
+            if row[0] == "AAPL":
+                status = row[6]
+                assert status == "ok", (
+                    f"AAPL row on {row[1]} has status='{status}', expected 'ok'"
+                )
+
+    def test_mutation_coalesce_zero_in_doc_breaks_null_exclusion(self):
+        """Mutation: re-add COALESCE(...,0) in the DOC → NULL day appears as 0%.
+
+        This is the mutation proof that the WHERE IS NOT NULL filter is doing
+        the work. If someone changes LN(1 + return_1d) back to
+        LN(1 + COALESCE(return_1d, 0)) AND removes the WHERE IS NOT NULL,
+        the NULL day would be silently treated as 0%.
+        """
+        prod_sql = self._get_prod_sql()
+        # Mutation: remove WHERE return_1d IS NOT NULL and add COALESCE
+        mutated_sql = prod_sql.replace(
+            "AND return_1d IS NOT NULL", ""
+        ).replace(
+            "AND return_1d IS NOT NULL", ""
+        ).replace(
+            "LN(GREATEST(1 + return_1d, 1e-10))",
+            "LN(GREATEST(1 + COALESCE(return_1d, 0), 1e-10))"
+        ).replace(
+            "LN(GREATEST(1 + bench_return, 1e-10))",
+            "LN(GREATEST(1 + COALESCE(bench_return, 0), 1e-10))"
+        )
+        rows = [
+            ("AAPL", "2024-01-01", 0.05, "2024-01-01 16:30:00"),
+            ("AAPL", "2024-01-02", None, "2024-01-02 16:30:00"),  # data-quality break
+            ("AAPL", "2024-01-03", 0.02, "2024-01-03 16:30:00"),
+            ("SPY", "2024-01-01", 0.01, "2024-01-01 16:30:00"),
+            ("SPY", "2024-01-02", 0.01, "2024-01-02 16:30:00"),
+            ("SPY", "2024-01-03", 0.01, "2024-01-03 16:30:00"),
+        ]
+        result = self._run_relperf_sql(mutated_sql, rows)
+        aapl_dates = [str(r[1]) for r in result if r[0] == "AAPL"]
+        # After mutation, the NULL day appears as 0% — this is the bug
+        assert "2024-01-02" in aapl_dates, (
+            "Mutation proof failed: COALESCE(...,0) + no WHERE IS NOT NULL "
+            "should cause the NULL day to appear in output"
+        )
+
     def test_mutation_disable_invalid_return_status_fails(self):
         """Mutation 2b: change invalid_return status condition → FAILS.
 
@@ -1445,6 +1517,50 @@ class TestEquityMetricsMomentumDuckDB:
             mutated_momentum = mutated[mom_start:mom_end]
             assert "WHERE RETURN_1D IS NOT NULL" in mutated_momentum.upper(), (
                 "Mutation should add WHERE return_1d IS NOT NULL to with_momentum"
+            )
+
+    def test_adjusted_momentum_lag_before_null_filter(self):
+        """Adjusted-mode momentum: LAG must see full series (before null-filter).
+
+        The adjusted variant's with_momentum CTE reads from returns_from_source
+        which gets return_1d from silver_ohlcv_day_adjusted. Adding
+        WHERE return_1d IS NOT NULL before momentum computation would break
+        LAG(close, 20) by skipping NULL-return rows.
+
+        This test verifies:
+        (a) The adjusted with_momentum CTE does NOT have WHERE return_1d IS NOT NULL
+        (b) Adding the filter is a mutation that changes the SQL
+        """
+        raw_sql = extract_view_sql("serve_daily_equity_metrics_v1", variant="adjusted")
+        sql = to_duckdb(raw_sql, params={":as_of": "'2099-01-01'"})
+        sql = sql.replace("serve_daily_prices_v1", "base_prices")
+        sql = sql.replace("close_price", "close")
+
+        # The with_momentum CTE should NOT filter return_1d in adjusted mode
+        sql_upper = sql.upper()
+        mom_start = sql_upper.find("WITH_MOMENTUM AS")
+        mom_end = sql_upper.find("WITH_VOL AS")
+        if mom_start >= 0 and mom_end >= 0:
+            momentum_cte = sql[mom_start:mom_end]
+            assert "WHERE RETURN_1D IS NOT NULL" not in momentum_cte.upper(), (
+                "Adjusted with_momentum CTE should NOT have WHERE return_1d IS NOT NULL"
+            )
+
+        # Mutate: add the filter to adjusted variant
+        mutated = re.sub(
+            r"(FROM\s+returns_from_source\s*)",
+            r"\1WHERE return_1d IS NOT NULL ",
+            sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        mutated_upper = mutated.upper()
+        mom_start = mutated_upper.find("WITH_MOMENTUM AS")
+        mom_end = mutated_upper.find("WITH_VOL AS")
+        if mom_start >= 0 and mom_end >= 0:
+            mutated_momentum = mutated[mom_start:mom_end]
+            assert "WHERE RETURN_1D IS NOT NULL" in mutated_momentum.upper(), (
+                "Mutation should add WHERE return_1d IS NOT NULL to adjusted with_momentum"
             )
 
 

@@ -395,6 +395,7 @@ WITH entity_returns AS (
     FROM ${catalog}.${schema}.serve_daily_equity_metrics_v1
     WHERE event_date >= :start_date
       AND information_available_ts <= :as_of
+      AND return_1d IS NOT NULL
 ),
 benchmark_returns AS (
     SELECT
@@ -405,6 +406,7 @@ benchmark_returns AS (
     WHERE symbol = :benchmark
       AND event_date >= :start_date
       AND information_available_ts <= :as_of
+      AND return_1d IS NOT NULL
 ),
 entity_cumulative AS (
     SELECT
@@ -420,16 +422,15 @@ entity_cumulative AS (
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS has_invalid_return,
-        -- Cumulative return: only compute if no invalid returns in window
-        -- NULL return_1d (data-quality breaks) are treated as no-change (0%)
-        -- for cumulative return but propagate through BOOL_OR for anomaly detection
+        -- Cumulative return: only compute if no invalid returns in window.
+        -- NULL return_1d (data-quality breaks) are excluded upstream (WHERE IS NOT NULL).
         CASE
             WHEN BOOL_OR(return_1d <= -1) OVER (
                 PARTITION BY symbol
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             ) THEN NULL
-            ELSE EXP(SUM(LN(1 + COALESCE(return_1d, 0))) OVER (
+            ELSE EXP(SUM(LN(1 + return_1d)) OVER (
                 PARTITION BY symbol
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -456,7 +457,7 @@ benchmark_cumulative AS (
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             ) THEN NULL
-            ELSE EXP(SUM(LN(1 + COALESCE(bench_return, 0))) OVER (
+            ELSE EXP(SUM(LN(1 + bench_return)) OVER (
                 ORDER BY event_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             )) - 1
