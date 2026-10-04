@@ -49,6 +49,8 @@ resources:
             dependencies:
               - "sentence-transformers>=2.2.0"
               - "torch>=2.0.0"
+              - "loguru>=0.7.0"
+              - "python-dotenv>=1.0.0"
 
     sec_rag_ingest:
       name: quant-platform-sec-rag-ingest-${bundle.target}
@@ -62,3 +64,6 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+            dependencies:
+              - "beautifulsoup4>=4.12.0"
+              - "lxml>=4.9.0"

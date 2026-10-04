@@ -29,6 +29,10 @@ from typing import (
     List,
     Optional,
     Protocol,
+
+# Ensure repo root is on sys.path so ``pipelines.*`` resolves when invoked
+# via ``python_file`` in a Databricks job.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     Set,
     Tuple,
 )

@@ -22,11 +22,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+
+# Ensure repo root is on sys.path so ``api.*`` and ``pipelines.*`` resolve
+# when invoked via ``python_file`` in a Databricks job.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # -- Config --
 

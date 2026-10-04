@@ -652,3 +652,153 @@ class TestEmbeddingConcurrencyFixes:
         mock_spark.catalog = MagicMock()
 
         return mock_spark
+
+
+class TestJobEntrypointImportsN5:
+    """N5 (P2): Verify jobs.yml declares all dependencies needed by each
+    entrypoint, and that entrypoints set sys.path for Databricks jobs.
+
+    Mutation proof: remove loguru/python-dotenv from sec_embeddings env →
+    test_sec_embeddings_env_declares_loguru_dotenv FAILS.
+    Remove sys.path.insert from build_sec_embeddings.py →
+    test_build_sec_embeddings_sets_sys_path FAILS.
+    """
+
+    JOBS_PATH = Path(__file__).parent.parent.parent / "resources" / "jobs.yml"
+
+    def _load_jobs(self):
+        import yaml
+        if not self.JOBS_PATH.exists():
+            pytest.skip("jobs.yml not found")
+        return yaml.safe_load(self.JOBS_PATH.read_text(encoding="utf-8"))
+
+    def test_sec_embeddings_env_declares_loguru_dotenv(self):
+        """sec_embeddings environment must declare loguru and python-dotenv
+        (imported transitively by api/services/embeddings.py → api/config.py)."""
+        data = self._load_jobs()
+        envs = data["resources"]["jobs"]["sec_embeddings"]["environments"]
+        deps = []
+        for env in envs:
+            deps.extend(env.get("spec", {}).get("dependencies", []))
+
+        dep_str = " ".join(deps)
+        assert "loguru" in dep_str, (
+            "sec_embeddings env missing loguru (imported by api/services/embeddings.py)"
+        )
+        assert "python-dotenv" in dep_str, (
+            "sec_embeddings env missing python-dotenv (imported by api/config.py)"
+        )
+
+    def test_sec_rag_ingest_env_declares_bs4(self):
+        """sec_rag_ingest environment must declare beautifulsoup4
+        (used by strip_html via from bs4 import BeautifulSoup)."""
+        data = self._load_jobs()
+        envs = data["resources"]["jobs"]["sec_rag_ingest"]["environments"]
+        deps = []
+        for env in envs:
+            deps.extend(env.get("spec", {}).get("dependencies", []))
+
+        dep_str = " ".join(deps)
+        assert "beautifulsoup4" in dep_str, (
+            "sec_rag_ingest env missing beautifulsoup4 (used by strip_html)"
+        )
+
+    def test_build_sec_embeddings_sets_sys_path(self):
+        """build_sec_embeddings.py must set sys.path for Databricks job context."""
+        source = Path(__file__).parent.parent.parent / "pipelines" / "build_sec_embeddings.py"
+        content = source.read_text(encoding="utf-8")
+        assert "sys.path.insert" in content, (
+            "build_sec_embeddings.py missing sys.path.insert — "
+            "api.* imports will fail in Databricks job context"
+        )
+
+    def test_sec_rag_ingest_sets_sys_path(self):
+        """sec_rag_ingest.py must set sys.path for Databricks job context."""
+        source = Path(__file__).parent.parent.parent / "pipelines" / "sec_rag_ingest.py"
+        content = source.read_text(encoding="utf-8")
+        assert "sys.path.insert" in content, (
+            "sec_rag_ingest.py missing sys.path.insert — "
+            "pipelines.* imports will fail in Databricks job context"
+        )
+
+    def test_all_entrypoint_imports_declared(self):
+        """Every top-level import in each entrypoint must be available in
+        the Databricks serverless environment or declared as a dependency.
+
+        This test parses the AST of each entrypoint and checks that every
+        top-level import (excluding stdlib and repo-local modules) is listed
+        in the job's environment dependencies.
+        """
+        import ast
+        import sys as _sys
+        data = self._load_jobs()
+
+        # Map entrypoint → job name
+        entrypoints = {
+            "pipelines/build_sec_embeddings.py": "sec_embeddings",
+            "pipelines/sec_rag_ingest.py": "sec_rag_ingest",
+        }
+
+        # Stdlib modules (no need to declare)
+        stdlib_mods = set(_sys.stdlib_module_names) if hasattr(_sys, "stdlib_module_names") else {
+            "argparse", "hashlib", "json", "logging", "os", "re", "sys",
+            "threading", "time", "uuid", "dataclasses", "datetime", "pathlib",
+            "typing", "abc", "collections", "concurrent", "email", "io",
+            "struct", "functools", "copy", "math", "random", "string",
+            "textwrap", "enum", "contextlib", "warnings", "traceback",
+            "importlib", "inspect", "ast",
+        }
+
+        # Repo-local modules (resolved by sys.path.insert)
+        repo_local_prefixes = {"pipelines", "api", "ml", "db", "silver", "gold", "etl", "config", "strategies"}
+
+        repo_root = Path(__file__).parent.parent.parent
+
+        for rel_path, job_name in entrypoints.items():
+            source_path = repo_root / rel_path
+            if not source_path.exists():
+                continue
+
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+            # Collect top-level import module names
+            imported_modules = set()
+            for node in ast.iter_child_nodes(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        imported_modules.add(alias.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        imported_modules.add(node.module.split(".")[0])
+
+            # Get job dependencies from jobs.yml
+            job = data["resources"]["jobs"].get(job_name, {})
+            env_deps = set()
+            for env in job.get("environments", []):
+                for dep in env.get("spec", {}).get("dependencies", []):
+                    # "loguru>=0.7.0" → "loguru"
+                    env_deps.add(dep.split(">=")[0].split("==")[0].split("<")[0].strip())
+
+            # Check: every imported module must be stdlib, repo-local, or in deps
+            # Also allow known Databricks built-in packages
+            databricks_builtin = {"databricks", "pyspark", "spark"}
+            missing = []
+            for mod in sorted(imported_modules):
+                if mod in stdlib_mods:
+                    continue
+                if mod in repo_local_prefixes:
+                    continue
+                if mod in databricks_builtin:
+                    continue
+                if mod in env_deps:
+                    continue
+                # Check if it's a known pip package alias
+                pip_aliases = {"bs4": "beautifulsoup4", "dotenv": "python-dotenv", "PIL": "Pillow"}
+                if pip_aliases.get(mod) in env_deps:
+                    continue
+                missing.append(mod)
+
+            assert not missing, (
+                f"{job_name} ({rel_path}) imports {missing} but these are not "
+                f"declared in the job environment dependencies: {env_deps}"
+            )
