@@ -322,9 +322,17 @@ def get_ticker_corpus(ticker: str) -> TickerCorpus:
     Thread-safe. Concurrent requests for the same ticker coalesce to one load.
     No all-corpus fallback — raises NoCoverageError if ticker has no data.
 
+    Share-class aliases (GOOGL → GOOG) are resolved to the canonical ticker
+    so the correct corpus is loaded.
+
     Raises NoCoverageError if the ticker has no chunks.
     """
     ticker = ticker.upper().strip()
+    # Resolve share-class aliases to canonical ticker for corpus lookup
+    canonical = _resolve_canonical_ticker(ticker)
+    if canonical != ticker:
+        logger.info("Share-class alias: {} → {} for corpus lookup", ticker, canonical)
+    ticker = canonical
 
     # Fast path: check cache
     with _ticker_cache_lock:
@@ -386,6 +394,48 @@ def _insert_ticker_corpus(ticker: str, corpus: TickerCorpus) -> None:
 
 
 # -- Coverage lookup --
+
+def _resolve_canonical_ticker(ticker: str) -> str:
+    """Resolve a share-class alias to its canonical ticker via gold_sec_coverage.
+
+    Multiple tickers can share one CIK (e.g. GOOG/GOOGL).  Filings are stored
+    under the canonical ticker.  This function returns the canonical ticker
+    so retrieval loads the correct corpus.
+    """
+    ticker = ticker.upper().strip()
+    try:
+        spark = _get_spark()
+        from pyspark.sql import functions as F
+
+        # Find the canonical ticker: same CIK, lowest alphabetically
+        row = (
+            spark.table(COVERAGE_TABLE)
+            .filter(F.col("ticker") == ticker)
+            .select("cik")
+            .collect()
+        )
+        if not row or not row[0]["cik"]:
+            return ticker
+
+        cik = row[0]["cik"]
+        # Find all tickers with this CIK, pick the first alphabetically
+        all_rows = (
+            spark.table(COVERAGE_TABLE)
+            .filter(F.col("cik") == cik)
+            .select("ticker")
+            .collect()
+        )
+        if not all_rows:
+            return ticker
+
+        tickers = sorted(r["ticker"].upper() for r in all_rows)
+        canonical = tickers[0]
+        if canonical != ticker:
+            logger.info("Resolved alias {} → canonical {} (CIK {})", ticker, canonical, cik)
+        return canonical
+    except Exception:
+        return ticker
+
 
 def check_ticker_coverage(ticker: str) -> Tuple[int, Optional[str]]:
     """Check coverage for a ticker. Returns (n_chunks, cik).

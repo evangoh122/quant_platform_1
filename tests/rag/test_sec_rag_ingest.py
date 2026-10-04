@@ -45,6 +45,7 @@ from pipelines.sec_rag_ingest import (  # noqa: E402
     parse_sec_timestamp,
     process_filing,
     record_key,
+    resolve_canonical_tickers,
     run_ingest,
     strip_html,
 )
@@ -463,6 +464,35 @@ class TestNormalizeSecTicker:
     def test_deduplication(self):
         variants = normalize_sec_ticker("NVDA")
         assert len(variants) == len(set(variants))
+
+
+class TestResolveCanonicalTickers:
+    def test_single_ticker_per_cik(self):
+        """No aliases when each ticker has a unique CIK."""
+        mapped = [("AAPL", "0000320193"), ("MSFT", "0000789019")]
+        alias_map, cik_tickers = resolve_canonical_tickers(mapped)
+        assert alias_map["AAPL"] == "AAPL"
+        assert alias_map["MSFT"] == "MSFT"
+
+    def test_goog_googl_share_cik(self):
+        """GOOG/GOOGL share CIK → first alphabetically (GOOG) is canonical."""
+        mapped = [("GOOGL", "0001652044"), ("GOOG", "0001652044")]
+        alias_map, cik_tickers = resolve_canonical_tickers(mapped)
+        assert alias_map["GOOG"] == "GOOG"  # canonical
+        assert alias_map["GOOGL"] == "GOOG"  # alias
+
+    def test_fox_foxa_share_cik(self):
+        """FOX/FOXA share CIK → FOX is canonical (alphabetically first)."""
+        mapped = [("FOXA", "0001700172"), ("FOX", "0001700172")]
+        alias_map, _ = resolve_canonical_tickers(mapped)
+        assert alias_map["FOX"] == "FOX"
+        assert alias_map["FOXA"] == "FOX"
+
+    def test_identity_for_no_aliases(self):
+        """Tickers without aliases map to themselves."""
+        mapped = [("NVDA", "0001045810")]
+        alias_map, _ = resolve_canonical_tickers(mapped)
+        assert alias_map["NVDA"] == "NVDA"
 
 
 # -- Rate limiter tests --

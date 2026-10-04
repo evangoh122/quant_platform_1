@@ -529,6 +529,34 @@ def build_cik_map(
     return results
 
 
+def resolve_canonical_tickers(
+    mapped_tickers: List[Tuple[str, str]],
+) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+    """Resolve canonical ticker per CIK for share-class deduplication.
+
+    When multiple tickers share one CIK (e.g. GOOG/GOOGL, FOX/FOXA),
+    the first ticker alphabetically becomes canonical.  All filings for
+    that CIK are stored under the canonical ticker.
+
+    Returns:
+        alias_map: ticker -> canonical ticker (identity for canonical tickers)
+        cik_tickers: cik -> sorted list of tickers sharing that CIK
+    """
+    from collections import defaultdict
+    cik_tickers: Dict[str, List[str]] = defaultdict(list)
+    for ticker, cik in mapped_tickers:
+        cik_tickers[cik].append(ticker)
+    for cik in cik_tickers:
+        cik_tickers[cik].sort()
+
+    alias_map: Dict[str, str] = {}
+    for cik, tickers in cik_tickers.items():
+        canonical = tickers[0]
+        for t in tickers:
+            alias_map[t] = canonical
+    return alias_map, dict(cik_tickers)
+
+
 @dataclass
 class CikMappingResult:
     ticker: str
@@ -1294,6 +1322,12 @@ def run_ingest(
             result.missing_count += 1
             logger.warning("CIK mapping: %s — %s: %s", mapping.status, symbol, mapping.reason)
 
+    # Resolve share-class aliases: GOOG/GOOGL → one canonical ticker per CIK
+    alias_map, cik_tickers = resolve_canonical_tickers(mapped_tickers)
+    for ticker, canonical in alias_map.items():
+        if ticker != canonical:
+            logger.info("Share-class alias: %s → %s (same CIK)", ticker, canonical)
+
     # Write CIK mapping log
     if cik_mapping_log_writer is not None:
         for symbol, mapping in cik_map.items():
@@ -1368,10 +1402,13 @@ def run_ingest(
                 ))
 
     # Anti-join against existing — with conflict detection
-    planned: List[Tuple[str, str, str, FilingMeta]] = []  # (ticker, cik, company_name, filing)
+    # Use canonical ticker per CIK so share-class filings are stored once
+    planned: List[Tuple[str, str, str, FilingMeta]] = []  # (canonical_ticker, cik, company_name, filing)
+    planned_accessions: Set[str] = set()  # dedup within this batch
     for ticker, cik in mapped_tickers:
         if ticker in failed_tickers:
             continue
+        canonical = alias_map.get(ticker, ticker)
         for filing in all_filings.get(ticker, []):
             dashed = filing.accession_number
             if dashed in existing_accessions:
@@ -1402,9 +1439,15 @@ def run_ingest(
                         f"CIK {existing_cik} (ticker={existing_ticker}), "
                         f"but current request is CIK {cik} (ticker={ticker})"
                     )
+                # Same CIK: filing already stored — skip for this ticker
                 result.skipped_existing_count += 1
                 continue
-            planned.append((ticker, cik, ticker, filing))
+            # Deduplicate within this batch (share-class tickers discover same accessions)
+            if dashed in planned_accessions:
+                result.skipped_existing_count += 1
+                continue
+            planned_accessions.add(dashed)
+            planned.append((canonical, cik, canonical, filing))
             result.planned_count += 1
 
     if dry_run:

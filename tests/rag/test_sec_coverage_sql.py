@@ -231,3 +231,110 @@ class TestGoldCoverageDuckDB:
             f"AAPL CIK should be 0000320193 (latest mapped), got {aapl['cik']}. "
             "ROW_NUMBER ORDER BY may be wrong direction."
         )
+
+
+def _run_coverage_sql_with_aliases(sql: str) -> list[dict]:
+    """Execute coverage SQL with GOOG/GOOGL share-class fixtures."""
+    import duckdb
+
+    con = duckdb.connect()
+
+    # Universe: AAPL, MSFT, GOOG, GOOGL
+    con.execute("CREATE TABLE gold_tradable_universe (symbol VARCHAR)")
+    con.executemany(
+        "INSERT INTO gold_tradable_universe VALUES (?)",
+        [("AAPL",), ("MSFT",), ("GOOG",), ("GOOGL",)],
+    )
+
+    # CIK mapping: GOOG and GOOGL share CIK 0001652044
+    con.execute(
+        "CREATE TABLE sec_cik_mapping_log ("
+        "ticker VARCHAR, cik VARCHAR, status VARCHAR, mapped_ts TIMESTAMP)"
+    )
+    con.executemany(
+        "INSERT INTO sec_cik_mapping_log VALUES (?,?,?,?)",
+        [
+            ("AAPL", "0000320193", "mapped", "2024-06-01 00:00:00"),
+            ("MSFT", "0000789019", "mapped", "2024-03-01 00:00:00"),
+            ("GOOG", "0001652044", "mapped", "2024-04-01 00:00:00"),
+            ("GOOGL", "0001652044", "mapped", "2024-04-01 00:00:00"),
+        ],
+    )
+
+    # Bronze filings: stored under canonical ticker GOOG only
+    con.execute(
+        "CREATE TABLE bronze_sec_filings_v2 ("
+        "accession_number VARCHAR, ticker VARCHAR, filing_section VARCHAR, "
+        "chunk_text VARCHAR, accepted_ts TIMESTAMP, ingest_ts TIMESTAMP)"
+    )
+    con.executemany(
+        "INSERT INTO bronze_sec_filings_v2 VALUES (?,?,?,?,?,?)",
+        [
+            ("F1", "AAPL", "10-K", "text1", "2024-01-15 10:00:00", "2024-01-16 08:00:00"),
+            ("F2", "AAPL", "10-Q", "text2", "2024-06-15 10:00:00", "2024-06-16 08:00:00"),
+            ("F3", "GOOG", "10-K", "text3", "2024-04-15 10:00:00", "2024-04-16 08:00:00"),
+        ],
+    )
+
+    # Silver sections: stored under canonical ticker GOOG only
+    con.execute(
+        "CREATE TABLE silver_sec_sections (ticker VARCHAR, chunk_id VARCHAR)"
+    )
+    con.executemany(
+        "INSERT INTO silver_sec_sections VALUES (?,?)",
+        [
+            ("AAPL", "ch1"),
+            ("AAPL", "ch2"),
+            ("AAPL", "ch3"),
+            ("GOOG", "ch4"),
+            ("GOOG", "ch5"),
+        ],
+    )
+
+    con.execute(sql)
+    rows = con.execute(
+        "SELECT ticker, cik, n_filings, n_chunks, first_filed, last_filed, last_ingest_ts "
+        "FROM gold_sec_coverage ORDER BY ticker"
+    ).fetchall()
+    cols = [
+        "ticker", "cik", "n_filings", "n_chunks",
+        "first_filed", "last_filed", "last_ingest_ts",
+    ]
+    result = [dict(zip(cols, r)) for r in rows]
+    con.close()
+    return result
+
+
+class TestGoldCoverageAliases:
+    """Share-class alias resolution in gold_sec_coverage."""
+
+    @pytest.fixture(autouse=True)
+    def _require_sql(self):
+        if not SQL_PATH.exists():
+            pytest.skip(f"SQL file not found: {SQL_PATH}")
+
+    def test_googl_gets_coverage_row(self):
+        """GOOGL (alias) must get a coverage row with GOOG's data."""
+        sql = _load_coverage_sql()
+        rows = _run_coverage_sql_with_aliases(sql)
+        tickers = {r["ticker"]: r for r in rows}
+        assert "GOOGL" in tickers, "GOOGL must appear in coverage"
+        assert "GOOG" in tickers, "GOOG must appear in coverage"
+
+    def test_alias_same_data_as_canonical(self):
+        """GOOGL alias must have same n_filings/n_chunks as GOOG canonical."""
+        sql = _load_coverage_sql()
+        rows = _run_coverage_sql_with_aliases(sql)
+        tickers = {r["ticker"]: r for r in rows}
+        goog = tickers["GOOG"]
+        googl = tickers["GOOGL"]
+        assert goog["n_filings"] == googl["n_filings"]
+        assert goog["n_chunks"] == googl["n_chunks"]
+        assert goog["cik"] == googl["cik"]
+
+    def test_alias_n_chunks_gt_zero(self):
+        """GOOGL alias must have n_chunks > 0 (not zero)."""
+        sql = _load_coverage_sql()
+        rows = _run_coverage_sql_with_aliases(sql)
+        googl = next(r for r in rows if r["ticker"] == "GOOGL")
+        assert googl["n_chunks"] > 0, "GOOGL must have chunks via canonical GOOG"
