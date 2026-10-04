@@ -474,7 +474,7 @@
   status                             string NOT NULL
   processed_ts                       timestamp NOT NULL
 
-### sec_ingest_log  (17 cols)
+### sec_ingest_log  (16 cols)
   run_id                             string NOT NULL
   ticker                             string NOT NULL
   cik                                string NOT NULL
@@ -501,9 +501,11 @@
   mapped_ts                          timestamp
   run_id                             string
 
-### gold_sec_coverage  (5 cols)
+### gold_sec_coverage  (7 cols)
   ticker                             string NOT NULL
   cik                                string
-  n_chunks                           int NOT NULL
-  n_accessions                       int NOT NULL
-  latest_accepted_ts                 timestamp
+  n_filings                          bigint NOT NULL
+  n_chunks                           bigint NOT NULL
+  first_filed                        timestamp
+  last_filed                         timestamp
+  last_ingest_ts                     timestamp
