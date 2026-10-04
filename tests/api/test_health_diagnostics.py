@@ -491,3 +491,35 @@ def test_probe_thread_leak_bounded(client, monkeypatch):
     final_thread_count = threading.active_count()
     growth = final_thread_count - initial_thread_count
     assert growth <= 4, f"Thread count grew by {growth}, expected <= 4 (1 per dep + margin)"
+
+
+# ── 9. Warehouse statement timeout enforced ──────────────────────────────────
+
+def test_warehouse_query_timeout_enforced(monkeypatch):
+    """Warehouse query raises TimeoutError when the query hangs.
+
+    MUTATION THAT MUST FAIL: remove the timeout → query hangs indefinitely.
+    """
+    import db.delta_adapter as adapter
+
+    class HangingWarehouse:
+        def cursor(self):
+            return self
+        def execute(self, query, params=None):
+            time.sleep(9999)
+        def fetchall(self):
+            return []
+        def close(self):
+            pass
+        @property
+        def description(self):
+            return []
+
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: HangingWarehouse())
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError, match="timed out"):
+        adapter._warehouse_query("SELECT 1", timeout=1, limit=1)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 3.0, f"Query took {elapsed:.1f}s, expected < 3s (timeout=1)"

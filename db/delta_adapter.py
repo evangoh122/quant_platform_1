@@ -103,8 +103,10 @@ def _warehouse_query(
     """Execute a parameterized query on the SQL warehouse. Returns list of dicts.
 
     Parameters are passed as %s placeholders (databricks-sql-connector style).
-    The query is bounded by LIMIT and has a statement timeout.
+    The query is bounded by LIMIT and has a statement timeout enforced via a
+    daemon thread (the connector has no native statement timeout).
     """
+    import threading as _threading
     from api.diagnostics import stage
 
     # Enforce bounded LIMIT if not already present
@@ -113,14 +115,36 @@ def _warehouse_query(
 
     conn = _get_warehouse_connection()
     with stage("warehouse_query", table=_extract_table_name(query)):
-        cursor = conn.cursor()
-        try:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            rows = cursor.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
-        finally:
-            cursor.close()
+        result: List[Dict[str, Any]] = []
+        error: list[Exception] = []
+
+        def _execute():
+            try:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(query, params)
+                    columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                    rows = cursor.fetchall()
+                    result.extend(dict(zip(columns, row)) for row in rows)
+                finally:
+                    cursor.close()
+            except Exception as exc:
+                error.append(exc)
+
+        t = _threading.Thread(target=_execute, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+
+        if t.is_alive():
+            raise TimeoutError(
+                f"Warehouse query timed out after {timeout}s: "
+                f"{_extract_table_name(query)}"
+            )
+
+        if error:
+            raise error[0]
+
+        return result
 
 
 def _extract_table_name(query: str) -> str:
