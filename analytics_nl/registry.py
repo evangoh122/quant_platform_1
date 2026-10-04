@@ -78,7 +78,7 @@ class RegistryData:
 
 
 def _validate_identifier(value: str, context: str) -> None:
-    if not _IDENTIFIER_RE.match(value):
+    if not _IDENTIFIER_RE.fullmatch(value):
         raise RegistryValidationError(
             [f"Invalid identifier {value!r} in {context}: must match ^[a-z_][a-z0-9_]*$"]
         )

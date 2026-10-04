@@ -220,7 +220,7 @@ class TickerEntity(FrozenStrictModel):
     @field_validator("canonical_id")
     @classmethod
     def validate_ticker(cls, v: str) -> str:
-        if not _TICKER_RE.match(v):
+        if not _TICKER_RE.fullmatch(v):
             raise ValueError(
                 f"Ticker must match ^[A-Z][A-Z0-9.]{{0,9}}$, got {v!r}"
             )
@@ -236,7 +236,7 @@ class SectorEntity(FrozenStrictModel):
     @field_validator("canonical_id")
     @classmethod
     def validate_sector(cls, v: str) -> str:
-        if not _SECTOR_RE.match(v):
+        if not _SECTOR_RE.fullmatch(v):
             raise ValueError(
                 f"Sector must match ^[a-z_][a-z0-9_]*$, got {v!r}"
             )
@@ -252,7 +252,7 @@ class IndexEntity(FrozenStrictModel):
     @field_validator("canonical_id")
     @classmethod
     def validate_index(cls, v: str) -> str:
-        if not _TICKER_RE.match(v):
+        if not _TICKER_RE.fullmatch(v):
             raise ValueError(
                 f"Index must match ^[A-Z][A-Z0-9.]{{0,9}}$, got {v!r}"
             )
@@ -348,7 +348,7 @@ class LLMEntityMention(FrozenStrictModel):
     @field_validator("text")
     @classmethod
     def validate_text(cls, v: str) -> str:
-        if not _ENTITY_MENTION_RE.match(v):
+        if not _ENTITY_MENTION_RE.fullmatch(v):
             raise ValueError(
                 "Entity mention must match allowlist pattern: "
                 "alphanumeric start, alphanumeric/space/dot/ampersand/apostrophe/hyphen/slash/underscore only"
@@ -470,14 +470,14 @@ class ProvenanceEnvelope(FrozenStrictModel):
     @field_validator("statement_id")
     @classmethod
     def validate_statement_id(cls, v: str) -> str:
-        if not _ID_RE.match(v):
+        if not _ID_RE.fullmatch(v):
             raise ValueError(f"statement_id must match {_ID_RE.pattern}")
         return v
 
     @field_validator("trace_id")
     @classmethod
     def validate_trace_id(cls, v: str) -> str:
-        if not _TRACE_ID_RE.match(v):
+        if not _TRACE_ID_RE.fullmatch(v):
             raise ValueError(f"trace_id must match {_TRACE_ID_RE.pattern}")
         return v
 

@@ -236,6 +236,10 @@ class TestTickerValidation:
         with pytest.raises(ValidationError, match="Ticker must match"):
             TickerEntity(canonical_id="AAPL!")
 
+    def test_trailing_newline_rejected(self):
+        with pytest.raises(ValidationError, match="Ticker must match"):
+            TickerEntity(canonical_id="AAPL\n")
+
 
 class TestSectorValidation:
     """Sector IDs must match ^[a-z_][a-z0-9_]*$."""
@@ -255,6 +259,30 @@ class TestSectorValidation:
     def test_starting_with_number_rejected(self):
         with pytest.raises(ValidationError, match="Sector must match"):
             SectorEntity(canonical_id="1tech")
+
+    def test_trailing_newline_rejected(self):
+        with pytest.raises(ValidationError, match="Sector must match"):
+            SectorEntity(canonical_id="technology\n")
+
+
+class TestIndexValidation:
+    """Index IDs must match ^[A-Z][A-Z0-9.]{0,9}$."""
+
+    def test_valid_index(self):
+        idx = IndexEntity(canonical_id="SPY")
+        assert idx.canonical_id == "SPY"
+
+    def test_valid_index_with_dot(self):
+        idx = IndexEntity(canonical_id="RSP.X")
+        assert idx.canonical_id == "RSP.X"
+
+    def test_lowercase_rejected(self):
+        with pytest.raises(ValidationError, match="Index must match"):
+            IndexEntity(canonical_id="spy")
+
+    def test_trailing_newline_rejected(self):
+        with pytest.raises(ValidationError, match="Index must match"):
+            IndexEntity(canonical_id="SPY\n")
 
 
 class TestDateRange:
