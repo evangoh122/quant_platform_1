@@ -24,6 +24,18 @@ from analytics_nl.registry import RegistryData, RegistryEntry
 
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
+# Exact allowed key sets at every nesting level — fail closed on unknown keys
+_ALLOWED_TOP_KEYS = frozenset({
+    "policy_version", "semantic_model_version",
+    "hard_bounds", "soft_thresholds",
+    "known_splits", "adjusted_source_available",
+})
+_ALLOWED_HARD_BOUNDS_KEYS = frozenset({"gold", "silver"})
+_ALLOWED_GOLD_KEYS = frozenset({"date_bound_years", "row_bound"})
+_ALLOWED_SILVER_KEYS = frozenset({"date_bound_years", "row_bound", "ticker_bound"})
+_ALLOWED_SOFT_THRESHOLDS_KEYS = frozenset({"cheap", "normal"})
+_ALLOWED_TIER_KEYS = frozenset({"max_days", "max_entities", "max_rows"})
+
 # Metrics that use unadjusted prices — corporate-action sensitive
 _UNADJUSTED_PRICE_METRICS = frozenset({
     Metric.return_,
@@ -76,6 +88,11 @@ def load_policy_bounds() -> PolicyBounds:
 
     errors: list[str] = []
 
+    # --- Exact key-set validation at top level ---
+    unknown_top = set(raw.keys()) - _ALLOWED_TOP_KEYS
+    if unknown_top:
+        errors.append(f"Unknown top-level keys: {sorted(unknown_top)}")
+
     # Validate policy version
     pv = raw.get("policy_version")
     if pv != SEMANTIC_MODEL_VERSION:
@@ -89,12 +106,26 @@ def load_policy_bounds() -> PolicyBounds:
     hb = raw.get("hard_bounds")
     if not isinstance(hb, dict):
         errors.append("hard_bounds must be a dict")
-        hb = {}
+    else:
+        # Exact key-set for hard_bounds
+        unknown_hb = set(hb.keys()) - _ALLOWED_HARD_BOUNDS_KEYS
+        if unknown_hb:
+            errors.append(f"Unknown hard_bounds keys: {sorted(unknown_hb)}")
+
+    # Validate each layer inside hard_bounds (type check before any .get)
     for layer_name in ("gold", "silver"):
-        layer_raw = hb.get(layer_name)
-        if not isinstance(layer_raw, dict):
-            errors.append(f"hard_bounds.{layer_name} must be a dict")
+        layer_raw = hb.get(layer_name) if isinstance(hb, dict) else None
+        if layer_raw is None:
+            errors.append(f"hard_bounds.{layer_name} is required")
             continue
+        if not isinstance(layer_raw, dict):
+            errors.append(f"hard_bounds.{layer_name} must be a dict, got {type(layer_raw).__name__}")
+            continue
+        # Exact key-set for each layer
+        allowed_keys = _ALLOWED_GOLD_KEYS if layer_name == "gold" else _ALLOWED_SILVER_KEYS
+        unknown_layer = set(layer_raw.keys()) - allowed_keys
+        if unknown_layer:
+            errors.append(f"Unknown hard_bounds.{layer_name} keys: {sorted(unknown_layer)}")
         for key in ("date_bound_years", "row_bound"):
             val = layer_raw.get(key)
             if val is None:
@@ -112,29 +143,29 @@ def load_policy_bounds() -> PolicyBounds:
             elif tb <= 0:
                 errors.append(f"hard_bounds.silver.ticker_bound must be positive, got {tb}")
 
-    gold_raw = hb.get("gold", {})
-    silver_raw = hb.get("silver", {})
-
-    gold = HardBounds(
-        date_bound_years=gold_raw.get("date_bound_years", 10),
-        row_bound=gold_raw.get("row_bound", 5000),
-    )
-    silver = HardBounds(
-        date_bound_years=silver_raw.get("date_bound_years", 2),
-        ticker_bound=silver_raw.get("ticker_bound", 10),
-        row_bound=silver_raw.get("row_bound", 10000),
-    )
-
     # Validate soft_thresholds structure
     st = raw.get("soft_thresholds")
     if not isinstance(st, dict):
         errors.append("soft_thresholds must be a dict")
-        st = {}
+    else:
+        # Exact key-set for soft_thresholds
+        unknown_st = set(st.keys()) - _ALLOWED_SOFT_THRESHOLDS_KEYS
+        if unknown_st:
+            errors.append(f"Unknown soft_thresholds keys: {sorted(unknown_st)}")
+
+    # Validate each tier inside soft_thresholds (type check before any .get)
     for tier_name in ("cheap", "normal"):
-        tier_raw = st.get(tier_name)
-        if not isinstance(tier_raw, dict):
-            errors.append(f"soft_thresholds.{tier_name} must be a dict")
+        tier_raw = st.get(tier_name) if isinstance(st, dict) else None
+        if tier_raw is None:
+            errors.append(f"soft_thresholds.{tier_name} is required")
             continue
+        if not isinstance(tier_raw, dict):
+            errors.append(f"soft_thresholds.{tier_name} must be a dict, got {type(tier_raw).__name__}")
+            continue
+        # Exact key-set for each tier
+        unknown_tier = set(tier_raw.keys()) - _ALLOWED_TIER_KEYS
+        if unknown_tier:
+            errors.append(f"Unknown soft_thresholds.{tier_name} keys: {sorted(unknown_tier)}")
         for key in ("max_days", "max_entities", "max_rows"):
             val = tier_raw.get(key)
             if val is None:
@@ -144,31 +175,48 @@ def load_policy_bounds() -> PolicyBounds:
             elif val <= 0:
                 errors.append(f"soft_thresholds.{tier_name}.{key} must be positive, got {val}")
 
-    cheap_raw = st.get("cheap", {})
-    normal_raw = st.get("normal", {})
+    # Raise immediately if validation errors — do not proceed to construction
+    if errors:
+        raise PolicyValidationError(errors)
+
+    # --- Construction (all keys guaranteed present and valid) ---
+    gold_raw = hb["gold"]
+    silver_raw = hb["silver"]
+
+    gold = HardBounds(
+        date_bound_years=gold_raw["date_bound_years"],
+        row_bound=gold_raw["row_bound"],
+    )
+    silver = HardBounds(
+        date_bound_years=silver_raw["date_bound_years"],
+        ticker_bound=silver_raw["ticker_bound"],
+        row_bound=silver_raw["row_bound"],
+    )
+
+    cheap_raw = st["cheap"]
+    normal_raw = st["normal"]
 
     cheap = SoftThresholds(
-        max_days=cheap_raw.get("max_days", 31),
-        max_entities=cheap_raw.get("max_entities", 2),
-        max_rows=cheap_raw.get("max_rows", 500),
+        max_days=cheap_raw["max_days"],
+        max_entities=cheap_raw["max_entities"],
+        max_rows=cheap_raw["max_rows"],
     )
     normal = SoftThresholds(
-        max_days=normal_raw.get("max_days", 366),
-        max_entities=normal_raw.get("max_entities", 5),
-        max_rows=normal_raw.get("max_rows", 2500),
+        max_days=normal_raw["max_days"],
+        max_entities=normal_raw["max_entities"],
+        max_rows=normal_raw["max_rows"],
     )
 
     # Validate ordering: cheap <= normal for each threshold
-    if not errors:
-        if cheap.max_days > normal.max_days:
-            errors.append(f"cheap.max_days ({cheap.max_days}) > normal.max_days ({normal.max_days})")
-        if cheap.max_entities > normal.max_entities:
-            errors.append(f"cheap.max_entities ({cheap.max_entities}) > normal.max_entities ({normal.max_entities})")
-        if cheap.max_rows > normal.max_rows:
-            errors.append(f"cheap.max_rows ({cheap.max_rows}) > normal.max_rows ({normal.max_rows})")
-
-    if errors:
-        raise PolicyValidationError(errors)
+    ordering_errors: list[str] = []
+    if cheap.max_days > normal.max_days:
+        ordering_errors.append(f"cheap.max_days ({cheap.max_days}) > normal.max_days ({normal.max_days})")
+    if cheap.max_entities > normal.max_entities:
+        ordering_errors.append(f"cheap.max_entities ({cheap.max_entities}) > normal.max_entities ({normal.max_entities})")
+    if cheap.max_rows > normal.max_rows:
+        ordering_errors.append(f"cheap.max_rows ({cheap.max_rows}) > normal.max_rows ({normal.max_rows})")
+    if ordering_errors:
+        raise PolicyValidationError(ordering_errors)
 
     # Load known splits (optional — empty list if not present)
     known_splits_raw = raw.get("known_splits", [])

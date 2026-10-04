@@ -157,10 +157,18 @@ def _parse_entry(pair_key: str, raw: dict[str, Any]) -> RegistryEntry:
 def _validate_registry(raw: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
-    # Top-level versions
+    # Top-level versions — all three must match
     sem_ver = raw.get("semantic_model_version")
     if sem_ver != SEMANTIC_MODEL_VERSION:
         errors.append(f"semantic_model_version mismatch: expected {SEMANTIC_MODEL_VERSION}, got {sem_ver}")
+
+    reg_ver = raw.get("semantic_registry_version")
+    if reg_ver != SEMANTIC_MODEL_VERSION:
+        errors.append(f"semantic_registry_version mismatch: expected {SEMANTIC_MODEL_VERSION}, got {reg_ver}")
+
+    pol_ver = raw.get("policy_version")
+    if pol_ver != SEMANTIC_MODEL_VERSION:
+        errors.append(f"policy_version mismatch: expected {SEMANTIC_MODEL_VERSION}, got {pol_ver}")
 
     # Approved views
     approved_views = raw.get("approved_views", [])
@@ -176,7 +184,7 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
         errors.append("No entries defined")
 
     # Known tokens for fail-closed validation
-    from analytics_nl.contracts import Metric, Operation
+    from analytics_nl.contracts import Grouping, Metric, Operation
 
     _VALID_METRICS = {m.value for m in Metric}
     _VALID_OPERATIONS = {o.value for o in Operation}
@@ -188,6 +196,7 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
     _VALID_REQUIRED_SLOTS = {"entities", "date_range"}
     _VALID_OUTPUT_TYPES = {"string", "number", "integer", "date", "coverage_status"}
     _VALID_PARAMETER_TYPES = {"string", "integer", "number", "date", "boolean"}
+    _VALID_GROUPING_TOKENS = {g.value for g in Grouping}
 
     # Validate each entry
     for pair_key, entry_raw in entries.items():
@@ -233,9 +242,11 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
             if slot not in _VALID_REQUIRED_SLOTS:
                 errors.append(f"Entry {pair_key}: unknown required slot {slot!r}")
 
-        # Grouping
+        # Grouping — must be from the fixed allow-list
         for g in entry_raw.get("allowed_grouping", []):
             _validate_identifier(g, f"grouping in {pair_key!r}")
+            if g not in _VALID_GROUPING_TOKENS:
+                errors.append(f"Entry {pair_key}: unknown grouping token {g!r}")
 
         # Ordering
         for ordering in entry_raw.get("allowed_ordering", []):
@@ -298,7 +309,10 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
                             f"Entry {pair_key}: parameter {pname!r} default {pdefault} < min {pmin}"
                         )
                 except TypeError:
-                    pass  # non-comparable types (e.g. string default with int min)
+                    errors.append(
+                        f"Entry {pair_key}: parameter {pname!r} default type {type(pdefault).__name__} "
+                        f"incompatible with min type {type(pmin).__name__}"
+                    )
             if pdefault is not None and pmax is not None:
                 try:
                     if pdefault > pmax:
@@ -306,7 +320,10 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
                             f"Entry {pair_key}: parameter {pname!r} default {pdefault} > max {pmax}"
                         )
                 except TypeError:
-                    pass
+                    errors.append(
+                        f"Entry {pair_key}: parameter {pname!r} default type {type(pdefault).__name__} "
+                        f"incompatible with max type {type(pmax).__name__}"
+                    )
 
         # Chart families
         for cf in entry_raw.get("chart_families", []):

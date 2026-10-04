@@ -9,12 +9,10 @@ hard_bounds:
   gold:
     date_bound_years: 10
     row_bound: 5000
-    description: "Gold layer: max 10 years, 5000 rows, registry-defined entity limits"
   silver:
     date_bound_years: 2
     ticker_bound: 10
     row_bound: 10000
-    description: "Silver layer: max 2 years, 10 tickers, 10000 rows"
 
 # Soft thresholds for cost classification
 soft_thresholds:
@@ -26,7 +24,6 @@ soft_thresholds:
     max_days: 366
     max_entities: 5
     max_rows: 2500
-  # Anything above normal thresholds but within hard bounds = EXPENSIVE
 
 # Known stock splits for corporate-action safety.
 # Empty by default — to be populated by owner/admin.

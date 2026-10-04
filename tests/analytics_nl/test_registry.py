@@ -304,3 +304,59 @@ class TestRegistryFailClosed:
         raw["approved_views"].append("serve_unused_view")
         errors = _validate_registry(raw)
         assert any("not referenced" in e for e in errors), f"Expected unused view error, got {errors}"
+
+    def test_semantic_registry_version_mismatch_rejected(self):
+        """semantic_registry_version must match SEMANTIC_MODEL_VERSION."""
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["semantic_registry_version"] = "999.0.0"
+        errors = _validate_registry(raw)
+        assert any("semantic_registry_version mismatch" in e for e in errors), (
+            f"Expected semantic_registry_version mismatch error, got {errors}"
+        )
+
+    def test_policy_version_mismatch_rejected(self):
+        """policy_version must match SEMANTIC_MODEL_VERSION."""
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["policy_version"] = "999.0.0"
+        errors = _validate_registry(raw)
+        assert any("policy_version mismatch" in e for e in errors), (
+            f"Expected policy_version mismatch error, got {errors}"
+        )
+
+    def test_unknown_grouping_token_rejected(self):
+        """Grouping tokens must come from the fixed allow-list."""
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["allowed_grouping"] = ["day", "bogus_grouping"]
+        errors = _validate_registry(raw)
+        assert any("unknown grouping token" in e for e in errors), (
+            f"Expected unknown grouping token error, got {errors}"
+        )
+
+    def test_typed_default_vs_min_type_error_not_suppressed(self):
+        """A string default against integer min must produce an error, not be silently ignored."""
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["parameters"]["entity_count"] = {
+            "type": "integer", "min": 1, "max": 10, "default": "oops",
+        }
+        errors = _validate_registry(raw)
+        assert any("incompatible" in e and "default type" in e for e in errors), (
+            f"Expected type incompatibility error, got {errors}"
+        )
+
+    def test_typed_default_vs_max_type_error_not_suppressed(self):
+        """A string default against integer max must produce an error."""
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["parameters"]["entity_count"] = {
+            "type": "integer", "min": 1, "max": 10, "default": "oops",
+        }
+        errors = _validate_registry(raw)
+        # Should have at least one error about incompatible types (min or max)
+        type_errors = [e for e in errors if "incompatible" in e]
+        assert len(type_errors) >= 1, (
+            f"Expected at least one type incompatibility error, got {errors}"
+        )

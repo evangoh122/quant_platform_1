@@ -1285,3 +1285,128 @@ class TestInsufficientData:
         )
         assert result.cost_class == CostClass.REJECT
         assert PolicyReasonCode.INSUFFICIENT_DATA in result.reason_codes
+
+
+class TestFailClosedKeySets:
+    """Policy must reject unknown keys at every nesting level — no silent acceptance."""
+
+    def _make_valid_raw(self) -> dict:
+        return {
+            "policy_version": SEMANTIC_MODEL_VERSION,
+            "semantic_model_version": SEMANTIC_MODEL_VERSION,
+            "hard_bounds": {
+                "gold": {"date_bound_years": 10, "row_bound": 5000},
+                "silver": {"date_bound_years": 2, "ticker_bound": 10, "row_bound": 10000},
+            },
+            "soft_thresholds": {
+                "cheap": {"max_days": 31, "max_entities": 2, "max_rows": 500},
+                "normal": {"max_days": 366, "max_entities": 5, "max_rows": 2500},
+            },
+        }
+
+    def _load_from_raw(self, raw: dict):
+        import yaml
+        from unittest.mock import patch, MagicMock
+        from analytics_nl.policy import load_policy_bounds
+        yaml_text = yaml.dump(raw)
+        mock_ref = MagicMock()
+        mock_ref.read_text.return_value = yaml_text
+        with patch("analytics_nl.policy.resources") as mock_resources:
+            mock_resources.files.return_value.joinpath.return_value = mock_ref
+            return load_policy_bounds()
+
+    def test_unknown_nested_key_in_gold_rejected(self):
+        """hard_bounds.gold.rogue_bound must be rejected, not silently ignored."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"]["gold"]["rogue_bound"] = 999
+        with pytest.raises(PolicyValidationError, match="rogue_bound"):
+            self._load_from_raw(raw)
+
+    def test_unknown_nested_key_in_silver_rejected(self):
+        """hard_bounds.silver.rogue_bound must be rejected."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"]["silver"]["rogue_bound"] = 999
+        with pytest.raises(PolicyValidationError, match="rogue_bound"):
+            self._load_from_raw(raw)
+
+    def test_unknown_top_level_key_rejected(self):
+        """Unknown top-level keys must be rejected."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["bogus_key"] = "bogus"
+        with pytest.raises(PolicyValidationError, match="bogus_key"):
+            self._load_from_raw(raw)
+
+    def test_unknown_soft_thresholds_key_rejected(self):
+        """Unknown soft_thresholds keys must be rejected."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["soft_thresholds"]["bogus_tier"] = {"max_days": 1}
+        with pytest.raises(PolicyValidationError, match="bogus_tier"):
+            self._load_from_raw(raw)
+
+    def test_unknown_tier_key_rejected(self):
+        """Unknown keys inside cheap/normal tier must be rejected."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["soft_thresholds"]["cheap"]["bogus_field"] = 42
+        with pytest.raises(PolicyValidationError, match="bogus_field"):
+            self._load_from_raw(raw)
+
+    def test_malformed_gold_as_int_raises_policy_error(self):
+        """hard_bounds.gold = 42 must raise PolicyValidationError, not AttributeError."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"]["gold"] = 42
+        with pytest.raises(PolicyValidationError, match="must be a dict"):
+            self._load_from_raw(raw)
+
+    def test_malformed_gold_as_list_raises_policy_error(self):
+        """hard_bounds.gold = [1,2] must raise PolicyValidationError, not AttributeError."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"]["gold"] = [1, 2]
+        with pytest.raises(PolicyValidationError, match="must be a dict"):
+            self._load_from_raw(raw)
+
+    def test_malformed_cheap_as_string_raises_policy_error(self):
+        """soft_thresholds.cheap = 'oops' must raise PolicyValidationError."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["soft_thresholds"]["cheap"] = "oops"
+        with pytest.raises(PolicyValidationError, match="must be a dict"):
+            self._load_from_raw(raw)
+
+    def test_missing_gold_key_raises_policy_error(self):
+        """Missing hard_bounds.gold.date_bound_years must raise, not silently default."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        del raw["hard_bounds"]["gold"]["date_bound_years"]
+        with pytest.raises(PolicyValidationError, match="date_bound_years"):
+            self._load_from_raw(raw)
+
+    def test_missing_cheap_max_days_raises_policy_error(self):
+        """Missing soft_thresholds.cheap.max_days must raise, not silently default."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        del raw["soft_thresholds"]["cheap"]["max_days"]
+        with pytest.raises(PolicyValidationError, match="max_days"):
+            self._load_from_raw(raw)
+
+    def test_missing_hard_bounds_raises_policy_error(self):
+        """Missing hard_bounds entirely must raise."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        del raw["hard_bounds"]
+        with pytest.raises(PolicyValidationError, match="hard_bounds"):
+            self._load_from_raw(raw)
+
+    def test_missing_soft_thresholds_raises_policy_error(self):
+        """Missing soft_thresholds entirely must raise."""
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        del raw["soft_thresholds"]
+        with pytest.raises(PolicyValidationError, match="soft_thresholds"):
+            self._load_from_raw(raw)
