@@ -14,7 +14,13 @@ from loguru import logger
 from api.config import TICKER_TO_CIK
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-_USER_AGENT = os.getenv("EDGAR_USER_AGENT", "RAG-Workbench research@example.com")
+_user_agent_raw = os.getenv("EDGAR_USER_AGENT", "")
+if not _user_agent_raw or "example" in _user_agent_raw.lower():
+    raise ValueError(
+        "EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
+        "Set it from environment or Databricks secret."
+    )
+_USER_AGENT = _user_agent_raw
 _rate_lock = threading.Lock()
 _last_call: float = 0.0
 _MIN_INTERVAL = 0.11  # ~9 req/s to stay under 10/s

@@ -7,6 +7,12 @@
 # MAGIC %md
 # MAGIC # 02 — Ingest SEC EDGAR Data (for RAG)
 # MAGIC
+# MAGIC **DEPRECATED:** This notebook is superseded by `pipelines/sec_rag_ingest.py`.
+# MAGIC Use the pipeline CLI for production ingestion:
+# MAGIC ```
+# MAGIC python pipelines/sec_rag_ingest.py --tickers AAPL,MSFT --start-date 2024-09-01
+# MAGIC ```
+# MAGIC
 # MAGIC **Writes to:** `bootcamp_students.evangoh_capstone.bronze_sec_filings`
 # MAGIC
 # MAGIC **Sources:** SEC EDGAR free REST API (`data.sec.gov`) — no API key required.  
@@ -63,7 +69,12 @@ UNIVERSE_STK = [
 FORM_TYPES = ["10-K", "10-Q", "8-K"]
 
 # ── EDGAR REST client ───────────────────────────────────────────────
-EDGAR_EMAIL = os.getenv("EDGAR_EMAIL", "evangoh@gmail.com")
+EDGAR_EMAIL = os.getenv("EDGAR_EMAIL", "")
+if not EDGAR_EMAIL or "example" in EDGAR_EMAIL.lower():
+    raise ValueError(
+        "EDGAR_EMAIL must be set to a valid contact email. "
+        "Set it from environment or Databricks secret."
+    )
 HEADERS = {
     "User-Agent": f"Capstone-Quant-Platform {EDGAR_EMAIL}",
     "Accept": "application/json",
@@ -1682,10 +1693,12 @@ RAG_FORM_TYPES = [
 # 4. SEC CONFIG
 # ================================================================
 
-EDGAR_EMAIL = os.getenv(
-    "EDGAR_EMAIL",
-    "your_email@example.com",
-)
+EDGAR_EMAIL = os.getenv("EDGAR_EMAIL", "")
+if not EDGAR_EMAIL or "example" in EDGAR_EMAIL.lower():
+    raise ValueError(
+        "EDGAR_EMAIL must be set to a valid contact email. "
+        "Set it from environment or Databricks secret."
+    )
 
 HEADERS = {
     "User-Agent": (

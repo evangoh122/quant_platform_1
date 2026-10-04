@@ -979,3 +979,42 @@ class TestMainEndToEnd:
         # If filings were discovered and processed, rows should be appended
         # (the exact count depends on the fixture data)
         assert writer.total_rows >= 0  # at least no crash
+
+
+# -- Grep-style test: no example.com in production User-Agent --
+
+class TestNoPlaceholderUserAgent:
+    """Verify no example.com User-Agent remains in production code."""
+
+    PRODUCTION_FILES = [
+        "pipelines/sec_rag_ingest.py",
+        "pipelines/build_sec_embeddings.py",
+        "api/services/xbrl_client.py",
+        "api/services/edgar_adapter.py",
+        "api/services/_edgar_identity.py",
+        "config/settings.py",
+        "etl/extract_edgar.py",
+    ]
+
+    def test_no_example_com_in_production_files(self):
+        """No production file should contain example.com as a User-Agent default."""
+        import re
+        repo_root = Path(__file__).parent.parent.parent
+        pattern = re.compile(r"example\.com", re.IGNORECASE)
+        violations = []
+        for rel_path in self.PRODUCTION_FILES:
+            full_path = repo_root / rel_path
+            if not full_path.exists():
+                continue
+            content = full_path.read_text(encoding="utf-8")
+            # Skip comments and test-only strings
+            for i, line in enumerate(content.splitlines(), 1):
+                if pattern.search(line):
+                    # Allow in comments that explain the check
+                    stripped = line.lstrip()
+                    if stripped.startswith("#") or stripped.startswith("//"):
+                        continue
+                    violations.append(f"{rel_path}:{i}: {line.strip()}")
+        assert not violations, (
+            f"Found example.com in production code:\n" + "\n".join(violations)
+        )

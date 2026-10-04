@@ -5,7 +5,13 @@ CATALOG = os.getenv("CATALOG", "bootcamp_students")
 SCHEMA  = os.getenv("SCHEMA", "evangoh_capstone")
 
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
-EDGAR_EMAIL     = os.getenv("EDGAR_EMAIL", "research@example.com")
+_edgar_email_raw = os.getenv("EDGAR_EMAIL", "")
+if not _edgar_email_raw or "example" in _edgar_email_raw.lower():
+    raise ValueError(
+        "EDGAR_EMAIL must be set to a valid contact email. "
+        "Set it from environment or Databricks secret."
+    )
+EDGAR_EMAIL = _edgar_email_raw
 
 TWS_HOST      = os.getenv("TWS_HOST", "127.0.0.1")
 TWS_PORT      = int(os.getenv("TWS_PORT", "7497"))
