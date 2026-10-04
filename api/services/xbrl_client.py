@@ -11,21 +11,23 @@ from functools import lru_cache
 from loguru import logger
 
 from api.config import TICKER_TO_CIK
-from pipelines.sec_rag_ingest import get_global_limiter
+from pipelines.sec_rag_ingest import get_global_limiter, _resolve_user_agent, _validate_user_agent
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 _USER_AGENT = None  # Lazy-initialized on first use
 
 
 def _get_user_agent() -> str:
+    """Resolve SEC EDGAR User-Agent via the pipeline resolver.
+
+    Checks SEC_EDGAR_USER_AGENT env var first, then falls back to the
+    Databricks secret (same resolver as sec_rag_ingest).  Never logs
+    the actual value.
+    """
     global _USER_AGENT
     if _USER_AGENT is None:
-        raw = os.getenv("EDGAR_USER_AGENT", "")
-        if not raw or "example" in raw.lower():
-            raise ValueError(
-                "EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
-                "Set it from environment or Databricks secret."
-            )
+        raw = _resolve_user_agent()
+        _validate_user_agent(raw)
         _USER_AGENT = raw
     return _USER_AGENT
 
