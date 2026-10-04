@@ -334,8 +334,9 @@ def aggregate_results(
             result[name] = sum(vals) / len(vals) if vals else 0.0
         return result
 
-    # Count zero-gold answerable items excluded from aggregation
-    zero_gold_excluded = sum(1 for ir in answerable if not _has_gold(ir))
+    # Filter zero-gold rows — shared by overall, bootstrap, per-type, per-ticker
+    answerable_scored = [ir for ir in answerable if _has_gold(ir)]
+    zero_gold_excluded = len(answerable) - len(answerable_scored)
 
     overall = _avg_metrics(answerable, metric_names)
 
@@ -354,39 +355,39 @@ def aggregate_results(
         if ticker_items:
             per_ticker[ticker] = _avg_metrics(ticker_items, metric_names)
 
-    # Bootstrap CIs on recall@5 and MRR for answerable items
+    # Bootstrap CIs on recall@5 and MRR for answerable items with gold
     bootstrap: dict[str, Any] = {}
-    if answerable:
-        r5_vals = [ir.metrics.get("recall_at_5", 0.0) for ir in answerable]
-        mrr_vals = [ir.metrics.get("mrr_at_10", 0.0) for ir in answerable]
+    if answerable_scored:
+        r5_vals = [ir.metrics.get("recall_at_5", 0.0) for ir in answerable_scored]
+        mrr_vals = [ir.metrics.get("mrr_at_10", 0.0) for ir in answerable_scored]
         bootstrap["recall_at_5"] = bootstrap_ci(r5_vals)
         bootstrap["mrr_at_10"] = bootstrap_ci(mrr_vals)
 
-        # Per-type bootstrap
+        # Per-type bootstrap (same zero-gold filter)
         bootstrap["per_type"] = {}
         for item_type in per_type:
-            type_answerable = [ir for ir in answerable if ir.item.item_type == item_type]
-            if len(type_answerable) >= 2:
+            type_scored = [ir for ir in answerable_scored if ir.item.item_type == item_type]
+            if len(type_scored) >= 2:
                 bootstrap["per_type"][item_type] = {
                     "recall_at_5": bootstrap_ci(
-                        [ir.metrics.get("recall_at_5", 0.0) for ir in type_answerable]
+                        [ir.metrics.get("recall_at_5", 0.0) for ir in type_scored]
                     ),
                     "mrr_at_10": bootstrap_ci(
-                        [ir.metrics.get("mrr_at_10", 0.0) for ir in type_answerable]
+                        [ir.metrics.get("mrr_at_10", 0.0) for ir in type_scored]
                     ),
                 }
 
-        # Per-ticker bootstrap
+        # Per-ticker bootstrap (same zero-gold filter)
         bootstrap["per_ticker"] = {}
         for ticker in per_ticker:
-            ticker_answerable = [ir for ir in answerable if ir.item.ticker == ticker]
-            if len(ticker_answerable) >= 2:
+            ticker_scored = [ir for ir in answerable_scored if ir.item.ticker == ticker]
+            if len(ticker_scored) >= 2:
                 bootstrap["per_ticker"][ticker] = {
                     "recall_at_5": bootstrap_ci(
-                        [ir.metrics.get("recall_at_5", 0.0) for ir in ticker_answerable]
+                        [ir.metrics.get("recall_at_5", 0.0) for ir in ticker_scored]
                     ),
                     "mrr_at_10": bootstrap_ci(
-                        [ir.metrics.get("mrr_at_10", 0.0) for ir in ticker_answerable]
+                        [ir.metrics.get("mrr_at_10", 0.0) for ir in ticker_scored]
                     ),
                 }
 

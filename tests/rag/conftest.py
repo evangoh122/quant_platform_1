@@ -1,7 +1,7 @@
 import sys
 import hashlib
 from types import ModuleType
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -234,3 +234,48 @@ def fake_pyspark(monkeypatch):
 
     pyspark_sql.SparkSession = MagicMock(name="SparkSession")
     pyspark_sql.DataFrame = MagicMock(name="DataFrame")
+
+
+# ── Cross-Encoder guard ──────────────────────────────────────────────────────
+
+class _FakeCrossEncoder:
+    """Records CrossEncoder() construction attempts without loading any model."""
+    instances: list["_FakeCrossEncoder"] = []
+
+    def __init__(self, *a, **kw):
+        self._init_args = (a, kw)
+        _FakeCrossEncoder.instances.append(self)
+
+    def predict(self, pairs, **kw):
+        import numpy as _np
+        n = len(pairs) if hasattr(pairs, '__len__') else 1
+        return _np.tile(_np.array([0.1, 0.15, 0.75], dtype=_np.float32), (n, 1))
+
+
+@pytest.fixture(autouse=True)
+def _no_cross_encoder_load(request):
+    """Prevent any sentence_transformers.CrossEncoder model load during tests.
+
+    Patches the real CrossEncoder class so ``Verifier()`` never downloads or
+    loads a HuggingFace model.  The verifier module is reloaded so its
+    module-level singleton picks up the patched class.
+    """
+    import importlib
+    import api.services.verifier as verifier_mod
+
+    _FakeCrossEncoder.instances.clear()
+    orig_ce = verifier_mod.CrossEncoder
+
+    patcher = patch(
+        "sentence_transformers.CrossEncoder",
+        _FakeCrossEncoder,
+    )
+    patcher.start()
+    verifier_mod.CrossEncoder = _FakeCrossEncoder
+    importlib.reload(verifier_mod)
+
+    yield
+
+    patcher.stop()
+    verifier_mod.CrossEncoder = orig_ce
+    importlib.reload(verifier_mod)

@@ -299,6 +299,72 @@ class TestDeduplicationExplicitCases:
         assert result["zero_gold_excluded"] == 1
 
 
+class TestBootstrapExcludesZeroGold:
+    """test_bootstrap_excludes_zero_gold — bootstrap must use same rows as overall."""
+
+    def test_bootstrap_matches_overall_filter(self):
+        """One perfect row + one zero-gold row → bootstrap mean 1.0, n==1."""
+        perfect_item = _item("answerable", gold_chunk_ids=("c1", "c2"))
+        perfect_ir = ItemResult(
+            item=perfect_item,
+            config=RetrievalConfig(mode="bm25", ticker_filter=True, top_k=5),
+        )
+        perfect_ir.metrics = {
+            "recall_at_1": 1.0, "recall_at_5": 1.0, "recall_at_10": 1.0,
+            "mrr_at_10": 1.0, "ndcg_at_10": 1.0,
+        }
+
+        zero_gold_item = _item("answerable", gold_chunk_ids=())
+        zero_gold_ir = ItemResult(
+            item=zero_gold_item,
+            config=RetrievalConfig(mode="bm25", ticker_filter=True, top_k=5),
+        )
+        zero_gold_ir.metrics = {
+            "recall_at_1": 0.0, "recall_at_5": 0.0, "recall_at_10": 0.0,
+            "mrr_at_10": 0.0, "ndcg_at_10": 0.0,
+        }
+
+        result = aggregate_results([perfect_ir, zero_gold_ir])
+        bs_r5 = result["bootstrap"]["recall_at_5"]
+        bs_mrr = result["bootstrap"]["mrr_at_10"]
+        # Bootstrap should only include the scored row (n==1)
+        assert bs_r5["n"] == 1
+        assert bs_r5["mean"] == pytest.approx(1.0)
+        assert bs_mrr["n"] == 1
+        assert bs_mrr["mean"] == pytest.approx(1.0)
+        assert result["zero_gold_excluded"] == 1
+
+    def test_mutation_bootstrap_over_all_answerable_fails(self):
+        """If bootstrap used all answerable (not just scored), mean would drop."""
+        perfect_item = _item("answerable", gold_chunk_ids=("c1",))
+        perfect_ir = ItemResult(
+            item=perfect_item,
+            config=RetrievalConfig(mode="bm25", ticker_filter=True, top_k=5),
+        )
+        perfect_ir.metrics = {
+            "recall_at_1": 1.0, "recall_at_5": 1.0, "recall_at_10": 1.0,
+            "mrr_at_10": 1.0, "ndcg_at_10": 1.0,
+        }
+
+        zero_gold_item = _item("answerable", gold_chunk_ids=())
+        zero_gold_ir = ItemResult(
+            item=zero_gold_item,
+            config=RetrievalConfig(mode="bm25", ticker_filter=True, top_k=5),
+        )
+        zero_gold_ir.metrics = {
+            "recall_at_1": 0.0, "recall_at_5": 0.0, "recall_at_10": 0.0,
+            "mrr_at_10": 0.0, "ndcg_at_10": 0.0,
+        }
+
+        result = aggregate_results([perfect_ir, zero_gold_ir])
+        bs_r5 = result["bootstrap"]["recall_at_5"]
+        # If bootstrap erroneously included zero-gold row, mean would be 0.5
+        assert bs_r5["mean"] == pytest.approx(1.0), (
+            f"Bootstrap mean {bs_r5['mean']} != 1.0 — "
+            "bootstrap likely included zero-gold rows"
+        )
+
+
 class TestDedupPropertyTest:
     """test_dedup_property — seeded randomized ≥ 500 cases."""
 

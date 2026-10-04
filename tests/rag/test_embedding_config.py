@@ -59,3 +59,16 @@ def test_hybrid_retriever_uses_config_dim():
     # hybrid_retriever imports EMBEDDING_DIM from embeddings, which imports from config
     from api.services.embeddings import EMBEDDING_DIM
     assert EMBEDDING_DIM == cfg_mod.config.EMBEDDING_DIM == 384
+
+
+def test_fake_embedding_provider_active():
+    """Guard: conftest's _FakeEmbeddingProvider must be installed so no HF model loads."""
+    import api.services.embeddings as emb_mod
+    # The conftest fixture sets emb_mod._embeddings to a _FakeEmbeddingProvider
+    assert emb_mod._embeddings is not None, (
+        "embeddings._embeddings is None — the conftest fake was not installed. "
+        "Reverting the fake would cause HuggingFace model loads."
+    )
+    # Verify it has the expected interface
+    assert hasattr(emb_mod._embeddings, "embed_query")
+    assert hasattr(emb_mod._embeddings, "embed_documents")

@@ -18,11 +18,17 @@ class Verifier:
         self.model = None
         self.model_name = model_name
         self.failed_to_load = False
+        self._model_initialised = False
+
+    def _ensure_model(self):
+        if self._model_initialised:
+            return
+        self._model_initialised = True
         if CrossEncoder:
             try:
-                self.model = CrossEncoder(model_name)
+                self.model = CrossEncoder(self.model_name)
             except Exception as e:
-                logger.error(f"Failed to load CrossEncoder model {model_name}: {e}")
+                logger.error(f"Failed to load CrossEncoder model {self.model_name}: {e}")
                 self.failed_to_load = True
 
     def verify_numeric(self, llm_value: float, xbrl_fact_value: float, tolerance: float = 0.005) -> bool:
@@ -43,6 +49,7 @@ class Verifier:
         Verify if the source text strictly entails the generated claim using an NLI model.
         Returns a tuple of (PASS/FAIL/SKIPPED, reasoning).
         """
+        self._ensure_model()
         if self.failed_to_load:
             return "ERROR", f"Failed to load CrossEncoder model {self.model_name}."
         if not self.model:
