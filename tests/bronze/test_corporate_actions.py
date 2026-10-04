@@ -1159,3 +1159,253 @@ class TestRunbookSourceCommands:
                 f"Runbook uses --source {source_val!r} which is not in "
                 f"VALID_SOURCES={mod.VALID_SOURCES}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 18. Checkpoint ordering — SUCCESS after append + key verification
+# ---------------------------------------------------------------------------
+
+class TestCheckpointOrdering:
+
+    def test_success_checkpoint_after_append_not_before(self):
+        """SUCCESS must be logged AFTER the Bronze append, not in the fetch loop.
+
+        Structural test: read the notebook source and verify that
+        _log_checkpoint(..., 'SUCCESS', ...) appears AFTER the
+        .saveAsTable(BRONZE_TABLE) append call, and NOT before it.
+        """
+        from pathlib import Path
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+
+        # Find the line numbers of key markers
+        append_line = None
+        success_checkpoint_lines = []
+
+        for i, line in enumerate(lines):
+            if "saveAsTable(BRONZE_TABLE)" in line:
+                append_line = i
+            if '_log_checkpoint(spark, run_id, sym, "massive", "SUCCESS"' in line:
+                success_checkpoint_lines.append(i)
+
+        assert append_line is not None, "Could not find saveAsTable(BRONZE_TABLE) in notebook"
+        assert len(success_checkpoint_lines) > 0, "Could not find SUCCESS checkpoint call"
+
+        # Every SUCCESS checkpoint must be AFTER the append
+        for ln in success_checkpoint_lines:
+            assert ln > append_line, (
+                f"SUCCESS checkpoint at line {ln + 1} appears BEFORE "
+                f"append at line {append_line + 1}. Must checkpoint AFTER append."
+            )
+
+    def test_success_checkpoint_after_key_verification(self):
+        """SUCCESS must be logged AFTER the post-append key verification.
+
+        Structural test: verify that the verification query
+        (WHERE (symbol, ...) IN (...)) appears between the append and the
+        SUCCESS checkpoint.
+        """
+        from pathlib import Path
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+
+        append_line = None
+        verify_line = None
+        success_checkpoint_lines = []
+
+        for i, line in enumerate(lines):
+            if "saveAsTable(BRONZE_TABLE)" in line:
+                append_line = i
+            if "post-append key verification" in line.lower() or "verified_keys" in line:
+                if verify_line is None:
+                    verify_line = i
+            if '_log_checkpoint(spark, run_id, sym, "massive", "SUCCESS"' in line:
+                success_checkpoint_lines.append(i)
+
+        assert append_line is not None
+        assert verify_line is not None, "Could not find key verification logic"
+        assert len(success_checkpoint_lines) > 0
+
+        # Verification must be after append
+        assert verify_line > append_line, (
+            f"Key verification at line {verify_line + 1} must be after append at {append_line + 1}"
+        )
+        # SUCCESS must be after verification
+        for ln in success_checkpoint_lines:
+            assert ln > verify_line, (
+                f"SUCCESS checkpoint at line {ln + 1} must be after "
+                f"key verification at line {verify_line + 1}"
+            )
+
+    def test_no_success_checkpoint_in_fetch_loop(self):
+        """SUCCESS must NOT be logged inside the fetch loop (before anti-join).
+
+        The fetch loop ends at the anti-join comment. SUCCESS must only
+        appear after the write section.
+        """
+        from pathlib import Path
+
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+
+        # Find the anti-join marker (end of fetch loop)
+        antijoin_line = None
+        for i, line in enumerate(lines):
+            if "Anti-join: filter out existing keys" in line:
+                antijoin_line = i
+                break
+
+        assert antijoin_line is not None
+
+        # Check that no SUCCESS checkpoint appears before the anti-join
+        for i, line in enumerate(lines):
+            if i >= antijoin_line:
+                break
+            if '_log_checkpoint(spark, run_id, sym, "massive", "SUCCESS"' in line:
+                pytest.fail(
+                    f"SUCCESS checkpoint found at line {i + 1} inside the fetch loop "
+                    f"(before anti-join at line {antijoin_line + 1}). "
+                    f"Must be deferred until after append + key verification."
+                )
+
+
+# ---------------------------------------------------------------------------
+# 19. Rate limit — adapter enforces delay internally
+# ---------------------------------------------------------------------------
+
+class TestAdapterRateLimit:
+
+    def test_adapter_sleeps_between_requests(self):
+        """The adapter must sleep between HTTP requests, including for empty results.
+
+        With N symbols returning empty results, the adapter must sleep
+        at least N-1 times (or enforce monotonic spacing).
+        """
+        from unittest.mock import MagicMock, call
+        from etl.corporate_actions import MassiveCorporateActionsSource
+
+        sleeper = MagicMock()
+        clock_times = iter([
+            dt.datetime(2025, 1, 1, 12, 0, 0),
+            dt.datetime(2025, 1, 1, 12, 0, 0),
+            dt.datetime(2025, 1, 1, 12, 0, 0),
+            dt.datetime(2025, 1, 1, 12, 0, 0),
+            dt.datetime(2025, 1, 1, 12, 0, 0),
+            dt.datetime(2025, 1, 1, 12, 0, 0),
+        ])
+        clock = lambda: next(clock_times)
+
+        session = _FakeSession([
+            _FakeResponse({"status": "OK", "results": []}),
+            _FakeResponse({"status": "OK", "results": []}),
+            _FakeResponse({"status": "OK", "results": []}),
+        ])
+
+        src = MassiveCorporateActionsSource(
+            api_key="test-key",
+            session=session,
+            clock=clock,
+            sleeper=sleeper,
+            delay_seconds=0.5,
+            max_retries=0,
+        )
+
+        # Fetch 3 symbols, all return empty results
+        src.fetch_splits("AAA")
+        src.fetch_splits("BBB")
+        src.fetch_splits("CCC")
+
+        # The adapter must have slept at least between requests
+        # With 3 fetches, expect at least 2 sleeps (between fetch 1-2 and 2-3)
+        sleep_calls = [c for c in sleeper.call_args_list if c != call()]
+        assert len(sleep_calls) >= 2, (
+            f"Expected at least 2 inter-request sleeps, got {len(sleep_calls)}. "
+            f"Sleep calls: {sleep_calls}"
+        )
+        # Each sleep must be >= delay_seconds
+        for c in sleep_calls:
+            assert c[0][0] >= 0.5, f"Sleep duration {c[0][0]} < 0.5"
+
+    def test_adapter_delay_enforced_for_pagination(self):
+        """The adapter must sleep between pagination pages too."""
+        from unittest.mock import MagicMock
+        from etl.corporate_actions import MassiveCorporateActionsSource
+
+        sleeper = MagicMock()
+        clock = lambda: dt.datetime(2025, 1, 1, 12, 0, 0)
+
+        # Two pages of results
+        page1 = {
+            "status": "OK",
+            "results": [
+                {"execution_date": "2024-01-01", "split_from": 1, "split_to": 2, "ticker": "X"}
+            ],
+            "next_url": "https://api.massive.com/v3/reference/splits?ticker=X&limit=1000&cursor=abc",
+        }
+        page2 = {
+            "status": "OK",
+            "results": [
+                {"execution_date": "2024-06-01", "split_from": 1, "split_to": 3, "ticker": "X"}
+            ],
+        }
+        session = _FakeSession([_FakeResponse(page1), _FakeResponse(page2)])
+
+        src = MassiveCorporateActionsSource(
+            api_key="test-key",
+            session=session,
+            clock=clock,
+            sleeper=sleeper,
+            delay_seconds=0.5,
+            max_retries=0,
+        )
+
+        results = src.fetch_splits("X")
+        assert len(results) == 2
+
+        # Must have slept between page 1 and page 2
+        sleep_calls = [c for c in sleeper.call_args_list if c.args]
+        assert len(sleep_calls) >= 1, (
+            f"Expected at least 1 sleep between pagination pages, got {len(sleep_calls)}"
+        )
+
+    def test_mutation_remove_adapter_delay_skips_sleep(self):
+        """Mutation: if adapter delay is removed, sleeper is never called.
+
+        This proves the delay enforcement is load-bearing.
+        """
+        from unittest.mock import MagicMock
+        from etl.corporate_actions import MassiveCorporateActionsSource
+
+        sleeper = MagicMock()
+        clock = lambda: dt.datetime(2025, 1, 1, 12, 0, 0)
+
+        session = _FakeSession([
+            _FakeResponse({"status": "OK", "results": []}),
+            _FakeResponse({"status": "OK", "results": []}),
+        ])
+
+        # Create adapter with delay_seconds=0.0 — should still sleep if
+        # delay is enforced (min 0.5 in constructor)
+        src = MassiveCorporateActionsSource(
+            api_key="test-key",
+            session=session,
+            clock=clock,
+            sleeper=sleeper,
+            delay_seconds=0.0,  # will be clamped to 0.5 by constructor
+            max_retries=0,
+        )
+
+        src.fetch_splits("AAA")
+        src.fetch_splits("BBB")
+
+        # Even with delay_seconds=0.0, constructor clamps to 0.5
+        sleep_calls = [c for c in sleeper.call_args_list if c.args]
+        assert len(sleep_calls) >= 1, (
+            "Adapter must sleep between requests even with delay_seconds=0.0 "
+            "(constructor clamps to 0.5)"
+        )

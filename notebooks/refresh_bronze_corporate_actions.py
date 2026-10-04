@@ -365,6 +365,9 @@ def main() -> None:
     # --- Fetch loop ---
     all_candidate_rows: list[dict] = []
     existing_keys_set: set[tuple] = set()
+    # Track successful fetches for deferred SUCCESS checkpointing
+    # Maps symbol -> (raw_count, deduped_count)
+    successful_symbols: dict[str, tuple[int, int]] = {}
 
     # Load existing Bronze keys for anti-join
     try:
@@ -414,9 +417,8 @@ def main() -> None:
             report["candidate_rows"] += len(valid_rows)
             report["deduped_rows"] += len(deduped)
 
-            if mode == "write":
-                _log_checkpoint(spark, run_id, sym, "massive", "SUCCESS",
-                                len(valid_rows), len(deduped))
+            # Defer SUCCESS checkpoint — only after append + key verification
+            successful_symbols[sym] = (len(valid_rows), len(deduped))
 
         except Exception as exc:
             report["failed"] += 1
@@ -466,6 +468,45 @@ def main() -> None:
         df = spark.createDataFrame(spark_rows, schema=schema)
         df.write.format("delta").mode("append").saveAsTable(BRONZE_TABLE)
         print(f"  Appended {len(new_rows)} rows to {BRONZE_TABLE}")
+
+        # --- Post-append key verification ---
+        # Verify that the appended keys now exist in Bronze before marking SUCCESS.
+        new_keys_set = {_row_to_key(r) for r in new_rows}
+        verified_keys: set[tuple] = set()
+        try:
+            # Query Bronze for the keys we just wrote
+            key_tuples_str = ", ".join(
+                f"('{k[0]}', '{k[1]}', '{k[2]}')" for k in new_keys_set
+            )
+            verify_rows = spark.sql(
+                f"SELECT symbol, CAST(ex_date AS STRING) AS ex_date, source "
+                f"FROM {BRONZE_TABLE} "
+                f"WHERE (symbol, CAST(ex_date AS STRING), source) IN ({key_tuples_str})"
+            ).collect()
+            verified_keys = {(r["symbol"], r["ex_date"], r["source"]) for r in verify_rows}
+        except Exception as exc:
+            print(f"  WARN: post-append verification query failed: {exc}")
+
+        # Checkpoint SUCCESS only for symbols whose keys were verified
+        # Group new_rows by symbol to know which symbols contributed rows
+        sym_verified: dict[str, bool] = {}
+        for r in new_rows:
+            k = _row_to_key(r)
+            sym = r["symbol"]
+            if k in verified_keys:
+                sym_verified[sym] = True
+            else:
+                sym_verified.setdefault(sym, False)
+
+        for sym, (raw_cnt, dedup_cnt) in successful_symbols.items():
+            if sym in sym_verified and sym_verified[sym]:
+                _log_checkpoint(spark, run_id, sym, "massive", "SUCCESS",
+                                raw_cnt, dedup_cnt)
+            elif sym in sym_verified:
+                # Keys not verified — log as FAILED so resume retries
+                _log_checkpoint(spark, run_id, sym, "massive", "FAILED",
+                                raw_cnt, dedup_cnt,
+                                error="post-append key verification failed")
 
     # --- Post-Bronze count ---
     try:
