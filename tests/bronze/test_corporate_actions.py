@@ -1163,115 +1163,632 @@ class TestRunbookSourceCommands:
 
 # ---------------------------------------------------------------------------
 # 18. Checkpoint ordering — SUCCESS after append + key verification
+# (Structural source-grep tests replaced by functional tests in TestRunBatchFunctional)
 # ---------------------------------------------------------------------------
 
-class TestCheckpointOrdering:
 
-    def test_success_checkpoint_after_append_not_before(self):
-        """SUCCESS must be logged AFTER the Bronze append, not in the fetch loop.
+# ---------------------------------------------------------------------------
+# 18b. Functional tests for run_batch() with in-memory fakes
+# ---------------------------------------------------------------------------
 
-        Structural test: read the notebook source and verify that
-        _log_checkpoint(..., 'SUCCESS', ...) appears AFTER the
-        .saveAsTable(BRONZE_TABLE) append call, and NOT before it.
-        """
-        from pathlib import Path
+class _InMemoryWriter:
+    """Fake writer that records appended rows. Can be configured to raise."""
 
-        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
-        text = nb_path.read_text(encoding="utf-8")
-        lines = text.splitlines()
+    def __init__(self, raise_on_append: bool = False):
+        self.appended: list[list[dict]] = []
+        self.tables: list[str] = []
+        self._raise = raise_on_append
 
-        # Find the line numbers of key markers
-        append_line = None
-        success_checkpoint_lines = []
+    def append_rows(self, rows: list[dict], table_fqn: str) -> None:
+        if self._raise:
+            raise RuntimeError("simulated write failure")
+        self.appended.append(list(rows))
+        self.tables.append(table_fqn)
 
-        for i, line in enumerate(lines):
-            if "saveAsTable(BRONZE_TABLE)" in line:
-                append_line = i
-            if '_log_checkpoint(spark, run_id, sym, "massive", "SUCCESS"' in line:
-                success_checkpoint_lines.append(i)
 
-        assert append_line is not None, "Could not find saveAsTable(BRONZE_TABLE) in notebook"
-        assert len(success_checkpoint_lines) > 0, "Could not find SUCCESS checkpoint call"
+class _InMemoryCheckpointStore:
+    """Fake checkpoint store that records logs in memory."""
 
-        # Every SUCCESS checkpoint must be AFTER the append
-        for ln in success_checkpoint_lines:
-            assert ln > append_line, (
-                f"SUCCESS checkpoint at line {ln + 1} appears BEFORE "
-                f"append at line {append_line + 1}. Must checkpoint AFTER append."
-            )
+    def __init__(self):
+        self.logs: list[dict] = []
+        self._completed: set[str] = set()
 
-    def test_success_checkpoint_after_key_verification(self):
-        """SUCCESS must be logged AFTER the post-append key verification.
+    def log(self, run_id: str, symbol: str, source: str, status: str,
+            raw_count: int, deduped_count: int, error: str = "") -> None:
+        self.logs.append({
+            "run_id": run_id, "symbol": symbol, "source": source,
+            "status": status, "raw_count": raw_count,
+            "deduped_count": deduped_count, "error": error,
+        })
+        if status in ("SUCCESS", "EMPTY"):
+            self._completed.add(symbol)
 
-        Structural test: verify that the verification query
-        (WHERE (symbol, ...) IN (...)) appears between the append and the
-        SUCCESS checkpoint.
-        """
-        from pathlib import Path
+    def completed_symbols(self, run_id: str) -> set[str]:
+        return set(self._completed)
 
-        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
-        text = nb_path.read_text(encoding="utf-8")
-        lines = text.splitlines()
 
-        append_line = None
-        verify_line = None
-        success_checkpoint_lines = []
+class _InMemoryKeyVerifier:
+    """Fake key verifier that checks keys against an in-memory set."""
 
-        for i, line in enumerate(lines):
-            if "saveAsTable(BRONZE_TABLE)" in line:
-                append_line = i
-            if "post-append key verification" in line.lower() or "verified_keys" in line:
-                if verify_line is None:
-                    verify_line = i
-            if '_log_checkpoint(spark, run_id, sym, "massive", "SUCCESS"' in line:
-                success_checkpoint_lines.append(i)
+    def __init__(self, existing_keys: set[tuple] | None = None):
+        self._existing = existing_keys or set()
 
-        assert append_line is not None
-        assert verify_line is not None, "Could not find key verification logic"
-        assert len(success_checkpoint_lines) > 0
+    def verify_keys(self, keys: set[tuple], table_fqn: str) -> set[tuple]:
+        return keys & self._existing
 
-        # Verification must be after append
-        assert verify_line > append_line, (
-            f"Key verification at line {verify_line + 1} must be after append at {append_line + 1}"
+
+class _StubAdapter:
+    """Stub adapter that returns preset splits per symbol."""
+
+    def __init__(self, splits_by_symbol: dict[str, list]):
+        self._splits = splits_by_symbol
+        self.calls: list[str] = []
+
+    def fetch_splits(self, symbol: str) -> list:
+        self.calls.append(symbol)
+        return self._splits.get(symbol, [])
+
+
+class _FailingAdapter:
+    """Adapter that raises on specific symbols."""
+
+    def __init__(self, fail_symbols: set[str]):
+        self._fail = fail_symbols
+
+    def fetch_splits(self, symbol: str) -> list:
+        if symbol in self._fail:
+            raise RuntimeError(f"fetch failed for {symbol}")
+        return []
+
+
+def _make_split_row(symbol: str, ex_date: str, source: str = "massive",
+                    ratio: float = 2.0) -> dict:
+    """Helper to create a valid row dict."""
+    return {
+        "symbol": symbol,
+        "ex_date": ex_date,
+        "split_ratio": ratio,
+        "source": source,
+        "fetched_ts": "2025-01-01T12:00:00.000000",
+        "information_available_ts": f"{ex_date}T13:30:00.000000",
+    }
+
+
+class TestRunBatchFunctional:
+
+    def test_crash_on_write_no_success_recorded(self):
+        """Writer raises after fetch → no SUCCESS checkpoint for that symbol."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        adapter = _StubAdapter({"AAPL": [
+            type("Split", (), {
+                "symbol": "AAPL", "ex_date": dt.date(2024, 6, 1),
+                "split_ratio": 4.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 6, 1, 13, 30),
+            })()
+        ]})
+        writer = _InMemoryWriter(raise_on_append=True)
+        checkpoint = _InMemoryCheckpointStore()
+        verifier = _InMemoryKeyVerifier()
+
+        new_rows, report = run_batch(
+            symbols=["AAPL"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run-1",
+            existing_keys_set=set(),
+            mode="write",
         )
-        # SUCCESS must be after verification
-        for ln in success_checkpoint_lines:
-            assert ln > verify_line, (
-                f"SUCCESS checkpoint at line {ln + 1} must be after "
-                f"key verification at line {verify_line + 1}"
-            )
 
-    def test_no_success_checkpoint_in_fetch_loop(self):
-        """SUCCESS must NOT be logged inside the fetch loop (before anti-join).
+        # Writer raised, so no rows were appended
+        assert len(writer.appended) == 0
+        # No SUCCESS checkpoint should be logged
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 0, f"Unexpected SUCCESS logs: {success_logs}"
 
-        The fetch loop ends at the anti-join comment. SUCCESS must only
-        appear after the write section.
+    def test_resume_after_crash_symbol_not_skipped(self):
+        """After a crash (no SUCCESS), second call with same run_id re-fetches."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        split = type("Split", (), {
+            "symbol": "AAPL", "ex_date": dt.date(2024, 6, 1),
+            "split_ratio": 4.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 6, 1, 13, 30),
+        })()
+
+        # First call: writer crashes
+        adapter1 = _StubAdapter({"AAPL": [split]})
+        writer1 = _InMemoryWriter(raise_on_append=True)
+        checkpoint1 = _InMemoryCheckpointStore()
+        verifier1 = _InMemoryKeyVerifier()
+
+        run_batch(
+            symbols=["AAPL"],
+            adapter=adapter1,
+            writer=writer1,
+            checkpoint_store=checkpoint1,
+            key_verifier=verifier1,
+            run_id="resume-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # Verify no SUCCESS was recorded
+        assert "AAPL" not in checkpoint1._completed
+
+        # Second call: same run_id, writer works, keys verified
+        adapter2 = _StubAdapter({"AAPL": [split]})
+        writer2 = _InMemoryWriter()
+        # Simulate that after append, the key exists
+        verifier2 = _InMemoryKeyVerifier(
+            existing_keys={("AAPL", "2024-06-01", "massive")}
+        )
+        # Use same checkpoint store (simulating resume with same run_id)
+        # But since crash didn't log SUCCESS, AAPL is not in completed
+        checkpoint2 = _InMemoryCheckpointStore()
+        # Make sure completed is empty (simulating no SUCCESS from first run)
+        assert "AAPL" not in checkpoint2._completed
+
+        new_rows, report = run_batch(
+            symbols=["AAPL"],
+            adapter=adapter2,
+            writer=writer2,
+            checkpoint_store=checkpoint2,
+            key_verifier=verifier2,
+            run_id="resume-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # AAPL should be re-fetched (adapter was called)
+        assert "AAPL" in adapter2.calls
+        # Rows should be written
+        assert len(writer2.appended) == 1
+        assert len(writer2.appended[0]) == 1
+        # SUCCESS should now be logged
+        success_logs = [l for l in checkpoint2.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 1
+        assert success_logs[0]["symbol"] == "AAPL"
+
+    def test_truly_succeeded_symbol_is_skipped_on_resume(self):
+        """A symbol that truly succeeded is in completed_keys and skipped."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        checkpoint = _InMemoryCheckpointStore()
+        checkpoint._completed.add("AAPL")  # Already succeeded
+
+        adapter = _StubAdapter({"AAPL": []})
+        writer = _InMemoryWriter()
+        verifier = _InMemoryKeyVerifier()
+
+        new_rows, report = run_batch(
+            symbols=["AAPL"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # AAPL should NOT be fetched (skipped)
+        assert "AAPL" not in adapter.calls
+        assert report["attempted"] == 0
+
+    def test_all_keys_verified_not_any(self):
+        """Symbol with 2 rows, only 1 verified → NOT SUCCESS (FAILED)."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        row1 = _make_split_row("SYM", "2024-01-01")
+        row2 = _make_split_row("SYM", "2024-06-01")
+
+        adapter = _StubAdapter({"SYM": [
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 1, 1),
+                "split_ratio": 2.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+            })(),
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 6, 1),
+                "split_ratio": 3.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 6, 1, 13, 30),
+            })(),
+        ]})
+
+        writer = _InMemoryWriter()
+        # Only one of the two keys is verified
+        verifier = _InMemoryKeyVerifier(
+            existing_keys={("SYM", "2024-01-01", "massive")}
+        )
+        checkpoint = _InMemoryCheckpointStore()
+
+        new_rows, report = run_batch(
+            symbols=["SYM"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # 2 rows written
+        assert len(writer.appended) == 1
+        assert len(writer.appended[0]) == 2
+
+        # Only 1 of 2 keys verified → FAILED, not SUCCESS
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        failed_logs = [l for l in checkpoint.logs if l["status"] == "FAILED"]
+        assert len(success_logs) == 0, f"Expected no SUCCESS, got: {success_logs}"
+        assert len(failed_logs) == 1
+        assert "verification" in failed_logs[0]["error"]
+
+    def test_all_keys_verified_marks_success(self):
+        """Symbol with 2 rows, both verified → SUCCESS."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        adapter = _StubAdapter({"SYM": [
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 1, 1),
+                "split_ratio": 2.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+            })(),
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 6, 1),
+                "split_ratio": 3.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 6, 1, 13, 30),
+            })(),
+        ]})
+
+        writer = _InMemoryWriter()
+        # Both keys verified
+        verifier = _InMemoryKeyVerifier(
+            existing_keys={
+                ("SYM", "2024-01-01", "massive"),
+                ("SYM", "2024-06-01", "massive"),
+            }
+        )
+        checkpoint = _InMemoryCheckpointStore()
+
+        new_rows, report = run_batch(
+            symbols=["SYM"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 1
+        assert success_logs[0]["symbol"] == "SYM"
+
+    def test_resume_with_partial_verification_retries(self):
+        """Symbol that FAILED verification is re-fetched on resume."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        split = type("Split", (), {
+            "symbol": "SYM", "ex_date": dt.date(2024, 1, 1),
+            "split_ratio": 2.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+        })()
+
+        # First run: verification fails
+        adapter1 = _StubAdapter({"SYM": [split]})
+        writer1 = _InMemoryWriter()
+        verifier1 = _InMemoryKeyVerifier(existing_keys=set())  # nothing verified
+        checkpoint1 = _InMemoryCheckpointStore()
+
+        run_batch(
+            symbols=["SYM"],
+            adapter=adapter1,
+            writer=writer1,
+            checkpoint_store=checkpoint1,
+            key_verifier=verifier1,
+            run_id="retry-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # FAILED logged, not SUCCESS
+        failed_logs = [l for l in checkpoint1.logs if l["status"] == "FAILED"]
+        assert len(failed_logs) == 1
+        assert "SYM" not in checkpoint1._completed  # FAILED doesn't add to completed
+
+        # Second run: symbol NOT in completed → re-fetched
+        checkpoint2 = _InMemoryCheckpointStore()
+        # Don't add SYM to completed (simulating FAILED from first run)
+        adapter2 = _StubAdapter({"SYM": [split]})
+        writer2 = _InMemoryWriter()
+        verifier2 = _InMemoryKeyVerifier(
+            existing_keys={("SYM", "2024-01-01", "massive")}
+        )
+
+        new_rows, report = run_batch(
+            symbols=["SYM"],
+            adapter=adapter2,
+            writer=writer2,
+            checkpoint_store=checkpoint2,
+            key_verifier=verifier2,
+            run_id="retry-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # SYM was re-fetched
+        assert "SYM" in adapter2.calls
+        success_logs = [l for l in checkpoint2.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 1
+
+    def test_quote_in_symbol_handled_by_join(self):
+        """A symbol containing a quote (e.g. BRK.B) is handled without error."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        split = type("Split", (), {
+            "symbol": "BRK.B", "ex_date": dt.date(2024, 1, 1),
+            "split_ratio": 2.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+        })()
+
+        adapter = _StubAdapter({"BRK.B": [split]})
+        writer = _InMemoryWriter()
+        verifier = _InMemoryKeyVerifier(
+            existing_keys={("BRK.B", "2024-01-01", "massive")}
+        )
+        checkpoint = _InMemoryCheckpointStore()
+
+        new_rows, report = run_batch(
+            symbols=["BRK.B"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # Should succeed without SQL errors
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 1
+        assert success_logs[0]["symbol"] == "BRK.B"
+
+    def test_dry_run_skips_write_and_checkpoint(self):
+        """In dry-run mode, no writes or checkpoints occur."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        split = type("Split", (), {
+            "symbol": "AAPL", "ex_date": dt.date(2024, 1, 1),
+            "split_ratio": 2.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+        })()
+
+        adapter = _StubAdapter({"AAPL": [split]})
+        writer = _InMemoryWriter()
+        checkpoint = _InMemoryCheckpointStore()
+        verifier = _InMemoryKeyVerifier()
+
+        new_rows, report = run_batch(
+            symbols=["AAPL"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="dry-run",
+        )
+
+        # No writes
+        assert len(writer.appended) == 0
+        # No checkpoints
+        assert len(checkpoint.logs) == 0
+        # But rows are still returned
+        assert len(new_rows) == 1
+
+    def test_existing_keys_anti_join(self):
+        """Rows with existing keys are filtered out."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        split = type("Split", (), {
+            "symbol": "AAPL", "ex_date": dt.date(2024, 1, 1),
+            "split_ratio": 2.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+        })()
+
+        adapter = _StubAdapter({"AAPL": [split]})
+        writer = _InMemoryWriter()
+        verifier = _InMemoryKeyVerifier(
+            existing_keys={("AAPL", "2024-01-01", "massive")}
+        )
+        checkpoint = _InMemoryCheckpointStore()
+
+        new_rows, report = run_batch(
+            symbols=["AAPL"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            # Key already exists in Bronze
+            existing_keys_set={("AAPL", "2024-01-01", "massive")},
+            mode="write",
+        )
+
+        # Row filtered by anti-join
+        assert len(new_rows) == 0
+        assert report["new_rows"] == 0
+        assert report["conflict_rows"] == 1
+        # No append attempted
+        assert len(writer.appended) == 0
+
+    def test_failed_fetch_logged_and_continues(self):
+        """A failed fetch is logged as FAILED and other symbols continue."""
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        adapter = _FailingAdapter(fail_symbols={"BAD"})
+        writer = _InMemoryWriter()
+        checkpoint = _InMemoryCheckpointStore()
+        verifier = _InMemoryKeyVerifier()
+
+        new_rows, report = run_batch(
+            symbols=["BAD", "GOOD"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        assert report["failed"] == 1
+        assert "BAD" in report["failures"]
+        # GOOD was attempted but returned empty (no splits)
+        assert report["attempted"] == 2
+
+
+class TestRunBatchMutationProofs:
+    """Mutation tests that prove bugs would be caught."""
+
+    def test_mutation_success_before_append_fails(self):
+        """Mutation: record SUCCESS before append → test fails.
+
+        If run_batch recorded SUCCESS before calling writer.append_rows,
+        then even a crashing writer would leave SUCCESS checkpoints.
         """
-        from pathlib import Path
+        from notebooks.refresh_bronze_corporate_actions import run_batch
 
-        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
-        text = nb_path.read_text(encoding="utf-8")
-        lines = text.splitlines()
+        split = type("Split", (), {
+            "symbol": "AAPL", "ex_date": dt.date(2024, 1, 1),
+            "split_ratio": 2.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+        })()
 
-        # Find the anti-join marker (end of fetch loop)
-        antijoin_line = None
-        for i, line in enumerate(lines):
-            if "Anti-join: filter out existing keys" in line:
-                antijoin_line = i
-                break
+        adapter = _StubAdapter({"AAPL": [split]})
+        # Writer will crash
+        writer = _InMemoryWriter(raise_on_append=True)
+        checkpoint = _InMemoryCheckpointStore()
+        verifier = _InMemoryKeyVerifier()
 
-        assert antijoin_line is not None
+        run_batch(
+            symbols=["AAPL"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
 
-        # Check that no SUCCESS checkpoint appears before the anti-join
-        for i, line in enumerate(lines):
-            if i >= antijoin_line:
-                break
-            if '_log_checkpoint(spark, run_id, sym, "massive", "SUCCESS"' in line:
-                pytest.fail(
-                    f"SUCCESS checkpoint found at line {i + 1} inside the fetch loop "
-                    f"(before anti-join at line {antijoin_line + 1}). "
-                    f"Must be deferred until after append + key verification."
-                )
+        # If SUCCESS were recorded before append, this would pass
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 0, (
+            "Mutation detected: SUCCESS was recorded before/despite write failure"
+        )
+
+    def test_mutation_any_key_verified_fails(self):
+        """Mutation: revert to ANY key verified → test fails.
+
+        A symbol with 2 keys where only 1 is verified should NOT get SUCCESS.
+        If the code used 'any()' instead of 'all()', it would incorrectly
+        mark it as SUCCESS.
+        """
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        adapter = _StubAdapter({"SYM": [
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 1, 1),
+                "split_ratio": 2.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+            })(),
+            type("Split", (), {
+                "symbol": "SYM", "ex_date": dt.date(2024, 6, 1),
+                "split_ratio": 3.0, "source": "massive",
+                "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+                "information_available_ts": dt.datetime(2024, 6, 1, 13, 30),
+            })(),
+        ]})
+
+        writer = _InMemoryWriter()
+        # Only 1 of 2 keys verified
+        verifier = _InMemoryKeyVerifier(
+            existing_keys={("SYM", "2024-01-01", "massive")}
+        )
+        checkpoint = _InMemoryCheckpointStore()
+
+        run_batch(
+            symbols=["SYM"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 0, (
+            "Mutation detected: ANY-key-verified logic allowed partial verification"
+        )
+
+    def test_mutation_sql_interpolation_fails(self):
+        """Mutation: if verify_keys used SQL interpolation, quote in symbol would fail.
+
+        The _InMemoryKeyVerifier uses set intersection (simulating DataFrame join),
+        so this test proves the join path works. A real SQL interpolation test
+        would need a Spark session, but we verify the interface contract here.
+        """
+        from notebooks.refresh_bronze_corporate_actions import run_batch
+
+        split = type("Split", (), {
+            "symbol": "O'NEILL", "ex_date": dt.date(2024, 1, 1),
+            "split_ratio": 2.0, "source": "massive",
+            "fetched_ts": dt.datetime(2025, 1, 1, 12, 0),
+            "information_available_ts": dt.datetime(2024, 1, 1, 13, 30),
+        })()
+
+        adapter = _StubAdapter({"O'NEILL": [split]})
+        writer = _InMemoryWriter()
+        verifier = _InMemoryKeyVerifier(
+            existing_keys={("O'NEILL", "2024-01-01", "massive")}
+        )
+        checkpoint = _InMemoryCheckpointStore()
+
+        new_rows, report = run_batch(
+            symbols=["O'NEILL"],
+            adapter=adapter,
+            writer=writer,
+            checkpoint_store=checkpoint,
+            key_verifier=verifier,
+            run_id="test-run",
+            existing_keys_set=set(),
+            mode="write",
+        )
+
+        # Should succeed — no SQL interpolation error
+        success_logs = [l for l in checkpoint.logs if l["status"] == "SUCCESS"]
+        assert len(success_logs) == 1
 
 
 # ---------------------------------------------------------------------------

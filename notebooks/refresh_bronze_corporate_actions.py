@@ -147,6 +147,253 @@ def _is_finite_positive_nonone(v: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Abstract interfaces for injectable dependencies
+# ---------------------------------------------------------------------------
+
+class Writer:
+    """Abstract writer: appends rows to a table."""
+
+    def append_rows(self, rows: list[dict], table_fqn: str) -> None:
+        raise NotImplementedError
+
+
+class CheckpointStore:
+    """Abstract checkpoint store: logs symbol status."""
+
+    def log(self, run_id: str, symbol: str, source: str, status: str,
+            raw_count: int, deduped_count: int, error: str = "") -> None:
+        raise NotImplementedError
+
+    def completed_symbols(self, run_id: str) -> set[str]:
+        raise NotImplementedError
+
+
+class KeyVerifier:
+    """Abstract key verifier: checks which keys exist in a table."""
+
+    def verify_keys(self, keys: set[tuple], table_fqn: str) -> set[tuple]:
+        """Return the subset of keys that exist in the table."""
+        raise NotImplementedError
+
+
+class SparkWriter(Writer):
+    """Spark-based writer for production use."""
+
+    def __init__(self, spark):
+        self._spark = spark
+
+    def append_rows(self, rows: list[dict], table_fqn: str) -> None:
+        from pyspark.sql import Row
+        from pyspark.sql.types import (
+            StructType, StructField, StringType, DoubleType, TimestampType, DateType,
+        )
+        schema = StructType([
+            StructField("symbol", StringType(), False),
+            StructField("ex_date", DateType(), False),
+            StructField("split_ratio", DoubleType(), False),
+            StructField("source", StringType(), False),
+            StructField("fetched_ts", TimestampType(), False),
+            StructField("information_available_ts", TimestampType(), False),
+        ])
+        spark_rows = []
+        for r in rows:
+            spark_rows.append(Row(
+                symbol=r["symbol"],
+                ex_date=dt.date.fromisoformat(r["ex_date"]),
+                split_ratio=r["split_ratio"],
+                source=r["source"],
+                fetched_ts=dt.datetime.fromisoformat(r["fetched_ts"]),
+                information_available_ts=dt.datetime.fromisoformat(r["information_available_ts"]),
+            ))
+        df = self._spark.createDataFrame(spark_rows, schema=schema)
+        df.write.format("delta").mode("append").saveAsTable(table_fqn)
+
+
+class SparkCheckpointStore(CheckpointStore):
+    """Spark-based checkpoint store for production use."""
+
+    def __init__(self, spark):
+        self._spark = spark
+
+    def log(self, run_id: str, symbol: str, source: str, status: str,
+            raw_count: int, deduped_count: int, error: str = "") -> None:
+        _log_checkpoint(self._spark, run_id, symbol, source, status,
+                        raw_count, deduped_count, error)
+
+    def completed_symbols(self, run_id: str) -> set[str]:
+        try:
+            log_rows = self._spark.sql(
+                f"SELECT DISTINCT symbol FROM {CHECKPOINT_TABLE} "
+                f"WHERE run_id = '{run_id}' AND status IN ('SUCCESS', 'EMPTY')"
+            ).collect()
+            return {r["symbol"] for r in log_rows}
+        except Exception:
+            return set()
+
+
+class SparkKeyVerifier(KeyVerifier):
+    """Spark-based key verifier using DataFrame join (no SQL interpolation)."""
+
+    def __init__(self, spark):
+        self._spark = spark
+
+    def verify_keys(self, keys: set[tuple], table_fqn: str) -> set[tuple]:
+        if not keys:
+            return set()
+        try:
+            from pyspark.sql import Row
+            from pyspark.sql.types import (
+                StructType, StructField, StringType, DateType,
+            )
+            schema = StructType([
+                StructField("symbol", StringType(), False),
+                StructField("ex_date", DateType(), False),
+                StructField("source", StringType(), False),
+            ])
+            key_rows = [
+                Row(symbol=k[0], ex_date=dt.date.fromisoformat(k[1]), source=k[2])
+                for k in keys
+            ]
+            keys_df = self._spark.createDataFrame(key_rows, schema=schema)
+            bronze_df = self._spark.sql(
+                f"SELECT symbol, ex_date, source FROM {table_fqn}"
+            )
+            joined = keys_df.join(bronze_df, on=["symbol", "ex_date", "source"], how="inner")
+            verified = joined.collect()
+            return {(r["symbol"], r["ex_date"].isoformat(), r["source"]) for r in verified}
+        except Exception as exc:
+            print(f"  WARN: post-append verification query failed: {exc}")
+            return set()
+
+
+# ---------------------------------------------------------------------------
+# Core batch processing (importable, testable)
+# ---------------------------------------------------------------------------
+
+def run_batch(
+    symbols: list[str],
+    adapter,
+    writer: Writer,
+    checkpoint_store: CheckpointStore,
+    key_verifier: KeyVerifier,
+    run_id: str,
+    existing_keys_set: set[tuple],
+    mode: str = "write",
+    report: dict | None = None,
+) -> tuple[list[dict], dict]:
+    """Process a batch of symbols: fetch, validate, dedup, write, verify, checkpoint.
+
+    Returns (new_rows_written, updated_report).
+    """
+    if report is None:
+        report = {"attempted": 0, "success": 0, "empty": 0, "failed": 0,
+                  "candidate_rows": 0, "deduped_rows": 0, "new_rows": 0,
+                  "conflict_rows": 0, "failures": {}}
+
+    completed_keys = checkpoint_store.completed_symbols(run_id) if mode == "write" else set()
+
+    all_candidate_rows: list[dict] = []
+    # Track successful fetches for deferred SUCCESS checkpointing
+    successful_symbols: dict[str, tuple[int, int]] = {}
+
+    for sym in symbols:
+        if sym in completed_keys:
+            continue
+
+        report["attempted"] += 1
+        try:
+            splits = adapter.fetch_splits(sym)
+            rows = [_split_to_row(s) for s in splits]
+
+            # Validate
+            valid_rows = []
+            for r in rows:
+                err = _validate_row(r)
+                if err:
+                    print(f"  WARN {sym}: {err}")
+                    continue
+                valid_rows.append(r)
+
+            if not valid_rows:
+                report["empty"] += 1
+                if mode == "write":
+                    checkpoint_store.log(run_id, sym, "massive", "EMPTY", 0, 0)
+                continue
+
+            # Deduplicate within batch by natural key
+            seen_keys: set[tuple] = set()
+            deduped = []
+            for r in valid_rows:
+                k = _row_to_key(r)
+                if k not in seen_keys:
+                    seen_keys.add(k)
+                    deduped.append(r)
+
+            all_candidate_rows.extend(deduped)
+            report["success"] += 1
+            report["candidate_rows"] += len(valid_rows)
+            report["deduped_rows"] += len(deduped)
+
+            # Defer SUCCESS checkpoint — only after append + key verification
+            successful_symbols[sym] = (len(valid_rows), len(deduped))
+
+        except Exception as exc:
+            report["failed"] += 1
+            safe_msg = _redact_api_key(str(exc))[:200]
+            report["failures"][sym] = safe_msg
+            print(f"  FAILED {sym}: {safe_msg}")
+            if mode == "write":
+                checkpoint_store.log(run_id, sym, "massive", "FAILED", 0, 0, error=safe_msg)
+
+    # --- Anti-join: filter out existing keys ---
+    new_rows = [r for r in all_candidate_rows if _row_to_key(r) not in existing_keys_set]
+    conflicts = [r for r in all_candidate_rows if _row_to_key(r) in existing_keys_set]
+    report["new_rows"] = len(new_rows)
+    report["conflict_rows"] = len(conflicts)
+
+    # --- Write (write mode only) ---
+    if mode == "write" and new_rows:
+        try:
+            writer.append_rows(new_rows, BRONZE_TABLE)
+            print(f"  Appended {len(new_rows)} rows to {BRONZE_TABLE}")
+        except Exception as exc:
+            # Write failed — log all successful symbols as FAILED
+            safe_msg = _redact_api_key(str(exc))[:200]
+            for sym, (raw_cnt, dedup_cnt) in successful_symbols.items():
+                checkpoint_store.log(run_id, sym, "massive", "FAILED",
+                                     raw_cnt, dedup_cnt,
+                                     error=f"write failed: {safe_msg}")
+            return [], report
+
+        # --- Post-append key verification via DataFrame join ---
+        new_keys_set = {_row_to_key(r) for r in new_rows}
+        verified_keys = key_verifier.verify_keys(new_keys_set, BRONZE_TABLE)
+
+        # Group new_rows by symbol to know which symbols contributed keys
+        keys_by_symbol: dict[str, set[tuple]] = {}
+        for r in new_rows:
+            sym = r["symbol"]
+            k = _row_to_key(r)
+            keys_by_symbol.setdefault(sym, set()).add(k)
+
+        # Checkpoint SUCCESS only if ALL of a symbol's keys are verified
+        for sym, (raw_cnt, dedup_cnt) in successful_symbols.items():
+            if sym not in keys_by_symbol:
+                continue
+            sym_keys = keys_by_symbol[sym]
+            if all(k in verified_keys for k in sym_keys):
+                checkpoint_store.log(run_id, sym, "massive", "SUCCESS",
+                                     raw_cnt, dedup_cnt)
+            else:
+                # Keys not all verified — log as FAILED so resume retries
+                checkpoint_store.log(run_id, sym, "massive", "FAILED",
+                                     raw_cnt, dedup_cnt,
+                                     error="post-append key verification failed")
+
+    return new_rows, report
+
+
+# ---------------------------------------------------------------------------
 # Notebook main
 # ---------------------------------------------------------------------------
 
@@ -362,14 +609,8 @@ def main() -> None:
     except Exception:
         report["pre_bronze_count"] = 0
 
-    # --- Fetch loop ---
-    all_candidate_rows: list[dict] = []
+    # --- Load existing Bronze keys for anti-join ---
     existing_keys_set: set[tuple] = set()
-    # Track successful fetches for deferred SUCCESS checkpointing
-    # Maps symbol -> (raw_count, deduped_count)
-    successful_symbols: dict[str, tuple[int, int]] = {}
-
-    # Load existing Bronze keys for anti-join
     try:
         existing_rows = spark.sql(
             f"SELECT symbol, CAST(ex_date AS STRING) AS ex_date, source FROM {BRONZE_TABLE}"
@@ -379,134 +620,26 @@ def main() -> None:
     except Exception:
         pass  # table may not exist yet
 
-    for sym in all_symbols:
-        if sym in completed_keys:
-            continue
+    # --- Create injectable dependencies ---
+    writer = SparkWriter(spark)
+    checkpoint_store = SparkCheckpointStore(spark)
+    key_verifier = SparkKeyVerifier(spark)
 
-        report["attempted"] += 1
-        try:
-            splits = adapter.fetch_splits(sym)
-            rows = [_split_to_row(s) for s in splits]
+    # --- Process batch ---
+    new_rows, batch_report = run_batch(
+        symbols=all_symbols,
+        adapter=adapter,
+        writer=writer,
+        checkpoint_store=checkpoint_store,
+        key_verifier=key_verifier,
+        run_id=run_id,
+        existing_keys_set=existing_keys_set,
+        mode=mode,
+        report=report,
+    )
 
-            # Validate
-            valid_rows = []
-            for r in rows:
-                err = _validate_row(r)
-                if err:
-                    print(f"  WARN {sym}: {err}")
-                    continue
-                valid_rows.append(r)
-
-            if not valid_rows:
-                report["empty"] += 1
-                if mode == "write":
-                    _log_checkpoint(spark, run_id, sym, "massive", "EMPTY", 0, 0)
-                continue
-
-            # Deduplicate within batch by natural key
-            seen_keys: set[tuple] = set()
-            deduped = []
-            for r in valid_rows:
-                k = _row_to_key(r)
-                if k not in seen_keys:
-                    seen_keys.add(k)
-                    deduped.append(r)
-
-            all_candidate_rows.extend(deduped)
-            report["success"] += 1
-            report["candidate_rows"] += len(valid_rows)
-            report["deduped_rows"] += len(deduped)
-
-            # Defer SUCCESS checkpoint — only after append + key verification
-            successful_symbols[sym] = (len(valid_rows), len(deduped))
-
-        except Exception as exc:
-            report["failed"] += 1
-            safe_msg = _redact_api_key(str(exc))[:200]
-            report["failures"][sym] = safe_msg
-            print(f"  FAILED {sym}: {safe_msg}")
-            if mode == "write":
-                _log_checkpoint(spark, run_id, sym, "massive", "FAILED", 0, 0,
-                                error=safe_msg)
-
-        # Delay is now enforced inside the adapter (_request_with_retry)
-
-    # --- Anti-join: filter out existing keys ---
-    new_rows = [r for r in all_candidate_rows if _row_to_key(r) not in existing_keys_set]
-    conflicts = [r for r in all_candidate_rows if _row_to_key(r) in existing_keys_set]
-    report["new_rows"] = len(new_rows)
-    report["conflict_rows"] = len(conflicts)
-
-    # --- Write Bronze (write mode only) ---
-    if mode == "write" and new_rows:
-        from pyspark.sql import Row
-        from pyspark.sql.types import (
-            StructType, StructField, StringType, DoubleType, TimestampType, DateType,
-        )
-
-        schema = StructType([
-            StructField("symbol", StringType(), False),
-            StructField("ex_date", DateType(), False),
-            StructField("split_ratio", DoubleType(), False),
-            StructField("source", StringType(), False),
-            StructField("fetched_ts", TimestampType(), False),
-            StructField("information_available_ts", TimestampType(), False),
-        ])
-
-        # Convert row dicts to Spark Rows with proper types
-        spark_rows = []
-        for r in new_rows:
-            spark_rows.append(Row(
-                symbol=r["symbol"],
-                ex_date=dt.date.fromisoformat(r["ex_date"]),
-                split_ratio=r["split_ratio"],
-                source=r["source"],
-                fetched_ts=dt.datetime.fromisoformat(r["fetched_ts"]),
-                information_available_ts=dt.datetime.fromisoformat(r["information_available_ts"]),
-            ))
-
-        df = spark.createDataFrame(spark_rows, schema=schema)
-        df.write.format("delta").mode("append").saveAsTable(BRONZE_TABLE)
-        print(f"  Appended {len(new_rows)} rows to {BRONZE_TABLE}")
-
-        # --- Post-append key verification ---
-        # Verify that the appended keys now exist in Bronze before marking SUCCESS.
-        new_keys_set = {_row_to_key(r) for r in new_rows}
-        verified_keys: set[tuple] = set()
-        try:
-            # Query Bronze for the keys we just wrote
-            key_tuples_str = ", ".join(
-                f"('{k[0]}', '{k[1]}', '{k[2]}')" for k in new_keys_set
-            )
-            verify_rows = spark.sql(
-                f"SELECT symbol, CAST(ex_date AS STRING) AS ex_date, source "
-                f"FROM {BRONZE_TABLE} "
-                f"WHERE (symbol, CAST(ex_date AS STRING), source) IN ({key_tuples_str})"
-            ).collect()
-            verified_keys = {(r["symbol"], r["ex_date"], r["source"]) for r in verify_rows}
-        except Exception as exc:
-            print(f"  WARN: post-append verification query failed: {exc}")
-
-        # Checkpoint SUCCESS only for symbols whose keys were verified
-        # Group new_rows by symbol to know which symbols contributed rows
-        sym_verified: dict[str, bool] = {}
-        for r in new_rows:
-            k = _row_to_key(r)
-            sym = r["symbol"]
-            if k in verified_keys:
-                sym_verified[sym] = True
-            else:
-                sym_verified.setdefault(sym, False)
-
-        for sym, (raw_cnt, dedup_cnt) in successful_symbols.items():
-            if sym in sym_verified and sym_verified[sym]:
-                _log_checkpoint(spark, run_id, sym, "massive", "SUCCESS",
-                                raw_cnt, dedup_cnt)
-            elif sym in sym_verified:
-                # Keys not verified — log as FAILED so resume retries
-                _log_checkpoint(spark, run_id, sym, "massive", "FAILED",
-                                raw_cnt, dedup_cnt,
-                                error="post-append key verification failed")
+    # Merge batch report
+    report.update(batch_report)
 
     # --- Post-Bronze count ---
     try:
