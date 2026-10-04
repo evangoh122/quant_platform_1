@@ -22,9 +22,14 @@ The frontend must be built **before** the app is deployed so the backend can
 serve it (the Databricks App runtime does not run `vite build`).
 
 ```bash
-cd frontend && npm install && npm run build
+# From the repo root — installs deps + builds in one step:
+./scripts/build_frontend.sh
 # produces frontend/dist/
 ```
+
+The script runs `npm ci && npm run build` inside `frontend/` and exits
+non-zero on any failure.  `frontend/dist/` is gitignored but included in
+the bundle via `sync.include` in `databricks.yml`.
 
 ## 3. Create the app
 
@@ -115,11 +120,29 @@ Lakebase password in `app.yaml`, `requirements-*.txt`, or any committed file.
 
 ## 7. CLI / DABs deployment (alternative to the UI)
 
+Deploying the Databricks App via CLI follows this sequence:
+
 ```bash
-databricks apps validate --profile <PROFILE>
-databricks apps deploy --profile <PROFILE>
-databricks apps get <app-name> --profile <PROFILE>   # confirm status RUNNING + url
+# 1. Build the frontend (produces frontend/dist/)
+./scripts/build_frontend.sh
+
+# 2. Validate the bundle
+databricks bundle validate --profile <PROFILE>
+
+# 3. Deploy the bundle (syncs code + resources to the workspace)
+databricks bundle deploy --profile <PROFILE>
+
+# 4. Start the app
+databricks apps start --profile <PROFILE>
+
+# 5. Smoke-test the deployed app
+python scripts/smoke_app.py <APP_URL>
 ```
+
+The `sync.include` directive in `databricks.yml` ensures `frontend/dist/`
+is uploaded even though it is gitignored. If `frontend/dist/` does not
+exist at deploy time the API still starts, but `GET /` returns a hint
+instead of the SPA.
 
 ## 8. Smoke tests (rubric §11)
 
