@@ -86,7 +86,10 @@ CREATE OR REPLACE TEMP VIEW _deduped_daily AS
 SELECT
     symbol,
     event_ts,
-    DATE(event_ts)          AS event_date,
+    -- Trading date = bronze's own event_date. Do NOT derive it from event_ts: recent bronze rows carry the
+    -- previous session's 16:00 ET timestamp (e.g. event_date 2026-09-11 with event_ts 2026-09-10T20:00Z), and
+    -- DATE(event_ts) is also session-timezone dependent — deriving it silently dropped those Fridays.
+    event_date,
     open,
     high,
     low,
@@ -98,11 +101,12 @@ FROM (
     SELECT
         *,
         ROW_NUMBER() OVER (
-            PARTITION BY symbol, event_ts
-            ORDER BY ingest_ts DESC NULLS LAST, source, source_file
+            PARTITION BY symbol, event_date
+            ORDER BY ingest_ts DESC NULLS LAST, event_ts DESC, source, source_file
         ) AS rn
     FROM bootcamp_students.evangoh_capstone.bronze_ohlcv_day
     WHERE timespan = 'day'
+      AND event_date IS NOT NULL
       AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
       AND close > 0
       AND high >= GREATEST(open, close)

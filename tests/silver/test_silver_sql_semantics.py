@@ -868,3 +868,43 @@ class TestAdjustedArithmetic:
             f"adj_volume should be {volume}*{cum} = {volume*cum}, got {adj_volume}"
         assert adj_volume != pytest.approx(volume / cum), \
             f"Mutation: adj_volume = {volume}/{cum} = {volume/cum} would be wrong"
+
+class TestDedupedDailyUsesBronzeEventDate:
+    """_deduped_daily must keep bronze's own event_date. Recent bronze rows carry the previous session's 16:00 ET
+    timestamp (event_date 2026-09-11, event_ts 2026-09-10T20:00Z); deriving the date from event_ts collapsed them onto
+    the previous day and silently dropped every such Friday."""
+
+    def _run(self, rows):
+        sql = _shim_for_duckdb(_extract_cte(_SQL_PATH.read_text(encoding="utf-8"), "_deduped_daily"))
+        conn = duckdb.connect()
+        conn.execute("SET TimeZone='UTC'")
+        conn.execute("""
+            CREATE TABLE bronze_ohlcv_day (
+                symbol VARCHAR, event_ts TIMESTAMPTZ, event_date DATE, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
+                volume DOUBLE, vwap DOUBLE, trade_count DOUBLE, timespan VARCHAR, source VARCHAR, source_file VARCHAR,
+                ingest_ts TIMESTAMPTZ)
+        """)
+        conn.executemany("INSERT INTO bronze_ohlcv_day VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        conn.execute(sql.rstrip().rstrip(";").replace("CREATE OR REPLACE TEMP VIEW", "CREATE OR REPLACE VIEW"))
+        return conn.execute("SELECT symbol, event_date, close FROM _deduped_daily ORDER BY event_date").fetchall()
+
+    def test_friday_with_previous_day_timestamp_is_kept(self):
+        import datetime as _dt
+        row = lambda d, ts, c, ing: ("SPY", ts, d, c, c, c, c, 1e6, c, 100, "day", "s", "f", ing)
+        ing = _dt.datetime(2026, 9, 12, tzinfo=_dt.timezone.utc)
+        rows = [
+            row(_dt.date(2026, 9, 10), _dt.datetime(2026, 9, 9, 20, tzinfo=_dt.timezone.utc), 500.0, ing),
+            row(_dt.date(2026, 9, 11), _dt.datetime(2026, 9, 10, 20, tzinfo=_dt.timezone.utc), 505.0, ing),
+        ]
+        out = self._run(rows)
+        assert [(str(d), c) for _, d, c in out] == [("2026-09-10", 500.0), ("2026-09-11", 505.0)]
+
+    def test_duplicate_event_date_keeps_latest_ingest(self):
+        import datetime as _dt
+        row = lambda ts, c, ing: ("SPY", ts, _dt.date(2026, 9, 11), c, c, c, c, 1e6, c, 100, "day", "s", "f", ing)
+        rows = [
+            row(_dt.datetime(2026, 9, 11, 4, tzinfo=_dt.timezone.utc), 501.0, _dt.datetime(2026, 9, 11, tzinfo=_dt.timezone.utc)),
+            row(_dt.datetime(2026, 9, 10, 20, tzinfo=_dt.timezone.utc), 505.0, _dt.datetime(2026, 9, 12, tzinfo=_dt.timezone.utc)),
+        ]
+        out = self._run(rows)
+        assert [(str(d), c) for _, d, c in out] == [("2026-09-11", 505.0)]
