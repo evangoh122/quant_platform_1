@@ -69,14 +69,17 @@ def _reset_state():
     """Reset diagnostics state between tests."""
     from api import deps
     from api.diagnostics import ring_buffer
+    import api.routes.health as health_mod
 
     deps._breaker.reset()
     deps._role_cache.clear()
     ring_buffer.clear()
+    health_mod._inflight.clear()
     yield
     deps._breaker.reset()
     deps._role_cache.clear()
     ring_buffer.clear()
+    health_mod._inflight.clear()
 
 
 @pytest.fixture
@@ -454,3 +457,37 @@ def test_warehouse_health_returns_type_only(monkeypatch):
     assert "RuntimeError" in detail
     assert "password" not in detail
     assert "db.internal" not in detail
+
+
+# ── 8. Thread leak: single in-flight guard per dependency ────────────────────
+
+def test_probe_thread_leak_bounded(client, monkeypatch):
+    """Calling /api/health 20 times with a hanging probe leaks at most 1 thread per dep.
+
+    MUTATION THAT MUST FAIL: remove the in-flight guard → thread count grows unbounded.
+    """
+    import api.routes.health as health_mod
+
+    # Make both probes hang forever
+    def _hang_forever():
+        import time as _time
+        _time.sleep(9999)
+        return False, 9999000, "should not reach here"
+
+    monkeypatch.setattr(health_mod, "_probe_lakebase", _hang_forever)
+    monkeypatch.setattr(health_mod, "_probe_delta", _hang_forever)
+
+    # Reset inflight tracking
+    health_mod._inflight.clear()
+
+    initial_thread_count = threading.active_count()
+
+    for _ in range(20):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+
+    # Allow at most 2 extra threads (1 per dependency) plus a small margin
+    # for the ThreadPoolExecutor workers
+    final_thread_count = threading.active_count()
+    growth = final_thread_count - initial_thread_count
+    assert growth <= 4, f"Thread count grew by {growth}, expected <= 4 (1 per dep + margin)"

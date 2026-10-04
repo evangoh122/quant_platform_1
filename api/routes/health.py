@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from fastapi import APIRouter
@@ -47,6 +48,10 @@ _delta_last_error: str | None = None
 
 import threading
 _probe_lock = threading.Lock()
+
+# Single in-flight guard per dependency: track the running thread so a
+# second concurrent /api/health call does not spawn a duplicate probe.
+_inflight: dict[str, threading.Thread] = {}
 
 
 def _probe_lakebase() -> tuple[bool, float, str | None]:
@@ -125,11 +130,17 @@ def _probe_delta() -> tuple[bool, float, str | None]:
 
 
 def _run_with_timeout(fn, timeout: float, probe_name: str) -> tuple[bool, float, str | None]:
-    """Run a probe function with a hard timeout.
+    """Run a probe function with a hard timeout and single-inflight guard.
 
-    Uses a daemon thread so the caller is never blocked past the timeout,
-    even if the probe function sleeps indefinitely.
+    If a previous probe for the same *probe_name* is still running, returns
+    ``(False, 0, "probe still running")`` without starting another thread.
+    Otherwise spawns a daemon thread and joins with *timeout*.
     """
+    with _probe_lock:
+        existing = _inflight.get(probe_name)
+        if existing is not None and existing.is_alive():
+            return False, 0.0, "probe still running"
+
     result: list[Any] = []
     error: list[Exception] = []
 
@@ -140,11 +151,17 @@ def _run_with_timeout(fn, timeout: float, probe_name: str) -> tuple[bool, float,
             error.append(e)
 
     t = threading.Thread(target=_target, daemon=True)
+    with _probe_lock:
+        _inflight[probe_name] = t
     t.start()
     t.join(timeout=timeout)
 
+    # Clean up inflight reference when thread finishes
+    with _probe_lock:
+        if probe_name in _inflight and not _inflight[probe_name].is_alive():
+            del _inflight[probe_name]
+
     if t.is_alive():
-        # Timed out — thread is still running but we don't care (daemon)
         with _probe_lock:
             if probe_name == "lakebase":
                 global _lakebase_last_error
@@ -173,21 +190,33 @@ def health() -> HealthResponse:
             startup=[],
         )
 
-    dependencies: list[DependencyStatus] = []
-
     # Lakebase reachability — with timeout
     from api.deps import lakebase_status
 
     lb = lakebase_status()
     cb_state = "open" if lb["circuit_breaker_open"] else "closed"
 
-    lb_ok, lb_ms, lb_detail = _run_with_timeout(
-        _probe_lakebase, _LAKEBASE_TIMEOUT, "lakebase"
-    )
+    # Run both probes concurrently — bounded by max(timeout) + margin (~6s)
+    results: dict[str, tuple[bool, float, str | None]] = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            pool.submit(_run_with_timeout, _probe_lakebase, _LAKEBASE_TIMEOUT, "lakebase"): "lakebase",
+            pool.submit(_run_with_timeout, _probe_delta, _WAREHOUSE_TIMEOUT, "delta"): "delta",
+        }
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                results[name] = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                results[name] = (False, 0.0, type(exc).__name__)
+
+    lb_ok, lb_ms, lb_detail = results["lakebase"]
+    delta_ok, delta_ms, delta_detail = results["delta"]
 
     with _probe_lock:
         lb_last_err = _lakebase_last_error
 
+    dependencies: list[DependencyStatus] = []
     dependencies.append(DependencyStatus(
         name="lakebase", ok=lb_ok, detail=lb_detail or "",
         latency_ms=round(lb_ms, 1),
@@ -195,11 +224,6 @@ def health() -> HealthResponse:
         last_ok_at=_lakebase_last_ok_at,
         circuit_breaker_state=cb_state,
     ))
-
-    # Delta / warehouse probe — with timeout
-    delta_ok, delta_ms, delta_detail = _run_with_timeout(
-        _probe_delta, _WAREHOUSE_TIMEOUT, "delta"
-    )
 
     with _probe_lock:
         delta_last_err = _delta_last_error
