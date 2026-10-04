@@ -59,13 +59,14 @@ class Signal(BaseModel):
 class OHLCVFeature(BaseModel):
     """Split-adjusted daily bars from silver_ohlcv_day_adjusted."""
     symbol: str
-    feature_ts: str = ""
+    event_date: str = ""
     open: Optional[float] = None
     high: Optional[float] = None
     low: Optional[float] = None
     close: Optional[float] = None
     volume: Optional[float] = None
     vwap: Optional[float] = None
+    price_basis: str = "split_adjusted"
 
 
 class OptionsFeature(BaseModel):

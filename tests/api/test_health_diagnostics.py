@@ -1104,3 +1104,113 @@ def test_options_expiry_returns_error():
     result = get_options_features("AAPL", expiry="2024-02-01")
     assert len(result) == 1
     assert result[0].get("error") == "expiry_not_supported"
+
+
+# ── 19. get_latest_signal: explicit no_signals_published on empty ─────────────
+
+def test_get_latest_signal_empty_returns_no_signals_published(monkeypatch):
+    """Empty table returns {"status": "no_signals_published"}, not {}.
+
+    MUTATION: revert to returning {} → agent misreads empty as generic no-data.
+    """
+    import db.delta_adapter as adapter
+    from agent.tools_retrieval import get_latest_signal
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_warehouse_query", lambda *a, **kw: [])
+
+    result = get_latest_signal("AAPL")
+    assert result == {"status": "no_signals_published"}
+    assert result != {}
+
+
+# ── 20. _warehouse_query: LIMIT only on SELECT ───────────────────────────────
+
+def test_warehouse_query_no_limit_on_describe(monkeypatch):
+    """DESCRIBE/SHOW statements must not have LIMIT appended.
+
+    MUTATION: remove the SELECT-only guard → DESCRIBE gets LIMIT → PARSE_SYNTAX_ERROR.
+    """
+    import db.delta_adapter as adapter
+
+    captured = {}
+
+    class _FakeCursor:
+        description = [("col_name", None)]
+        def execute(self, query, params=None):
+            captured["query"] = query
+        def fetchall(self):
+            return [("symbol",)]
+        def close(self):
+            pass
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCursor()
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: _FakeConn())
+    monkeypatch.setattr(adapter, "_query_semaphore", __import__("threading").Semaphore(10))
+
+    adapter._warehouse_query("DESCRIBE bootcamp_students.evangoh_capstone.silver_ohlcv_day_adjusted", limit=1000)
+    assert "LIMIT" not in captured["query"]
+
+
+def test_warehouse_query_limit_on_bare_select(monkeypatch):
+    """SELECT without LIMIT gets one appended.
+
+    MUTATION: skip appending → unbounded query hits warehouse.
+    """
+    import db.delta_adapter as adapter
+
+    captured = {}
+
+    class _FakeCursor:
+        description = [("col", None)]
+        def execute(self, query, params=None):
+            captured["query"] = query
+        def fetchall(self):
+            return [(1,)]
+        def close(self):
+            pass
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCursor()
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: _FakeConn())
+    monkeypatch.setattr(adapter, "_query_semaphore", __import__("threading").Semaphore(10))
+
+    adapter._warehouse_query("SELECT * FROM t", limit=500)
+    assert "LIMIT 500" in captured["query"]
+
+
+def test_warehouse_query_preserves_existing_limit(monkeypatch):
+    """SELECT already with LIMIT is not double-limited.
+
+    MUTATION: ignore existing LIMIT → query becomes "... LIMIT 100 LIMIT 500".
+    """
+    import db.delta_adapter as adapter
+
+    captured = {}
+
+    class _FakeCursor:
+        description = [("col", None)]
+        def execute(self, query, params=None):
+            captured["query"] = query
+        def fetchall(self):
+            return [(1,)]
+        def close(self):
+            pass
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCursor()
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: _FakeConn())
+    monkeypatch.setattr(adapter, "_query_semaphore", __import__("threading").Semaphore(10))
+
+    adapter._warehouse_query("SELECT * FROM t LIMIT 100", limit=500)
+    assert captured["query"] == "SELECT * FROM t LIMIT 100"

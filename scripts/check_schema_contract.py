@@ -10,8 +10,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import FrozenSet
+
+# Ensure repo root is on sys.path so `db` and other top-level packages resolve
+# when invoked as ``python3 scripts/check_schema_contract.py``.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from db.schema_contract import TABLE_COLUMNS
 

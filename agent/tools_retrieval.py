@@ -43,7 +43,7 @@ def get_latest_signal(symbol: str) -> dict:
     from db.delta_adapter import as_dicts, latest_signals
 
     rows = as_dicts(latest_signals(symbol, limit=1))
-    return rows[0] if rows else {}
+    return rows[0] if rows else {"status": "no_signals_published"}
 
 
 def get_market_features(symbol: str, start_time: str, end_time: str, *, limit: int = 5000) -> list:

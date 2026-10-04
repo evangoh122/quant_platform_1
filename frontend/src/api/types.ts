@@ -30,13 +30,14 @@ export interface Signal {
 
 export interface OHLCVFeature {
   symbol: string;
-  feature_ts: string;
+  event_date: string;
   open: number | null;
   high: number | null;
   low: number | null;
   close: number | null;
   volume: number | null;
   vwap: number | null;
+  price_basis: string;
 }
 
 export interface OptionsFeature {

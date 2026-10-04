@@ -57,7 +57,7 @@ def market_features(
     def _read_options() -> list[dict]:
         from agent.tools_retrieval import get_options_features
 
-        return get_options_features(symbol, limit=limit)
+        return get_options_features(symbol, limit=min(days, limit))
 
     from api.diagnostics import stage
 
@@ -70,13 +70,14 @@ def market_features(
         data=[
             OHLCVFeature(
                 symbol=str(r.get("symbol", symbol)),
-                feature_ts=iso(r.get("feature_ts")) or "",
+                event_date=iso(r.get("event_date") or r.get("feature_ts")) or "",
                 open=r.get("open"),
                 high=r.get("high"),
                 low=r.get("low"),
                 close=r.get("close"),
                 volume=r.get("volume"),
                 vwap=r.get("vwap"),
+                price_basis="split_adjusted",
             )
             for r in ohlcv_rows
         ],

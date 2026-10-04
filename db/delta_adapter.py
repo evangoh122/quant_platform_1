@@ -159,8 +159,9 @@ def _warehouse_query(
     import threading as _threading
     from api.diagnostics import stage
 
-    # Enforce bounded LIMIT if not already present
-    if limit and "LIMIT" not in query.upper():
+    # Enforce bounded LIMIT on SELECT statements only (not DESCRIBE/SHOW/SET)
+    _upper = query.lstrip().upper()
+    if limit and "LIMIT" not in _upper and _upper.startswith("SELECT"):
         query = f"{query.rstrip(';')} LIMIT {int(limit)}"
 
     conn = _get_warehouse_connection()
@@ -378,7 +379,7 @@ def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 500
         spark = _spark()
         daily_cols = [
             "symbol",
-            F.col("event_date").alias("feature_ts"),
+            "event_date",
             F.col("adj_open").alias("open"),
             F.col("adj_high").alias("high"),
             F.col("adj_low").alias("low"),
@@ -394,7 +395,7 @@ def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 500
 
     # Warehouse fallback
     daily_query = (
-        f"SELECT symbol, event_date AS feature_ts, "
+        f"SELECT symbol, event_date, "
         f"adj_open AS open, adj_high AS high, adj_low AS low, "
         f"adj_close AS close, adj_volume AS volume, adj_vwap AS vwap, "
         f"return_1d "

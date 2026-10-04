@@ -12,7 +12,7 @@ import { FreshnessBadge } from '../components/FreshnessBadge';
 import type { OHLCVFeature } from '../api/types';
 
 const ohlcvColumns: Column<OHLCVFeature>[] = [
-  { key: 'ts', header: 'Time', render: (r) => r.feature_ts || '—' },
+  { key: 'ts', header: 'Date', render: (r) => r.event_date || '—' },
   { key: 'open', header: 'Open', render: (r) => (r.open ?? '—').toString() },
   { key: 'high', header: 'High', render: (r) => (r.high ?? '—').toString() },
   { key: 'low', header: 'Low', render: (r) => (r.low ?? '—').toString() },
@@ -82,7 +82,7 @@ export function MarketDashboard() {
                 detail={`gold_ohlcv_features is empty for ${symbol} — features appear once the silver→gold pipeline has run.`}
               />
             ) : (
-              <Table columns={ohlcvColumns} rows={data?.ohlcv.data ?? []} rowKey={(r) => r.feature_ts || r.symbol} />
+              <Table columns={ohlcvColumns} rows={data?.ohlcv.data ?? []} rowKey={(r) => r.event_date || r.symbol} />
             )}
           </Card>
         </>
