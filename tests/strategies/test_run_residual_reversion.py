@@ -299,7 +299,7 @@ class _StubFetch:
         return pd.DataFrame(columns=["symbol", "event_date", "close"])
 
 
-def test_adjusted_path_generates_correct_sql():
+def test_adjusted_path_generates_correct_sql(monkeypatch):
     """When price_table='silver_ohlcv_day_adjusted', fetch_data must generate
     SQL that selects `adj_close AS close`, filters on `adj_close`, and reads
     from the adjusted table."""
@@ -307,11 +307,8 @@ def test_adjusted_path_generates_correct_sql():
     import strategies.run_residual_reversion as mod
 
     stub = _StubFetch()
-    try:
-        mod._fetch = stub
-        fetch_data(None, price_table="silver_ohlcv_day_adjusted")
-    finally:
-        mod._fetch = mod.__dict__.get("_fetch_orig", mod._fetch)
+    monkeypatch.setattr(mod, "_fetch", stub)  # restored automatically after the test
+    fetch_data(None, price_table="silver_ohlcv_day_adjusted")
 
     # Find the closes query (contains the price_table).
     closes_qs = [s for s in stub.calls if "silver_ohlcv_day_adjusted" in s]
@@ -326,7 +323,7 @@ def test_adjusted_path_generates_correct_sql():
     )
 
 
-def test_bronze_path_generates_correct_sql_and_warns():
+def test_bronze_path_generates_correct_sql_and_warns(monkeypatch):
     """When price_table='bronze_ohlcv_day', fetch_data must generate SQL that
     selects and filters on raw `close` and emit a warning about unadjusted
     prices."""
@@ -335,13 +332,10 @@ def test_bronze_path_generates_correct_sql_and_warns():
     import strategies.run_residual_reversion as mod
 
     stub = _StubFetch()
-    try:
-        mod._fetch = stub
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            fetch_data(None, price_table="bronze_ohlcv_day")
-    finally:
-        mod._fetch = mod.__dict__.get("_fetch_orig", mod._fetch)
+    monkeypatch.setattr(mod, "_fetch", stub)  # restored automatically after the test
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fetch_data(None, price_table="bronze_ohlcv_day")
 
     assert any("UNADJUSTED" in str(w.message) for w in caught), (
         "bronze path must warn about unadjusted prices"
@@ -500,3 +494,8 @@ def test_mutation_ignore_mask_fails():
            pd.isna(signals_no_mask["returns"].loc[dates[100], "TESTX"]), (
         "mask must change NaN/finite status of the return on the break day"
     )
+
+def test_fetch_is_not_left_stubbed():
+    """Guard: earlier SQL-capture tests must restore _fetch (run after them in file order)."""
+    import strategies.run_residual_reversion as mod
+    assert not isinstance(mod._fetch, _StubFetch), "a test leaked its _fetch stub"
