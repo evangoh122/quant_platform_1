@@ -444,6 +444,18 @@ class SparkGraphStore:
             # Structured column equality on NFKC-normalised, lower-cased value.
             # Parity with JsonlGraphStore: compare normalised input to concept_norm column.
             norm_concept = normalize_unicode(concept).lower()
+            # Guard: if any rows have NULL concept_norm, concept searches would
+            # silently omit them.  Raise a clear error instead of silent data loss.
+            null_count = df.where(
+                F.col("concept_norm").isNull()
+            ).limit(1).count()
+            if null_count > 0:
+                raise RuntimeError(
+                    f"gold_sec_kg_nodes contains rows with NULL concept_norm. "
+                    f"A full rebuild is required to populate concept_norm before "
+                    f"concept searches can work.  Run the SEC knowledge graph build "
+                    f"job to backfill."
+                )
             df = df.where(F.col("concept_norm") == norm_concept)
         if period_start is not None:
             df = df.where(F.col("properties_json").contains(

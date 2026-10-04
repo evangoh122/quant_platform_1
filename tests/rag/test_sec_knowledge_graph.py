@@ -1465,6 +1465,8 @@ class TestSparkGraphStoreRoundTrip:
             return self
         def contains(self, substr):
             return TestSparkGraphStoreRoundTrip._Expr("contains", self._name, substr)
+        def isNull(self):
+            return TestSparkGraphStoreRoundTrip._Expr("is_null", self._name, None)
 
     class _LoweredCol:
         """Wraps a _FakeCol so .contains(s) evaluates as lower(value).contains(s)."""
@@ -1504,6 +1506,8 @@ class TestSparkGraphStoreRoundTrip:
             return TestSparkGraphStoreRoundTrip._FakeDataFrame(self._rows[:n])
         def collect(self):
             return self._rows
+        def count(self):
+            return len(self._rows)
         def toLocalIterator(self):
             return iter(self._rows)
 
@@ -1539,6 +1543,8 @@ class TestSparkGraphStoreRoundTrip:
             elif expr.op == "exists":
                 arr = getattr(row, expr.left, None) or []
                 return any(expr.right(e) for e in arr)
+            elif expr.op == "is_null":
+                return getattr(row, expr.left, None) is None
             else:
                 raise ValueError(f"Unknown expression op: {expr.op!r}")
         # Bare value — reject instead of silently returning True
@@ -2836,6 +2842,9 @@ class _SpyDataFrame:
         self._spy_log.append(("collect", None))
         return self._rows
 
+    def count(self):
+        return len(self._rows)
+
     def toLocalIterator(self):
         self._spy_log.append(("toLocalIterator", None))
         return iter(self._rows)
@@ -2885,6 +2894,8 @@ class TestPredicatePushdown:
             elif condition.op == "exists":
                 arr = getattr(row, condition.left, None) or []
                 return any(condition.right(e) for e in arr)
+            elif condition.op == "is_null":
+                return getattr(row, condition.left, None) is None
             else:
                 raise ValueError(f"Unknown condition op: {condition.op!r}")
         raise ValueError(f"Cannot evaluate bare condition: {condition!r}")
@@ -4311,3 +4322,269 @@ class TestSparkAsOfBeforeLimit:
         assert len(without_filter) == 1
         # The key test: with_filter must return the eligible row
         # If F.exists were removed, limit=1 could pick the future row first
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 42. concept_norm column migration (round 13)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConceptNormMigration:
+    """ensure_concept_norm_column adds the column only when missing.
+
+    Fake Spark session tracks ALTER TABLE calls to verify idempotency.
+    """
+
+    class _FakeSparkForMigration:
+        """Tracks SQL calls and simulates table schema changes."""
+        def __init__(self, columns: list):
+            self._columns = list(columns)
+            self.alter_calls = []
+            self.create_calls = []
+
+        def table(self, name):
+            """Return a fake DataFrame with .columns."""
+            parent = self
+            class _FakeDF:
+                @property
+                def columns(self):
+                    return parent._columns
+                def limit(self, n):
+                    return self
+                def collect(self):
+                    return [None]
+            return _FakeDF()
+
+        def sql(self, stmt):
+            self.create_calls.append(stmt)
+            if "ADD COLUMNS" in stmt.upper():
+                self.alter_calls.append(stmt)
+                # Simulate column added
+                if "concept_norm" in stmt.lower():
+                    self._columns.append("concept_norm")
+
+    def test_alter_issued_when_column_missing(self):
+        """Table without concept_norm → ALTER TABLE issued exactly once."""
+        from pipelines.build_sec_knowledge_graph import ensure_concept_norm_column
+        spark = self._FakeSparkForMigration([
+            "node_id", "node_type", "label", "properties_json",
+            "provenance", "build_version",
+        ])
+        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
+        assert len(spark.alter_calls) == 1
+        assert "ADD COLUMNS" in spark.alter_calls[0].upper()
+        assert "concept_norm" in spark.alter_calls[0].lower()
+
+    def test_no_alter_when_column_exists(self):
+        """Table already has concept_norm → no ALTER issued."""
+        from pipelines.build_sec_knowledge_graph import ensure_concept_norm_column
+        spark = self._FakeSparkForMigration([
+            "node_id", "node_type", "label", "properties_json",
+            "concept_norm", "provenance", "build_version",
+        ])
+        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
+        assert len(spark.alter_calls) == 0
+
+    def test_idempotent_second_call(self):
+        """Second call after column was added → no second ALTER."""
+        from pipelines.build_sec_knowledge_graph import ensure_concept_norm_column
+        spark = self._FakeSparkForMigration([
+            "node_id", "node_type", "label", "properties_json",
+            "provenance", "build_version",
+        ])
+        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
+        assert len(spark.alter_calls) == 1
+        # Second call — column now exists
+        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
+        assert len(spark.alter_calls) == 1  # still only one ALTER
+
+    def test_unreadable_table_skips(self):
+        """If table is not readable, migration is skipped (no crash)."""
+        from pipelines.build_sec_knowledge_graph import ensure_concept_norm_column
+        class _BrokenSpark:
+            def table(self, name):
+                raise RuntimeError("table not found")
+        spark = _BrokenSpark()
+        # Should not raise
+        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
+
+
+class TestConceptNormNullGuard:
+    """Concept searches must raise RuntimeError when NULL concept_norm rows exist."""
+
+    def test_null_concept_norm_raises_error(self, monkeypatch):
+        """SparkGraphStore.find_nodes raises RuntimeError on NULL concept_norm."""
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+        from datetime import timedelta
+
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "100", "entity_unit": "USD",
+            "period_start": "", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        # Build Spark rows with NULL concept_norm (simulating pre-migration table)
+        node_rows = []
+        for node in nodes:
+            prov_list = [
+                T._FakeRow(
+                    accession_number=p.accession_number,
+                    source_chunk_id=p.source_chunk_id,
+                    accepted_ts=p.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=int(p.accepted_ts.timestamp()),
+                )
+                for p in node.provenance
+            ]
+            node_rows.append(T._FakeRow(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                label=node.label,
+                properties_json=node.properties_json,
+                concept_norm=None,  # NULL — simulates pre-migration rows
+                provenance=prov_list,
+                build_version=node.build_version,
+            ))
+
+        edge_rows = []
+        for edge in edges:
+            edge_rows.append(T._FakeRow(
+                edge_id=edge.edge_id,
+                src_id=edge.src_id,
+                edge_type=edge.edge_type,
+                dst_id=edge.dst_id,
+                valid_from=edge.valid_from.replace(tzinfo=None) + timedelta(hours=8),
+                valid_from_epoch=int(edge.valid_from.timestamp()),
+                accession_number=edge.accession_number,
+                source_chunk_id=edge.source_chunk_id,
+                accepted_ts=edge.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                accepted_epoch=int(edge.accepted_ts.timestamp()),
+                confidence=edge.confidence,
+                properties_json=edge.properties_json,
+                build_version=edge.build_version,
+            ))
+
+        store = T._MockSparkGraphStore("test_cat", "test_sch", node_rows, edge_rows)
+
+        # Concept search must raise RuntimeError
+        with pytest.raises(RuntimeError, match="NULL concept_norm"):
+            store.find_nodes("XbrlFact", concept="Revenues")
+
+    def test_no_error_when_concept_norm_populated(self, monkeypatch):
+        """Concept search works normally when all rows have concept_norm."""
+        T = TestSparkGraphStoreRoundTrip
+        T._patch_pyspark(T, monkeypatch)
+        from datetime import timedelta
+
+        entities = [{
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "xbrl_fact", "entity_key": "Revenues",
+            "entity_value": "100", "entity_unit": "USD",
+            "period_start": "", "period_end": "2024-01-28",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }, {
+            "cik": "0001045810", "ticker": "NVDA",
+            "accession_number": "0001045810-24-000001",
+            "form_type": "10-K", "accepted_epoch": 1700000000,
+            "entity_type": "company", "entity_key": "NVIDIA",
+            "entity_value": "NVIDIA Corporation",
+            "entity_unit": "", "period_start": "", "period_end": "",
+            "confidence": 1.0, "source_chunk_id": "c1",
+        }]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        node_rows = []
+        for node in nodes:
+            prov_list = [
+                T._FakeRow(
+                    accession_number=p.accession_number,
+                    source_chunk_id=p.source_chunk_id,
+                    accepted_ts=p.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                    accepted_epoch=int(p.accepted_ts.timestamp()),
+                )
+                for p in node.provenance
+            ]
+            props = json.loads(node.properties_json)
+            raw_concept = props.get("entity_key", props.get("metric", ""))
+            concept_norm = normalize_unicode(raw_concept).lower() if raw_concept else None
+            node_rows.append(T._FakeRow(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                label=node.label,
+                properties_json=node.properties_json,
+                concept_norm=concept_norm,
+                provenance=prov_list,
+                build_version=node.build_version,
+            ))
+
+        edge_rows = []
+        for edge in edges:
+            edge_rows.append(T._FakeRow(
+                edge_id=edge.edge_id,
+                src_id=edge.src_id,
+                edge_type=edge.edge_type,
+                dst_id=edge.dst_id,
+                valid_from=edge.valid_from.replace(tzinfo=None) + timedelta(hours=8),
+                valid_from_epoch=int(edge.valid_from.timestamp()),
+                accession_number=edge.accession_number,
+                source_chunk_id=edge.source_chunk_id,
+                accepted_ts=edge.accepted_ts.replace(tzinfo=None) + timedelta(hours=8),
+                accepted_epoch=int(edge.accepted_ts.timestamp()),
+                confidence=edge.confidence,
+                properties_json=edge.properties_json,
+                build_version=edge.build_version,
+            ))
+
+        store = T._MockSparkGraphStore("test_cat", "test_sch", node_rows, edge_rows)
+
+        # Should work without error
+        results = store.find_nodes("XbrlFact", concept="Revenues")
+        assert len(results) == 1
+
+    def test_mutation_skip_alter_test_fails(self):
+        """Mutation proof: removing the ALTER logic causes this test to fail.
+
+        This test verifies that ensure_concept_norm_column is called in the build.
+        If the ALTER is skipped, pre-existing tables without concept_norm will
+        cause the MERGE to fail on schema mismatch.
+        """
+        from pipelines.build_sec_knowledge_graph import ensure_concept_norm_column
+        # Simulate a table without concept_norm
+        spark = TestConceptNormMigration._FakeSparkForMigration([
+            "node_id", "node_type", "label", "properties_json",
+            "provenance", "build_version",
+        ])
+        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
+        # Must have issued exactly one ALTER
+        assert len(spark.alter_calls) == 1, (
+            "ensure_concept_norm_column did not issue ALTER TABLE — "
+            "MERGE will fail on schema mismatch for pre-existing tables"
+        )

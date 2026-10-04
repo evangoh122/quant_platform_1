@@ -266,3 +266,25 @@ OPTIMIZE bootcamp_students.evangoh_capstone.gold_sec_kg_edges
 ```
 
 Do not schedule `OPTIMIZE` in this task — document it for operator use.
+
+### concept_norm migration (round 12+)
+
+The `concept_norm` column on `gold_sec_kg_nodes` enables structured concept
+searches (NFKC-normalised, lower-cased).  Pre-round-12 tables lack this column.
+
+**Migration:** The build job automatically runs `ALTER TABLE ... ADD COLUMNS
+(concept_norm STRING)` if the column is missing (idempotent, re-runnable).
+A full rebuild then populates `concept_norm` for all rows via the MERGE
+`whenMatchedUpdateAll` path.
+
+**NULL handling:** If concept searches are attempted before a rebuild has run,
+the query path detects NULL `concept_norm` rows and raises a clear
+`RuntimeError` instead of silently omitting legacy rows.  This is a deliberate
+fail-fast: concept searches require a populated `concept_norm` column.
+
+**Operator action:** After upgrading to round 12+, trigger a full SEC knowledge
+graph build to backfill `concept_norm`:
+
+```bash
+databricks jobs run-now --job-name sec_knowledge_graph_build --profile <PROFILE>
+```

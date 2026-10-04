@@ -32,6 +32,29 @@ def _table_exists(spark, table_name: str) -> bool:
         return False
 
 
+def ensure_concept_norm_column(spark, fqn: str) -> None:
+    """Forward-only, re-runnable migration: add concept_norm if missing.
+
+    Older gold_sec_kg_nodes tables (pre-round-12) lack the concept_norm column.
+    CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so this
+    ALTER TABLE path is required before the MERGE.  Follows the established
+    pattern of ensure_model_availability_columns in run_silver_gold.py.
+
+    Args:
+        spark: SparkSession
+        fqn: fully-qualified table name (e.g. catalog.schema.gold_sec_kg_nodes)
+    """
+    try:
+        existing = set(spark.table(fqn).columns)
+    except Exception as e:
+        print(f"  ensure concept_norm: {fqn} not readable ({str(e)[:80]}); skipping")
+        return
+    if "concept_norm" in existing:
+        return
+    spark.sql(f"ALTER TABLE {fqn} ADD COLUMNS (concept_norm STRING)")
+    print(f"  added {fqn}.concept_norm column")
+
+
 def build(
     spark,
     *,
@@ -221,6 +244,9 @@ def build(
     # MERGE nodes
     nodes_table = f"{catalog}.{schema}.gold_sec_kg_nodes"
     edges_table = f"{catalog}.{schema}.gold_sec_kg_edges"
+
+    # Ensure concept_norm column exists on pre-round-12 tables
+    ensure_concept_norm_column(spark, nodes_table)
 
     # Create tables if not exist
     spark.sql(f"""
