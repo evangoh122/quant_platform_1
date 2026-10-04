@@ -186,6 +186,77 @@ class TestWrapperMatchesHybridRerank:
         assert len(results) == 2
 
 
+class TestProductionWrapperMatchesHarness:
+    """test_production_wrapper_matches_hybrid_rerank_on_fixture"""
+
+    def test_search_sec_filings_matches_hybrid_rerank(self, offline_adapter, monkeypatch):
+        """PRODUCTION search_sec_filings output matches harness hybrid_rerank on fixture data.
+
+        Same chunk ids, same order. Uses a deterministic fake reranker so the
+        test is hermetic and fast.
+        """
+        from evals.rag_eval.corpus import install_offline_corpus
+        from api.services.hybrid_retriever import HybridRetriever
+        from api.services import reranker as reranker_mod
+        from agent import tools_retrieval as tr
+        import sys
+        from unittest.mock import MagicMock, patch
+
+        # Mock db.lakebase if psycopg is not installed
+        if "db.lakebase" not in sys.modules:
+            sys.modules["db.lakebase"] = MagicMock()
+
+        call_log: list[str] = []
+
+        def _fake_rerank(query, docs, top_k=5):
+            call_log.append("rerank")
+            # Assign deterministic scores for comparison
+            for d in docs:
+                chunk_id = d.metadata.get("chunk_id", "")
+                d.metadata["rerank_score"] = hash(chunk_id) % 100 / 100.0
+            scored = sorted(docs, key=lambda d: d.metadata.get("rerank_score", 0), reverse=True)
+            return scored[:top_k]
+
+        monkeypatch.setattr(reranker_mod, "rerank", _fake_rerank)
+
+        item = _answerable_item(ticker="NVDA")
+        as_of = item.as_of_datetime()
+
+        with install_offline_corpus(offline_adapter):
+            retriever = HybridRetriever(top_k=5, rrf_k=60)
+
+            # Harness path: retrieve_mode("hybrid_rerank")
+            docs_harness = retriever.retrieve_mode(
+                query=item.question,
+                mode="hybrid_rerank",
+                ticker=item.ticker,
+                as_of=as_of,
+                top_k=5,
+            )
+
+            call_log.clear()
+
+            # Production path: search_sec_filings uses the same composition
+            with patch.object(tr, "normalize_symbol", return_value="NVDA"), \
+                 patch("api.services.hybrid_retriever.HybridRetriever", return_value=retriever):
+                results_prod = tr.search_sec_filings(
+                    item.ticker,
+                    query=item.question,
+                    top_k=5,
+                    as_of=as_of,
+                )
+
+        # Extract chunk IDs in order from both paths
+        harness_chunk_ids = [d.metadata.get("chunk_id", "") for d in docs_harness]
+        prod_chunk_ids = [r.get("chunk_id", "") for r in results_prod]
+
+        assert harness_chunk_ids == prod_chunk_ids, (
+            f"PRODUCTION search_sec_filings and harness hybrid_rerank chunk IDs differ.\n"
+            f"  harness: {harness_chunk_ids}\n"
+            f"  prod:    {prod_chunk_ids}"
+        )
+
+
 class TestEveryModeFiltersBeforeScoring:
     """test_every_mode_filters_before_scoring"""
 
@@ -281,7 +352,7 @@ class TestRetrieveMatchesRetrieveMode:
         )
 
     def test_hybrid_rerank_parity_with_deterministic_reranker(self, offline_adapter, monkeypatch):
-        """retrieve_and_rerank() and retrieve_mode('hybrid_rerank') produce identical ORDERED results.
+        """retrieve_and_rerank() and retrieve_mode('hybrid_rerank') produce identical ORDERED results with scores.
 
         Uses a deterministic fake reranker (sorts by chunk_id reversed) so the
         test is hermetic.  A mutation that skips or reorders rerank in one path
@@ -295,7 +366,15 @@ class TestRetrieveMatchesRetrieveMode:
 
         def _fake_rerank(query, docs, top_k=5):
             call_log.append("rerank")
-            scored = sorted(docs, key=lambda d: d.metadata.get("chunk_id", ""), reverse=True)
+            # Assign deterministic scores based on chunk_id for comparison
+            scored = []
+            for d in docs:
+                d_copy = d.copy() if hasattr(d, 'copy') else d
+                # Use a deterministic score: higher chunk_id = higher score
+                chunk_id = d.metadata.get("chunk_id", "")
+                d_copy.metadata["rerank_score"] = hash(chunk_id) % 100 / 100.0
+                scored.append(d_copy)
+            scored.sort(key=lambda d: d.metadata.get("rerank_score", 0), reverse=True)
             return scored[:top_k]
 
         monkeypatch.setattr(reranker_mod, "rerank", _fake_rerank)
@@ -327,10 +406,11 @@ class TestRetrieveMatchesRetrieveMode:
 
         assert call_log.count("rerank") == 1, "retrieve_mode('hybrid_rerank') must call rerank exactly once"
 
-        prod_seq = [d.metadata.get("chunk_id", "") for d in docs_prod]
-        eval_seq = [d.metadata.get("chunk_id", "") for d in docs_eval]
+        # Compare both order AND scores
+        prod_seq = [(d.metadata.get("chunk_id", ""), d.metadata.get("rerank_score")) for d in docs_prod]
+        eval_seq = [(d.metadata.get("chunk_id", ""), d.metadata.get("rerank_score")) for d in docs_eval]
         assert prod_seq == eval_seq, (
-            f"retrieve_and_rerank() and retrieve_mode('hybrid_rerank') ordered results differ.\n"
+            f"retrieve_and_rerank() and retrieve_mode('hybrid_rerank') ordered results with scores differ.\n"
             f"  prod: {prod_seq}\n"
             f"  eval: {eval_seq}"
         )

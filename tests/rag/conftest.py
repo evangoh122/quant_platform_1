@@ -82,16 +82,63 @@ def _block_network(monkeypatch):
     """
     import socket
 
+    def _is_loopback(host):
+        """Check if host is loopback (127.0.0.0/8 or ::1)."""
+        if host in ("127.0.0.1", "localhost", "::1"):
+            return True
+        # Check 127.0.0.0/8 range
+        try:
+            parts = host.split(".")
+            if len(parts) == 4 and parts[0] == "127":
+                return True
+        except Exception:
+            pass
+        return False
+
     _real_create_connection = socket.create_connection
+    _real_socket_connect = socket.socket.connect
+    _real_socket_connect_ex = socket.socket.connect_ex
+    _real_getaddrinfo = socket.getaddrinfo
 
     def _fail_create_connection(address, *args, **kwargs):
         host, port = address
+        if _is_loopback(host):
+            return _real_create_connection(address, *args, **kwargs)
         raise ConnectionRefusedError(
             f"Network access blocked in tests (attempted {host}:{port}). "
             f"Mock the call or use monkeypatch to allow."
         )
 
+    def _fail_socket_connect(self, address, *args, **kwargs):
+        host, port = address[0] if len(address) > 0 else ("unknown", 0)
+        if _is_loopback(host):
+            return _real_socket_connect(self, address, *args, **kwargs)
+        raise ConnectionRefusedError(
+            f"Network access blocked in tests (socket.connect to {host}:{port}). "
+            f"Mock the call or use monkeypatch to allow."
+        )
+
+    def _fail_socket_connect_ex(self, address, *args, **kwargs):
+        host, port = address[0] if len(address) > 0 else ("unknown", 0)
+        if _is_loopback(host):
+            return _real_socket_connect_ex(self, address, *args, **kwargs)
+        raise ConnectionRefusedError(
+            f"Network access blocked in tests (socket.connect_ex to {host}:{port}). "
+            f"Mock the call or use monkeypatch to allow."
+        )
+
+    def _fail_getaddrinfo(host, port, *args, **kwargs):
+        if _is_loopback(host):
+            return _real_getaddrinfo(host, port, *args, **kwargs)
+        raise ConnectionRefusedError(
+            f"Network access blocked in tests (getaddrinfo for {host}:{port}). "
+            f"Mock the call or use monkeypatch to allow."
+        )
+
     monkeypatch.setattr(socket, "create_connection", _fail_create_connection)
+    monkeypatch.setattr(socket.socket, "connect", _fail_socket_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _fail_socket_connect_ex)
+    monkeypatch.setattr(socket, "getaddrinfo", _fail_getaddrinfo)
 
     # Disable cross-encoder reranker in all tests for speed.
     # _get_model returning None makes rerank() return docs[:top_k] unchanged.
@@ -148,3 +195,38 @@ def fake_pyspark(monkeypatch):
 
     pyspark_sql.SparkSession = MagicMock(name="SparkSession")
     pyspark_sql.DataFrame = MagicMock(name="DataFrame")
+
+
+@pytest.fixture(scope="module")
+def cached_offline_adapter():
+    """Module-scoped fixture for caching the offline adapter.
+
+    This avoids reloading the fixture data for every test in the module,
+    keeping parity tests fast.
+    """
+    from pathlib import Path
+    from evals.rag_eval.corpus import JsonlCorpusAdapter
+
+    fixture_dir = Path(__file__).parent / "fixtures" / "rag_eval"
+    return JsonlCorpusAdapter.from_files(
+        fixture_dir / "corpus_smoke.jsonl",
+        fixture_dir / "embeddings_smoke.npz",
+    )
+
+
+@pytest.fixture(scope="module")
+def fake_reranker():
+    """Module-scoped fixture providing a deterministic fake reranker.
+
+    Returns a function that sorts by chunk_id reversed and assigns
+    deterministic scores. Use with monkeypatch to avoid model downloads.
+    """
+    def _fake_rerank(query, docs, top_k=5):
+        # Assign deterministic scores based on chunk_id
+        for d in docs:
+            chunk_id = d.metadata.get("chunk_id", "")
+            d.metadata["rerank_score"] = hash(chunk_id) % 100 / 100.0
+        scored = sorted(docs, key=lambda d: d.metadata.get("rerank_score", 0), reverse=True)
+        return scored[:top_k]
+
+    return _fake_rerank

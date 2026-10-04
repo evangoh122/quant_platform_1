@@ -39,8 +39,26 @@ def build_report(run_report: RunReport, *, include_text: bool = False) -> dict[s
     # Redact absolute paths in cli_args to basename
     cli_args = report.get("cli_args", {})
     if cli_args:
+        def _redact_path(v):
+            # Handle pathlib.Path objects directly
+            if isinstance(v, Path):
+                if v.is_absolute():
+                    return v.name
+                # Convert relative paths to plain string
+                return str(v)
+            # Handle string paths
+            if isinstance(v, str) and Path(v).is_absolute():
+                return Path(v).name
+            # Handle any os.PathLike object
+            if hasattr(v, '__fspath__'):
+                p = Path(v)
+                if p.is_absolute():
+                    return p.name
+                return str(p)
+            return v
+
         report["cli_args"] = {
-            k: Path(v).name if isinstance(v, str) and Path(v).is_absolute() else v
+            k: _redact_path(v)
             for k, v in cli_args.items()
         }
 

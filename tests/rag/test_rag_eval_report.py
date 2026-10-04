@@ -203,6 +203,25 @@ class TestReportTextStripping:
         assert report["cli_args"]["corpus"] == "relative/corpus.jsonl"
         assert report["cli_args"]["mode"] == "all"
 
+    def test_cli_args_path_objects_redacted_to_basename(self):
+        """Pathlib.Path objects in cli_args are redacted to basename string."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={
+                "golden": Path("/home/user/project/data/golden.jsonl"),
+                "corpus": Path("relative/corpus.jsonl"),
+                "mode": "all",
+            },
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        # Path objects must be converted to plain strings (basename)
+        assert report["cli_args"]["golden"] == "golden.jsonl"
+        assert isinstance(report["cli_args"]["golden"], str)
+        # Relative paths should not be changed
+        assert report["cli_args"]["corpus"] == "relative/corpus.jsonl"
+        assert report["cli_args"]["mode"] == "all"
+
     def test_write_json_has_no_text_in_hits(self, tmp_path):
         """Written JSON report file has no text field in hits."""
         report = build_report(self._make_report_with_text("secret content"))
