@@ -2095,6 +2095,7 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
         def __init__(self, keyType=None, valueType=None, valueContainsNull=True):
             self.keyType = keyType
             self.valueType = valueType
+            self.valueContainsNull = valueContainsNull
 
     pyspark_sql_types.StructType = _StructType
     pyspark_sql_types.StructField = _StructField
@@ -2273,12 +2274,11 @@ class TestPipelineValidation:
 
         import pipelines.build_sec_knowledge_graph as pipeline_mod
 
-        # Track order of operations
-        call_order = []
+        # Track order of operations by recording validate into write_spy.calls
         original_validate = pipeline_mod.validate_and_raise
         def _tracking_validate(*args, **kwargs):
             result = original_validate(*args, **kwargs)
-            call_order.append("validate_and_raise")
+            write_spy.record("validate", fn="validate_and_raise")
             return result
 
         monkeypatch.setattr(pipeline_mod, "validate_and_raise", _tracking_validate)
@@ -2289,24 +2289,19 @@ class TestPipelineValidation:
             schema="test_sch",
         )
 
-        # Validation must have been called
-        assert "validate_and_raise" in call_order, (
-            "validate_and_raise was never called"
-        )
-        # Writes must have happened (at least manifest)
-        assert write_spy.write_count > 0, "No writes recorded after validation"
+        # Validate must have been recorded in write_spy.calls
+        validate_indices = [i for i, c in enumerate(write_spy.calls) if c["kind"] == "validate"]
+        assert len(validate_indices) >= 1, "validate_and_raise was never called"
+        validate_idx = validate_indices[0]
 
-        # Check order: all createDataFrame/write calls must come after validate
-        validate_idx = call_order.index("validate_and_raise")
-        write_calls = [c for c in write_spy.calls if c["kind"] in ("write", "createDataFrame")]
-        for wc in write_calls:
-            # write_spy calls happen in order; validate must be before any write
-            wc_idx = write_spy.calls.index(wc)
-            # find the validate call in write_spy.calls (it won't be there, it's in call_order)
-            # Instead: validate_and_raise must have been called before build_graph returns
-            # which is before any createDataFrame/write calls
-            pass  # order is implicit: build() calls validate_and_raise before any writes
-        assert write_spy.write_count > 0, "Expected writes after validation"
+        # All createDataFrame/write/sql calls must come after the validate call
+        write_kinds = ("write", "createDataFrame", "sql")
+        write_indices = [i for i, c in enumerate(write_spy.calls) if c["kind"] in write_kinds]
+        assert len(write_indices) > 0, "No write/createDataFrame/sql calls recorded"
+        assert validate_idx < write_indices[0], (
+            f"validate_and_raise (index {validate_idx}) must come before "
+            f"first write operation (index {write_indices[0]})"
+        )
 
     def test_manifest_row_has_exact_counts(self, monkeypatch):
         """(c) Manifest row written to gold_sec_kg_build_runs carries exact expected counts."""
@@ -2413,3 +2408,43 @@ class TestPipelineValidation:
             f"Column names mismatch:\n  expected: {expected_names}\n"
             f"  actual:   {actual_names}"
         )
+
+        # Assert per-field dataType AND nullable against documented schema
+        # From docs/DATA_SCHEMAS.md:498-507
+        def _dt_repr(dt):
+            """Return a comparable representation of a dataType."""
+            if hasattr(dt, 'keyType') and hasattr(dt, 'valueType'):
+                # MapType
+                return f"MapType({_dt_repr(dt.keyType)},{_dt_repr(dt.valueType)},valueContainsNull={dt.valueContainsNull})"
+            elif hasattr(dt, 'elementType'):
+                # ArrayType
+                return f"Array({_dt_repr(dt.elementType)})"
+            else:
+                return str(dt)
+
+        from pyspark.sql.types import (
+            IntegerType, MapType, StringType, StructField, TimestampType,
+        )
+        expected_fields = [
+            StructField("run_id", StringType(), False),
+            StructField("build_version", StringType(), False),
+            StructField("run_ts", TimestampType(), False),
+            StructField("input_rows_by_entity_type", MapType(StringType(), IntegerType(), valueContainsNull=False), False),
+            StructField("accepted_rows", IntegerType(), False),
+            StructField("rejected_rows", IntegerType(), False),
+            StructField("rejection_reasons", MapType(StringType(), IntegerType(), valueContainsNull=False), False),
+            StructField("node_count", IntegerType(), False),
+            StructField("edge_count", IntegerType(), False),
+        ]
+        for i, (actual, expected) in enumerate(zip(schema.fields, expected_fields)):
+            assert actual.name == expected.name, (
+                f"Field {i} name mismatch: {actual.name} != {expected.name}"
+            )
+            assert _dt_repr(actual.dataType) == _dt_repr(expected.dataType), (
+                f"Field {i} ({actual.name}) dataType mismatch: "
+                f"{_dt_repr(actual.dataType)} != {_dt_repr(expected.dataType)}"
+            )
+            assert actual.nullable == expected.nullable, (
+                f"Field {i} ({actual.name}) nullable mismatch: "
+                f"{actual.nullable} != {expected.nullable}"
+            )
