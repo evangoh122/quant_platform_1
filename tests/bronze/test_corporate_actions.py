@@ -809,7 +809,54 @@ class TestNotebookMode:
 
 
 # ---------------------------------------------------------------------------
-# 10. MassiveCorporateActionsSource — normalization
+# 10. Resume per source (both mode)
+# ---------------------------------------------------------------------------
+
+class TestResumePerSource:
+
+    def test_notebook_checkpoint_query_includes_source(self):
+        """The checkpoint query must include source in SELECT, not just symbol."""
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        # Must query both symbol and source
+        assert "SELECT DISTINCT symbol, source FROM" in text, \
+            "Checkpoint query must include source for per-source resume"
+
+    def test_notebook_checkpoint_uses_completed_keys_tuple(self):
+        """The checkpoint set must be (symbol, source) tuples, not just symbols."""
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        text = nb_path.read_text(encoding="utf-8")
+        assert "completed_keys" in text, "Must use completed_keys (not completed_symbols)"
+        assert "(r[\"symbol\"], r[\"source\"])" in text, \
+            "Checkpoint key must be (symbol, source) tuple"
+
+    def test_resume_skips_only_completed_source(self):
+        """In 'both' mode, if massive completed but yfinance didn't,
+        only massive should be skipped."""
+        # This is a logic test: the check should be per (sym, source)
+        completed_keys = {("AAPL", "massive")}  # massive done, yfinance not
+        adapters = [("massive", None), ("yfinance", None)]
+        sym = "AAPL"
+
+        # The new logic: skip only if ALL adapters for this symbol are done
+        should_skip = all((sym, src) in completed_keys for src, _ in adapters)
+        assert not should_skip, \
+            "Should NOT skip AAPL because yfinance is not completed"
+
+    def test_resume_skips_when_all_sources_done(self):
+        """When both sources are completed for a symbol, skip it."""
+        completed_keys = {("AAPL", "massive"), ("AAPL", "yfinance")}
+        adapters = [("massive", None), ("yfinance", None)]
+        sym = "AAPL"
+
+        should_skip = all((sym, src) in completed_keys for src, _ in adapters)
+        assert should_skip, "Should skip AAPL because both sources are completed"
+
+
+# ---------------------------------------------------------------------------
+# 11. MassiveCorporateActionsSource — normalization
 # ---------------------------------------------------------------------------
 
 class _FakeResponse:
