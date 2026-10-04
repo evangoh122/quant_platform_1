@@ -333,7 +333,11 @@ entity_cumulative AS (
         event_date,
         return_1d,
         information_available_ts,
-        EXP(SUM(LN(1 + return_1d)) OVER (
+        -- Guard: GREATEST(1 + return_1d, 1e-10) prevents LN(0) or LN(negative).
+        -- Assumption: daily returns on positive-priced equities are bounded
+        -- above -1 (price cannot go below 0). NULL data-quality breaks are
+        -- excluded by the WHERE clause. The guard is defensive only.
+        EXP(SUM(LN(GREATEST(1 + return_1d, 1e-10))) OVER (
             PARTITION BY symbol
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -346,7 +350,7 @@ benchmark_cumulative AS (
         event_date,
         bench_return,
         bench_info_ts,
-        EXP(SUM(LN(1 + bench_return)) OVER (
+        EXP(SUM(LN(GREATEST(1 + bench_return, 1e-10))) OVER (
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         )) - 1 AS bench_cumulative_return
