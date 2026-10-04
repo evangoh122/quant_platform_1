@@ -76,12 +76,42 @@ def load_policy_bounds() -> PolicyBounds:
 
     errors: list[str] = []
 
+    # Validate policy version
     pv = raw.get("policy_version")
+    if pv != SEMANTIC_MODEL_VERSION:
+        errors.append(f"policy_version mismatch: expected {SEMANTIC_MODEL_VERSION}, got {pv}")
+
     smv = raw.get("semantic_model_version")
     if smv != SEMANTIC_MODEL_VERSION:
         errors.append(f"semantic_model_version mismatch: expected {SEMANTIC_MODEL_VERSION}, got {smv}")
 
-    hb = raw.get("hard_bounds", {})
+    # Validate hard_bounds structure
+    hb = raw.get("hard_bounds")
+    if not isinstance(hb, dict):
+        errors.append("hard_bounds must be a dict")
+        hb = {}
+    for layer_name in ("gold", "silver"):
+        layer_raw = hb.get(layer_name)
+        if not isinstance(layer_raw, dict):
+            errors.append(f"hard_bounds.{layer_name} must be a dict")
+            continue
+        for key in ("date_bound_years", "row_bound"):
+            val = layer_raw.get(key)
+            if val is None:
+                errors.append(f"hard_bounds.{layer_name}.{key} is required")
+            elif not isinstance(val, int) or isinstance(val, bool):
+                errors.append(f"hard_bounds.{layer_name}.{key} must be int, got {type(val).__name__}")
+            elif val <= 0:
+                errors.append(f"hard_bounds.{layer_name}.{key} must be positive, got {val}")
+        if layer_name == "silver":
+            tb = layer_raw.get("ticker_bound")
+            if tb is None:
+                errors.append("hard_bounds.silver.ticker_bound is required")
+            elif not isinstance(tb, int) or isinstance(tb, bool):
+                errors.append(f"hard_bounds.silver.ticker_bound must be int, got {type(tb).__name__}")
+            elif tb <= 0:
+                errors.append(f"hard_bounds.silver.ticker_bound must be positive, got {tb}")
+
     gold_raw = hb.get("gold", {})
     silver_raw = hb.get("silver", {})
 
@@ -95,7 +125,25 @@ def load_policy_bounds() -> PolicyBounds:
         row_bound=silver_raw.get("row_bound", 10000),
     )
 
-    st = raw.get("soft_thresholds", {})
+    # Validate soft_thresholds structure
+    st = raw.get("soft_thresholds")
+    if not isinstance(st, dict):
+        errors.append("soft_thresholds must be a dict")
+        st = {}
+    for tier_name in ("cheap", "normal"):
+        tier_raw = st.get(tier_name)
+        if not isinstance(tier_raw, dict):
+            errors.append(f"soft_thresholds.{tier_name} must be a dict")
+            continue
+        for key in ("max_days", "max_entities", "max_rows"):
+            val = tier_raw.get(key)
+            if val is None:
+                errors.append(f"soft_thresholds.{tier_name}.{key} is required")
+            elif not isinstance(val, int) or isinstance(val, bool):
+                errors.append(f"soft_thresholds.{tier_name}.{key} must be int, got {type(val).__name__}")
+            elif val <= 0:
+                errors.append(f"soft_thresholds.{tier_name}.{key} must be positive, got {val}")
+
     cheap_raw = st.get("cheap", {})
     normal_raw = st.get("normal", {})
 
@@ -109,6 +157,15 @@ def load_policy_bounds() -> PolicyBounds:
         max_entities=normal_raw.get("max_entities", 5),
         max_rows=normal_raw.get("max_rows", 2500),
     )
+
+    # Validate ordering: cheap <= normal for each threshold
+    if not errors:
+        if cheap.max_days > normal.max_days:
+            errors.append(f"cheap.max_days ({cheap.max_days}) > normal.max_days ({normal.max_days})")
+        if cheap.max_entities > normal.max_entities:
+            errors.append(f"cheap.max_entities ({cheap.max_entities}) > normal.max_entities ({normal.max_entities})")
+        if cheap.max_rows > normal.max_rows:
+            errors.append(f"cheap.max_rows ({cheap.max_rows}) > normal.max_rows ({normal.max_rows})")
 
     if errors:
         raise PolicyValidationError(errors)

@@ -78,6 +78,113 @@ class TestPolicyBoundsLoading:
         assert bounds.normal.max_rows == 2500
 
 
+class TestPolicyBoundsValidation:
+    """Policy bounds loading must raise PolicyValidationError for malformed data."""
+
+    def _make_valid_raw(self) -> dict:
+        """Build a minimal valid policy bounds dict."""
+        return {
+            "policy_version": SEMANTIC_MODEL_VERSION,
+            "semantic_model_version": SEMANTIC_MODEL_VERSION,
+            "hard_bounds": {
+                "gold": {"date_bound_years": 10, "row_bound": 5000},
+                "silver": {"date_bound_years": 2, "ticker_bound": 10, "row_bound": 10000},
+            },
+            "soft_thresholds": {
+                "cheap": {"max_days": 31, "max_entities": 2, "max_rows": 500},
+                "normal": {"max_days": 366, "max_entities": 5, "max_rows": 2500},
+            },
+        }
+
+    def _load_from_raw(self, raw: dict):
+        """Load PolicyBounds by monkeypatching the YAML file read."""
+        import yaml
+        from unittest.mock import patch, MagicMock
+        from analytics_nl.policy import load_policy_bounds
+
+        yaml_text = yaml.dump(raw)
+        mock_ref = MagicMock()
+        mock_ref.read_text.return_value = yaml_text
+        with patch("analytics_nl.policy.resources") as mock_resources:
+            mock_resources.files.return_value.joinpath.return_value = mock_ref
+            return load_policy_bounds()
+
+    def test_valid_bounds_load_succeeds(self):
+        raw = self._make_valid_raw()
+        bounds = self._load_from_raw(raw)
+        assert bounds.policy_version == SEMANTIC_MODEL_VERSION
+
+    def test_missing_hard_bounds_type_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"] = "not_a_dict"
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_missing_gold_date_bound_years_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        del raw["hard_bounds"]["gold"]["date_bound_years"]
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_negative_row_bound_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"]["gold"]["row_bound"] = -1
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_zero_date_bound_years_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"]["silver"]["date_bound_years"] = 0
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_string_type_for_bound_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["hard_bounds"]["gold"]["row_bound"] = "not_int"
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_policy_version_mismatch_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["policy_version"] = "999.0.0"
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_cheap_exceeds_normal_max_days_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["soft_thresholds"]["cheap"]["max_days"] = 9999
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_cheap_exceeds_normal_max_entities_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["soft_thresholds"]["cheap"]["max_entities"] = 9999
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_cheap_exceeds_normal_max_rows_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["soft_thresholds"]["cheap"]["max_rows"] = 9999
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+    def test_missing_soft_thresholds_type_rejected(self):
+        from analytics_nl.policy import PolicyValidationError
+        raw = self._make_valid_raw()
+        raw["soft_thresholds"] = 42
+        with pytest.raises(PolicyValidationError):
+            self._load_from_raw(raw)
+
+
 class TestCheapestClassification:
     """CHEAP: <=31 days, <=2 entities, <=500 rows."""
 
