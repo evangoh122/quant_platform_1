@@ -1446,11 +1446,22 @@ class TestSearchSecFilingsError:
 
         as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
 
+        # Record the PIT predicate actually built: unix_timestamp(accepted_ts) <= lit(as_of epoch).
+        F = sys.modules["pyspark.sql.functions"]
+        _orig_lit, _orig_ts = F.lit, F.unix_timestamp
+        lit_args, ts_calls = [], []
+        F.lit = lambda *a, **kw: (lit_args.append(a[0] if a else None), _orig_lit(*a, **kw))[1]
+        F.unix_timestamp = lambda *a, **kw: (ts_calls.append(a), _orig_ts(*a, **kw))[1]
+
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
              patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
              patch("agent.tools_retrieval._spark", return_value=mock_spark):
             result = search_sec_filings("NVDA", as_of=as_of)
 
+        assert ts_calls, "fallback must build unix_timestamp(accepted_ts) for the PIT filter"
+        assert int(as_of.timestamp()) in lit_args, (
+            f"fallback PIT filter must compare against lit(as_of epoch); lit args={lit_args}"
+        )
         # Verify that where() was called at least twice (ticker + as_of)
         assert len(where_calls) >= 2, (
             f"Expected at least 2 where calls (ticker + as_of), got {len(where_calls)}"
