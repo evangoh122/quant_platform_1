@@ -54,6 +54,8 @@ STEPS = [
     ("gold_sec_features", "gold/gold_sec_features.py", "py"),
     ("gold_cot_features", "gold/04_gold_cot_features.sql", "sql"),
     ("gold_model_features", "gold/05_gold_model_features.sql", "sql"),
+    ("gold_tradable_universe", "gold/06_gold_tradable_universe.sql", "sql"),
+    ("gold_regime_features", "gold/07_gold_regime_features.sql", "sql"),
 ]
 
 TARGET_TABLES = [
@@ -62,6 +64,7 @@ TARGET_TABLES = [
     "silver_cot_positions", "silver_ohlcv_day_adjusted", "data_quality_breaks",
     "gold_ohlcv_features", "gold_options_features", "gold_sec_features",
     "gold_cot_features", "gold_model_features",
+    "gold_tradable_universe", "gold_regime_features",
 ]
 
 DATE_START = "1900-01-01"

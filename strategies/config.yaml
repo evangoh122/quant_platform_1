@@ -6,6 +6,7 @@
 global:
   catalog: bootcamp_students
   schema: evangoh_capstone
+  price_table: silver_ohlcv_day_adjusted   # adjusted prices (adj_close); use bronze_ohlcv_day for raw
   timezone: America/New_York
   regular_session_start: "09:30"
   regular_session_end: "16:00"
