@@ -1350,6 +1350,7 @@ class TestMainEndToEnd:
 
         writer = FakeDataWriter()
         log_writer = FakeLogWriter()
+        cik_log = FakeCikMappingLogWriter()
         universe = [TickerEntry(ticker="NVDA", phase=1)]
 
         monkeypatch.setattr(
@@ -1370,7 +1371,7 @@ class TestMainEndToEnd:
         )
         monkeypatch.setattr(
             "pipelines.sec_rag_ingest.SparkCikMappingLogWriter",
-            lambda: FakeCikMappingLogWriter(),
+            lambda: cik_log,
         )
         monkeypatch.setattr("pipelines._http_adapter.RequestsAdapter", lambda: http)
 
@@ -1388,14 +1389,55 @@ class TestMainEndToEnd:
 
         main()
 
-        # Exactly 2 filings processed (10-K + 10-Q); 8-K is before start_date
-        assert writer.total_rows > 0, "Expected filing chunks to be written"
+        # --- Filings: exactly 2 batches (10-K + 10-Q); 8-K filtered by --forms default ---
         assert len(writer.appended) == 2, f"Expected 2 append calls, got {len(writer.appended)}"
 
-        # Log entries: 2 succeeded filings
+        # Flatten all rows across both batches
+        all_rows = [r for batch in writer.appended for r in batch]
+        assert len(all_rows) > 0, "Expected filing chunks to be written"
+
+        # Every row must reference the correct ticker and CIK
+        assert all(r["ticker"] == "NVDA" for r in all_rows)
+        assert all(r["cik"] == "0001045810" for r in all_rows)
+
+        # Accession numbers present in written rows
+        accessions = {r["accession_number"] for r in all_rows}
+        assert "0001045810-25-000010" in accessions, "10-K accession missing"
+        assert "0001045810-24-000020" in accessions, "10-Q accession missing"
+
+        # Form types
+        form_types = {r["form_type"] for r in all_rows}
+        assert form_types == {"10-K", "10-Q"}, f"Unexpected form types: {form_types}"
+
+        # accepted_ts values per accession
+        ts_map = {r["accession_number"]: r["accepted_ts"] for r in all_rows}
+        assert ts_map["0001045810-25-000010"] is not None, "10-K accepted_ts missing"
+        assert ts_map["0001045810-24-000020"] is not None, "10-Q accepted_ts missing"
+
+        # Each filing produces 4 chunks (one per section: item1, item1a, item7, item8)
+        for acc in accessions:
+            acc_rows = [r for r in all_rows if r["accession_number"] == acc]
+            chunk_ids = sorted(r["chunk_id"] for r in acc_rows)
+            sections = sorted(r["filing_section"] for r in acc_rows)
+            assert chunk_ids == [1, 1, 1, 1], f"{acc}: unexpected chunk_ids {chunk_ids}"
+            assert sections == ["item1_business", "item1a_risk_factors", "item7_mda", "item8_financial_statements"], \
+                f"{acc}: unexpected sections {sections}"
+
+        # --- Log entries: 2 succeeded filings ---
         succeeded = [e for e in log_writer.entries if e.status == "succeeded"]
         assert len(succeeded) == 2, f"Expected 2 succeeded log entries, got {len(succeeded)}"
         assert all(e.ticker == "NVDA" for e in succeeded)
+        log_accessions = {e.accession_number for e in succeeded}
+        assert log_accessions == {"0001045810-25-000010", "0001045810-24-000020"}
+        assert all(e.form_type in ("10-K", "10-Q") for e in succeeded)
+        assert all(e.cik == "0001045810" for e in succeeded)
+
+        # --- CIK mapping log: exactly 1 entry for NVDA mapped ---
+        assert len(cik_log.entries) == 1
+        assert cik_log.entries[0].ticker == "NVDA"
+        assert cik_log.entries[0].cik == "0001045810"
+        assert cik_log.entries[0].status == "mapped"
+        assert cik_log.flush_count == 1
 
 
 # -- Grep-style test: no example.com or your_email in production code --
