@@ -34,7 +34,7 @@ LAKEBASE_DBNAME = os.getenv("LAKEBASE_DBNAME", "databricks_postgres")
 LAKEBASE_USER = os.getenv("LAKEBASE_USER", "evangohsg@gmail.com")
 LAKEBASE_SCHEMA = os.getenv("LAKEBASE_SCHEMA", "public")
 LAKEBASE_SSLMODE = os.getenv("LAKEBASE_SSLMODE", "require")
-LAKEBASE_CONNECT_TIMEOUT = int(os.getenv("LAKEBASE_CONNECT_TIMEOUT", "10"))
+LAKEBASE_CONNECT_TIMEOUT = int(os.getenv("LAKEBASE_CONNECT_TIMEOUT", "3"))
 
 POOL_MIN_SIZE = int(os.getenv("LAKEBASE_POOL_MIN_SIZE", "1"))
 POOL_MAX_SIZE = int(os.getenv("LAKEBASE_POOL_MAX_SIZE", "5"))

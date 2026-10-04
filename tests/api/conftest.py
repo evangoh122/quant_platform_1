@@ -50,6 +50,18 @@ def _prod_env(monkeypatch):
     monkeypatch.delenv("AUTH_DEV_USER", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_resilience():
+    """Reset circuit breaker and role cache between tests."""
+    from api import deps
+
+    deps._breaker.reset()
+    deps._role_cache.clear()
+    yield
+    deps._breaker.reset()
+    deps._role_cache.clear()
+
+
 @pytest.fixture
 def fake_lakebase(monkeypatch) -> FakeLakebase:
     fake = FakeLakebase()

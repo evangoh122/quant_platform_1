@@ -40,20 +40,31 @@ def health() -> HealthResponse:
 
     dependencies: list[DependencyStatus] = []
 
-    # Lakebase reachability (mints a token + opens a pooled connection).
-    try:
-        from db.lakebase import get_lakebase
+    # Lakebase reachability — circuit breaker aware.
+    from api.deps import lakebase_status
 
-        db = get_lakebase()
-        row = db.fetchone("SELECT 1")
-        ok = row is not None and row[0] == 1
+    lb = lakebase_status()
+    if lb["circuit_breaker_open"]:
         dependencies.append(
-            DependencyStatus(name="lakebase", ok=ok, detail="reachable" if ok else "no response")
+            DependencyStatus(
+                name="lakebase", ok=False,
+                detail=f"circuit breaker open ({lb['consecutive_failures']} failures)",
+            )
         )
-    except Exception as exc:  # noqa: BLE001
-        dependencies.append(
-            DependencyStatus(name="lakebase", ok=False, detail=type(exc).__name__)
-        )
+    else:
+        try:
+            from db.lakebase import get_lakebase
+
+            db = get_lakebase()
+            row = db.fetchone("SELECT 1")
+            ok = row is not None and row[0] == 1
+            dependencies.append(
+                DependencyStatus(name="lakebase", ok=ok, detail="reachable" if ok else "no response")
+            )
+        except Exception as exc:  # noqa: BLE001
+            dependencies.append(
+                DependencyStatus(name="lakebase", ok=False, detail=type(exc).__name__)
+            )
 
     # Delta / Spark availability (pyspark is not required locally).
     if importlib.util.find_spec("pyspark") is None:
