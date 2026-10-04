@@ -180,6 +180,78 @@ class TestEmbeddingBuild:
         chunks_table_call = mock_spark.table.call_args_list
         assert len(chunks_table_call) >= 2  # embeddings table + chunks table
 
+    def test_concurrent_embedding_workers(self):
+        """Multiple batches should be embedded concurrently (spy on threads)."""
+        import threading
+        import time
+        from pipelines.build_sec_embeddings import build
+
+        new_chunks = [
+            {
+                "chunk_id": f"c{i}",
+                "chunk_text": f"Text {i}",
+                "accession_number": f"ACC{i}",
+                "ticker": "NVDA",
+                "accepted_epoch": 1736899200,
+            }
+            for i in range(8)
+        ]
+
+        mock_spark = self._make_mock_spark(new_chunks=new_chunks)
+
+        active_threads = []
+        max_concurrent = [0]
+        lock = threading.Lock()
+
+        class SlowEmbeddings:
+            def embed_documents(self, texts):
+                tid = threading.current_thread().ident
+                with lock:
+                    active_threads.append(tid)
+                    max_concurrent[0] = max(max_concurrent[0], len(set(active_threads)))
+                time.sleep(0.05)
+                with lock:
+                    active_threads.remove(tid)
+                return [[0.1] * 384 for _ in texts]
+
+        with patch("api.services.embeddings.get_embeddings", return_value=SlowEmbeddings()):
+            result = build(mock_spark, batch_size=2, partitions=4)
+
+        assert result["rows_written"] == 8
+        # With 8 chunks, batch_size=2 → 4 batches, partitions=4 workers
+        # At least 2 should have run concurrently
+        assert max_concurrent[0] >= 2, (
+            f"Expected concurrent workers, max_concurrent={max_concurrent[0]}"
+        )
+
+    def test_sequential_output_matches_concurrent(self):
+        """Concurrent embedding must produce the same result as sequential."""
+        from pipelines.build_sec_embeddings import build
+
+        new_chunks = [
+            {
+                "chunk_id": f"c{i}",
+                "chunk_text": f"Text {i}",
+                "accession_number": f"ACC{i}",
+                "ticker": "NVDA",
+                "accepted_epoch": 1736899200,
+            }
+            for i in range(6)
+        ]
+
+        # Run with partitions=1 (sequential)
+        mock_spark_seq = self._make_mock_spark(new_chunks=new_chunks)
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            result_seq = build(mock_spark_seq, batch_size=3, partitions=1)
+
+        # Run with partitions=4 (concurrent)
+        mock_spark_par = self._make_mock_spark(new_chunks=new_chunks)
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            result_par = build(mock_spark_par, batch_size=3, partitions=4)
+
+        assert result_seq["rows_written"] == result_par["rows_written"] == 6
+        assert result_seq["embedding_dim"] == result_par["embedding_dim"]
+
 
 class TestEmbeddingJobYaml:
     """Static YAML assertions for the sec_embeddings job."""

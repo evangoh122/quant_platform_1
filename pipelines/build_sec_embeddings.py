@@ -6,7 +6,11 @@ Reads chunk text from silver_sec_sections, embeds with BAAI/bge-small-en-v1.5
 chunk_id is NOT already present for that embedding_model are embedded.
 
 Uses Spark left anti-join for incremental processing -- never collects all
-chunk IDs into the driver.
+chunk IDs into the driver at once.
+
+Embedding runs in parallel via a bounded ThreadPoolExecutor (max_workers =
+partitions).  Each worker initialises its own model instance so there is no
+contention on the shared model object.
 
 Run via databricks-connect serverless:
     python pipelines/build_sec_embeddings.py
@@ -19,6 +23,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 # -- Config --
@@ -72,11 +77,12 @@ def build(
     all chunk IDs into the driver at once. Processes in bounded batches
     via toLocalIterator() to keep driver memory bounded.
 
+    Embedding runs in parallel via a bounded ThreadPoolExecutor so that
+    N batches can be embedded concurrently (N = partitions).
+
     Returns dict with keys: rows_written, embedding_dim, rows_already_embedded.
     """
     from api.services.embeddings import get_embeddings
-
-    embeddings = get_embeddings()
 
     t0 = time.monotonic()
 
@@ -114,42 +120,60 @@ def build(
     if partitions > 1:
         anti_join_df = anti_join_df.repartition(partitions)
 
-    # Use toLocalIterator() to stream rows in bounded batches instead of
-    # collecting all rows into driver memory at once.
+    # Collect batches from the iterator
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    out_rows = []
     total_processed = 0
     rows_written = 0
 
-    for row in anti_join_df.toLocalIterator():
-        chunk_text = row["chunk_text"]
-        if not chunk_text:
-            continue
+    # Each worker initialises its own embeddings model so there is no
+    # contention on a shared object.  Bounded by max_workers=partitions.
+    max_workers = max(1, partitions)
 
-        out_rows.append({
-            "chunk_id": row["chunk_id"],
-            "chunk_text": chunk_text,
-            "accession_number": row["accession_number"],
-            "ticker": row["ticker"],
-            "accepted_epoch": row["accepted_epoch"],
-        })
+    def _embed_batch(batch):
+        """Worker: embed a batch and write to Delta.  Returns row count."""
+        from api.services.embeddings import get_embeddings as _get
+        worker_embeddings = _get()
+        return _embed_and_write_batch(spark, worker_embeddings, batch, now)
 
-        # Process in bounded batches
-        if len(out_rows) >= batch_size:
-            rows_written += _embed_and_write_batch(
-                spark, embeddings, out_rows, now,
-            )
-            total_processed += len(out_rows)
-            if total_processed % 500 == 0:
-                print(f"  Processed {total_processed} chunks")
-            out_rows = []
+    # Submit batches to the pool as they come off the iterator.
+    # At most max_workers futures are in-flight at any time (bounded memory).
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pending = set()
+        batch = []
 
-    # Process remaining rows
-    if out_rows:
-        rows_written += _embed_and_write_batch(
-            spark, embeddings, out_rows, now,
-        )
-        total_processed += len(out_rows)
+        for row in anti_join_df.toLocalIterator():
+            chunk_text_val = row["chunk_text"]
+            if not chunk_text_val:
+                continue
+
+            batch.append({
+                "chunk_id": row["chunk_id"],
+                "chunk_text": chunk_text_val,
+                "accession_number": row["accession_number"],
+                "ticker": row["ticker"],
+                "accepted_epoch": row["accepted_epoch"],
+            })
+
+            if len(batch) >= batch_size:
+                # Wait for a slot if we've hit the concurrency limit
+                if len(pending) >= max_workers:
+                    done, pending = _drain_one(pending)
+                    for f in done:
+                        rows_written += f.result()
+                pending.add(pool.submit(_embed_batch, batch))
+                total_processed += len(batch)
+                if total_processed % 500 == 0:
+                    print(f"  Processed {total_processed} chunks")
+                batch = []
+
+        # Submit the last partial batch
+        if batch:
+            pending.add(pool.submit(_embed_batch, batch))
+            total_processed += len(batch)
+
+        # Wait for all remaining futures
+        for f in as_completed(pending):
+            rows_written += f.result()
 
     elapsed = time.monotonic() - t0
     return {
@@ -158,6 +182,16 @@ def build(
         "rows_already_embedded": -1,  # unknown with anti-join
         "elapsed_seconds": round(elapsed, 1),
     }
+
+
+def _drain_one(pending):
+    """Wait for exactly one future to complete. Returns (done_set, remaining_set)."""
+    from concurrent.futures import as_completed
+    done = set()
+    for f in as_completed(pending):
+        done.add(f)
+        break
+    return done, pending - done
 
 
 def _embed_and_write_batch(
