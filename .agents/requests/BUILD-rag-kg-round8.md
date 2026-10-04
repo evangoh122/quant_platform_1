@@ -1,5 +1,8 @@
 # BUILD rag-kg round 8 (builder: MiMo) — small, test-only round
 
+> CONTINUATION: your previous run stopped mid-task. Your partial edits are committed as the latest "wip(kg): round 8 partial" commit. Run `git show HEAD`, finish every item below, run the mutation proofs, write the verdict and commit. Do not start over.
+
+
 IMPLEMENT NOW. Do not ask "Shall I proceed?". Stay on branch slice/rag-kg. Commit with descriptive messages.
 NEVER delete or weaken existing tests. Checker verdict: .agents/deepseek/VERDICT-rag-kg-round7.md. Production code is fine.
 
