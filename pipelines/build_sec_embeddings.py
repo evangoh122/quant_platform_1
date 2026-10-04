@@ -281,7 +281,7 @@ def _embed_and_write_batch(
     except Exception:
         pass
 
-    return inserted if inserted > 0 else len(out_rows)
+    return inserted
 
 
 def main():

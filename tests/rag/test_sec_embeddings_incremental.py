@@ -558,6 +558,70 @@ class TestEmbeddingConcurrencyFixes:
         # 3 candidates but only 1 inserted — must use MERGE metric, not len(out_rows)
         assert result["rows_written"] == 1
 
+    def test_zero_inserted_reported_as_zero(self, fake_pyspark):
+        """N4: When MERGE inserts 0 rows (all duplicates), rows_written must
+        be 0, not len(out_rows).
+
+        Mutation proof: old code had
+        ``return inserted if inserted > 0 else len(out_rows)`` which would
+        return 3 (the candidate count) when 0 were actually inserted.
+        """
+        from pipelines.build_sec_embeddings import build
+
+        new_chunks = [
+            {
+                "chunk_id": f"c{i}",
+                "chunk_text": f"Text {i}",
+                "accession_number": f"ACC{i}",
+                "ticker": "NVDA",
+                "accepted_epoch": 1736899200,
+            }
+            for i in range(3)
+        ]
+
+        mock_spark = MagicMock()
+
+        mock_anti_join_df = MagicMock()
+        mock_anti_join_df.filter.return_value = mock_anti_join_df
+        mock_anti_join_df.select.return_value = mock_anti_join_df
+        mock_anti_join_df.join.return_value = mock_anti_join_df
+        mock_anti_join_df.repartition.return_value = mock_anti_join_df
+        mock_anti_join_df.limit.return_value = mock_anti_join_df
+        mock_chunk_rows = [
+            MagicMock(__getitem__=lambda self, k, d=d: d.get(k))
+            for d in new_chunks
+        ]
+        mock_anti_join_df.toLocalIterator.return_value = iter(mock_chunk_rows)
+
+        mock_embedded_df = MagicMock()
+        mock_embedded_df.filter.return_value = mock_embedded_df
+        mock_embedded_df.select.return_value = mock_embedded_df
+
+        def table_side_effect(name):
+            if "embeddings" in name:
+                return mock_embedded_df
+            return mock_anti_join_df
+
+        mock_spark.table.side_effect = table_side_effect
+
+        # Mock DESCRIBE HISTORY: 0 rows inserted (all were duplicates)
+        mock_hist_row = MagicMock()
+        mock_hist_row.__getitem__ = lambda self, k: {
+            "operationMetrics": {"numTargetRowsInserted": "0"}
+        }.get(k)
+        mock_spark.sql.return_value.collect.return_value = [mock_hist_row]
+        mock_spark.createDataFrame.return_value = MagicMock()
+        mock_spark.catalog = MagicMock()
+
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            result = build(mock_spark, batch_size=256, partitions=4)
+
+        # 0 inserted must be 0, not len(out_rows)=3
+        assert result["rows_written"] == 0, (
+            f"Expected rows_written=0, got {result['rows_written']}. "
+            "Mutation: old code returned len(out_rows) when inserted==0."
+        )
+
     def _make_mock_spark_for_concurrency(self, new_chunks):
         """Helper: mock Spark for concurrency tests."""
         mock_spark = MagicMock()
