@@ -508,7 +508,7 @@ class TestArgparseCLIFlags:
         spec.loader.exec_module(mod)
 
         import argparse
-        parser = argparse.ArgumentParser()
+        parser = argparse.ArgumentParser(allow_abbrev=False)
         parser.add_argument("--mode", default=None)
         parser.add_argument("--source", default=None)
         parser.add_argument("--symbol-start", default=None)
@@ -516,7 +516,7 @@ class TestArgparseCLIFlags:
         parser.add_argument("--delay-seconds", type=float, default=None)
         parser.add_argument("--max-retries", type=int, default=None)
         parser.add_argument("--run-id", default=None)
-        args, _ = parser.parse_known_args(argv_list)
+        args = parser.parse_args(argv_list)
         return args
 
     def test_mode_write(self):
@@ -551,6 +551,55 @@ class TestArgparseCLIFlags:
         assert args.symbol_end == "MSFT"
 
     def test_unknown_flag_does_not_raise(self):
-        """Unknown flags are silently ignored (parse_known_args)."""
-        args = self._parse_args(["--mode", "write", "--unknown-flag", "value"])
-        assert args.mode == "write"
+        """Unknown flags cause SystemExit (strict parse_args)."""
+        import argparse
+        parser = argparse.ArgumentParser(allow_abbrev=False)
+        parser.add_argument("--mode", default=None)
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--mode", "write", "--unknown-flag", "value"])
+
+    def test_abbreviation_rejected(self):
+        """--mod (abbreviation of --mode) is rejected with allow_abbrev=False."""
+        import argparse
+        parser = argparse.ArgumentParser(allow_abbrev=False)
+        parser.add_argument("--mode", default=None)
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--mod", "write"])
+
+    def test_help_exits_zero_no_spark(self):
+        """--help exits 0 without creating Spark."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        result = subprocess.run(
+            [sys.executable, str(nb_path), "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, f"--help failed: {result.stderr}"
+        assert "Refresh bronze corporate actions" in result.stdout
+
+    def test_bogus_flag_exits_nonzero_no_spark(self):
+        """--bogus exits non-zero without creating Spark."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        nb_path = Path(__file__).resolve().parents[2] / "notebooks" / "refresh_bronze_corporate_actions.py"
+        result = subprocess.run(
+            [sys.executable, str(nb_path), "--bogus"],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode != 0, f"--bogus should fail but exited 0"
+
+    def test_sys_path_insertion_from_notebooks_dir(self):
+        """Running from notebooks/ allows importing etl."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        nb_dir = Path(__file__).resolve().parents[2] / "notebooks"
+        result = subprocess.run(
+            [sys.executable, "refresh_bronze_corporate_actions.py", "--help"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(nb_dir),
+        )
+        assert result.returncode == 0, f"Failed from notebooks/: {result.stderr}"

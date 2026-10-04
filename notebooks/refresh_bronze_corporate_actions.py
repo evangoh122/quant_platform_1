@@ -16,7 +16,13 @@ import os
 import sys
 import time as _time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
+
+# Ensure repo root is on sys.path so `etl` is importable from notebooks/.
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no Spark, no network)
@@ -46,7 +52,7 @@ def _now_utc() -> dt.datetime:
 
 
 def _new_run_id() -> str:
-    return f"run-{dt.datetime.utcnow().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    return f"run-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
 def _valid_mode(mode: str) -> str:
@@ -122,6 +128,21 @@ def _is_finite_positive_nonone(v: Any) -> bool:
 
 def main() -> None:
     """Entry point — all Spark/dbutils/network setup lives here."""
+    # --- Parameters: argparse first (CLI/job), BEFORE Spark ---
+    parser = argparse.ArgumentParser(
+        description="Refresh bronze corporate actions from live universe.",
+        allow_abbrev=False,
+    )
+    parser.add_argument("--mode", default=None, help="dry-run or write")
+    parser.add_argument("--source", default=None, help="Data source (yfinance)")
+    parser.add_argument("--symbol-start", default=None, help="Inclusive lower bound for symbol range")
+    parser.add_argument("--symbol-end", default=None, help="Inclusive upper bound for symbol range")
+    parser.add_argument("--delay-seconds", type=float, default=None, help="Min delay between fetches")
+    parser.add_argument("--max-retries", type=int, default=None, help="Max retries per symbol")
+    parser.add_argument("--run-id", default=None, help="Resume run id")
+    args = parser.parse_args()
+
+    # --- Spark / dbutils (after argparse so --help and bad flags fail fast) ---
     try:
         from pyspark.sql import SparkSession
         spark = SparkSession.builder.getOrCreate()
@@ -132,19 +153,6 @@ def main() -> None:
         import dbutils  # type: ignore[import-not-found]
     except ImportError:
         dbutils = None
-
-    # --- Parameters: argparse first (CLI/job), fallback to widgets (interactive) ---
-    parser = argparse.ArgumentParser(
-        description="Refresh bronze corporate actions from live universe."
-    )
-    parser.add_argument("--mode", default=None, help="dry-run or write")
-    parser.add_argument("--source", default=None, help="Data source (yfinance)")
-    parser.add_argument("--symbol-start", default=None, help="Inclusive lower bound for symbol range")
-    parser.add_argument("--symbol-end", default=None, help="Inclusive upper bound for symbol range")
-    parser.add_argument("--delay-seconds", type=float, default=None, help="Min delay between fetches")
-    parser.add_argument("--max-retries", type=int, default=None, help="Max retries per symbol")
-    parser.add_argument("--run-id", default=None, help="Resume run id")
-    args, _ = parser.parse_known_args()
 
     # Defaults
     mode = "dry-run"
