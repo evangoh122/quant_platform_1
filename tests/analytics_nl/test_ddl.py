@@ -8,6 +8,42 @@ import pytest
 from analytics_nl.registry import load_registry
 
 
+def _find_greatest_args(sql: str) -> list[str]:
+    """Find all GREATEST(...) calls and return their argument strings.
+
+    Module-level utility so all test classes can use it.
+    """
+    results = []
+    upper = sql.upper()
+    start = 0
+    while True:
+        idx = upper.find("GREATEST", start)
+        if idx == -1:
+            break
+        if idx > 0 and upper[idx - 1].isalnum():
+            start = idx + 1
+            continue
+        after = upper[idx + 8:]
+        if not re.match(r"\s*\(", after):
+            start = idx + 1
+            continue
+        paren_start = sql.index("(", idx + 8)
+        depth = 0
+        end = paren_start
+        while end < len(sql):
+            if sql[end] == "(":
+                depth += 1
+            elif sql[end] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            end += 1
+        args_str = sql[paren_start + 1:end]
+        results.append(args_str)
+        start = end + 1
+    return results
+
+
 @pytest.fixture
 def registry():
     return load_registry()
@@ -413,19 +449,79 @@ class TestDDLPITSafetyAsOfBeforeWindow:
             )
 
     def test_relative_performance_includes_benchmark_availability(self, ddl_content):
-        """Relative performance output must include benchmark availability in GREATEST."""
-        # Find the relative performance SQL block
-        section_start = ddl_content.find("## serve_relative_performance_v1")
-        section_end = ddl_content.find("## serve_options_metrics_v1")
-        section = ddl_content[section_start:section_end]
+        """Relative performance output must include benchmark availability in GREATEST.
 
-        # Must use GREATEST with benchmark availability
-        assert "GREATEST" in section, (
-            "Relative performance must use GREATEST for information_available_ts"
-        )
-        assert "bench_info_ts" in section or "benchmark" in section.lower(), (
-            "Relative performance must propagate benchmark availability"
-        )
+        Mutation proof: removing the benchmark availability from
+        serve_relative_performance_v1's final GREATEST → FAILS.
+        Replacing the whole GREATEST with a single column → FAILS.
+        """
+        blocks = self._extract_sql_blocks(ddl_content)
+        for sql in blocks:
+            sql_upper = sql.upper()
+            # Identify the relative performance block by its unique CTE names
+            if "BENCHMARK_CUMULATIVE" not in sql_upper:
+                continue
+            ctes, final_select = self._parse_sql_ctes_and_final_select(sql)
+            # Final SELECT must output information_available_ts as GREATEST
+            assert "GREATEST" in final_select, (
+                "Relative performance final SELECT must use GREATEST for "
+                "information_available_ts"
+            )
+            # GREATEST must combine entity and benchmark availability
+            greatest_args = _find_greatest_args(sql)
+            # Find the one in the final SELECT
+            final_greatest = None
+            for args_str in greatest_args:
+                if args_str.upper().strip() in final_select:
+                    final_greatest = args_str
+                    break
+            assert final_greatest is not None, (
+                "Could not find GREATEST in relative performance final SELECT"
+            )
+            args = [a.strip().upper() for a in final_greatest.split(",")]
+            # Must have at least 2 availability tokens
+            info_args = [a for a in args if "INFO_TS" in a or "INFORMATION_AVAILABLE_TS" in a]
+            assert len(info_args) >= 2, (
+                f"Relative performance GREATEST must combine at least 2 "
+                f"availability timestamps, found {len(info_args)}: {info_args}"
+            )
+            # One of them must be the benchmark availability
+            bench_found = any("BENCH" in a for a in info_args)
+            assert bench_found, (
+                "Relative performance GREATEST must include benchmark "
+                f"availability (bench_*_info_ts). Found: {info_args}"
+            )
+            # --- Mutation proof 1: remove benchmark from GREATEST ---
+            # Replace GREATEST(entity_info_ts, bench_max_info_ts)
+            # with just entity_info_ts
+            mutated = re.sub(
+                r"GREATEST\s*\(\s*\n?\s*e\.entity_info_ts\s*,\s*\n?\s*b\.bench_max_info_ts\s*\)",
+                "e.entity_info_ts",
+                sql,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            mutated_blocks = self._extract_sql_blocks(
+                f"```sql\n{mutated}\n```"
+            )
+            for msql in mutated_blocks:
+                mctes, mfinal = self._parse_sql_ctes_and_final_select(msql)
+                if "INFORMATION_AVAILABLE_TS" not in mfinal:
+                    continue
+                mgreatest = _find_greatest_args(msql)
+                # After mutation, either no GREATEST remains or only 1 arg
+                has_multi_arg_greatest = False
+                for ga in mgreatest:
+                    margs = [a.strip() for a in ga.split(",")]
+                    minfo = [a for a in margs if "INFO_TS" in a.upper() or "INFORMATION_AVAILABLE_TS" in a.upper()]
+                    if len(minfo) >= 2:
+                        has_multi_arg_greatest = True
+                assert not has_multi_arg_greatest, (
+                    "Mutation proof failed: removing benchmark from GREATEST "
+                    "should leave at most 1 availability arg"
+                )
+            return
+        pytest.skip("No relative performance SQL block found")
 
     def test_mutation_as_of_after_window_fails(self, ddl_content):
         """Mutation proof: moving as-of filter after window must fail the PIT test.
@@ -741,50 +837,59 @@ class TestDDLAvailabilityContract:
 
         return None
 
-    def _find_greatest_args(self, sql: str):
-        """Find all GREATEST(...) calls and return their argument strings."""
-        results = []
-        upper = sql.upper()
-        start = 0
-        while True:
-            idx = upper.find("GREATEST", start)
-            if idx == -1:
-                break
-            if idx > 0 and upper[idx - 1].isalnum():
-                start = idx + 1
-                continue
-            after = upper[idx + 8:]
-            if not re.match(r"\s*\(", after):
-                start = idx + 1
-                continue
-            paren_start = sql.index("(", idx + 8)
-            depth = 0
-            end = paren_start
-            while end < len(sql):
-                if sql[end] == "(":
-                    depth += 1
-                elif sql[end] == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                end += 1
-            args_str = sql[paren_start + 1:end]
-            results.append(args_str)
-            start = end + 1
-        return results
-
     def test_output_availability_is_window_max(self, ddl_content):
         """Every GREATEST availability token must resolve to a CTE defined as
         MAX(information_available_ts) OVER (PARTITION BY ... ORDER BY ...
         ROWS BETWEEN ... AND CURRENT ROW), matching the window frame of the
         metric it accompanies.
+
+        Also REQUIRES that every SQL block whose final SELECT outputs
+        information_available_ts uses a GREATEST/MAX expression combining
+        every contributing input. A final SELECT that outputs
+        information_available_ts without GREATEST is a FAIL.
         """
         blocks = self._extract_sql_blocks(ddl_content)
         for i, sql in enumerate(blocks):
             ctes, final_select = self._parse_sql_ctes_and_final_select(sql)
             if "INFORMATION_AVAILABLE_TS" not in final_select:
                 continue
-            for args_str in self._find_greatest_args(sql):
+
+            # --- Every final SELECT with info_ts MUST use GREATEST when
+            #     there are multiple contributing availability sources ---
+            greatest_args = _find_greatest_args(sql)
+            has_availability_greatest = False
+            for args_str in greatest_args:
+                args = [a.strip() for a in args_str.split(",")]
+                info_tokens = [
+                    a for a in args
+                    if "INFORMATION_AVAILABLE_TS" in a.upper() or "_INFO_TS" in a.upper()
+                ]
+                if len(info_tokens) >= 2:
+                    has_availability_greatest = True
+                    break
+
+            # Count CTEs that define NEW availability columns (e.g.,
+            # realized_vol_20d_info_ts, entity_info_ts) via MAX(...) OVER.
+            # CTEs that merely SELECT information_available_ts from a source
+            # table are passthroughs — not independent contributing sources.
+            cte_availability_sources = set()
+            for name, body in ctes:
+                # Look for new info_ts columns defined via MAX(...) OVER
+                if re.search(r"MAX\s*\(\s*(?:INFORMATION_AVAILABLE_TS|\w+_INFO_TS)\s*\)\s+OVER", body):
+                    cte_availability_sources.add(name)
+            # Also check if the final SELECT itself defines info_ts via MAX OVER
+            if re.search(r"MAX\s*\(\s*(?:INFORMATION_AVAILABLE_TS|\w+_INFO_TS)\s*\)\s+OVER", final_select):
+                cte_availability_sources.add("__final__")
+
+            if len(cte_availability_sources) >= 2:
+                assert has_availability_greatest, (
+                    f"SQL block {i + 1}: final SELECT outputs information_available_ts "
+                    f"with {len(cte_availability_sources)} availability sources "
+                    f"({', '.join(sorted(cte_availability_sources))}) but does not "
+                    f"use GREATEST to combine them."
+                )
+
+            for args_str in _find_greatest_args(sql):
                 args = [a.strip() for a in args_str.split(",")]
                 info_tokens = [
                     a for a in args
@@ -826,3 +931,42 @@ class TestDDLAvailabilityContract:
                         f"Info frame: {info_frame_norm}, "
                         f"Metric frame: {metric_frame_norm}"
                     )
+
+    def test_mutation_replace_greatest_with_single_column_fails(self, ddl_content):
+        """Mutation proof: replacing the availability GREATEST with a single
+        column in serve_relative_performance_v1 → FAILS the availability
+        contract check.
+        """
+        blocks = self._extract_sql_blocks(ddl_content)
+        for sql in blocks:
+            sql_upper = sql.upper()
+            if "BENCHMARK_CUMULATIVE" not in sql_upper:
+                continue
+            # Replace the GREATEST(...) AS information_available_ts with a single column
+            mutated = re.sub(
+                r"GREATEST\s*\([^)]+\)\s+AS\s+information_available_ts",
+                "e.entity_info_ts AS information_available_ts",
+                sql,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            mutated_blocks = self._extract_sql_blocks(
+                f"```sql\n{mutated}\n```"
+            )
+            for msql in mutated_blocks:
+                mctes, mfinal = self._parse_sql_ctes_and_final_select(msql)
+                if "INFORMATION_AVAILABLE_TS" not in mfinal:
+                    continue
+                mgreatest = _find_greatest_args(msql)
+                has_multi = False
+                for ga in mgreatest:
+                    margs = [a.strip() for a in ga.split(",")]
+                    minfo = [a for a in margs if "INFO_TS" in a.upper() or "INFORMATION_AVAILABLE_TS" in a.upper()]
+                    if len(minfo) >= 2:
+                        has_multi = True
+                assert not has_multi, (
+                    "Mutation proof failed: replacing GREATEST with single "
+                    "column should leave no multi-arg availability GREATEST"
+                )
+            return
+        pytest.skip("No relative performance SQL block found")
