@@ -194,3 +194,113 @@ class TestPutCallRatioEntries:
         for op in ("trend", "compare", "rank", "aggregate"):
             entry = registry.entries[f"put_call_ratio.{op}"]
             assert "put_call_ratio" in entry.input_columns
+
+
+def _minimal_valid_registry() -> dict:
+    """Build a minimal valid registry dict for mutation testing."""
+    return {
+        "semantic_registry_version": "1.0.0",
+        "semantic_model_version": "1.0.0",
+        "policy_version": "1.0.0",
+        "approved_views": ["serve_daily_prices_v1"],
+        "entries": {
+            "price.trend": {
+                "layer": "silver",
+                "serving_view": "serve_daily_prices_v1",
+                "description": "test",
+                "input_columns": ["symbol", "event_date", "close_price"],
+                "aggregation": "none",
+                "required_slots": ["entities", "date_range"],
+                "allowed_grouping": ["day"],
+                "allowed_ordering": [["event_date", "asc"]],
+                "parameters": {
+                    "entity_count": {"type": "integer", "min": 1, "max": 10, "default": 1},
+                },
+                "output_fields": [
+                    {"name": "symbol", "type": "string", "nullable": False},
+                    {"name": "event_date", "type": "date", "nullable": False},
+                    {"name": "close_price", "type": "number", "nullable": False},
+                ],
+                "chart_families": ["line"],
+                "max_entities": 10,
+                "row_limit": 10000,
+                "entry_version": "1.0.0",
+            },
+        },
+    }
+
+
+class TestRegistryFailClosed:
+    """Registry must reject malformed data — fail closed."""
+
+    def test_unsupported_metric_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["bogus.trend"] = raw["entries"]["price.trend"].copy()
+        errors = _validate_registry(raw)
+        assert any("unsupported metric" in e for e in errors), f"Expected unsupported metric error, got {errors}"
+
+    def test_unsupported_operation_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.bogus"] = raw["entries"]["price.trend"].copy()
+        errors = _validate_registry(raw)
+        assert any("unsupported operation" in e for e in errors), f"Expected unsupported operation error, got {errors}"
+
+    def test_unknown_aggregation_token_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["aggregation"] = "bogus_agg"
+        errors = _validate_registry(raw)
+        assert any("unknown aggregation token" in e for e in errors), f"Expected unknown aggregation error, got {errors}"
+
+    def test_unknown_required_slot_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["required_slots"] = ["entities", "bogus_slot"]
+        errors = _validate_registry(raw)
+        assert any("unknown required slot" in e for e in errors), f"Expected unknown required slot error, got {errors}"
+
+    def test_unknown_output_field_type_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["output_fields"].append(
+            {"name": "bogus", "type": "bogus_type", "nullable": False}
+        )
+        errors = _validate_registry(raw)
+        assert any("unknown output field type" in e for e in errors), f"Expected unknown output type error, got {errors}"
+
+    def test_unknown_parameter_type_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["parameters"]["bogus"] = {"type": "bogus_type"}
+        errors = _validate_registry(raw)
+        assert any("unknown parameter type" in e for e in errors), f"Expected unknown parameter type error, got {errors}"
+
+    def test_default_below_min_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["parameters"]["entity_count"]["default"] = 0
+        errors = _validate_registry(raw)
+        assert any("default" in e and "< min" in e for e in errors), f"Expected default < min error, got {errors}"
+
+    def test_default_above_max_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.trend"]["parameters"]["entity_count"]["default"] = 999
+        errors = _validate_registry(raw)
+        assert any("default" in e and "> max" in e for e in errors), f"Expected default > max error, got {errors}"
+
+    def test_extra_entry_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["entries"]["price.bogus_extra"] = raw["entries"]["price.trend"].copy()
+        errors = _validate_registry(raw)
+        assert any("Extra registry entry" in e for e in errors), f"Expected extra entry error, got {errors}"
+
+    def test_unused_approved_view_rejected(self):
+        from analytics_nl.registry import _validate_registry
+        raw = _minimal_valid_registry()
+        raw["approved_views"].append("serve_unused_view")
+        errors = _validate_registry(raw)
+        assert any("not referenced" in e for e in errors), f"Expected unused view error, got {errors}"

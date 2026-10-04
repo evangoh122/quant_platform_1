@@ -175,6 +175,20 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
     if not entries:
         errors.append("No entries defined")
 
+    # Known tokens for fail-closed validation
+    from analytics_nl.contracts import Metric, Operation
+
+    _VALID_METRICS = {m.value for m in Metric}
+    _VALID_OPERATIONS = {o.value for o in Operation}
+    _VALID_AGGREGATION_TOKENS = {
+        "none", "mean_min_max", "latest", "cumulative_mean",
+        "sum_mean", "mean_max", "worst_mean", "mean_latest",
+        "mean_cumulative", "mean_only",
+    }
+    _VALID_REQUIRED_SLOTS = {"entities", "date_range"}
+    _VALID_OUTPUT_TYPES = {"string", "number", "integer", "date", "coverage_status"}
+    _VALID_PARAMETER_TYPES = {"string", "integer", "number", "date", "boolean"}
+
     # Validate each entry
     for pair_key, entry_raw in entries.items():
         # Pair key format
@@ -186,6 +200,12 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
         metric, operation = parts
         _validate_identifier(metric, f"metric in {pair_key!r}")
         _validate_identifier(operation, f"operation in {pair_key!r}")
+
+        # Reject unsupported metric/operation keys
+        if metric not in _VALID_METRICS:
+            errors.append(f"Entry {pair_key}: unsupported metric {metric!r}")
+        if operation not in _VALID_OPERATIONS:
+            errors.append(f"Entry {pair_key}: unsupported operation {operation!r}")
 
         # Serving view must be in approved list
         sv = entry_raw.get("serving_view", "")
@@ -201,13 +221,17 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
         for col in entry_raw.get("input_columns", []):
             _validate_identifier(col, f"input_column in {pair_key!r}")
 
-        # Aggregation token
+        # Aggregation token — must be from the approved set
         agg = entry_raw.get("aggregation", "")
         _validate_identifier(agg, f"aggregation in {pair_key!r}")
+        if agg not in _VALID_AGGREGATION_TOKENS:
+            errors.append(f"Entry {pair_key}: unknown aggregation token {agg!r}")
 
-        # Required slots
+        # Required slots — must be from the approved set
         for slot in entry_raw.get("required_slots", []):
             _validate_identifier(slot, f"required_slot in {pair_key!r}")
+            if slot not in _VALID_REQUIRED_SLOTS:
+                errors.append(f"Entry {pair_key}: unknown required slot {slot!r}")
 
         # Grouping
         for g in entry_raw.get("allowed_grouping", []):
@@ -222,7 +246,7 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
                 if ordering[1] not in ("asc", "desc"):
                     errors.append(f"Entry {pair_key}: ordering direction must be 'asc' or 'desc'")
 
-        # Output fields
+        # Output fields — close scalar types to a fixed set
         output_field_names = set()
         has_status_field = False
         has_agg_value_field = False
@@ -234,9 +258,12 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
             if fname in output_field_names:
                 errors.append(f"Entry {pair_key}: duplicate output field {fname!r}")
             output_field_names.add(fname)
+            ftype = f.get("type", "")
+            if ftype not in _VALID_OUTPUT_TYPES:
+                errors.append(f"Entry {pair_key}: unknown output field type {ftype!r}")
             if fname == "status":
                 has_status_field = True
-                status_type = f.get("type", "")
+                status_type = ftype
             if fname == "agg_value":
                 has_agg_value_field = True
                 agg_value_nullable = f.get("nullable", False)
@@ -254,9 +281,32 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
                     f"Entry {pair_key}: agg_value must be nullable when status field is present"
                 )
 
-        # Parameters
-        for pname in entry_raw.get("parameters", {}):
+        # Parameters — validate type and default bounds
+        for pname, pval in entry_raw.get("parameters", {}).items():
             _validate_identifier(pname, f"parameter in {pair_key!r}")
+            ptype = pval.get("type", "string")
+            if ptype not in _VALID_PARAMETER_TYPES:
+                errors.append(f"Entry {pair_key}: unknown parameter type {ptype!r}")
+            # Validate default is within [min, max] bounds
+            pdefault = pval.get("default")
+            pmin = pval.get("min")
+            pmax = pval.get("max")
+            if pdefault is not None and pmin is not None:
+                try:
+                    if pdefault < pmin:
+                        errors.append(
+                            f"Entry {pair_key}: parameter {pname!r} default {pdefault} < min {pmin}"
+                        )
+                except TypeError:
+                    pass  # non-comparable types (e.g. string default with int min)
+            if pdefault is not None and pmax is not None:
+                try:
+                    if pdefault > pmax:
+                        errors.append(
+                            f"Entry {pair_key}: parameter {pname!r} default {pdefault} > max {pmax}"
+                        )
+                except TypeError:
+                    pass
 
         # Chart families
         for cf in entry_raw.get("chart_families", []):
@@ -298,14 +348,24 @@ def _validate_registry(raw: dict[str, Any]) -> list[str]:
             if not (0.0 <= mcr <= 1.0):
                 errors.append(f"Entry {pair_key}: coverage.min_coverage_ratio {mcr} must be in [0.0, 1.0]")
 
-    # Coverage: check all 9 metrics × 4 operations
-    from analytics_nl.contracts import Metric, Operation
-
+    # Exact coverage: check all 9 metrics × 4 operations
     for m in Metric:
         for o in Operation:
             key = f"{m.value}.{o.value}"
             if key not in entries:
                 errors.append(f"Missing registry entry for {key}")
+
+    # Reject extra entries beyond the expected 36 pairs
+    expected_keys = {f"{m.value}.{o.value}" for m in Metric for o in Operation}
+    for key in entries:
+        if key not in expected_keys:
+            errors.append(f"Extra registry entry not in metric×operation grid: {key!r}")
+
+    # Reject unused approved views
+    referenced_views = {entries[k].get("serving_view", "") for k in entries}
+    for view in approved_views:
+        if view not in referenced_views:
+            errors.append(f"Approved view {view!r} is not referenced by any entry")
 
     return errors
 
