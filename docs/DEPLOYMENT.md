@@ -97,6 +97,45 @@ Least-privilege guidance:
   `positions`, `agent_actions`, `research_notes`, `accounts`), and nothing else.
 - Do **not** grant `CREATE DATABASE`/`DROP` or any admin role.
 
+### Lakebase resource declaration (DABs)
+
+The Lakebase database is declared in `resources/app.yml` so Databricks Apps
+provisioning connects the app to the correct instance:
+
+```yaml
+resources:
+  - name: lakebase
+    database:
+      instance: evangoh-capstone-lakebase
+      permission: CAN_CONNECT_AND_CREATE
+```
+
+### Required Postgres grants
+
+The app's database role needs these grants on the `public` schema. Run these
+as the Lakebase database owner:
+
+```sql
+-- Schema access
+GRANT USAGE ON SCHEMA public TO "<app-database-role>";
+
+-- User identity (read own role, upsert new users)
+GRANT SELECT, INSERT ON TABLE public.users TO "<app-database-role>";
+
+-- Operational tables used by portfolio/watchlist/orders
+GRANT SELECT, INSERT, UPDATE ON TABLE public.watchlists TO "<app-database-role>";
+GRANT SELECT, INSERT, UPDATE ON TABLE public.orders TO "<app-database-role>";
+GRANT SELECT, INSERT, UPDATE ON TABLE public.positions TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.approvals TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.executions TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.agent_actions TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.research_notes TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.accounts TO "<app-database-role>";
+```
+
+Replace `<app-database-role>` with the Lakebase database role for the app's
+service principal. Do **not** grant `CREATE` on the schema or `ALL` on any table.
+
 ## 6. Secrets — Databricks secrets only
 
 No secret, token, or connection string is ever committed. Every credential is
