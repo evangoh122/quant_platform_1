@@ -14,6 +14,27 @@ FED_REFRESH = ROOT / "notebooks" / "refresh_bronze_fed.py"
 EQUITIES_REFRESH = ROOT / "notebooks" / "refresh_bronze_equities.py"
 OPTIONS_REFRESH = ROOT / "notebooks" / "refresh_bronze_options.py"
 SEC_KG_ENUM_SNAPSHOT = ROOT / "tests" / "fixtures" / "sec_kg_enum_snapshot.yaml"
+NL1_METRICS = {
+    "price",
+    "return",
+    "volume",
+    "realized_volatility",
+    "drawdown",
+    "momentum",
+    "relative_performance",
+    "implied_volatility",
+    "put_call_ratio",
+}
+PRICE_RETURN_METRICS = {
+    "return",
+    "realized_volatility",
+    "drawdown",
+    "momentum",
+    "relative_performance",
+    "return_N",
+    "rolling_realized_volatility",
+    "momentum_N",
+}
 
 # These transforms are not present on this branch, but their checked schema is
 # part of the ontology contract. Keep this small: SQL-backed tables are parsed.
@@ -35,7 +56,14 @@ def _documents():
 def _table_references(value, parent_key=None):
     if isinstance(value, dict):
         for key, child in value.items():
-            if key in {"table", "source_table", "left_table", "right_table", "evidence_table"}:
+            if key in {
+                "table",
+                "source_table",
+                "adjusted_source_table",
+                "left_table",
+                "right_table",
+                "evidence_table",
+            }:
                 yield child
             elif key == "tables":
                 yield from child
@@ -223,6 +251,54 @@ def test_every_referenced_table_has_semantics():
         for table in _table_references(document)
     }
     assert referenced <= known, f"Missing table semantics: {sorted(referenced - known)}"
+
+
+def test_every_local_sql_target_has_semantics():
+    known = set(_documents()["table_semantics.yaml"]["tables"])
+    created_or_merged = set(_sql_table_schemas())
+    assert created_or_merged <= known, (
+        f"Missing table semantics for local SQL targets: {sorted(created_or_merged - known)}"
+    )
+
+
+def test_nl1_metrics_have_formula_grain_and_source_table():
+    metrics = _documents()["metric_definitions.yaml"]["metrics"]
+    assert NL1_METRICS <= metrics.keys()
+    for name in NL1_METRICS:
+        assert metrics[name].get("formula"), f"{name}: missing formula"
+        assert metrics[name].get("grain"), f"{name}: missing grain"
+        assert metrics[name].get("source_table"), f"{name}: missing source_table"
+
+
+def test_proposed_tables_cannot_source_live_metrics():
+    documents = _documents()
+    tables = documents["table_semantics.yaml"]["tables"]
+    metrics = documents["metric_definitions.yaml"]["metrics"]
+    proposed = {name for name, spec in tables.items() if spec.get("status") == "proposed"}
+    for name, spec in metrics.items():
+        if spec.get("source_table") in proposed:
+            assert spec.get("status") == "proposed", (
+                f"{name}: a proposed source table cannot back a live metric"
+            )
+
+
+def test_price_return_metrics_are_adjusted_or_explicitly_unadjusted():
+    metrics = _documents()["metric_definitions.yaml"]["metrics"]
+    for name in PRICE_RETURN_METRICS:
+        spec = metrics[name]
+        adjustment = spec.get("price_adjustment")
+        assert adjustment in {"adjusted", "unadjusted"}, (
+            f"{name}: declare adjusted or unadjusted price inputs"
+        )
+        if adjustment == "adjusted":
+            assert spec.get("adjusted_source_table") == "silver_ohlcv_day_adjusted", (
+                f"{name}: adjusted price-return metrics must reference "
+                "silver_ohlcv_day_adjusted"
+            )
+        else:
+            assert spec.get("unadjusted_reason"), (
+                f"{name}: unadjusted metrics must explicitly document the limitation"
+            )
 
 
 def test_no_duplicate_terms():

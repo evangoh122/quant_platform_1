@@ -35,6 +35,15 @@ terms:
   put_call_ratio:
     definition: "Daily put option volume divided by daily call option volume for an underlying."
     aliases: [put/call, PCR, put call volume ratio]
+  split_adjusted_price:
+    definition: "A price restated onto a common share basis using corporate-action split ratios. The daily adj_* columns are current-scale back-adjusted display levels and are approved for return calculations, not historical point-in-time price-level features."
+    aliases: [adjusted price, back-adjusted price, split adjusted price]
+  corporate_action:
+    definition: "An issuer event that changes a security or its share basis; the implemented ontology scope currently covers stock splits from bronze_corporate_actions."
+    aliases: [issuer action, corp action]
+  reverse_split:
+    definition: "A stock split that reduces shares outstanding; under the normalized new-shares / old-shares convention its split_ratio is greater than zero and less than one."
+    aliases: [reverse stock split, share consolidation]
   cot_crowding:
     definition: "Positioning extremity inferred from trailing CFTC leveraged-money and asset-manager z-scores."
     aliases: [crowding, positioning crowding, COT crowding score]

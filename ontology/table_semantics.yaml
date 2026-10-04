@@ -9,6 +9,18 @@ tables:
     keys: [symbol, event_ts, timespan]
     pit_column: ingest_ts
     freshness: "Daily after the US session close"
+    price_adjustment: unadjusted
+    critical_rule: "Raw OHLC/VWAP/volume are unadjusted; do not compute cross-split returns, volatility, or momentum from this table."
+  bronze_corporate_actions:
+    grain: "One normalized split event per (symbol, ex_date, source)"
+    keys: [symbol, ex_date, source]
+    pit_column: information_available_ts
+    freshness: "Split information is available at 09:30 America/New_York on ex_date, converted to UTC"
+    split_ratio_definition: "new shares / old shares; values above 1 are forward splits and values below 1 are reverse splits"
+    sources:
+      yfinance: implemented
+      massive: planned
+    source_note: "The branch implements only yfinance; no Massive-over-yfinance precedence is active yet."
   bronze_options_day:
     grain: "One provider daily option-contract bar per (contract_symbol, event_ts, timespan); event_date is derived"
     keys: [contract_symbol, event_ts, timespan]
@@ -22,6 +34,11 @@ tables:
     latest_as_of_rule: "For each (series_id, observation_date), latest value as of t is the row with maximum vintage_date among rows where information_available_ts <= t."
   bronze_cftc_fut:
     grain: "One CFTC TFF futures-only report row per (source_dataset, CFTC_Contract_Market_Code, report_date)"
+    keys: [source_dataset, CFTC_Contract_Market_Code, report_date]
+    pit_column: release_ts
+    freshness: "Weekly CFTC release, normally Friday"
+  bronze_cftc_com:
+    grain: "One CFTC TFF combined futures-and-options report row per (source_dataset, CFTC_Contract_Market_Code, report_date)"
     keys: [source_dataset, CFTC_Contract_Market_Code, report_date]
     pit_column: release_ts
     freshness: "Weekly CFTC release, normally Friday"
@@ -40,6 +57,18 @@ tables:
     keys: [accession_number, chunk_id]
     pit_column: accepted_ts
     freshness: "Event-driven at EDGAR acceptance"
+  sec_ingest_log:
+    grain: "One append-only SEC filing attempt per (run_id, ticker, accession_number, attempt)"
+    keys: [run_id, ticker, accession_number, attempt]
+    pit_column: logged_ts
+    freshness: "Written as each SEC ingestion attempt completes; dry runs are logged only when explicitly requested"
+    statuses: [planned, in_progress, succeeded, failed, skipped_existing, missing_cik]
+  sec_cik_mapping_log:
+    grain: "One ticker-to-CIK mapping result per (run_id, ticker)"
+    keys: [run_id, ticker]
+    pit_column: mapped_ts
+    freshness: "Appended once per requested ticker during each SEC ingestion run"
+    statuses: [mapped, missing, ambiguous]
 
   silver_ohlcv:
     grain: "One validated bar per (symbol, event_ts, timespan)"
@@ -57,6 +86,21 @@ tables:
     keys: [dedup_hash, quarantine_reason]
     pit_column: ingest_ts
     freshness: "Same batch as silver_ohlcv"
+  silver_ohlcv_day_adjusted:
+    grain: "One deduplicated split-adjusted daily bar per (symbol, event_date)"
+    keys: [symbol, event_date]
+    pit_column: information_available_ts
+    freshness: "Daily at 16:30 America/New_York on the bar date, converted to UTC"
+    adjustment_columns: [adj_open, adj_high, adj_low, adj_close, adj_vwap, adj_volume, cumulative_split_ratio, price_adjustment_factor]
+    adjustment_rule: "Prices and VWAP are divided by cumulative_split_ratio; volume is multiplied by it. Stored adj_* levels are global/current-scale and approved for returns, not historical model price-level features."
+    critical_rule: "Use return_1d for daily return analytics; it is NULL while a matching data-quality break is masked."
+  data_quality_breaks:
+    grain: "One detected daily OHLCV break per (symbol, event_date)"
+    keys: [symbol, event_date]
+    pit_column: processed_ts
+    freshness: "Refreshed with silver_ohlcv_day_adjusted while preserving reviewed decisions"
+    classification_values: [SPLIT_EXPLAINED, UNEXPLAINED_PENDING, CONFIRMED_DATA_BREAK]
+    implemented_reason_values: ["same-date split within 3% tolerance", "same-date split but residual exceeds 3%", "no matching split event"]
   silver_options_quotes:
     grain: "One cleaned quote per dedup_hash, derived from option_symbol, participant_ts, and source sequence_id"
     keys: [dedup_hash]
@@ -83,6 +127,39 @@ tables:
     pit_column: accepted_ts
     freshness: "Event-driven; available no earlier than accepted_ts"
     entity_types: [xbrl_fact, company, event, risk_factor]
+
+  serve_daily_prices_v1:
+    status: proposed
+    grain: "One proposed daily price row per (symbol, event_date)"
+    keys: [symbol, event_date]
+    pit_column: information_available_ts
+    freshness: "Not live; proposed DDL is unexecuted and requires owner/admin action"
+    source_rule: "silver_ohlcv_day_adjusted is primary; bronze_ohlcv_day is an explicitly unadjusted fallback subject to split-safety rejection"
+  serve_daily_equity_metrics_v1:
+    status: proposed
+    grain: "One proposed daily return/volatility/drawdown/momentum row per (symbol, event_date)"
+    keys: [symbol, event_date]
+    pit_column: information_available_ts
+    freshness: "Not live; proposed DDL is unexecuted and requires owner/admin action"
+  serve_relative_performance_v1:
+    status: proposed
+    grain: "One proposed daily relative-performance row per (symbol, event_date, benchmark)"
+    keys: [symbol, event_date, benchmark]
+    pit_column: information_available_ts
+    freshness: "Not live; proposed DDL is unexecuted and requires owner/admin action"
+  serve_options_metrics_v1:
+    status: proposed
+    grain: "One proposed daily options-metric row per (symbol, feature_ts)"
+    keys: [symbol, feature_ts]
+    pit_column: information_available_ts
+    freshness: "Not live; proposed DDL is unexecuted and requires owner/admin action"
+  serve_bounded_daily_bars_v1:
+    status: proposed
+    grain: "One proposed bounded daily drill-down row per (symbol, event_date)"
+    keys: [symbol, event_date]
+    pit_column: information_available_ts
+    freshness: "Not live; proposed DDL is unexecuted and requires owner/admin action"
+    source_rule: "silver_ohlcv_day_adjusted is primary; bronze_ohlcv_day is an explicitly unadjusted fallback with suspected-split detection"
 
   gold_ohlcv_features:
     grain: "One minute feature row per (symbol, feature_ts)"
@@ -114,6 +191,12 @@ tables:
     keys: [ticker, accession_number]
     pit_column: information_available_ts
     freshness: "Event-driven at accepted_ts"
+  gold_sec_coverage:
+    grain: "One current SEC coverage summary row per canonical ticker in the all-history tradable universe"
+    keys: [ticker]
+    freshness: "Refreshed after SEC bronze and silver sections; counts may be zero for uncovered universe members"
+    coverage_universe: "gold_tradable_universe: 300 symbols on the latest trade_date and 557 distinct symbols ever"
+    acceptance_rule: "first_filed and last_filed are min/max accepted_ts, not filing_date"
   gold_sec_chunk_embeddings:
     grain: "One vector per (chunk_id, embedding_model)"
     keys: [chunk_id, embedding_model]
@@ -131,6 +214,12 @@ tables:
     partition: edge_type
     pit_rule: "Filter valid_from <= query_as_of_ts before traversal; valid_from equals accepted_ts"
     schema_ref: "sec_kg/model.py is canonical for edge types and IDs"
+  gold_sec_kg_build_runs:
+    grain: "One knowledge-graph build manifest per run_id"
+    keys: [run_id]
+    pit_column: run_ts
+    freshness: "Appended after each knowledge-graph build"
+    manifest_counts: [input_rows_by_entity_type, accepted_rows, rejected_rows, rejection_reasons, node_count, edge_count]
   gold_model_features:
     grain: "One point-in-time model snapshot per (symbol, prediction_ts)"
     keys: [symbol, prediction_ts]

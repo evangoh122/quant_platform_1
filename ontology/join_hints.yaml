@@ -3,6 +3,12 @@ lineage:
     left_table: bronze_ohlcv
     right_table: silver_ohlcv
     keys: [symbol, event_ts, timespan]
+  bronze_ohlcv_day_to_silver_ohlcv_day_adjusted:
+    left_table: bronze_ohlcv_day
+    right_table: silver_ohlcv_day_adjusted
+    keys: [symbol, event_date]
+    temporal_rule: "The adjusted row is available at 16:30 America/New_York on event_date, converted to UTC; corporate actions contribute only according to their ex_date and availability contract."
+    transform: "Deduplicate daily bars, apply cumulative split factors, and mask return_1d when an active data-quality break is unresolved."
   bronze_cftc_fut_to_silver_cot_positions:
     left_table: bronze_cftc_fut
     right_table: silver_cot_positions
