@@ -239,7 +239,7 @@ class IngestLogEntry:
     filing_date: Optional[str]
     accepted_ts: Optional[datetime]
     status: str
-    rows_appended: int = 0
+    rows_appended: Optional[int] = None
     attempt: int = 1
     error_code: Optional[str] = None
     error_message: Optional[str] = None
@@ -1283,6 +1283,26 @@ def run_ingest(
             if dashed in existing_accessions:
                 existing_cik, existing_ticker = existing_accessions[dashed]
                 if existing_cik != cik:
+                    # Record the conflict in the audit log before raising
+                    if log_writer is not None:
+                        log_writer.append_log(catalog, schema, IngestLogEntry(
+                            run_id=run_id,
+                            ticker=ticker,
+                            cik=cik,
+                            accession_number=dashed,
+                            form_type=filing.form_type,
+                            filing_date=filing.filing_date,
+                            accepted_ts=filing.accepted_ts,
+                            status="failed",
+                            error_code="ownership_conflict",
+                            error_message=(
+                                f"Accession ownership conflict: {dashed} already owned by "
+                                f"CIK {existing_cik} (ticker={existing_ticker}), "
+                                f"but current request is CIK {cik} (ticker={ticker})"
+                            ),
+                            started_ts=datetime.now(timezone.utc),
+                            completed_ts=datetime.now(timezone.utc),
+                        ))
                     raise AccessionOwnershipConflict(
                         f"Accession ownership conflict: {dashed} already owned by "
                         f"CIK {existing_cik} (ticker={existing_ticker}), "
@@ -1473,7 +1493,8 @@ def run_ingest(
                     if entry is not None:
                         if entry.status == "succeeded":
                             result.succeeded_count += 1
-                            result.total_rows_appended += entry.rows_appended
+                            if entry.rows_appended is not None:
+                                result.total_rows_appended += entry.rows_appended
                         elif entry.status == "skipped_existing":
                             result.skipped_existing_count += 1
                         else:
@@ -1492,7 +1513,8 @@ def run_ingest(
                 if entry is not None:
                     if entry.status == "succeeded":
                         result.succeeded_count += 1
-                        result.total_rows_appended += entry.rows_appended
+                        if entry.rows_appended is not None:
+                            result.total_rows_appended += entry.rows_appended
                     elif entry.status == "skipped_existing":
                         result.skipped_existing_count += 1
                     else:
@@ -1684,7 +1706,7 @@ class SparkDataWriter:
                 # Get actual inserted count from this MERGE's own metrics,
                 # read inside the lock so it cannot be attributed to another
                 # worker's MERGE.
-                inserted = 0
+                inserted: Optional[int] = 0
                 try:
                     hist = spark.sql(f"DESCRIBE HISTORY {table} LIMIT 1").collect()
                     if hist:
@@ -1692,8 +1714,11 @@ class SparkDataWriter:
                         if metrics and "numTargetRowsInserted" in metrics:
                             inserted = int(metrics["numTargetRowsInserted"])
                 except Exception:
-                    # Fallback: count rows that were NOT matched (new accessions)
-                    inserted = len(rows)
+                    logger.warning(
+                        "Could not read MERGE metrics from DESCRIBE HISTORY; "
+                        "reporting inserted count as unknown"
+                    )
+                    inserted = None
 
                 return inserted
         finally:
@@ -1705,7 +1730,49 @@ class SparkDataWriter:
 
 
 class SparkLogWriter:
-    """Writes ingest log entries to sec_ingest_log via Spark."""
+    """Writes ingest log entries to sec_ingest_log via Spark.
+
+    Uses an explicit StructType so that all-None columns (e.g. completed_ts,
+    error_code, error_message on an ``in_progress`` row) are typed correctly
+    instead of being inferred as unresolved ``NullType``.
+    """
+
+    INGEST_LOG_SCHEMA = None  # lazily built once (needs pyspark import)
+
+    def __init__(self, spark_factory=None) -> None:
+        self._spark_factory = spark_factory
+
+    def _get_spark(self):
+        if self._spark_factory is not None:
+            return self._spark_factory()
+        from databricks.connect import DatabricksSession
+        return DatabricksSession.builder.serverless(True).getOrCreate()
+
+    def _ensure_schema(self):
+        if SparkLogWriter.INGEST_LOG_SCHEMA is not None:
+            return
+        from pyspark.sql.types import (
+            BooleanType, IntegerType, StringType, StructField,
+            StructType, TimestampType,
+        )
+        SparkLogWriter.INGEST_LOG_SCHEMA = StructType([
+            StructField("run_id", StringType(), False),
+            StructField("ticker", StringType(), False),
+            StructField("cik", StringType(), False),
+            StructField("accession_number", StringType(), False),
+            StructField("form_type", StringType(), False),
+            StructField("filing_date", StringType(), True),
+            StructField("accepted_ts", TimestampType(), True),
+            StructField("status", StringType(), False),
+            StructField("rows_appended", IntegerType(), True),
+            StructField("attempt", IntegerType(), True),
+            StructField("error_code", StringType(), True),
+            StructField("error_message", StringType(), True),
+            StructField("started_ts", TimestampType(), True),
+            StructField("completed_ts", TimestampType(), True),
+            StructField("dry_run", BooleanType(), True),
+            StructField("logged_ts", TimestampType(), False),
+        ])
 
     def append_log(
         self,
@@ -1713,9 +1780,8 @@ class SparkLogWriter:
         schema: str,
         entry: IngestLogEntry,
     ) -> None:
-        from databricks.connect import DatabricksSession
-        from pyspark.sql import functions as F
-        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        self._ensure_schema()
+        spark = self._get_spark()
         row = {
             "run_id": entry.run_id,
             "ticker": entry.ticker,
@@ -1734,8 +1800,36 @@ class SparkLogWriter:
             "dry_run": entry.dry_run,
             "logged_ts": datetime.now(timezone.utc),
         }
-        df = spark.createDataFrame([row])
+        df = spark.createDataFrame([row], schema=SparkLogWriter.INGEST_LOG_SCHEMA)
         df.write.mode("append").saveAsTable(f"{catalog}.{schema}.sec_ingest_log")
+
+
+def ensure_ingest_log_table(spark, catalog: str, schema: str) -> None:
+    """Create sec_ingest_log table if it does not exist (cold-start safety).
+
+    The schema matches docs/DATA_SCHEMAS.md exactly.  Called once at startup
+    before any reader or writer touches the table.
+    """
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {catalog}.{schema}.sec_ingest_log (
+            run_id            STRING    NOT NULL,
+            ticker            STRING    NOT NULL,
+            cik               STRING    NOT NULL,
+            accession_number  STRING    NOT NULL,
+            form_type         STRING    NOT NULL,
+            filing_date       STRING,
+            accepted_ts       TIMESTAMP,
+            status            STRING    NOT NULL,
+            rows_appended     INT,
+            attempt           INT,
+            error_code        STRING,
+            error_message     STRING,
+            started_ts        TIMESTAMP,
+            completed_ts      TIMESTAMP,
+            dry_run           BOOLEAN,
+            logged_ts         TIMESTAMP NOT NULL
+        ) USING DELTA
+    """)
 
 
 class SparkIngestLogReader:
@@ -1760,12 +1854,16 @@ class SparkIngestLogReader:
         run_id: str,
     ) -> Set[Tuple[str, str, str]]:
         spark = self._get_spark()
-        rows = spark.sql(f"""
-            SELECT DISTINCT run_id, ticker, accession_number
-            FROM {catalog}.{schema}.sec_ingest_log
-            WHERE run_id = '{run_id}'
-              AND status = 'succeeded'
-        """).collect()
+        try:
+            rows = spark.sql(f"""
+                SELECT DISTINCT run_id, ticker, accession_number
+                FROM {catalog}.{schema}.sec_ingest_log
+                WHERE run_id = '{run_id}'
+                  AND status = 'succeeded'
+            """).collect()
+        except Exception:
+            # Table does not exist yet (cold start) — no prior attempts
+            return set()
         return {(r["run_id"], r["ticker"], r["accession_number"]) for r in rows}
 
     def read_max_attempt(
@@ -1777,13 +1875,17 @@ class SparkIngestLogReader:
         accession_number: str,
     ) -> int:
         spark = self._get_spark()
-        rows = spark.sql(f"""
-            SELECT max(attempt) AS max_attempt
-            FROM {catalog}.{schema}.sec_ingest_log
-            WHERE run_id = '{run_id}'
-              AND ticker = '{ticker}'
-              AND accession_number = '{accession_number}'
-        """).collect()
+        try:
+            rows = spark.sql(f"""
+                SELECT max(attempt) AS max_attempt
+                FROM {catalog}.{schema}.sec_ingest_log
+                WHERE run_id = '{run_id}'
+                  AND ticker = '{ticker}'
+                  AND accession_number = '{accession_number}'
+            """).collect()
+        except Exception:
+            # Table does not exist yet (cold start)
+            return 0
         if rows and rows[0]["max_attempt"] is not None:
             return int(rows[0]["max_attempt"])
         return 0
@@ -1886,6 +1988,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     log_writer = SparkLogWriter()
     ingest_log_reader = SparkIngestLogReader()
     cik_mapping_log_writer = SparkCikMappingLogWriter()
+
+    # Ensure sec_ingest_log exists before any reader/writer touches it
+    from databricks.connect import DatabricksSession
+    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    ensure_ingest_log_table(spark, args.catalog, args.schema)
 
     result = run_ingest(
         catalog=args.catalog,
