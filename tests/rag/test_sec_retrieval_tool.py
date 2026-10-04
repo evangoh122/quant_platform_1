@@ -8,16 +8,38 @@ import sys
 from unittest.mock import MagicMock, patch
 
 
-# Hide pyspark/databricks/psycopg
-_pyspark_mock = MagicMock()
-sys.modules.setdefault("pyspark", _pyspark_mock)
-sys.modules.setdefault("pyspark.sql", _pyspark_mock.sql)
-sys.modules.setdefault("pyspark.sql.functions", _pyspark_mock.sql.functions)
-sys.modules.setdefault("databricks", MagicMock())
-sys.modules.setdefault("databricks.connect", MagicMock())
-sys.modules.setdefault("psycopg", MagicMock())
-sys.modules.setdefault("psycopg.rows", MagicMock())
-sys.modules.setdefault("psycopg_pool", MagicMock())
+# pyspark/databricks/psycopg fakes installed via module-scoped fixture below.
+# psycopg/psycopg.rows/psycopg_pool are also handled by tests/rag/conftest.py mock_if_missing.
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True, scope="module")
+def _mock_pyspark():
+    """Install pyspark/databricks/psycopg fakes for this module only."""
+    _pyspark_mock = MagicMock()
+    _originals = {}
+    _patches = {
+        "pyspark": _pyspark_mock,
+        "pyspark.sql": _pyspark_mock.sql,
+        "pyspark.sql.functions": _pyspark_mock.sql.functions,
+        "databricks": MagicMock(),
+        "databricks.connect": MagicMock(),
+        "psycopg": MagicMock(),
+        "psycopg.rows": MagicMock(),
+        "psycopg_pool": MagicMock(),
+    }
+    for name, mock in _patches.items():
+        _originals[name] = sys.modules.get(name)
+        sys.modules[name] = mock
+
+    yield
+
+    for name in _patches:
+        if _originals[name] is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = _originals[name]
 
 
 class TestSearchSecFilingsErrors:

@@ -17,30 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Hide pyspark and databricks.connect before importing the pipeline
-_pyspark_mock = MagicMock()
-sys.modules.setdefault("pyspark", _pyspark_mock)
-sys.modules.setdefault("pyspark.sql", _pyspark_mock.sql)
-sys.modules.setdefault("pyspark.sql.functions", _pyspark_mock.sql.functions)
-sys.modules.setdefault("pyspark.sql.types", _pyspark_mock.sql.types)
-sys.modules.setdefault("databricks", MagicMock())
-sys.modules.setdefault("databricks.connect", MagicMock())
-
-# Make pyspark.sql.types classes importable with real type identities
-# so that isinstance() and type() checks work in tests.
-try:
-    from pyspark.sql.types import (
-        StringType as _RealStringType,
-        StructField as _RealStructField,
-        StructType as _RealStructType,
-        TimestampType as _RealTimestampType,
-    )
-    _pyspark_mock.sql.types.StringType = _RealStringType
-    _pyspark_mock.sql.types.StructField = _RealStructField
-    _pyspark_mock.sql.types.StructType = _RealStructType
-    _pyspark_mock.sql.types.TimestampType = _RealTimestampType
-except ImportError:
-    pass  # pyspark not installed; MagicMock fallback is fine for non-schema tests
+# pyspark/databricks fakes installed via module-scoped fixture below
 
 from pipelines.sec_rag_ingest import (  # noqa: E402
     AccessionOwnershipConflict,
@@ -66,6 +43,50 @@ from pipelines.sec_rag_ingest import (  # noqa: E402
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sec"
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _mock_pyspark():
+    """Install pyspark/databricks fakes for this module only.
+
+    Uses sys.modules patching scoped to this module so it does not leak
+    into other test modules (e.g. tests/bronze/test_refresh_bronze_cot.py).
+    """
+    _pyspark_mock = MagicMock()
+    _originals = {}
+    _patches = {
+        "pyspark": _pyspark_mock,
+        "pyspark.sql": _pyspark_mock.sql,
+        "pyspark.sql.functions": _pyspark_mock.sql.functions,
+        "pyspark.sql.types": _pyspark_mock.sql.types,
+        "databricks": MagicMock(),
+        "databricks.connect": MagicMock(),
+    }
+    for name, mock in _patches.items():
+        _originals[name] = sys.modules.get(name)
+        sys.modules[name] = mock
+
+    try:
+        from pyspark.sql.types import (
+            StringType as _RealStringType,
+            StructField as _RealStructField,
+            StructType as _RealStructType,
+            TimestampType as _RealTimestampType,
+        )
+        _pyspark_mock.sql.types.StringType = _RealStringType
+        _pyspark_mock.sql.types.StructField = _RealStructField
+        _pyspark_mock.sql.types.StructType = _RealStructType
+        _pyspark_mock.sql.types.TimestampType = _RealTimestampType
+    except ImportError:
+        pass
+
+    yield
+
+    for name in _patches:
+        if _originals[name] is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = _originals[name]
 
 
 @pytest.fixture(autouse=True)

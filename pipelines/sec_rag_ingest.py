@@ -382,7 +382,7 @@ class CikMappingResult:
     ticker: str
     lookup_symbol: Optional[str]
     cik: Optional[str]
-    status: str  # mapped | missing | ambiguous
+    status: str  # mapped | missing
     reason: str
     mapped_ts: Optional[datetime] = None
 
