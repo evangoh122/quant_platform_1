@@ -2046,6 +2046,11 @@ def _setup_pyspark_mocks(monkeypatch, entity_rows=None, section_rows=None):
             self._schema = schema
             self._format = None
             self._mode = None
+        @property
+        def columns(self):
+            if self._rows and hasattr(self._rows[0], '_kw'):
+                return list(self._rows[0]._kw.keys())
+            return []
         def select(self, *args, **kwargs):
             return self
         def collect(self):
@@ -2801,7 +2806,40 @@ class TestNoDriverWideCollects:
                 if "chunk_metadata" in context or "entities" in context:
                     pytest.fail(
                         f"Line {i+1}: collect() used in main data path: {line.strip()}"
-                    )
+        )
+
+
+class TestLineEndings:
+    """All Python files must use LF line endings (no CRLF)."""
+
+    def test_no_crlf_in_python_files(self):
+        """No *.py under sec_kg/, pipelines/, api/services/, tests/rag/ contains CRLF."""
+        import os
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent.parent
+        dirs_to_check = [
+            root / "sec_kg",
+            root / "pipelines",
+            root / "api" / "services",
+            root / "tests" / "rag",
+        ]
+        violations = []
+        for d in dirs_to_check:
+            if not d.exists():
+                continue
+            for py_file in d.rglob("*.py"):
+                try:
+                    content = py_file.read_bytes()
+                    if b"\r\n" in content:
+                        violations.append(str(py_file.relative_to(root)))
+                except Exception:
+                    pass
+
+        assert violations == [], (
+            f"The following Python files contain CRLF line endings "
+            f"(convert to LF): {violations}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4407,6 +4445,116 @@ class TestConceptNormMigration:
         # Should not raise
         ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
 
+    def test_ensure_concept_norm_column_issues_alter(self):
+        """Function test: ensure_concept_norm_column issues ALTER TABLE when column is missing.
+
+        This test verifies that ensure_concept_norm_column is called correctly.
+        If the ALTER is skipped, pre-existing tables without concept_norm will
+        cause the MERGE to fail on schema mismatch.
+        """
+        from pipelines.build_sec_knowledge_graph import ensure_concept_norm_column
+        # Simulate a table without concept_norm
+        spark = TestConceptNormMigration._FakeSparkForMigration([
+            "node_id", "node_type", "label", "properties_json",
+            "provenance", "build_version",
+        ])
+        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
+        # Must have issued exactly one ALTER
+        assert len(spark.alter_calls) == 1, (
+            "ensure_concept_norm_column did not issue ALTER TABLE — "
+            "MERGE will fail on schema mismatch for pre-existing tables"
+        )
+
+    def test_build_issues_alter_before_merge(self, monkeypatch):
+        """Wiring test: build() issues ALTER TABLE ADD COLUMNS before MERGE.
+
+        Runs build() against a fake Spark whose gold_sec_kg_nodes columns lack
+        concept_norm and asserts the ALTER TABLE ... ADD COLUMNS (concept_norm STRING)
+        SQL is issued BEFORE the MERGE.  Record call order in one list.
+        """
+        from datetime import datetime, timezone
+        entity_rows = [
+            _FakeRow(
+                cik="0001045810", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                entity_type="company", entity_key="NVIDIA Corp",
+                entity_value="NVIDIA Corporation",
+                entity_unit="", period_start=None, period_end=None,
+                confidence=1.0, source_chunk_id="c1",
+            ),
+        ]
+        section_rows = [
+            _FakeRow(
+                chunk_id="c1", ticker="NVDA",
+                accession_number="0001045810-24-000001",
+                form_type="10-K", accepted_epoch=1700000000,
+                filing_section="item1_business", chunk_index=0,
+            ),
+        ]
+        fake_spark, write_spy, table_data = _setup_pyspark_mocks(
+            monkeypatch, entity_rows=entity_rows, section_rows=section_rows,
+        )
+
+        # Pre-existing gold_sec_kg_nodes table WITHOUT concept_norm column
+        # (simulates a pre-round-12 table)
+        table_data["gold_sec_kg_nodes"] = [
+            _FakeRow(
+                node_id="old_node", node_type="company", label="OldCorp",
+                properties_json='{}', provenance=[], build_version="old",
+            ),
+        ]
+
+        import pipelines.build_sec_knowledge_graph as pipeline_mod
+
+        # Track ALTER TABLE calls by wrapping sql()
+        call_order = []
+        original_sql = fake_spark.sql
+
+        def _tracking_sql(stmt):
+            call_order.append(("sql", stmt))
+            return original_sql(stmt)
+
+        monkeypatch.setattr(fake_spark, "sql", _tracking_sql)
+
+        # Also wrap DeltaTable.forName to record MERGE calls
+        from delta.tables import DeltaTable as _DT
+        original_for_name = _DT.forName
+
+        def _tracking_for_name(spark, table_name):
+            call_order.append(("merge", table_name))
+            return original_for_name(spark, table_name)
+
+        monkeypatch.setattr(_DT, "forName", _tracking_for_name)
+
+        pipeline_mod.build(
+            fake_spark,
+            catalog="test_cat",
+            schema="test_sch",
+        )
+
+        # Find ALTER TABLE and MERGE indices in call_order
+        alter_indices = [
+            i for i, (kind, stmt) in enumerate(call_order)
+            if kind == "sql" and "ADD COLUMNS" in stmt.upper()
+               and "concept_norm" in stmt.lower()
+        ]
+        merge_indices = [
+            i for i, (kind, _) in enumerate(call_order)
+            if kind == "merge"
+        ]
+
+        assert len(alter_indices) >= 1, (
+            f"ALTER TABLE ADD COLUMNS (concept_norm) not found in call order: {call_order}"
+        )
+        assert len(merge_indices) >= 1, (
+            f"MERGE (DeltaTable.forName) not found in call order: {call_order}"
+        )
+        assert alter_indices[0] < merge_indices[0], (
+            f"ALTER TABLE (index {alter_indices[0]}) must come before "
+            f"first MERGE (index {merge_indices[0]}). Call order: {call_order}"
+        )
+
 
 class TestConceptNormNullGuard:
     """Concept searches must raise RuntimeError when NULL concept_norm rows exist."""
@@ -4569,22 +4717,4 @@ class TestConceptNormNullGuard:
         results = store.find_nodes("XbrlFact", concept="Revenues")
         assert len(results) == 1
 
-    def test_mutation_skip_alter_test_fails(self):
-        """Mutation proof: removing the ALTER logic causes this test to fail.
 
-        This test verifies that ensure_concept_norm_column is called in the build.
-        If the ALTER is skipped, pre-existing tables without concept_norm will
-        cause the MERGE to fail on schema mismatch.
-        """
-        from pipelines.build_sec_knowledge_graph import ensure_concept_norm_column
-        # Simulate a table without concept_norm
-        spark = TestConceptNormMigration._FakeSparkForMigration([
-            "node_id", "node_type", "label", "properties_json",
-            "provenance", "build_version",
-        ])
-        ensure_concept_norm_column(spark, "cat.sch.gold_sec_kg_nodes")
-        # Must have issued exactly one ALTER
-        assert len(spark.alter_calls) == 1, (
-            "ensure_concept_norm_column did not issue ALTER TABLE — "
-            "MERGE will fail on schema mismatch for pre-existing tables"
-        )
