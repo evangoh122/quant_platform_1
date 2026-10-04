@@ -139,6 +139,7 @@ def build(
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     total_processed = 0
     rows_written = 0
+    rows_unknown = False
 
     # get_embeddings() is a singleton — all workers share the same model
     # instance.  Bounded by max_workers=partitions.
@@ -148,11 +149,17 @@ def build(
     _merge_lock = threading.Lock()
 
     def _embed_batch(batch):
-        """Worker: embed a batch and write to Delta.  Returns row count (0 if unknown)."""
+        """Worker: embed a batch and write to Delta.  Returns row count (None if unknown)."""
         from api.services.embeddings import get_embeddings as _get
         worker_embeddings = _get()
-        result = _embed_and_write_batch(spark, worker_embeddings, batch, now, _merge_lock)
-        return result if result is not None else 0
+        return _embed_and_write_batch(spark, worker_embeddings, batch, now, _merge_lock)
+
+    def _accumulate(result):
+        nonlocal rows_written, rows_unknown
+        if result is None:
+            rows_unknown = True
+        elif not rows_unknown:
+            rows_written += result
 
     # Submit batches to the pool as they come off the iterator.
     # At most max_workers futures are in-flight at any time (bounded memory).
@@ -178,7 +185,7 @@ def build(
                 if len(pending) >= max_workers:
                     done, pending = _drain_one(pending)
                     for f in done:
-                        rows_written += f.result()
+                        _accumulate(f.result())
                 pending.add(pool.submit(_embed_batch, batch))
                 total_processed += len(batch)
                 if total_processed % 500 == 0:
@@ -192,11 +199,11 @@ def build(
 
         # Wait for all remaining futures
         for f in as_completed(pending):
-            rows_written += f.result()
+            _accumulate(f.result())
 
     elapsed = time.monotonic() - t0
     return {
-        "rows_written": rows_written,
+        "rows_written": None if rows_unknown else rows_written,
         "embedding_dim": EMBEDDING_DIM,
         "rows_already_embedded": -1,  # unknown with anti-join
         "elapsed_seconds": round(elapsed, 1),
@@ -275,19 +282,28 @@ def _embed_and_write_batch(
         """)
 
         # Get actual inserted count from MERGE operationMetrics
-        inserted = 0
+        inserted: Optional[int] = None
         try:
             hist = spark.sql(f"DESCRIBE HISTORY {EMBEDDINGS_TABLE} LIMIT 1").collect()
             if hist:
                 metrics = hist[0]["operationMetrics"]
                 if metrics and "numTargetRowsInserted" in metrics:
                     inserted = int(metrics["numTargetRowsInserted"])
+                else:
+                    logger.warning(
+                        "DESCRIBE HISTORY returned no operationMetrics or "
+                        "numTargetRowsInserted key; reporting inserted count as unknown"
+                    )
+            else:
+                logger.warning(
+                    "DESCRIBE HISTORY returned no rows; "
+                    "reporting inserted count as unknown"
+                )
         except Exception:
             logger.warning(
                 "Could not read MERGE metrics from DESCRIBE HISTORY; "
                 "reporting inserted count as unknown"
             )
-            inserted = None
 
     # Drop the unique temp view
     try:
