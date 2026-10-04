@@ -429,7 +429,7 @@ def main() -> None:
                 _log_checkpoint(spark, run_id, sym, "massive", "FAILED", 0, 0,
                                 error=safe_msg)
 
-        _time.sleep(delay_seconds)
+        # Delay is now enforced inside the adapter (_request_with_retry)
 
     # --- Anti-join: filter out existing keys ---
     new_rows = [r for r in all_candidate_rows if _row_to_key(r) not in existing_keys_set]

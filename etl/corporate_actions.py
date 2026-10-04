@@ -209,6 +209,8 @@ class MassiveCorporateActionsSource:
         """Execute GET with retry on 429/5xx.  Raise on 401/403."""
         redacted_url = _redact_api_key(url)
         last_exc: Optional[Exception] = None
+        # Enforce minimum inter-request delay before every HTTP request
+        self._sleeper(self._delay)
         for attempt in range(self._max_retries + 1):
             try:
                 resp = self._session.get(url, timeout=self._timeout)
