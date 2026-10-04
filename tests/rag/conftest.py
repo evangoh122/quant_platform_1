@@ -109,8 +109,22 @@ def _block_network(monkeypatch):
             f"Mock the call or use monkeypatch to allow."
         )
 
+    def _extract_host_port(address, sock_family):
+        """Extract host and port from address tuple by socket family."""
+        if sock_family == socket.AF_UNIX:
+            # AF_UNIX: address is a str or bytes path
+            return None, None
+        if sock_family == socket.AF_INET6:
+            # AF_INET6: (host, port, flow, scope)
+            return address[0], address[1] if len(address) > 1 else 0
+        # AF_INET (default): (host, port)
+        return address[0], address[1] if len(address) > 1 else 0
+
     def _fail_socket_connect(self, address, *args, **kwargs):
-        host, port = address[0] if len(address) > 0 else ("unknown", 0)
+        # AF_UNIX sockets are always allowed (local IPC, no network)
+        if self.family == socket.AF_UNIX:
+            return _real_socket_connect(self, address, *args, **kwargs)
+        host, port = _extract_host_port(address, self.family)
         if _is_loopback(host):
             return _real_socket_connect(self, address, *args, **kwargs)
         raise ConnectionRefusedError(
@@ -119,7 +133,10 @@ def _block_network(monkeypatch):
         )
 
     def _fail_socket_connect_ex(self, address, *args, **kwargs):
-        host, port = address[0] if len(address) > 0 else ("unknown", 0)
+        # AF_UNIX sockets are always allowed (local IPC, no network)
+        if self.family == socket.AF_UNIX:
+            return _real_socket_connect_ex(self, address, *args, **kwargs)
+        host, port = _extract_host_port(address, self.family)
         if _is_loopback(host):
             return _real_socket_connect_ex(self, address, *args, **kwargs)
         raise ConnectionRefusedError(
@@ -128,7 +145,8 @@ def _block_network(monkeypatch):
         )
 
     def _fail_getaddrinfo(host, port, *args, **kwargs):
-        if _is_loopback(host):
+        # getaddrinfo(None, ...) is passive (used for bind) — always allow
+        if host is None or _is_loopback(host):
             return _real_getaddrinfo(host, port, *args, **kwargs)
         raise ConnectionRefusedError(
             f"Network access blocked in tests (getaddrinfo for {host}:{port}). "
