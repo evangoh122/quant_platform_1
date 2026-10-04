@@ -6,6 +6,7 @@ Live integration tests are marked @pytest.mark.databricks.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -1568,3 +1569,919 @@ class TestSearchSecFilingsError:
         assert result[0]["retrieval_mode"] == "hybrid", (
             "Naive as_of fell into substring fallback instead of hybrid path"
         )
+
+
+# ── Fix #1: BM25 ticker filter tests ─────────────────────────────────────────
+
+class TestBM25TickerFilter:
+    """Verify BM25 filters by ticker when set, not just boosts.
+
+    CodeRabbit finding: bm25_search only boosted matching tickers but kept
+    non-matching ones, so RRF could return other companies' chunks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_corpus(self, monkeypatch):
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("NVIDIA revenue growth driven by AI chips",
+                      ticker="NVDA", accession="NVDA1", accepted_ts="2025-01-01"),
+            _make_doc("NVIDIA CUDA ecosystem dominance in ML",
+                      ticker="NVDA", accession="NVDA2", accepted_ts="2025-01-01"),
+            _make_doc("Apple iPhone sales record quarter revenue",
+                      ticker="AAPL", accession="AAPL1", accepted_ts="2025-01-01"),
+        ]
+
+        tokenised = [hr.tokenize(d.page_content) for d in self.docs]
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_bm25_docs", self.docs)
+        monkeypatch.setattr(hr, "_bm25_tokenised", tokenised)
+        monkeypatch.setattr(hr, "_bm25_index", hr.BM25Okapi(tokenised))
+        monkeypatch.setattr(hr, "_embeddings_map", embeddings_map)
+        monkeypatch.setattr(hr, "_corpus", {
+            hashlib.md5(d.page_content.encode()).hexdigest()[:16]: (
+                d.page_content,
+                d.metadata["ticker"],
+                d.metadata["accession"],
+                d.metadata["accepted_ts"],
+                d.metadata["form_type"],
+                d.metadata["section_id"],
+                d.metadata["chunk_index"],
+                d.metadata.get("source_url", ""),
+            )
+            for d in self.docs
+        })
+
+        class StubEmbeddings:
+            def embed_query(self, text):
+                np.random.seed(hash(text) % (2**31))
+                v = np.random.randn(384).astype(np.float32)
+                v /= np.linalg.norm(v)
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: StubEmbeddings())
+
+    def test_bm25_filters_by_ticker_not_just_boosts(self):
+        """With ticker=NVDA, no AAPL chunk must appear in results."""
+        from api.services.hybrid_retriever import bm25_search
+
+        results = bm25_search("Apple iPhone revenue record", top_k=10, ticker="NVDA")
+        tickers = [d.metadata["ticker"] for d in results]
+        assert "AAPL" not in tickers, (
+            "BM25 returned AAPL chunk when ticker=NVDA — ticker filter missing"
+        )
+
+    def test_bm25_returns_empty_when_no_ticker_match(self):
+        """With ticker=MSFT (not in corpus), must return empty."""
+        from api.services.hybrid_retriever import bm25_search
+
+        results = bm25_search("revenue growth", top_k=10, ticker="MSFT")
+        assert results == [], (
+            "BM25 should return empty when ticker has no matching docs"
+        )
+
+    def test_hybrid_no_leak_across_tickers(self):
+        """Hybrid retrieve with ticker=NVDA must not return AAPL chunks."""
+        from api.services.hybrid_retriever import HybridRetriever
+
+        retriever = HybridRetriever(top_k=10)
+        results = retriever.retrieve("Apple iPhone revenue", ticker="NVDA", top_k=10)
+        tickers = [d.metadata["ticker"] for d in results]
+        assert "AAPL" not in tickers, (
+            "Hybrid retriever leaked AAPL chunk when ticker=NVDA"
+        )
+
+
+# ── Fix #2: Transient load failure retry tests ───────────────────────────────
+
+class TestTransientLoadFailureRetry:
+    """Verify transient load failures don't disable retrieval forever.
+
+    CodeRabbit finding: on exception, _corpus_loaded was set to True,
+    preventing retries.
+    """
+
+    def test_first_load_fails_second_succeeds(self, fake_pyspark, monkeypatch):
+        """First load raises CorpusUnavailableError, second succeeds."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Reset module state
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+
+        call_count = [0]
+
+        def _get_spark_sometimes():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("transient connection error")
+            # Second call: return a mock spark that yields empty results
+            mock_spark = MagicMock()
+            mock_chunks_df = MagicMock()
+            mock_chunks_df.select.return_value = mock_chunks_df
+            mock_chunks_df.collect.return_value = []
+            mock_embed_df = MagicMock()
+            mock_embed_df.select.return_value = mock_embed_df
+            mock_embed_df.collect.return_value = []
+
+            def table_side(name):
+                if "embeddings" in name:
+                    return mock_embed_df
+                return mock_chunks_df
+
+            mock_spark.table.side_effect = table_side
+            return mock_spark
+
+        monkeypatch.setattr(hr, "_get_spark", _get_spark_sometimes)
+
+        # Use monkeypatch.setitem on sys.modules to avoid import issues
+        # when pyspark is set to None (nopyspark mode)
+        mock_f = MagicMock()
+        mock_f.unix_timestamp.return_value = mock_f
+        mock_f.col.return_value = mock_f
+        mock_f.alias.return_value = mock_f
+
+        # First call: raises
+        with pytest.raises(CorpusUnavailableError):
+            monkeypatch.setitem(sys.modules, "pyspark.sql.functions", mock_f)
+            hr._load_corpus()
+
+        # _corpus_loaded must be False so next call retries
+        assert hr._corpus_loaded is False, (
+            "_corpus_loaded should be False after failure to allow retry"
+        )
+
+        # Second call: does not raise (retry succeeds, even if corpus is empty)
+        monkeypatch.setitem(sys.modules, "pyspark.sql.functions", mock_f)
+        hr._load_corpus()
+
+        assert hr._corpus_loaded is True
+
+    def test_partial_state_cleared_on_failure(self, fake_pyspark, monkeypatch):
+        """On failure, partial _corpus and _embeddings_map must be cleared."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        # Inject partial state
+        monkeypatch.setattr(hr, "_corpus", {"fake_id": ("text", "T", "A", "", "", "", 0, "")})
+        monkeypatch.setattr(hr, "_embeddings_map", {"fake_id": np.zeros(384)})
+        monkeypatch.setattr(hr, "_bm25_docs", [Document(page_content="x", metadata={})])
+        monkeypatch.setattr(hr, "_bm25_tokenised", [["x"]])
+        monkeypatch.setattr(hr, "_bm25_index", "not_none")
+
+        def boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(hr, "_get_spark", boom)
+
+        with pytest.raises(CorpusUnavailableError):
+            hr._load_corpus()
+
+        assert len(hr._corpus) == 0, "_corpus should be cleared after failure"
+        assert len(hr._embeddings_map) == 0, "_embeddings_map should be cleared after failure"
+        assert hr._bm25_docs is None
+        assert hr._bm25_tokenised is None
+        assert hr._bm25_index is None
+
+
+# ── Fix #3: Embedding dim check tests ─────────────────────────────────────────
+
+class TestEmbeddingDimCheck:
+    """Verify vector_search raises on dimension mismatch.
+
+    CodeRabbit finding: wrong-dim query vectors silently produced garbage.
+    """
+
+    def test_dim_mismatch_raises_corpus_unavailable(self, fake_pyspark, monkeypatch):
+        """Query vector with wrong dimension must raise CorpusUnavailableError."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError, vector_search
+
+        # Setup minimal corpus — must have non-empty _corpus so _load_corpus passes
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": np.zeros(384, dtype=np.float32)})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
+
+        class WrongDimEmbeddings:
+            def embed_query(self, text):
+                return [0.1] * 1024  # Wrong dim
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
+
+        with pytest.raises(CorpusUnavailableError, match="dim .* != stored"):
+            vector_search("test query")
+
+    def test_correct_dim_works(self, fake_pyspark, monkeypatch):
+        """Query vector with correct dimension proceeds normally."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import vector_search
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+
+        vec = np.zeros(384, dtype=np.float32)
+        vec[0] = 1.0
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": vec})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
+
+        class CorrectDimEmbeddings:
+            def embed_query(self, text):
+                v = np.zeros(384, dtype=np.float32)
+                v[0] = 1.0
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: CorrectDimEmbeddings())
+
+        # Should not raise
+        results = vector_search("test query")
+        assert isinstance(results, list)
+
+
+# ── Fix #4: build_sec_embeddings read error propagation tests ─────────────────
+
+class TestBuildEmbeddingsReadError:
+    """Verify build_sec_embeddings doesn't swallow existing-ID read errors.
+
+    CodeRabbit finding: blind except Exception set existing_ids = set(),
+    masking read failures.
+    """
+
+    def test_read_error_propagates(self, fake_pyspark):
+        """When reading existing IDs fails, build() must raise, not write."""
+        from pipelines.build_sec_embeddings import build
+
+        mock_spark = MagicMock()
+
+        # Make table() for embeddings raise (simulates read failure)
+        def table_side_effect(name):
+            if "embeddings" in name:
+                raise RuntimeError("Table not found: gold_sec_chunk_embeddings")
+            mock_df = MagicMock()
+            mock_df.select.return_value = mock_df
+            mock_df.filter.return_value = mock_df
+            mock_df.collect.return_value = []
+            return mock_df
+
+        mock_spark.table.side_effect = table_side_effect
+
+        class StubEmbeddings:
+            def embed_documents(self, texts):
+                return [[0.1] * 384 for _ in texts]
+
+        with patch("api.services.embeddings.get_embeddings", return_value=StubEmbeddings()):
+            with pytest.raises(RuntimeError, match="Table not found"):
+                build(mock_spark)
+
+        # Must not have written anything
+        mock_spark.createDataFrame.assert_not_called()
+
+
+# ── Fix #5: Stored-index dimension guard + model-name check (round 3) ────────
+
+class TestStoredIndexDimensionGuard:
+    """Verify vector_search validates against the STORED index dimension, not the configured EMBEDDING_DIM.
+
+    DeepSeek round-2 finding: the old guard compared len(qvec) with the
+    CONFIGURED EMBEDDING_DIM.  Switching EMBEDDING_PROVIDER=sentence_transformers
+    (1024-d) against a stored 384-d index passed the guard, then np.dot raised,
+    and the search silently fell back to substring search.
+    """
+
+    def test_1024d_query_against_384d_index_returns_unavailable(self, monkeypatch):
+        """A 1024-d query vector against a 384-d stored index must raise CorpusUnavailableError.
+
+        search_sec_filings must surface retrieval_unavailable, not substring_fallback.
+        """
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Setup corpus with 384-d stored embeddings
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+        vec384 = np.zeros(384, dtype=np.float32)
+        vec384[0] = 1.0
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": vec384})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
+
+        class WrongDimEmbeddings:
+            def embed_query(self, text):
+                return [0.1] * 1024  # 1024-d query, but stored index is 384-d
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
+
+        with pytest.raises(CorpusUnavailableError, match="dim .* != stored"):
+            hr.vector_search("test query")
+
+    def test_mixed_stored_dimensions_unavailable(self, fake_pyspark, monkeypatch):
+        """If stored embeddings have mixed dimensions, corpus load must raise CorpusUnavailableError."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError
+
+        # Reset module state
+        monkeypatch.setattr(hr, "_corpus_loaded", False)
+        monkeypatch.setattr(hr, "_corpus", {})
+        monkeypatch.setattr(hr, "_bm25_docs", None)
+        monkeypatch.setattr(hr, "_bm25_tokenised", None)
+        monkeypatch.setattr(hr, "_bm25_index", None)
+        monkeypatch.setattr(hr, "_embeddings_map", {})
+        monkeypatch.setattr(hr, "_stored_index_dim", None)
+        monkeypatch.setattr(hr, "_stored_embedding_model", None)
+
+        # Mock Spark to return embeddings with mixed dimensions
+        mock_spark = MagicMock()
+
+        mock_chunk_row = MagicMock()
+        mock_chunk_row.__getitem__ = lambda self, k: {
+            "chunk_id": "c1", "ticker": "NVDA", "chunk_text": "text",
+            "accession_number": "ACC", "accepted_epoch": 1735689600,
+            "form_type": "10-K", "filing_section": "s1",
+            "chunk_index": 0, "source_url": "",
+        }.get(k)
+
+        mock_chunks_df = MagicMock()
+        mock_chunks_df.select.return_value = mock_chunks_df
+        mock_chunks_df.collect.return_value = [mock_chunk_row]
+
+        # Two embeddings: one 384-d, one 1024-d
+        mock_embed_row1 = MagicMock()
+        mock_embed_row1.__getitem__ = lambda self, k: {
+            "chunk_id": "c1", "embedding": [0.1] * 384, "embedding_model": "BAAI/bge-small-en-v1.5",
+        }.get(k)
+        mock_embed_row2 = MagicMock()
+        mock_embed_row2.__getitem__ = lambda self, k: {
+            "chunk_id": "c2", "embedding": [0.1] * 1024, "embedding_model": "BAAI/bge-small-en-v1.5",
+        }.get(k)
+
+        mock_embed_df = MagicMock()
+        mock_embed_df.select.return_value = mock_embed_df
+        mock_embed_df.collect.return_value = [mock_embed_row1, mock_embed_row2]
+
+        def table_side(name):
+            if "embeddings" in name:
+                return mock_embed_df
+            return mock_chunks_df
+
+        mock_spark.table.side_effect = table_side
+        monkeypatch.setattr(hr, "_get_spark", lambda: mock_spark)
+
+        mock_f = MagicMock()
+        mock_f.unix_timestamp.return_value = mock_f
+        mock_f.col.return_value = mock_f
+        mock_f.alias.return_value = mock_f
+
+        with patch("pyspark.sql.functions", mock_f):
+            with pytest.raises(CorpusUnavailableError, match="dimension mismatch"):
+                hr._load_corpus()
+
+    def test_model_name_mismatch_unavailable(self, fake_pyspark, monkeypatch):
+        """If stored embedding_model does not match active model, corpus load raises CorpusUnavailableError."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError, vector_search
+
+        # Setup corpus with a stored model name
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_corpus", {
+            "c1": ("text", "NVDA", "ACC", "2025-01-01", "10-K", "s1", 0, ""),
+        })
+        vec = np.zeros(384, dtype=np.float32)
+        vec[0] = 1.0
+        monkeypatch.setattr(hr, "_embeddings_map", {"c1": vec})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "old-model-name")
+
+        class MatchingDimEmbeddings:
+            def embed_query(self, text):
+                v = np.zeros(384, dtype=np.float32)
+                v[0] = 1.0
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: MatchingDimEmbeddings())
+
+        # The active model (via config) is "BAAI/bge-small-en-v1.5", not "old-model-name"
+        with pytest.raises(CorpusUnavailableError, match="model mismatch"):
+            vector_search("test query")
+
+
+# ── Round 4: Default provider + BM25-only degradation tests ─────────────────
+
+class TestDefaultEmbeddingProvider:
+    """Verify config defaults to sentence-transformers (local), not huggingface (remote)."""
+
+    def test_default_provider_is_sentence_transformers(self, monkeypatch):
+        """With no EMBEDDING_PROVIDER env var, config must default to sentence-transformers."""
+        monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+        import api.config as cfg_mod
+        importlib.reload(cfg_mod)
+        assert cfg_mod.config.EMBEDDING_PROVIDER == "sentence-transformers"
+
+    def test_default_model_is_bge_small(self, monkeypatch):
+        """Default sentence-transformers model must be BAAI/bge-small-en-v1.5."""
+        monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("ST_EMBEDDING_MODEL", raising=False)
+        import api.config as cfg_mod
+        importlib.reload(cfg_mod)
+        assert cfg_mod.config.ST_EMBEDDING_MODEL == "BAAI/bge-small-en-v1.5"
+
+    def test_default_dim_is_384(self, monkeypatch):
+        """Default dimension must be 384 for sentence-transformers."""
+        monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("EMBEDDING_DIM", raising=False)
+        import api.config as cfg_mod
+        importlib.reload(cfg_mod)
+        assert cfg_mod.config.EMBEDDING_DIM == 384
+
+
+class TestHuggingfaceWithoutToken:
+    """Verify huggingface provider without a token fails clearly at init."""
+
+    def test_hf_no_token_raises_embedding_config_error(self, monkeypatch):
+        """get_embeddings() must raise EmbeddingConfigError when provider=huggingface and no token is set."""
+        monkeypatch.setenv("EMBEDDING_PROVIDER", "huggingface")
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.delenv("HUGGINGFACEHUB_API_TOKEN", raising=False)
+
+        import api.config as cfg_mod
+        import api.services.embeddings as emb_mod
+        importlib.reload(cfg_mod)
+        importlib.reload(emb_mod)
+
+        from api.services.exceptions import EmbeddingConfigError
+        with pytest.raises(EmbeddingConfigError, match="HF_TOKEN"):
+            emb_mod.get_embeddings()
+
+    def test_hf_no_token_search_sec_filings_returns_unavailable(self, monkeypatch):
+        """search_sec_filings with huggingface provider and no token must return retrieval_unavailable."""
+        monkeypatch.setenv("EMBEDDING_PROVIDER", "huggingface")
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.delenv("HUGGINGFACEHUB_API_TOKEN", raising=False)
+
+        import api.config as cfg_mod
+        import api.services.embeddings as emb_mod
+        importlib.reload(cfg_mod)
+        importlib.reload(emb_mod)
+
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from api.services.exceptions import EmbeddingConfigError
+
+        # With EmbeddingConfigError being a subclass of CorpusUnavailableError,
+        # search_sec_filings catches it and returns retrieval_unavailable.
+        # Mock the retriever to raise EmbeddingConfigError directly.
+        def fake_retrieve(*args, **kwargs):
+            raise EmbeddingConfigError(
+                "EMBEDDING_PROVIDER is 'huggingface' but neither HF_TOKEN nor "
+                "HUGGINGFACEHUB_API_TOKEN is set."
+            )
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) == 1
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["ticker"] == "NVDA"
+        # The message must name the missing setting, not the secret value
+        msg = result[0].get("message", "")
+        assert "HF_TOKEN" in msg, f"Expected 'HF_TOKEN' in message, got: {msg}"
+        assert "SEC filing corpus" not in msg, f"EmbeddingConfigError must NOT get generic corpus message: {msg}"
+
+
+class TestEmbedderFailureDegradesToBM25Only:
+    """Verify that an embedder runtime failure degrades to BM25-only, not substring."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_corpus(self, monkeypatch):
+        """Inject a tiny corpus WITH embeddings — embedder will fail at query time."""
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("NVIDIA revenue growth driven by AI chips",
+                      ticker="NVDA", accession="NVDA1", accepted_ts="2025-01-01"),
+            _make_doc("AMD EPYC server processor market share gains",
+                      ticker="AMD", accession="AMD1", accepted_ts="2025-01-01"),
+            _make_doc("NVIDIA CUDA ecosystem dominance in ML",
+                      ticker="NVDA", accession="NVDA2", accepted_ts="2025-06-01"),
+        ]
+
+        tokenised = [hr.tokenize(d.page_content) for d in self.docs]
+
+        # Build a NON-empty embeddings map so vector_search does NOT return early
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        monkeypatch.setattr(hr, "_corpus_loaded", True)
+        monkeypatch.setattr(hr, "_bm25_docs", self.docs)
+        monkeypatch.setattr(hr, "_bm25_tokenised", tokenised)
+        monkeypatch.setattr(hr, "_bm25_index", hr.BM25Okapi(tokenised))
+        monkeypatch.setattr(hr, "_embeddings_map", embeddings_map)
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
+        monkeypatch.setattr(hr, "_corpus", {
+            hashlib.md5(d.page_content.encode()).hexdigest()[:16]: (
+                d.page_content,
+                d.metadata["ticker"],
+                d.metadata["accession"],
+                d.metadata["accepted_ts"],
+                d.metadata["form_type"],
+                d.metadata["section_id"],
+                d.metadata["chunk_index"],
+                d.metadata.get("source_url", ""),
+            )
+            for d in self.docs
+        })
+
+    def test_embedder_raises_returns_bm25_only(self, monkeypatch):
+        """When embedder raises at query time, retrieve must return BM25-only results."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import HybridRetriever
+
+        call_count = [0]
+
+        class FailingEmbeddings:
+            def embed_query(self, text):
+                call_count[0] += 1
+                raise RuntimeError("Connection to HF API timed out")
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: FailingEmbeddings())
+
+        retriever = HybridRetriever(top_k=10)
+        results = retriever.retrieve("NVIDIA AI chips", top_k=10)
+
+        assert call_count[0] > 0, "Embedder was never called — empty embeddings_map short-circuited"
+        assert len(results) > 0, "BM25-only should still return results"
+        for doc in results:
+            assert doc.metadata.get("retrieval_mode") == "bm25_only", (
+                f"Expected retrieval_mode=bm25_only, got {doc.metadata.get('retrieval_mode')}"
+            )
+            assert doc.metadata.get("_warning") == "dense_unavailable"
+
+    def test_bm25_only_respects_ticker_filter(self, monkeypatch):
+        """BM25-only fallback must still respect ticker filter."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import HybridRetriever
+
+        call_count = [0]
+
+        class FailingEmbeddings:
+            def embed_query(self, text):
+                call_count[0] += 1
+                raise RuntimeError("auth error")
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: FailingEmbeddings())
+
+        retriever = HybridRetriever(top_k=10)
+        results = retriever.retrieve("revenue growth", ticker="NVDA", top_k=10)
+
+        assert call_count[0] > 0, "Embedder was never called"
+        assert len(results) > 0
+        for doc in results:
+            assert doc.metadata["ticker"] == "NVDA", (
+                f"BM25-only leaked {doc.metadata['ticker']} doc when ticker=NVDA"
+            )
+
+    def test_bm25_only_respects_as_of(self, monkeypatch):
+        """BM25-only fallback must still respect as_of filter."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import HybridRetriever
+
+        call_count = [0]
+
+        class FailingEmbeddings:
+            def embed_query(self, text):
+                call_count[0] += 1
+                raise RuntimeError("network error")
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: FailingEmbeddings())
+
+        retriever = HybridRetriever(top_k=10)
+        # as_of before NVDA2 (2025-06-01) — should exclude it
+        as_of = datetime(2025, 3, 1, tzinfo=timezone.utc)
+        results = retriever.retrieve("NVIDIA", as_of=as_of, top_k=10)
+
+        assert call_count[0] > 0, "Embedder was never called"
+        accessions = [d.metadata["accession"] for d in results]
+        assert "NVDA2" not in accessions, (
+            f"BM25-only leaked future doc NVDA2 (2025-06-01) with as_of=2025-03-01"
+        )
+        # NVDA1 (2025-01-01) should still be present
+        assert "NVDA1" in accessions
+
+    def test_bm25_only_returns_expected_hit(self, monkeypatch):
+        """BM25-only fallback must return the expected BM25 hit for a matching query."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import HybridRetriever
+
+        call_count = [0]
+
+        class FailingEmbeddings:
+            def embed_query(self, text):
+                call_count[0] += 1
+                raise RuntimeError("API error")
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: FailingEmbeddings())
+
+        retriever = HybridRetriever(top_k=10)
+        results = retriever.retrieve("AMD EPYC server processor", top_k=10)
+
+        assert call_count[0] > 0, "Embedder was never called"
+        assert len(results) > 0
+        texts = [d.page_content for d in results]
+        assert any("AMD EPYC" in t for t in texts), (
+            "BM25-only did not return the expected AMD EPYC hit"
+        )
+
+    def test_dimension_mismatch_still_returns_unavailable(self, monkeypatch):
+        """Dimension mismatch (config error) must still raise CorpusUnavailableError, not degrade to BM25."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import CorpusUnavailableError, vector_search
+
+        # The autouse fixture sets _embeddings_map={}, so vector_search returns
+        # early before the dim check. Add a real embedding to reach the guard.
+        # Use a content hash that matches an entry in _corpus from the autouse fixture.
+        content_hash = hashlib.md5("NVIDIA revenue growth driven by AI chips".encode()).hexdigest()[:16]
+        monkeypatch.setattr(hr, "_embeddings_map", {content_hash: np.zeros(384, dtype=np.float32)})
+        monkeypatch.setattr(hr, "_stored_index_dim", 384)
+        monkeypatch.setattr(hr, "_stored_embedding_model", "BAAI/bge-small-en-v1.5")
+
+        class WrongDimEmbeddings:
+            def embed_query(self, text):
+                return [0.1] * 1024
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: WrongDimEmbeddings())
+
+        with pytest.raises(CorpusUnavailableError, match="dim .* != stored"):
+            vector_search("test query")
+
+
+class TestBM25OnlyThroughSearchSecFilings:
+    """Verify BM25-only results propagate correctly through search_sec_filings."""
+
+    def test_bm25_only_mode_preserved_in_search_results(self, monkeypatch):
+        """search_sec_filings must preserve retrieval_mode=bm25_only from retriever."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from langchain_core.documents import Document
+
+        mock_doc = Document(
+            page_content="NVIDIA revenue growth",
+            metadata={
+                "accession": "ACC1",
+                "form_type": "10-K",
+                "accepted_ts": "2025-01-15",
+                "source_url": "",
+                "ticker": "NVDA",
+                "section_id": "item_7",
+                "chunk_index": 0,
+                "retrieval_mode": "bm25_only",
+                "_warning": "dense_unavailable",
+            },
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = [mock_doc]
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("api.services.reranker.rerank", side_effect=lambda q, d, top_k: d):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) == 1
+        assert result[0]["retrieval_mode"] == "bm25_only"
+        assert result[0]["_warning"] == "dense_unavailable"
+
+
+# ── End-to-end embedding error tests through search_sec_filings ──────────────
+
+class TestEmbeddingE2EThroughSearchSecFilings:
+    """End-to-end tests: embedding config/runtime errors through search_sec_filings.
+
+    These tests verify the full path from search_sec_filings through
+    HybridRetriever → vector_search → get_embeddings, ensuring that:
+    - Config errors (missing token, dim mismatch, model mismatch) → retrieval_unavailable
+    - Transient runtime failures → bm25_only with expected hits
+    """
+
+    def test_missing_token_returns_retrieval_unavailable(self, monkeypatch):
+        """Missing HF_TOKEN → EmbeddingConfigError → retrieval_unavailable."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from api.services.exceptions import EmbeddingConfigError
+
+        # Simulate: get_embeddings raises EmbeddingConfigError for missing token
+        def fake_retrieve(*args, **kwargs):
+            raise EmbeddingConfigError(
+                "EMBEDDING_PROVIDER is 'huggingface' but neither HF_TOKEN nor "
+                "HUGGINGFACEHUB_API_TOKEN is set."
+            )
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) == 1
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["ticker"] == "NVDA"
+        # Must name the missing setting, not the secret value
+        msg = result[0].get("message", "")
+        assert "HF_TOKEN" in msg, f"Expected 'HF_TOKEN' in message, got: {msg}"
+        assert "SEC filing corpus" not in msg, f"EmbeddingConfigError must NOT get generic corpus message: {msg}"
+
+    def test_token_value_never_leaks_in_message(self, monkeypatch):
+        """EmbeddingConfigError message must never contain the actual secret value."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        secret_value = "hf_FAKE_TOKEN_VALUE_12345"
+        monkeypatch.setenv("HF_TOKEN", secret_value)
+
+        from agent.tools_retrieval import search_sec_filings
+        from api.services.exceptions import EmbeddingConfigError
+
+        def fake_retrieve(*args, **kwargs):
+            raise EmbeddingConfigError(
+                f"EMBEDDING_PROVIDER is 'huggingface' but neither HF_TOKEN nor "
+                f"HUGGINGFACEHUB_API_TOKEN is set. Got: {secret_value}"
+            )
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        msg = result[0].get("message", "")
+        assert secret_value not in msg, f"Secret token value leaked into message: {msg}"
+
+    def test_dimension_mismatch_returns_retrieval_unavailable(self, monkeypatch):
+        """Dimension mismatch → EmbeddingConfigError → retrieval_unavailable with reason."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from api.services.exceptions import EmbeddingConfigError
+
+        def fake_retrieve(*args, **kwargs):
+            raise EmbeddingConfigError(
+                "query embedding dim 1024 != stored index dim 384; "
+                "check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
+                user_safe=True,
+            )
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) == 1
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["reason"] == "embedding_config"
+        assert result[0]["ticker"] == "NVDA"
+        msg = result[0].get("message", "")
+        assert "EMBEDDING_PROVIDER" in msg, f"Setting name missing from message: {msg}"
+        assert "Delta" not in msg, f"'Delta' should not appear in config error: {msg}"
+
+    def test_model_mismatch_returns_retrieval_unavailable(self, monkeypatch):
+        """Model mismatch → EmbeddingConfigError → retrieval_unavailable with reason."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from api.services.exceptions import EmbeddingConfigError
+
+        def fake_retrieve(*args, **kwargs):
+            raise EmbeddingConfigError(
+                "embedding model mismatch: active 'BAAI/bge-large-en-v1.5' != stored 'BAAI/bge-small-en-v1.5'; "
+                "check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
+                user_safe=True,
+            )
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.side_effect = fake_retrieve
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+            result = search_sec_filings("NVDA", query="revenue")
+
+        assert len(result) == 1
+        assert result[0]["error"] == "retrieval_unavailable"
+        assert result[0]["reason"] == "embedding_config"
+        assert result[0]["ticker"] == "NVDA"
+        msg = result[0].get("message", "")
+        assert "ST_EMBEDDING_MODEL" in msg, f"Setting name missing from message: {msg}"
+        assert "Delta" not in msg, f"'Delta' should not appear in config error: {msg}"
+
+    def test_transient_raise_returns_bm25_only_with_nvda_hit(self, monkeypatch):
+        """Transient embedder failure → bm25_only with expected NVDA hit."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from langchain_core.documents import Document
+
+        # Simulate: retriever returns BM25-only docs after embedder failed
+        mock_doc = Document(
+            page_content="NVIDIA revenue growth driven by AI chips",
+            metadata={
+                "accession": "NVDA1",
+                "form_type": "10-K",
+                "accepted_ts": "2025-01-15",
+                "source_url": "",
+                "ticker": "NVDA",
+                "section_id": "item_7",
+                "chunk_index": 0,
+                "retrieval_mode": "bm25_only",
+                "_warning": "dense_unavailable",
+            },
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = [mock_doc]
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("api.services.reranker.rerank", side_effect=lambda q, d, top_k: d):
+            result = search_sec_filings("NVDA", query="NVIDIA revenue")
+
+        assert len(result) == 1
+        assert result[0]["retrieval_mode"] == "bm25_only"
+        assert result[0]["_warning"] == "dense_unavailable"
+        assert "NVIDIA" in result[0]["chunk_text"]
+        assert result[0]["ticker"] == "NVDA"
+
+    def test_transient_raise_respects_as_of(self, monkeypatch):
+        """Transient failure with as_of must still return PIT-filtered results."""
+        mock_lakebase = MagicMock()
+        monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
+
+        from agent.tools_retrieval import search_sec_filings
+        from langchain_core.documents import Document
+
+        # Simulate: retriever returns BM25-only docs respecting as_of
+        mock_doc = Document(
+            page_content="NVIDIA revenue growth",
+            metadata={
+                "accession": "NVDA1",
+                "form_type": "10-K",
+                "accepted_ts": "2025-01-15",
+                "source_url": "",
+                "ticker": "NVDA",
+                "section_id": "item_7",
+                "chunk_index": 0,
+                "retrieval_mode": "bm25_only",
+                "_warning": "dense_unavailable",
+            },
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = [mock_doc]
+
+        as_of = datetime(2025, 6, 1, tzinfo=timezone.utc)
+
+        with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("api.services.reranker.rerank", side_effect=lambda q, d, top_k: d):
+            result = search_sec_filings("NVDA", query="NVIDIA revenue", as_of=as_of)
+
+        assert len(result) == 1
+        assert result[0]["retrieval_mode"] == "bm25_only"
+        assert result[0]["accepted_ts"] == "2025-01-15"  # Before as_of

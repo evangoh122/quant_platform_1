@@ -299,7 +299,13 @@ def main():
     ap.add_argument("--truncate", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--counts", action="store_true")
+    ap.add_argument("--schema", default=None,
+                    help="Target schema (overrides the SCHEMA env var); set per bundle target")
     args = ap.parse_args()
+    if args.schema:
+        global SCHEMA, FQN
+        SCHEMA = args.schema
+        FQN = f"{CATALOG}.{SCHEMA}"
 
     spark = get_spark()
     symbols = register_universe(spark)
