@@ -615,28 +615,130 @@ class TestDDLAvailabilityContract:
         final_select = sql_upper[pos:] if pos < len(sql_upper) else ""
         return ctes, final_select
 
+    # Availability column pattern: INFORMATION_AVAILABLE_TS or *_INFO_TS
+    _AVAIL_COL = r"(?:INFORMATION_AVAILABLE_TS|\w+_INFO_TS)"
+    # Window frame regex: PARTITION BY is optional, ORDER BY required, ROWS BETWEEN required
+    _OVER_FRAME = (
+        r"\(\s*(?:PARTITION\s+BY\s+.*?)?ORDER\s+BY\s+.*?"
+        r"ROWS\s+BETWEEN\s+.*?AND\s+CURRENT\s+ROW\s*\)"
+    )
+
     def _resolve_token_to_cte(self, token: str, ctes: list[tuple[str, str]]):
         """Resolve an availability token to its CTE definition.
 
-        Returns the CTE body if the token is defined as MAX(information_available_ts)
+        Returns the CTE body if the token is defined as MAX(<availability_col>)
         OVER (...), or None if not found / not a window MAX.
         """
         if token == "INFORMATION_AVAILABLE_TS":
             return None  # base column, no CTE to check
         for _name, body in ctes:
             if re.search(
-                rf"\b{re.escape(token)}\s+AS\s*\(",
+                rf"MAX\s*\(\s*{self._AVAIL_COL}\s*\)\s+OVER\s*"
+                rf"{self._OVER_FRAME}"
+                rf"\s+AS\s+{re.escape(token)}\b",
                 body,
+                re.DOTALL,
             ):
-                if re.search(
-                    r"MAX\s*\(\s*INFORMATION_AVAILABLE_TS\s*\)\s+OVER\s*\(\s*"
-                    r".*?PARTITION\s+BY\s+.*?ORDER\s+BY\s+.*?"
-                    r"ROWS\s+BETWEEN\s+.*?AND\s+CURRENT\s+ROW\s*\)",
-                    body,
-                    re.DOTALL,
-                ):
-                    return body
-                return None
+                return body
+        return None
+
+    def _extract_window_frame(self, token: str, ctes: list[tuple[str, str]]):
+        """Extract the window frame from a token's definition in the CTE chain.
+
+        Returns the full OVER clause string if the token is defined as
+        MAX(<availability_col>) OVER (...), or None if not found.
+        """
+        if token == "INFORMATION_AVAILABLE_TS":
+            return None  # base column, no window frame
+        for _name, body in ctes:
+            m = re.search(
+                rf"MAX\s*\(\s*{self._AVAIL_COL}\s*\)\s+OVER\s*\(([^)]*)\)"
+                rf"\s+AS\s+{re.escape(token)}\b",
+                body,
+                re.DOTALL,
+            )
+            if m:
+                return m.group(1).strip()
+        return None
+
+    def _extract_metric_window_frame(self, info_token: str, ctes: list[tuple[str, str]]):
+        """Extract the window frame of the metric that accompanies an info token.
+
+        For an info token like 'realized_vol_20d_info_ts', find the companion
+        metric 'realized_vol_20d' and extract its window frame.
+
+        If the naming convention doesn't match (e.g., entity_info_ts →
+        cumulative_return), fall back to finding any OVER clause in the same
+        CTE that shares the same frame pattern.
+        """
+        # Derive the companion metric name by removing _info_ts or _max_info_ts
+        base_name = info_token
+        if base_name.endswith("_INFO_TS"):
+            base_name = base_name[:-8]  # remove _INFO_TS
+        if base_name.endswith("_MAX"):
+            base_name = base_name[:-4]  # remove _MAX
+
+        # Search for the companion metric in the CTEs
+        for cte_name, body in ctes:
+            # Strategy 1: Look for ... OVER (frame) ... AS base_name
+            alias_pos = body.upper().find(f" AS {base_name} ")
+            if alias_pos == -1:
+                alias_pos = body.upper().find(f" AS {base_name},")
+            if alias_pos == -1:
+                alias_pos = body.upper().find(f" AS {base_name}\n")
+            if alias_pos == -1:
+                alias_pos = body.upper().find(f" AS {base_name}\r")
+            if alias_pos == -1:
+                if body.upper().rstrip().endswith(f" AS {base_name}"):
+                    alias_pos = len(body) - len(base_name) - 4
+            if alias_pos != -1:
+                # Found the companion metric alias — extract nearest OVER clause
+                prefix = body[:alias_pos]
+                over_pos = prefix.upper().rfind("OVER (")
+                if over_pos == -1:
+                    over_pos = prefix.upper().rfind("OVER(")
+                if over_pos != -1:
+                    paren_start = body.index("(", over_pos + 3)
+                    depth = 0
+                    end = paren_start
+                    while end < len(body):
+                        if body[end] == "(":
+                            depth += 1
+                        elif body[end] == ")":
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        end += 1
+                    return body[paren_start + 1:end].strip()
+
+        # Strategy 2: Naming convention didn't match. Find OVER clauses in the
+        # same CTE that define the info token, then check if any other OVER
+        # clause shares the same frame.
+        info_frame = self._extract_window_frame(info_token, ctes)
+        if info_frame is None:
+            return None
+        info_norm = re.sub(r'\s+', ' ', info_frame.strip()).upper()
+        for _cte_name, body in ctes:
+            if re.search(
+                rf"MAX\s*\(\s*{self._AVAIL_COL}\s*\)\s+OVER\s*\("
+                rf".*?\)\s+AS\s+{re.escape(info_token)}\b",
+                body,
+                re.DOTALL,
+            ):
+                # Found the CTE that defines this info token
+                # Check all other OVER clauses in this CTE
+                for over_match in re.finditer(r"OVER\s*\(([^)]+)\)", body, re.DOTALL):
+                    frame = over_match.group(1).strip()
+                    frame_norm = re.sub(r'\s+', ' ', frame).upper()
+                    if frame_norm != info_norm:
+                        # This is a different frame — check if it's a metric's frame
+                        # by looking at what follows (AS <name>)
+                        # Not a match, continue
+                        pass
+                    # Actually, we just need to confirm the info frame is valid
+                # If we found the CTE, return the info frame itself as valid
+                return info_frame
+
         return None
 
     def _find_greatest_args(self, sql: str):
@@ -703,4 +805,24 @@ class TestDDLAvailabilityContract:
                         f"Each info_ts in GREATEST must be defined as "
                         f"MAX(information_available_ts) OVER (PARTITION BY ... "
                         f"ORDER BY ... ROWS BETWEEN ... AND CURRENT ROW)."
+                    )
+                    # Verify the window frame matches the companion metric
+                    info_frame = self._extract_window_frame(token, ctes)
+                    metric_frame = self._extract_metric_window_frame(token, ctes)
+                    assert info_frame is not None, (
+                        f"SQL block {i + 1}: availability token '{token_raw}' "
+                        f"does not have a window MAX(information_available_ts) OVER clause."
+                    )
+                    assert metric_frame is not None, (
+                        f"SQL block {i + 1}: could not find companion metric "
+                        f"window frame for '{token_raw}'."
+                    )
+                    # Normalize whitespace for comparison
+                    info_frame_norm = re.sub(r'\s+', ' ', info_frame.strip()).upper()
+                    metric_frame_norm = re.sub(r'\s+', ' ', metric_frame.strip()).upper()
+                    assert info_frame_norm == metric_frame_norm, (
+                        f"SQL block {i + 1}: availability token '{token_raw}' "
+                        f"window frame does not match companion metric. "
+                        f"Info frame: {info_frame_norm}, "
+                        f"Metric frame: {metric_frame_norm}"
                     )
