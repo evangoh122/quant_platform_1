@@ -1,9 +1,9 @@
-"""AST-scan test: every top-level third-party import reachable from api/, agent/,
+"""AST-scan test: every third-party import reachable from api/, agent/,
 db/, config/ must be declared in requirements.txt.
 
-Deferred imports (inside function bodies) are excluded — only module-scope
-(top-level) imports are checked.  ibapi and pyspark are explicitly allowed
-to be absent since they are deferred by design.
+Walks the entire AST (including function bodies) so deferred imports like
+``from databricks import sql`` inside function bodies are also caught.
+ibapi and pyspark are explicitly allowed to be absent since they are optional.
 """
 from __future__ import annotations
 
@@ -73,12 +73,15 @@ def _parse_requirements() -> set[str]:
     return dists
 
 
-def _scan_top_level_imports(dirs: list[str]) -> set[str]:
-    """Walk Python files in *dirs* and collect top-level (module-scope) third-party imports.
+def _scan_all_imports(dirs: list[str]) -> set[str]:
+    """Walk Python files in *dirs* and collect ALL third-party imports,
+    including those inside function bodies (deferred imports).
 
     For ``ImportFrom`` nodes, both the full dotted module name (e.g.
     ``databricks.sql``) and the top-level package (e.g. ``databricks``) are
     collected so that dotted mappings in ``_IMPORT_TO_DIST`` are reachable.
+    Also adds ``module.name`` for each alias (e.g. ``from databricks import sql``
+    → ``databricks.sql``).
     """
     imports: set[str] = set()
     for d in dirs:
@@ -90,17 +93,20 @@ def _scan_top_level_imports(dirs: list[str]) -> set[str]:
                 tree = ast.parse(py_file.read_text(), filename=str(py_file))
             except SyntaxError:
                 continue
-            for node in ast.iter_child_nodes(tree):
+            for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
                         imports.add(alias.name.split(".")[0])
                 elif isinstance(node, ast.ImportFrom):
                     if node.module and node.level == 0:
-                        # Keep the full dotted name (e.g. "databricks.sql")
-                        # so dotted mappings in _IMPORT_TO_DIST are reachable.
                         imports.add(node.module)
-                        # Also keep the top-level package for generic lookups.
                         imports.add(node.module.split(".")[0])
+                        # Also add module.alias_name for each imported name
+                        # e.g. from databricks import sql → databricks.sql
+                        for alias in node.names:
+                            full = f"{node.module}.{alias.name}"
+                            imports.add(full)
+                            imports.add(full.split(".")[0])
     return imports
 
 
@@ -128,11 +134,11 @@ def _import_to_dist(import_name: str) -> str:
 
 
 def test_all_top_level_imports_declared_in_requirements():
-    """Every top-level third-party import must be declared in requirements.txt."""
+    """Every third-party import (including deferred) must be declared in requirements.txt."""
     req_dists = _parse_requirements()
     assert req_dists, "requirements.txt is empty or missing"
 
-    top_imports = _scan_top_level_imports(_SCAN_DIRS)
+    top_imports = _scan_all_imports(_SCAN_DIRS)
 
     missing: list[str] = []
     for imp in sorted(top_imports):
@@ -142,8 +148,8 @@ def test_all_top_level_imports_declared_in_requirements():
         # Skip local packages
         if _is_local_module(imp):
             continue
-        # Skip deferred-allowed
-        if imp in _DEFERRED_ALLOWED:
+        # Skip deferred-allowed (check top-level package too)
+        if imp in _DEFERRED_ALLOWED or imp.split(".")[0] in _DEFERRED_ALLOWED:
             continue
 
         dist = _import_to_dist(imp)
