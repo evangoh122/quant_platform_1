@@ -139,7 +139,7 @@ class TestSearchSecFilingsReturnsChunkId:
         with patch.object(tr, "normalize_symbol", return_value="NVDA"), \
              patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
              patch("api.services.reranker.rerank", return_value=[mock_doc]):
-            MockRetriever.return_value.retrieve.return_value = [mock_doc]
+            MockRetriever.return_value.retrieve_and_rerank.return_value = [mock_doc]
             results = tr.search_sec_filings("NVDA", query="revenue", top_k=1)
 
         assert len(results) == 1
@@ -150,8 +150,8 @@ class TestSearchSecFilingsReturnsChunkId:
 class TestWrapperMatchesHybridRerank:
     """test_wrapper_matches_hybrid_rerank"""
 
-    def test_wrapper_uses_hybrid_rerank_by_default(self):
-        """search_sec_filings should default to hybrid_rerank path for multi-hit queries."""
+    def test_wrapper_uses_retrieve_and_rerank(self):
+        """search_sec_filings delegates to retrieve_and_rerank (shared composition)."""
         import sys
         from unittest.mock import MagicMock, patch
 
@@ -177,13 +177,13 @@ class TestWrapperMatchesHybridRerank:
         ]
 
         with patch.object(tr, "normalize_symbol", return_value="NVDA"), \
-             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever, \
-             patch("api.services.reranker.rerank", return_value=docs) as mock_rerank:
-            MockRetriever.return_value.retrieve.return_value = docs
+             patch("api.services.hybrid_retriever.HybridRetriever") as MockRetriever:
+            MockRetriever.return_value.retrieve_and_rerank.return_value = docs
             results = tr.search_sec_filings("NVDA", query="revenue", top_k=5)
 
-        # rerank should have been called since query is non-empty and len(docs) > 1
-        mock_rerank.assert_called_once()
+        # retrieve_and_rerank should have been called (the shared composition)
+        MockRetriever.return_value.retrieve_and_rerank.assert_called_once()
+        assert len(results) == 2
 
 
 class TestEveryModeFiltersBeforeScoring:
@@ -238,14 +238,12 @@ class TestFutureChunkIsHardGate:
 class TestRetrieveMatchesRetrieveMode:
     """test_retrieve_and_retrieve_mode_return_same_docs"""
 
-    def test_retrieve_matches_hybrid_rerank_mode(self, offline_adapter):
-        """retrieve() and retrieve_mode(mode='hybrid_rerank') return the same docs.
+    def test_retrieve_matches_hybrid_rrf_mode(self, offline_adapter):
+        """retrieve() and retrieve_mode(mode='hybrid_rrf') return identical ORDERED results.
 
-        The eval harness measures the real retrieval path — if retrieve_mode
-        diverged from retrieve(), the eval would be measuring a dead code path.
-        Both paths reuse the same bm25_search, vector_search, and rrf_fuse.
-        The reranker reorders by relevance score so set equality is the
-        invariant; exact ordering depends on cross-encoder scores.
+        Both paths must call the same bm25_search + vector_search + rrf_fuse
+        composition.  We compare ordered (chunk_id, score) lists — not unordered
+        sets — because ordering is the whole point of RRF fusion.
         """
         from evals.rag_eval.corpus import install_offline_corpus
         from api.services.hybrid_retriever import HybridRetriever
@@ -256,7 +254,7 @@ class TestRetrieveMatchesRetrieveMode:
         with install_offline_corpus(offline_adapter):
             retriever = HybridRetriever(top_k=5, rrf_k=60)
 
-            # Production path: retrieve() gives RRF-fused results (no rerank)
+            # Production path: retrieve() gives RRF-fused results
             docs_prod = retriever.retrieve(
                 query=item.question,
                 ticker=item.ticker,
@@ -264,23 +262,77 @@ class TestRetrieveMatchesRetrieveMode:
                 top_k=5,
             )
 
-            # Eval path: retrieve_mode("hybrid_rerank") gives RRF + rerank
+            # Eval path: retrieve_mode("hybrid_rrf") delegates to retrieve()
+            docs_eval = retriever.retrieve_mode(
+                query=item.question,
+                mode="hybrid_rrf",
+                ticker=item.ticker,
+                as_of=as_of,
+                top_k=5,
+            )
+
+        # Ordered (chunk_id, component_score) comparison
+        prod_seq = [(d.metadata.get("chunk_id", ""), d.metadata.get("component_score")) for d in docs_prod]
+        eval_seq = [(d.metadata.get("chunk_id", ""), d.metadata.get("component_score")) for d in docs_eval]
+        assert prod_seq == eval_seq, (
+            f"retrieve() and retrieve_mode('hybrid_rrf') ordered results differ.\n"
+            f"  prod: {prod_seq}\n"
+            f"  eval: {eval_seq}"
+        )
+
+    def test_hybrid_rerank_parity_with_deterministic_reranker(self, offline_adapter, monkeypatch):
+        """retrieve_and_rerank() and retrieve_mode('hybrid_rerank') produce identical ORDERED results.
+
+        Uses a deterministic fake reranker (sorts by chunk_id reversed) so the
+        test is hermetic.  A mutation that skips or reorders rerank in one path
+        will cause the ordered comparison to fail.
+        """
+        from evals.rag_eval.corpus import install_offline_corpus
+        from api.services.hybrid_retriever import HybridRetriever
+        from api.services import reranker as reranker_mod
+
+        call_log: list[str] = []
+
+        def _fake_rerank(query, docs, top_k=5):
+            call_log.append("rerank")
+            scored = sorted(docs, key=lambda d: d.metadata.get("chunk_id", ""), reverse=True)
+            return scored[:top_k]
+
+        monkeypatch.setattr(reranker_mod, "rerank", _fake_rerank)
+
+        item = _answerable_item(ticker="NVDA")
+        as_of = item.as_of_datetime()
+
+        with install_offline_corpus(offline_adapter):
+            retriever = HybridRetriever(top_k=5, rrf_k=60)
+
+            # Production composition: retrieve_and_rerank()
+            docs_prod = retriever.retrieve_and_rerank(
+                query=item.question,
+                ticker=item.ticker,
+                as_of=as_of,
+                top_k=5,
+            )
+
+            call_log.clear()
+
+            # Eval path: retrieve_mode("hybrid_rerank")
             docs_eval = retriever.retrieve_mode(
                 query=item.question,
                 mode="hybrid_rerank",
                 ticker=item.ticker,
                 as_of=as_of,
                 top_k=5,
-                rerank=True,
             )
 
-        # Both must return the same set of chunk_ids
-        prod_ids = {d.metadata.get("chunk_id", "") for d in docs_prod}
-        eval_ids = {d.metadata.get("chunk_id", "") for d in docs_eval}
-        assert prod_ids == eval_ids, (
-            f"retrieve() and retrieve_mode('hybrid_rerank') returned different doc sets.\n"
-            f"  prod: {sorted(prod_ids)}\n"
-            f"  eval: {sorted(eval_ids)}"
+        assert call_log.count("rerank") == 1, "retrieve_mode('hybrid_rerank') must call rerank exactly once"
+
+        prod_seq = [d.metadata.get("chunk_id", "") for d in docs_prod]
+        eval_seq = [d.metadata.get("chunk_id", "") for d in docs_eval]
+        assert prod_seq == eval_seq, (
+            f"retrieve_and_rerank() and retrieve_mode('hybrid_rerank') ordered results differ.\n"
+            f"  prod: {prod_seq}\n"
+            f"  eval: {eval_seq}"
         )
 
 

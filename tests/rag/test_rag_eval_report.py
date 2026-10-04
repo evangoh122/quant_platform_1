@@ -130,3 +130,85 @@ class TestReportWritesJsonAndMarkdown:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         assert data["run_id"] == "test-run-001"
+
+
+class TestReportTextStripping:
+    """test_report_text_stripping_and_include_text_flag"""
+
+    def _make_report_with_text(self, text: str) -> RunReport:
+        item = GoldenItem(id="t1", ticker="NVDA", question="q", gold_chunk_ids=("c1",))
+        config = RetrievalConfig(mode="bm25", ticker_filter=True)
+        ir = ItemResult(
+            item=item,
+            config=config,
+            hits=[RetrievalHit(
+                chunk_id="c1", ticker="NVDA", accession="A1", section="s1",
+                form_type="10-K", accepted_ts="2024-01-01T00:00:00+00:00",
+                text=text, rank=1,
+            )],
+            metrics={"recall_at_1": 1.0},
+        )
+        return RunReport(
+            run_id="test-run-text",
+            git_sha="abc1234",
+            adapter_type="jsonl",
+            cli_args={"mode": "all"},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            item_results=[ir],
+            overall_metrics={"recall_at_5": 0.8},
+        )
+
+    def test_default_report_has_no_text_field(self):
+        """Default report JSON must not contain 'text' or 'chunk_text' in hits."""
+        long_text = "The company reported revenue of $42 billion for fiscal year 2024."
+        report = build_report(self._make_report_with_text(long_text))
+        report_json = json.dumps(report)
+        assert "text" not in report_json or '"text"' not in report_json
+        assert "chunk_text" not in report_json
+
+    def test_default_report_has_no_raw_sentence(self):
+        """Default report must not leak raw filing text sentences."""
+        secret_sentence = "NVIDIA reported record quarterly revenue of $26.5 billion"
+        report = build_report(self._make_report_with_text(secret_sentence))
+        report_json = json.dumps(report)
+        assert secret_sentence not in report_json
+
+    def test_include_text_truncates_to_200(self):
+        """With --include-text, hit text is truncated to 200 chars."""
+        long_text = "x" * 500
+        report = build_report(self._make_report_with_text(long_text), include_text=True)
+        hits = report["item_results"][0]["hits"]
+        assert len(hits[0]["text"]) == 200
+
+    def test_include_text_preserves_short_text(self):
+        """With --include-text, short text is preserved."""
+        short_text = "short text"
+        report = build_report(self._make_report_with_text(short_text), include_text=True)
+        hits = report["item_results"][0]["hits"]
+        assert hits[0]["text"] == "short text"
+
+    def test_cli_args_paths_redacted_to_basename(self):
+        """Absolute paths in cli_args are redacted to basename."""
+        rr = RunReport(
+            run_id="test",
+            cli_args={
+                "golden": "/home/user/project/data/golden.jsonl",
+                "corpus": "relative/corpus.jsonl",
+                "mode": "all",
+            },
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report = build_report(rr)
+        assert report["cli_args"]["golden"] == "golden.jsonl"
+        assert report["cli_args"]["corpus"] == "relative/corpus.jsonl"
+        assert report["cli_args"]["mode"] == "all"
+
+    def test_write_json_has_no_text_in_hits(self, tmp_path):
+        """Written JSON report file has no text field in hits."""
+        report = build_report(self._make_report_with_text("secret content"))
+        json_path, _ = write_report(report, tmp_path, date(2024, 6, 1))
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        hits = data["item_results"][0]["hits"]
+        assert "text" not in hits[0]
+        assert "chunk_text" not in hits[0]

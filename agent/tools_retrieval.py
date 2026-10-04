@@ -88,19 +88,14 @@ def search_sec_filings(
 
     try:
         from api.services.hybrid_retriever import HybridRetriever
-        from api.services.reranker import rerank
 
         retriever = HybridRetriever(top_k=top_k)
-        docs = retriever.retrieve(
+        docs = retriever.retrieve_and_rerank(
             query=query or symbol,
             ticker=symbol,
             as_of=as_of,
             top_k=top_k,
         )
-
-        # Apply reranker if we have a query
-        if query and len(docs) > 1:
-            docs = rerank(query, docs, top_k=top_k)
 
         return [
             {

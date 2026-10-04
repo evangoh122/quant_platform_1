@@ -15,9 +15,34 @@ from typing import Any
 from evals.rag_eval.models import RunReport
 
 
-def build_report(run_report: RunReport) -> dict[str, Any]:
-    """Convert RunReport to a serializable dict."""
+def build_report(run_report: RunReport, *, include_text: bool = False) -> dict[str, Any]:
+    """Convert RunReport to a serializable dict.
+
+    Args:
+        run_report: The run report to convert.
+        include_text: If True, include retrieval hit text truncated to 200 chars
+            (for local debugging only).  Default False — text is never written
+            into the public scorecard artifact.
+    """
     report = run_report.to_dict()
+
+    # Strip raw filing text from item_results unless explicitly requested
+    for ir_dict in report.get("item_results", []):
+        for hit_dict in ir_dict.get("hits", []):
+            if include_text:
+                raw = hit_dict.get("text", "")
+                hit_dict["text"] = raw[:200] if raw else ""
+            else:
+                hit_dict.pop("text", None)
+            hit_dict.pop("chunk_text", None)
+
+    # Redact absolute paths in cli_args to basename
+    cli_args = report.get("cli_args", {})
+    if cli_args:
+        report["cli_args"] = {
+            k: Path(v).name if isinstance(v, str) and Path(v).is_absolute() else v
+            for k, v in cli_args.items()
+        }
 
     # Add per-item rows
     item_rows: list[dict[str, Any]] = []

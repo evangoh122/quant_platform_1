@@ -140,6 +140,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--smoke-ids", type=str, default=None,
         help="Comma-separated golden item IDs for smoke run",
     )
+    parser.add_argument(
+        "--include-text", action="store_true",
+        help="Include retrieval hit text in report (truncated to 200 chars, local debug only)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -290,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Write report
     from evals.rag_eval.report import build_report, write_report
 
-    report_dict = build_report(report)
+    report_dict = build_report(report, include_text=args.include_text)
     json_path, md_path = write_report(report_dict, args.output_dir, date.today())
 
     print(f"\nReports written:")

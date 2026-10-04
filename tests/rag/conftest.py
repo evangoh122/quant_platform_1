@@ -70,6 +70,35 @@ def _reset_retriever_singletons():
     hr._stored_embedding_model = None
 
 
+@pytest.fixture(autouse=True)
+def _block_network(monkeypatch):
+    """Prevent any test from accidentally hitting the network or running slow models.
+
+    HuggingFace model downloads, cross-encoder loads, and other network
+    calls must be mocked at a higher level.  This guard makes accidental
+    network access fail fast with a clear error instead of stalling.
+    Also disables the cross-encoder reranker to keep tests fast — tests
+    that need reranking should mock it explicitly.
+    """
+    import socket
+
+    _real_create_connection = socket.create_connection
+
+    def _fail_create_connection(address, *args, **kwargs):
+        host, port = address
+        raise ConnectionRefusedError(
+            f"Network access blocked in tests (attempted {host}:{port}). "
+            f"Mock the call or use monkeypatch to allow."
+        )
+
+    monkeypatch.setattr(socket, "create_connection", _fail_create_connection)
+
+    # Disable cross-encoder reranker in all tests for speed.
+    # _get_model returning None makes rerank() return docs[:top_k] unchanged.
+    import api.services.reranker as reranker_mod
+    monkeypatch.setattr(reranker_mod, "_get_model", lambda *a, **kw: None)
+
+
 @pytest.fixture()
 def fake_pyspark(monkeypatch):
     """Install lightweight pyspark stubs so tests that exercise code paths
