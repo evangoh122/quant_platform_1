@@ -5,7 +5,8 @@ Read paths are split into two backends:
   * Delta (Unity Catalog) — market/feature/signal/SEC data. Queries use Spark
     column-equality predicates (``F.col(...) == value``), never f-string SQL.
   * Lakebase (Postgres) — operational state (positions, orders, watchlist).
-    Queries are parameterized (``%s`` placeholders only).
+    Queries are parameterized (``%s`` placeholders only for Postgres;
+    ``:name`` named placeholders for the SQL warehouse backend).
 
 Every user-supplied symbol is normalised and allow-listed via
 ``agent.guardrails.normalize_symbol`` before it reaches either backend, so an
@@ -74,12 +75,12 @@ def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: in
     query = (
         f"SELECT symbol, feature_ts, expiry, atm_iv, skew, put_call_ratio, volume_anomaly "
         f"FROM {_fqn('gold_options_features')} "
-        f"WHERE symbol = %s"
+        f"WHERE symbol = :symbol"
     )
-    params: tuple = (symbol,)
+    params: dict = {"symbol": symbol}
     if expiry:
-        query += " AND expiry = %s"
-        params = (symbol, expiry)
+        query += " AND expiry = :expiry"
+        params["expiry"] = expiry
     return _warehouse_query(query, params=params, limit=limit)
 
 
@@ -375,8 +376,8 @@ def get_cot_positioning(mapped_asset: str) -> dict:
         return rows[0].asDict() if rows else {}
 
     # Warehouse fallback
-    query = f"SELECT * FROM {_fqn('gold_cot_features')} WHERE mapped_asset = %s"
-    rows = _warehouse_query(query, params=(mapped_asset,), limit=1)
+    query = f"SELECT * FROM {_fqn('gold_cot_features')} WHERE mapped_asset = :mapped_asset"
+    rows = _warehouse_query(query, params={"mapped_asset": mapped_asset}, limit=1)
     return rows[0] if rows else {}
 
 

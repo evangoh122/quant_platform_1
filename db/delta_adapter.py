@@ -95,14 +95,15 @@ def _get_warehouse_connection():
 
 def _warehouse_query(
     query: str,
-    params: Optional[Tuple[Any, ...]] = None,
+    params: Optional[Dict[str, Any]] = None,
     *,
     timeout: int = WAREHOUSE_TIMEOUT_S,
     limit: int = 1000,
 ) -> List[Dict[str, Any]]:
     """Execute a parameterized query on the SQL warehouse. Returns list of dicts.
 
-    Parameters are passed as %s placeholders (databricks-sql-connector style).
+    Parameters use native named placeholders: ``:name`` markers with a dict
+    (``cursor.execute("... WHERE symbol = :symbol", {"symbol": s})``).
     The query is bounded by LIMIT and has a statement timeout enforced via a
     daemon thread (the connector has no native statement timeout).
     """
@@ -278,10 +279,10 @@ def latest_signals(symbol: Optional[str] = None, limit: int = 20) -> Any:
 
     # Warehouse fallback
     query = f"SELECT * FROM {_fqn('gold_trading_signals')}"
-    params = None
+    params: Optional[Dict[str, Any]] = None
     if symbol:
-        query += " WHERE symbol = %s"
-        params = (symbol,)
+        query += " WHERE symbol = :symbol"
+        params = {"symbol": symbol}
     query += " ORDER BY prediction_ts DESC"
     return _warehouse_query(query, params=params, limit=limit)
 
@@ -304,14 +305,14 @@ def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 500
     ohlcv_query = (
         f"SELECT symbol, feature_ts, open, high, low, close, volume, vwap "
         f"FROM {_fqn('gold_ohlcv_features')} "
-        f"WHERE symbol = %s AND feature_ts BETWEEN %s AND %s"
+        f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
     )
     opts_query = (
         f"SELECT symbol, feature_ts, expiry, atm_iv, skew, put_call_ratio, volume_anomaly "
         f"FROM {_fqn('gold_options_features')} "
-        f"WHERE symbol = %s AND feature_ts BETWEEN %s AND %s"
+        f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
     )
-    params = (symbol, start_ts, end_ts)
+    params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
     ohlcv_rows = _warehouse_query(ohlcv_query, params=params, limit=limit)
     opts_rows = _warehouse_query(opts_query, params=params, limit=limit)
 

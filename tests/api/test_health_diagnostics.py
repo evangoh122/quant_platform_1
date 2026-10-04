@@ -298,12 +298,12 @@ def test_warehouse_backend_selected_when_pyspark_missing(monkeypatch):
 
     assert len(calls) == 1
     assert "gold_trading_signals" in calls[0]["query"]
-    assert calls[0]["params"] == ("AAPL",)
+    assert calls[0]["params"] == {"symbol": "AAPL"}
     assert "LIMIT" in calls[0]["query"].upper() or calls[0]["kwargs"].get("limit") == 10
 
 
 def test_warehouse_query_uses_parameterized_params(monkeypatch):
-    """Warehouse query passes params as tuple, not string interpolation."""
+    """Warehouse query passes params as dict with :name markers, not %s."""
     import db.delta_adapter as adapter
 
     captured = {}
@@ -329,10 +329,10 @@ def test_warehouse_query_uses_parameterized_params(monkeypatch):
     monkeypatch.setattr(adapter, "_get_warehouse_connection", _mock_get_conn)
     monkeypatch.setattr(adapter, "_warehouse_available", lambda: True)
 
-    adapter._warehouse_query("SELECT * FROM t WHERE x = %s", params=("value",))
+    adapter._warehouse_query("SELECT * FROM t WHERE x = :val", params={"val": "value"})
 
-    assert captured["params"] == ("value",)
-    assert "%s" not in captured["query"] or "SELECT" in captured["query"]
+    assert captured["params"] == {"val": "value"}
+    assert ":val" in captured["query"]
 
 
 def test_warehouse_health_probe_returns_tuple(monkeypatch):
@@ -534,3 +534,149 @@ def test_health_trace_requires_auth(client):
     """
     resp = client.get("/api/health/trace")
     assert resp.status_code == 401
+
+
+# ── 11. Fake cursor validates :name markers (rejects %s / ?) ────────────────
+
+import re
+
+
+class _NamedParamValidatingCursor:
+    """Fake cursor that rejects %s/? placeholders; only :name markers allowed.
+
+    The params dict keys must exactly match the :name markers in the SQL.
+    """
+
+    _INVALID_RE = re.compile(r"%s|\?")
+    _NAME_RE = re.compile(r":(\w+)")
+
+    def __init__(self):
+        self.executed_query = None
+        self.executed_params = None
+
+    def execute(self, query, params=None):
+        if self._INVALID_RE.search(query):
+            raise ValueError(
+                f"Query uses legacy %s/? placeholders — must use :name markers: {query}"
+            )
+        names = set(self._NAME_RE.findall(query))
+        if params is not None:
+            param_keys = set(params.keys())
+            if names != param_keys:
+                raise ValueError(
+                    f":name markers {names} do not match params keys {param_keys}: {query}"
+                )
+        self.executed_query = query
+        self.executed_params = params
+
+    @property
+    def description(self):
+        return [("col",)]
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
+
+    def cancel(self):
+        pass
+
+
+class _NamedParamValidatingConn:
+    def __init__(self):
+        self.cursor_instance = _NamedParamValidatingCursor()
+
+    def cursor(self):
+        return self.cursor_instance
+
+    def close(self):
+        pass
+
+
+def test_warehouse_latest_signals_uses_named_params(monkeypatch):
+    """latest_signals warehouse path uses :symbol marker, not %s.
+
+    MUTATION: put back one %s → FAIL (fake cursor rejects legacy placeholders).
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+
+    conn = _NamedParamValidatingConn()
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: conn)
+
+    rows = adapter.latest_signals("AAPL", limit=3)
+    assert conn.cursor_instance.executed_query is not None
+    assert ":symbol" in conn.cursor_instance.executed_query
+    assert conn.cursor_instance.executed_params == {"symbol": "AAPL"}
+
+
+def test_warehouse_market_features_uses_named_params(monkeypatch):
+    """market_features warehouse path uses :symbol/:start_ts/:end_ts markers.
+
+    MUTATION: put back one %s → FAIL.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+
+    queries = []
+    conns = []
+
+    def _make_conn():
+        c = _NamedParamValidatingConn()
+        conns.append(c)
+        return c
+
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", _make_conn)
+
+    rows = adapter.market_features("AAPL", "2024-01-01", "2024-12-31", limit=100)
+    assert len(conns) == 2  # ohlcv + opts
+    for c in conns:
+        q = c.cursor_instance.executed_query
+        assert ":symbol" in q
+        assert ":start_ts" in q
+        assert ":end_ts" in q
+        assert c.cursor_instance.executed_params == {
+            "symbol": "AAPL", "start_ts": "2024-01-01", "end_ts": "2024-12-31",
+        }
+
+
+def test_warehouse_options_features_uses_named_params(monkeypatch):
+    """get_options_features warehouse path uses :symbol and optionally :expiry.
+
+    MUTATION: put back one %s → FAIL.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+
+    conn = _NamedParamValidatingConn()
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: conn)
+
+    from agent.tools_retrieval import get_options_features
+    rows = get_options_features("AAPL", expiry="2024-02-01", limit=100)
+    q = conn.cursor_instance.executed_query
+    assert ":symbol" in q
+    assert ":expiry" in q
+    assert conn.cursor_instance.executed_params == {"symbol": "AAPL", "expiry": "2024-02-01"}
+
+
+def test_warehouse_cot_uses_named_params(monkeypatch):
+    """get_cot_positioning warehouse path uses :mapped_asset marker.
+
+    MUTATION: put back one %s → FAIL.
+    """
+    import db.delta_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_has_pyspark", False)
+
+    conn = _NamedParamValidatingConn()
+    monkeypatch.setattr(adapter, "_get_warehouse_connection", lambda: conn)
+
+    from agent.tools_retrieval import get_cot_positioning
+    rows = get_cot_positioning("AAPL")
+    q = conn.cursor_instance.executed_query
+    assert ":mapped_asset" in q
+    assert conn.cursor_instance.executed_params == {"mapped_asset": "AAPL"}
