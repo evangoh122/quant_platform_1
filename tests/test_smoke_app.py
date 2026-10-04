@@ -78,8 +78,8 @@ def test_smoke_passes_with_valid_build(mock_urlopen):
 
 
 @patch("urllib.request.urlopen")
-def test_smoke_fails_on_json_hint(mock_urlopen):
-    """Missing-build JSON hint → FAIL."""
+def test_smoke_fails_on_json_hint(mock_urlopen, capsys):
+    """Missing-build JSON hint → FAIL, and the failing step is the frontend check."""
     from scripts.smoke_app import smoke_test
 
     hint = json.dumps({"error": "no frontend build", "hint": "run npm run build"}).encode()
@@ -92,14 +92,22 @@ def test_smoke_fails_on_json_hint(mock_urlopen):
 
     mock_urlopen.side_effect = _make_urlopen({
         "http://test.example.com/": resp,
+        "http://test.example.com/api/health": _json_response({"status": "ok"}),
+        "http://test.example.com/api/signals": _json_response({"data": []}),
+        "http://test.example.com/api/market/NVDA": _json_response({"symbol": "NVDA"}),
+        "http://test.example.com/api/analytics": _json_response({"data": []}),
+        "http://test.example.com/api/portfolio": _json_response({"positions": []}),
+        "http://test.example.com/api/watchlists": _json_response({"data": []}),
     })
 
     assert smoke_test("http://test.example.com") is False
+    captured = capsys.readouterr()
+    assert "FAIL  GET /" in captured.out
 
 
 @patch("urllib.request.urlopen")
-def test_smoke_fails_on_non_html(mock_urlopen):
-    """Arbitrary non-HTML content → FAIL."""
+def test_smoke_fails_on_non_html(mock_urlopen, capsys):
+    """Arbitrary non-HTML content → FAIL, and the failing step is the frontend check."""
     from scripts.smoke_app import smoke_test
 
     resp = MagicMock()
@@ -111,9 +119,17 @@ def test_smoke_fails_on_non_html(mock_urlopen):
 
     mock_urlopen.side_effect = _make_urlopen({
         "http://test.example.com/": resp,
+        "http://test.example.com/api/health": _json_response({"status": "ok"}),
+        "http://test.example.com/api/signals": _json_response({"data": []}),
+        "http://test.example.com/api/market/NVDA": _json_response({"symbol": "NVDA"}),
+        "http://test.example.com/api/analytics": _json_response({"data": []}),
+        "http://test.example.com/api/portfolio": _json_response({"positions": []}),
+        "http://test.example.com/api/watchlists": _json_response({"data": []}),
     })
 
     assert smoke_test("http://test.example.com") is False
+    captured = capsys.readouterr()
+    assert "FAIL  GET /" in captured.out
 
 
 @patch("urllib.request.urlopen")
