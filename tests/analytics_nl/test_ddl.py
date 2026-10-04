@@ -537,6 +537,29 @@ class TestDDLRelativePerformanceSemantics:
             "Relative performance must filter by event_date >= :start_date"
         )
 
+    def test_anomaly_propagation_for_invalid_returns(self, ddl_content):
+        """Relative performance must propagate invalid returns (≤ -100%) as NULL."""
+        section_start = ddl_content.find("## serve_relative_performance_v1")
+        section_end = ddl_content.find("## serve_options_metrics_v1")
+        section = ddl_content[section_start:section_end]
+
+        # Must use BOOL_OR to detect invalid returns
+        assert "BOOL_OR" in section, (
+            "Relative performance must use BOOL_OR to detect invalid returns"
+        )
+        # Must check for return_1d <= -1
+        assert "return_1d <= -1" in section.lower() or "return_1d <= -1" in section, (
+            "Relative performance must check for return_1d <= -1"
+        )
+        # Must set status to 'invalid_return' when invalid returns detected
+        assert "invalid_return" in section, (
+            "Relative performance must set status to 'invalid_return' when invalid returns detected"
+        )
+        # Must use CASE to set cumulative_return to NULL when invalid
+        assert "CASE" in section, (
+            "Relative performance must use CASE to set cumulative_return to NULL when invalid"
+        )
+
 
 class TestDDLAvailabilityContract:
     """Every output information_available_ts must be a window MAX / GREATEST over all inputs."""

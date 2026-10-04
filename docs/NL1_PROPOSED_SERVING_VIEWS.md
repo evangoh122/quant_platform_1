@@ -365,15 +365,27 @@ entity_cumulative AS (
         event_date,
         return_1d,
         information_available_ts,
-        -- Guard: GREATEST(1 + return_1d, 1e-10) prevents LN(0) or LN(negative).
-        -- Assumption: daily returns on positive-priced equities are bounded
-        -- above -1 (price cannot go below 0). NULL data-quality breaks are
-        -- excluded by the WHERE clause. The guard is defensive only.
-        EXP(SUM(LN(GREATEST(1 + return_1d, 1e-10))) OVER (
+        -- Anomaly propagation: if any return ≤ -1 (100% loss) or invalid,
+        -- mark the entire cumulative series as invalid.
+        -- Use BOOL_OR to detect any invalid return in the window.
+        BOOL_OR(return_1d <= -1) OVER (
             PARTITION BY symbol
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        )) - 1 AS cumulative_return,
+        ) AS has_invalid_return,
+        -- Cumulative return: only compute if no invalid returns in window
+        CASE
+            WHEN BOOL_OR(return_1d <= -1) OVER (
+                PARTITION BY symbol
+                ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) THEN NULL
+            ELSE EXP(SUM(LN(1 + return_1d)) OVER (
+                PARTITION BY symbol
+                ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )) - 1
+        END AS cumulative_return,
         MAX(information_available_ts) OVER (
             PARTITION BY symbol
             ORDER BY event_date
@@ -387,10 +399,20 @@ benchmark_cumulative AS (
         event_date,
         bench_return,
         bench_info_ts,
-        EXP(SUM(LN(GREATEST(1 + bench_return, 1e-10))) OVER (
+        BOOL_OR(bench_return <= -1) OVER (
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        )) - 1 AS bench_cumulative_return,
+        ) AS has_invalid_bench,
+        CASE
+            WHEN BOOL_OR(bench_return <= -1) OVER (
+                ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) THEN NULL
+            ELSE EXP(SUM(LN(1 + bench_return)) OVER (
+                ORDER BY event_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )) - 1
+        END AS bench_cumulative_return,
         MAX(bench_info_ts) OVER (
             ORDER BY event_date
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -404,7 +426,11 @@ SELECT
     e.return_1d,
     e.cumulative_return - b.bench_cumulative_return AS rel_perf,
     :benchmark AS benchmark,
-    GREATEST(e.entity_info_ts, b.bench_max_info_ts) AS information_available_ts
+    GREATEST(e.entity_info_ts, b.bench_max_info_ts) AS information_available_ts,
+    CASE
+        WHEN e.has_invalid_return OR b.has_invalid_bench THEN 'invalid_return'
+        ELSE 'ok'
+    END AS status
 FROM entity_cumulative e
 JOIN benchmark_cumulative b ON e.event_date = b.event_date;
 ```
