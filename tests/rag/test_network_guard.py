@@ -193,3 +193,28 @@ class TestIsLoopbackValidation:
         """127.1.evil.com must be blocked by the actual conftest guard."""
         with pytest.raises(ConnectionRefusedError, match=GUARD_MSG_PREFIX):
             socket.create_connection(("127.1.evil.com", 80))
+
+class TestSocketDefaultTimeoutScoping:
+    """The guard's socket default timeout must not leak past the fixture."""
+
+    def test_install_default_timeout_restores_previous_value(self):
+        import socket
+
+        from tests.rag._netguard import install_default_timeout
+
+        finalizers = []
+        before = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(None)
+            install_default_timeout(finalizers.append, 3)
+            assert socket.getdefaulttimeout() == 3
+            assert len(finalizers) == 1
+            finalizers[0]()
+            assert socket.getdefaulttimeout() is None
+        finally:
+            socket.setdefaulttimeout(before)
+
+    def test_guard_fixture_sets_timeout_during_test(self):
+        import socket
+
+        assert socket.getdefaulttimeout() == 10

@@ -1,5 +1,6 @@
 """tests/rag/_netguard.py — Extracted network guard helper for testability."""
 import ipaddress
+import socket
 
 
 def _is_loopback(host: str) -> bool:
@@ -16,3 +17,13 @@ def _is_loopback(host: str) -> bool:
     except ValueError:
         # Not a valid IP literal (e.g. "127.1.evil.com") — block it
         return False
+
+
+def install_default_timeout(add_finalizer, seconds=10):
+    """Set the socket default timeout and register a finalizer that restores the previous value.
+
+    Scoped so the guard's timeout cannot leak to tests outside the fixture.
+    """
+    prev = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    add_finalizer(lambda: socket.setdefaulttimeout(prev))

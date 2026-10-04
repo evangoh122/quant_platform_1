@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.rag._netguard import _is_loopback
+from tests.rag._netguard import _is_loopback, install_default_timeout
 
 
 def mock_if_missing(module_names):
@@ -88,9 +88,7 @@ def _block_network(monkeypatch, request):
     # hanging indefinitely (defense-in-depth alongside pytest-timeout).
     # Scoped: restore the previous value on teardown so it doesn't leak
     # to tests outside this module.
-    _prev_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(10)
-    request.addfinalizer(lambda: socket.setdefaulttimeout(_prev_timeout))
+    install_default_timeout(request.addfinalizer, 10)
 
     _real_create_connection = socket.create_connection
     _real_socket_connect = socket.socket.connect
