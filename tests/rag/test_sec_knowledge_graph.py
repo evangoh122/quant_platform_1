@@ -1797,3 +1797,193 @@ class TestRejectionReporting:
         nodes, edges, stats = build_graph(entities, corpus, "test-1.0")
         assert stats.accepted == 1
         assert len(stats.rejected) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 20. validate_and_raise shared validator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestValidateAndRaise:
+    """validate_and_raise raises on undocumented reasons, returns manifest."""
+
+    def test_raises_on_undocumented_reason(self):
+        """Undocumented rejection reason → ValueError, no writes."""
+        from sec_kg.build import BuildStats, validate_and_raise
+
+        stats = BuildStats()
+        stats.reject("totally_unknown_reason:something", "row1")
+        with pytest.raises(ValueError, match="Undocumented rejection reasons"):
+            validate_and_raise(stats)
+
+    def test_returns_manifest_on_documented_reasons(self):
+        """All documented reasons → returns manifest dict with exact counts."""
+        from sec_kg.build import BuildStats, validate_and_raise
+
+        stats = BuildStats()
+        stats.reject("unknown_entity_type:bad", "row1")
+        stats.reject("missing_cik_or_accession", "row2")
+        stats.accept()
+        stats.accept()
+        stats.accept()
+        entity_type_counts = {"company": 2, "filing": 1, "bad": 1}
+        manifest = validate_and_raise(stats, entity_type_counts)
+        assert manifest["accepted_rows"] == 3
+        assert manifest["rejected_rows"] == 2
+        assert manifest["rejection_reasons"]["unknown_entity_type:bad"] == 1
+        assert manifest["rejection_reasons"]["missing_cik_or_accession"] == 1
+        assert manifest["input_rows_by_entity_type"] == entity_type_counts
+
+    def test_raises_on_error_prefix_undocumented(self):
+        """Error prefix not in _ERROR_PREFIXES → ValueError."""
+        from sec_kg.build import BuildStats, validate_and_raise
+
+        stats = BuildStats()
+        stats.reject("fake_error:RuntimeError", "row1")
+        with pytest.raises(ValueError, match="Undocumented rejection reasons"):
+            validate_and_raise(stats)
+
+    def test_accepts_error_prefix_patterns(self):
+        """Error prefixes matching *_error:ExceptionType pass validation."""
+        from sec_kg.build import BuildStats, validate_and_raise
+
+        stats = BuildStats()
+        stats.reject("company_error:ValueError", "row1")
+        stats.reject("xbrl_error:TypeError", "row2")
+        manifest = validate_and_raise(stats)
+        assert manifest["rejected_rows"] == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 21. neighbors() exact timestamp assertion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestNeighborEdgeTimestampsExact:
+    """neighbors() returns exact edge timestamps; mutation must fail."""
+
+    def _make_entities_and_corpus(self):
+        """Create a simple company+filing+chunk graph."""
+        entities = [
+            {
+                "cik": "0001045810", "ticker": "NVDA",
+                "accession_number": "0001045810-24-000001",
+                "form_type": "10-K", "accepted_epoch": 1700000000,
+                "entity_type": "company", "entity_key": "NVIDIA",
+                "entity_value": "NVIDIA Corporation",
+                "entity_unit": "", "period_start": "", "period_end": "",
+                "confidence": 1.0, "source_chunk_id": "c1",
+            },
+            {
+                "cik": "0001045810", "ticker": "NVDA",
+                "accession_number": "0001045810-24-000001",
+                "form_type": "10-K", "accepted_epoch": 1700000000,
+                "entity_type": "filing", "entity_key": "Filing",
+                "entity_value": "10-K",
+                "entity_unit": "", "period_start": "", "period_end": "",
+                "confidence": 1.0, "source_chunk_id": "c1",
+            },
+        ]
+        corpus = {
+            "c1": {"chunk_id": "c1", "ticker": "NVDA",
+                   "accession_number": "0001045810-24-000001",
+                   "form_type": "10-K", "accepted_epoch": 1700000000,
+                   "filing_section": "item1", "chunk_index": 0,
+                   "chunk_text": "text"},
+        }
+        return entities, corpus
+
+    def test_neighbor_edge_timestamps_exact(self):
+        """neighbors() valid_from and accepted_ts must match exact expected values."""
+        from sec_kg.build import build_graph
+        from sec_kg.model import company_id
+
+        entities, corpus = self._make_entities_and_corpus()
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        kg = SecKnowledgeGraph(store)
+
+        cid = company_id("0001045810")
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        neighbors = kg.neighbors(cid, ["FILED"], as_of)
+        assert neighbors, "FILED neighbors should be non-empty"
+
+        # epoch 1700000000 = 2023-11-14T22:13:20Z
+        expected_ts = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+        for n in neighbors:
+            vf = datetime.fromisoformat(n["valid_from"])
+            at = datetime.fromisoformat(n["accepted_ts"])
+            assert vf == expected_ts, (
+                f"valid_from mismatch: got {vf}, expected {expected_ts}"
+            )
+            assert at == expected_ts, (
+                f"accepted_ts mismatch: got {at}, expected {expected_ts}"
+            )
+
+    def test_neighbor_timestamp_mutation_detectable(self):
+        """Adding 28800s to neighbor edge timestamps must fail the assertion."""
+        from sec_kg.build import build_graph
+        from sec_kg.model import company_id
+
+        entities, corpus = self._make_entities_and_corpus()
+        nodes, edges, _ = build_graph(entities, corpus, "test-1.0")
+
+        store = JsonlGraphStore()
+        store.load_from_build(nodes, edges)
+        kg = SecKnowledgeGraph(store)
+
+        cid = company_id("0001045810")
+        as_of = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        neighbors = kg.neighbors(cid, ["FILED"], as_of)
+        assert neighbors, "FILED neighbors should be non-empty"
+
+        # epoch 1700000000 = 2023-11-14T22:13:20Z
+        expected_ts = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+        mutated_ts = expected_ts.replace(
+            hour=(expected_ts.hour + 8) % 24
+        )  # +28800s = +8h
+
+        for n in neighbors:
+            vf = datetime.fromisoformat(n["valid_from"])
+            at = datetime.fromisoformat(n["accepted_ts"])
+            # These must NOT match the mutated timestamp
+            assert vf != mutated_ts, (
+                f"valid_from unexpectedly matches mutated +8h: {vf}"
+            )
+            assert at != mutated_ts, (
+                f"accepted_ts unexpectedly matches mutated +8h: {at}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 22. Pipeline validation integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPipelineValidation:
+    """Pipeline calls validate_and_raise before any table writes."""
+
+    def test_pipeline_raises_on_undocumented_reason(self):
+        """Pipeline must raise ValueError on undocumented rejection reason."""
+        from sec_kg.build import BuildStats, validate_and_raise
+
+        stats = BuildStats()
+        stats.reject("unknown_entity_type:bad", "row1")
+        stats.reject("totally_unknown:something", "row2")
+        entity_type_counts = {"bad": 1, "unknown": 1}
+        with pytest.raises(ValueError, match="Undocumented rejection reasons"):
+            validate_and_raise(stats, entity_type_counts)
+
+    def test_pipeline_writes_on_documented_reasons(self):
+        """Pipeline proceeds with writes when all reasons are documented."""
+        from sec_kg.build import BuildStats, validate_and_raise
+
+        stats = BuildStats()
+        stats.reject("unknown_entity_type:bad", "row1")
+        stats.reject("missing_cik_or_accession", "row2")
+        stats.accept()
+        entity_type_counts = {"company": 1, "bad": 1}
+        manifest = validate_and_raise(stats, entity_type_counts)
+        assert manifest["accepted_rows"] == 1
+        assert manifest["rejected_rows"] == 2
+        assert "unknown_entity_type:bad" in manifest["rejection_reasons"]
+        assert "missing_cik_or_accession" in manifest["rejection_reasons"]

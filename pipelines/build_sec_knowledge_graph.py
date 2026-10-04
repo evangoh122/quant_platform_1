@@ -9,12 +9,12 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sec_kg.build import build_graph
+from sec_kg.build import build_graph, validate_and_raise
 from sec_kg.model import BUILD_VERSION
 
 
@@ -92,6 +92,15 @@ def build(
 
     # Build graph
     nodes, edges, stats = build_graph(entities, chunk_metadata, BUILD_VERSION)
+
+    # Count entity types from input
+    entity_type_counts: Dict[str, int] = {}
+    for entity in entities:
+        etype = str(entity.get("entity_type", "")).lower()
+        entity_type_counts[etype] = entity_type_counts.get(etype, 0) + 1
+
+    # Validate rejection reasons — raise on undocumented, write nothing
+    manifest = validate_and_raise(stats, entity_type_counts)
 
     # Define Delta table schemas
     provenance_schema = ArrayType(StructType([
@@ -204,8 +213,43 @@ def build(
         "target.edge_id = source.edge_id"
     ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
 
+    # Write run manifest
+    runs_table = f"{catalog}.{schema}.gold_sec_kg_build_runs"
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {runs_table} (
+            run_id STRING NOT NULL,
+            build_version STRING NOT NULL,
+            run_ts TIMESTAMP NOT NULL,
+            input_rows_by_entity_type MAP<STRING,INT> NOT NULL,
+            accepted_rows INT NOT NULL,
+            rejected_rows INT NOT NULL,
+            rejection_reasons MAP<STRING,INT> NOT NULL,
+            node_count INT NOT NULL,
+            edge_count INT NOT NULL
+        ) USING DELTA
+    """)
+
+    from pyspark.sql import Row
+    import uuid
+
+    run_id = str(uuid.uuid4())
+    run_row = Row(
+        run_id=run_id,
+        build_version=BUILD_VERSION,
+        run_ts=datetime.now(timezone.utc),
+        input_rows_by_entity_type=manifest["input_rows_by_entity_type"],
+        accepted_rows=manifest["accepted_rows"],
+        rejected_rows=manifest["rejected_rows"],
+        rejection_reasons=manifest["rejection_reasons"],
+        node_count=len(nodes),
+        edge_count=len(edges),
+    )
+    run_df = spark.createDataFrame([run_row])
+    run_df.write.format("delta").mode("append").insertInto(runs_table)
+
     print(f"Build complete: {len(nodes)} nodes, {len(edges)} edges")
     print(f"  Tables: {nodes_table}, {edges_table}")
+    print(f"  Manifest: {runs_table} (run_id={run_id})")
 
 
 def main():

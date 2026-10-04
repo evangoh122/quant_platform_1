@@ -494,3 +494,14 @@
   confidence                         double
   properties_json                    string NOT NULL
   build_version                      string NOT NULL
+
+### gold_sec_kg_build_runs  (9 cols)
+  run_id                             string NOT NULL
+  build_version                      string NOT NULL
+  run_ts                             timestamp NOT NULL
+  input_rows_by_entity_type          map<string,int> NOT NULL
+  accepted_rows                      int NOT NULL
+  rejected_rows                      int NOT NULL
+  rejection_reasons                  map<string,int> NOT NULL
+  node_count                         int NOT NULL
+  edge_count                         int NOT NULL

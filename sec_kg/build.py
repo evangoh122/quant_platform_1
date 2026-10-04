@@ -872,6 +872,41 @@ def validate_rejection_reasons(stats: BuildStats) -> List[str]:
     return undocumented
 
 
+def validate_and_raise(
+    stats: BuildStats,
+    entity_type_counts: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    """Validate rejection reasons and raise on undocumented ones.
+
+    Shared by the offline script and the Databricks pipeline so their
+    behaviour cannot drift.
+
+    Args:
+        stats: BuildStats from build_graph()
+        entity_type_counts: input rows by entity_type (optional, for manifest)
+
+    Returns:
+        manifest dict with exact stats
+
+    Raises:
+        ValueError: if any rejection reason is not in ALLOWED_REJECTION_REASONS
+    """
+    undocumented = validate_rejection_reasons(stats)
+    if undocumented:
+        raise ValueError(
+            f"Undocumented rejection reasons detected: {undocumented}. "
+            f"Aborting — no tables written."
+        )
+
+    manifest: Dict[str, Any] = {
+        "input_rows_by_entity_type": entity_type_counts or {},
+        "accepted_rows": stats.accepted,
+        "rejected_rows": len(stats.rejected),
+        "rejection_reasons": dict(stats.rejection_counts),
+    }
+    return manifest
+
+
 def _get_accepted_ts(row: Dict[str, Any]) -> datetime:
     """Extract and normalize accepted_ts from entity row."""
     epoch = row.get("accepted_epoch")
