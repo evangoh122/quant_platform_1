@@ -1,7 +1,9 @@
 import sys
+import hashlib
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from tests.rag._netguard import _is_loopback, install_default_timeout
@@ -41,12 +43,34 @@ def _reset_retriever_singletons():
     leave a cached _embeddings object in the *old* module reference.  Subsequent
     tests hit that stale singleton and fail with EmbeddingConfigError.
     Clearing the cache forces get_embeddings() to re-evaluate on every test.
+
+    Also installs a deterministic fake embedding provider so no HuggingFace
+    download or sentence-transformers model load occurs in tests/rag.
     """
     import api.services.embeddings as emb_mod
     import api.services.hybrid_retriever as hr
 
+    class _FakeEmbeddingProvider:
+        """Hash-seeded deterministic vectors of the correct dimension (384)."""
+        _dim = 384
+
+        def _vec_for(self, text: str) -> list[float]:
+            seed = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+            rng = np.random.RandomState(seed)
+            v = rng.randn(self._dim).astype(np.float32)
+            norm = np.linalg.norm(v)
+            if norm > 0:
+                v = v / norm
+            return v.tolist()
+
+        def embed_query(self, text: str) -> list[float]:
+            return self._vec_for(text)
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [self._vec_for(t) for t in texts]
+
     # --- before ---
-    emb_mod._embeddings = None
+    emb_mod._embeddings = _FakeEmbeddingProvider()
 
     hr._corpus_loaded = False
     hr._corpus.clear()
