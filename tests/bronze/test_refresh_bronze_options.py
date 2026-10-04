@@ -25,7 +25,7 @@ def test_parse_opra_symbol_call():
     )
     assert underlying == "AAPL"
     assert expiry.isoformat() == "2025-01-17"
-    assert right == "call"
+    assert right == "CALL"
     assert strike == 200.0
 
 
@@ -35,7 +35,7 @@ def test_parse_opra_symbol_put():
     )
     assert underlying == "SPY"
     assert expiry.isoformat() == "2025-12-19"
-    assert right == "put"
+    assert right == "PUT"
     assert strike == 430.0
 
 
@@ -185,7 +185,7 @@ def test_shape_quote_row_full():
     assert row["underlying"] == "SPY"
     assert row["expiry"] == date(2026, 12, 18)
     assert row["strike"] == 600.0
-    assert row["right"] == "call"
+    assert row["right"] == "CALL"
     assert row["midpoint"] == 10.25  # (10.0 + 10.5) / 2
     assert row["delta"] == 0.6
     assert row["gamma"] == 0.01
@@ -201,7 +201,7 @@ def test_shape_quote_row_full():
 def test_shape_quote_row_right_put():
     snap_ts = datetime(2026, 10, 3, 16, 0, tzinfo=timezone.utc)
     row = m.shape_quote_row(_make_snapshot(contract_type="put"), "SPY", snap_ts)
-    assert row["right"] == "put"
+    assert row["right"] == "PUT"
 
 
 def test_shape_quote_row_uses_provider_ts():
@@ -229,10 +229,10 @@ def test_shape_quote_row_no_symbol_returns_none():
 
 
 def test_shape_quote_row_right_normalisation():
-    assert m._right_from_contract_type("call") == "call"
-    assert m._right_from_contract_type("CALL") == "call"
-    assert m._right_from_contract_type("put") == "put"
-    assert m._right_from_contract_type("P") == "put"
+    assert m._right_from_contract_type("call") == "CALL"
+    assert m._right_from_contract_type("CALL") == "CALL"
+    assert m._right_from_contract_type("put") == "PUT"
+    assert m._right_from_contract_type("P") == "PUT"
     assert m._right_from_contract_type("weird") is None
     assert m._right_from_contract_type(None) is None
 

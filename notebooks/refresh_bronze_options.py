@@ -203,7 +203,7 @@ def parse_opra_symbol(ticker):
         strike = int(strike_raw) / 1000.0
     except (ValueError, OverflowError):
         return None
-    right = "call" if right_raw == "C" else "put"
+    right = "CALL" if right_raw == "C" else "PUT"
     return underlying, expiry, right, strike
 
 
@@ -245,12 +245,12 @@ def resolve_snapshot_ts(provider_ts, snapshot_ts):
 
 
 def _right_from_contract_type(contract_type):
-    """Normalise a Polygon ``contract_type`` (call/put) to 'call'/'put'."""
+    """Normalise a Polygon ``contract_type`` (call/put) to 'CALL'/'PUT'."""
     ctype = (contract_type or "").lower()
     if ctype in ("call", "c"):
-        return "call"
+        return "CALL"
     if ctype in ("put", "p"):
-        return "put"
+        return "PUT"
     return None
 
 
@@ -473,8 +473,8 @@ def _shape_day(spark, vol_file, source_file, ingest_ts):
         F.to_date(F.regexp_extract("ticker", pattern, 2), "yyMMdd").alias("expiry"),
         (F.regexp_extract("ticker", pattern, 4).cast("double") / F.lit(1000.0))
         .alias("strike"),
-        F.when(F.regexp_extract("ticker", pattern, 3) == F.lit("C"), F.lit("call"))
-        .when(F.regexp_extract("ticker", pattern, 3) == F.lit("P"), F.lit("put"))
+        F.when(F.regexp_extract("ticker", pattern, 3) == F.lit("C"), F.lit("CALL"))
+        .when(F.regexp_extract("ticker", pattern, 3) == F.lit("P"), F.lit("PUT"))
         .otherwise(F.lit(None).cast("string"))
         .alias("right"),
         event_ts.alias("event_ts"),

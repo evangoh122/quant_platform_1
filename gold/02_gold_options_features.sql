@@ -70,8 +70,8 @@ USING (
           to_timestamp(concat(cast(event_date AS STRING), ' 16:00:00')))
         + make_interval(0, 0, 0, 0, 0, opt_pub_buffer_minutes, 0)
         AS information_available_ts,
-      SUM(CASE WHEN right = 'PUT'  THEN volume ELSE 0 END) AS put_volume,
-      SUM(CASE WHEN right = 'CALL' THEN volume ELSE 0 END) AS call_volume,
+      SUM(CASE WHEN UPPER(right) = 'PUT'  THEN volume ELSE 0 END) AS put_volume,
+      SUM(CASE WHEN UPPER(right) = 'CALL' THEN volume ELSE 0 END) AS call_volume,
       SUM(volume) AS total_volume
     FROM bootcamp_students.evangoh_capstone.bronze_options_day
     WHERE underlying IN (SELECT symbol FROM universe)
@@ -112,7 +112,7 @@ USING (
     FROM (
       SELECT symbol, d, iv,
         ROW_NUMBER() OVER (PARTITION BY symbol, d ORDER BY ABS(delta - (-0.25)) ASC, strike) AS rn
-      FROM q WHERE right = 'put' AND iv IS NOT NULL AND delta IS NOT NULL
+      FROM q WHERE UPPER(right) = 'PUT' AND iv IS NOT NULL AND delta IS NOT NULL
     ) WHERE rn = 1
   ),
   c25 AS (
@@ -120,7 +120,7 @@ USING (
     FROM (
       SELECT symbol, d, iv,
         ROW_NUMBER() OVER (PARTITION BY symbol, d ORDER BY ABS(delta - 0.25) ASC, strike) AS rn
-      FROM q WHERE right = 'call' AND iv IS NOT NULL AND delta IS NOT NULL
+      FROM q WHERE UPPER(right) = 'CALL' AND iv IS NOT NULL AND delta IS NOT NULL
     ) WHERE rn = 1
   ),
   term AS (
