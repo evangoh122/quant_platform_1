@@ -2484,3 +2484,312 @@ class TestNotebookThinWrapper:
         assert "--include-historical" in argv
         assert "--tickers" in argv
         assert "NVDA" in argv
+
+
+# ── Round 10 regression tests ────────────────────────────────────────────────
+
+
+class TestSparkLogWriterSchema:
+    """SparkLogWriter uses an explicit StructType — never schema inference.
+
+    PySpark infers all-None columns as NullType and raises
+    CANNOT_DETERMINE_TYPE on write.  An in_progress row has
+    completed_ts=None, error_code=None, error_message=None.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_pyspark_types(self, monkeypatch):
+        try:
+            saved = {}
+            for key in list(sys.modules):
+                if key.startswith("pyspark"):
+                    saved[key] = sys.modules.pop(key)
+            try:
+                import pyspark.sql.types as real_types
+                monkeypatch.setitem(sys.modules, "pyspark.sql.types", real_types)
+            finally:
+                for k, v in saved.items():
+                    sys.modules.setdefault(k, v)
+        except ImportError:
+            pytest.skip("pyspark not available for schema tests")
+
+    def _make_fake_spark(self, captured):
+        class FakeSparkSession:
+            def createDataFrame(self, data, schema=None):
+                captured["data"] = list(data)
+                captured["schema"] = schema
+                df = MagicMock()
+                mode_mock = MagicMock()
+                df.write.mode.return_value = mode_mock
+                mode_mock.saveAsTable.return_value = None
+                return df
+        return FakeSparkSession
+
+    def test_schema_matches_documented_sec_ingest_log(self):
+        """StructType exactly matches docs/DATA_SCHEMAS.md sec_ingest_log.
+
+        Schema from DATA_SCHEMAS.md:
+          run_id            string NOT NULL
+          ticker            string NOT NULL
+          cik               string NOT NULL
+          accession_number  string NOT NULL
+          form_type         string NOT NULL
+          filing_date       string
+          accepted_ts       timestamp
+          status            string NOT NULL
+          rows_appended     int
+          attempt           int
+          error_code        string
+          error_message     string
+          started_ts        timestamp
+          completed_ts      timestamp
+          dry_run           boolean
+          logged_ts         timestamp NOT NULL
+        """
+        from pipelines.sec_rag_ingest import SparkLogWriter
+
+        captured = {}
+        writer = SparkLogWriter(spark_factory=self._make_fake_spark(captured))
+        SparkLogWriter.INGEST_LOG_SCHEMA = None  # force rebuild
+        writer.append_log("cat", "sch", IngestLogEntry(
+            run_id="r1", ticker="AAPL", cik="0000320193",
+            accession_number="001", form_type="10-K",
+            filing_date=None, accepted_ts=None, status="in_progress",
+        ))
+
+        schema = captured.get("schema")
+        assert schema is not None, (
+            "Mutation: SparkLogWriter.createDataFrame called without schema=. "
+            "PySpark will infer all-None columns as NullType and raise "
+            "CANNOT_DETERMINE_TYPE in production."
+        )
+
+        expected_names = [
+            "run_id", "ticker", "cik", "accession_number", "form_type",
+            "filing_date", "accepted_ts", "status", "rows_appended", "attempt",
+            "error_code", "error_message", "started_ts", "completed_ts",
+            "dry_run", "logged_ts",
+        ]
+        actual_names = [f.name for f in schema.fields]
+        assert actual_names == expected_names, f"Field names mismatch: {actual_names}"
+
+        # Nullability: run_id=False, ticker=False, cik=False, accession_number=False,
+        # form_type=False, filing_date=True, accepted_ts=True, status=False,
+        # rows_appended=True, attempt=True, error_code=True, error_message=True,
+        # started_ts=True, completed_ts=True, dry_run=True, logged_ts=False
+        expected_nullable = [False, False, False, False, False, True, True, False,
+                             True, True, True, True, True, True, True, False]
+        actual_nullable = [f.nullable for f in schema.fields]
+        assert actual_nullable == expected_nullable, f"Nullability mismatch: {actual_nullable}"
+
+    def test_in_progress_row_with_all_none_fields_succeeds(self):
+        """An in_progress row with completed_ts/error_code/error_message=None
+        must NOT raise CANNOT_DETERMINE_TYPE when the explicit schema is used.
+        """
+        from pipelines.sec_rag_ingest import SparkLogWriter
+
+        captured = {}
+        writer = SparkLogWriter(spark_factory=self._make_fake_spark(captured))
+        SparkLogWriter.INGEST_LOG_SCHEMA = None
+        writer.append_log("cat", "sch", IngestLogEntry(
+            run_id="r1", ticker="NVDA", cik="0001234",
+            accession_number="001-12345", form_type="10-Q",
+            filing_date=None, accepted_ts=None, status="in_progress",
+            # all of these are None on an in_progress row:
+            completed_ts=None, error_code=None, error_message=None,
+            rows_appended=None,
+        ))
+
+        # If schema was not passed, createDataFrame would have been called
+        # without schema= and PySpark would infer NullType for None columns.
+        assert captured.get("schema") is not None
+
+
+class TestSparkIngestLogReaderColdStart:
+    """SparkIngestLogReader gracefully handles a missing sec_ingest_log table."""
+
+    def test_read_succeeded_returns_empty_on_table_not_found(self):
+        """On cold start (table absent), reader returns empty set — no crash."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q):
+                raise Exception("Table or view not found: sec_ingest_log")
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        result = reader.read_succeeded_accessions("cat", "sch", "r1")
+        assert result == set(), (
+            "Mutation: reader should return empty set on table-not-found, "
+            "but it raised or returned something else."
+        )
+
+    def test_read_max_attempt_returns_zero_on_table_not_found(self):
+        """On cold start, read_max_attempt returns 0."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q):
+                raise Exception("Table or view not found: sec_ingest_log")
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
+        assert result == 0
+
+
+class TestOwnershipConflictAuditRow:
+    """Pre-existing accession ownership conflicts must be recorded in sec_ingest_log."""
+
+    def test_ownership_conflict_writes_failed_log_entry(self):
+        """When anti-join detects a CIK conflict, a failed log entry is written
+        BEFORE the AccessionOwnershipConflict is raised.
+        """
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        # The accession is owned by a DIFFERENT CIK (9999999999, not 0001045810)
+        existing = {
+            "0001045810-25-000010": ("9999999999", "OTHER"),
+        }
+
+        log_entries = []
+
+        class CapturingLogWriter:
+            def append_log(self, catalog, schema, entry):
+                log_entries.append(entry)
+
+        with pytest.raises(AccessionOwnershipConflict):
+            run_ingest(
+                catalog="test", schema="test",
+                start_date="2024-09-01",
+                tickers=["NVDA"],
+                universe_reader=FakeUniverseReader(universe),
+                accession_reader=FakeAccessionReader(existing),
+                data_writer=FakeDataWriter(),
+                log_writer=CapturingLogWriter(),
+                http_client=http,
+                clock=clock,
+                cache_path=str(FIXTURES / "company_tickers.json"),
+            )
+
+        # Must have at least one failed entry with error_code=ownership_conflict
+        conflict_entries = [
+            e for e in log_entries
+            if e.error_code == "ownership_conflict" and e.status == "failed"
+        ]
+        assert len(conflict_entries) >= 1, (
+            f"Expected at least 1 ownership_conflict audit row, got {len(conflict_entries)}. "
+            "Mutation: the anti-join raises without writing a log entry."
+        )
+        assert conflict_entries[0].accession_number == "0001045810-25-000010"
+
+
+class TestSilverSqlPlaceholders:
+    """Silver SQL files must use {catalog}.{schema} placeholders, not hardcoded schemas."""
+
+    def test_silver_05_uses_placeholders(self):
+        sql = Path("silver/05_silver_sec_sections.sql").read_text(encoding="utf-8")
+        assert "bootcamp_students.evangoh_capstone" not in sql, (
+            "silver/05_silver_sec_sections.sql still hard-codes bootcamp_students.evangoh_capstone; "
+            "use {catalog}.{schema} placeholders"
+        )
+        assert "{catalog}.{schema}" in sql
+
+    def test_silver_06_uses_placeholders(self):
+        sql = Path("silver/06_silver_sec_entities.sql").read_text(encoding="utf-8")
+        assert "bootcamp_students.evangoh_capstone" not in sql, (
+            "silver/06_silver_sec_entities.sql still hard-codes bootcamp_students.evangoh_capstone; "
+            "use {catalog}.{schema} placeholders"
+        )
+        assert "{catalog}.{schema}" in sql
+
+
+class TestMergeMetricsNoCandidateFallback:
+    """When DESCRIBE HISTORY is unavailable, inserted count must NOT fall back
+    to len(rows) (candidate count).  It should be None (unknown).
+    """
+
+    def test_bronze_metrics_none_on_history_failure(self):
+        """SparkDataWriter.append_bronze_rows returns None when DESCRIBE HISTORY fails,
+        not len(rows).
+        """
+        from pipelines.sec_rag_ingest import SparkDataWriter
+
+        class FakeSpark:
+            _table_data = {}
+            def createDataFrame(self, data, schema=None):
+                df = MagicMock()
+                df.createOrReplaceTempView.return_value = None
+                return df
+            def sql(self, q):
+                if "DESCRIBE HISTORY" in q:
+                    raise Exception("table not found")
+                m = MagicMock()
+                m.collect.return_value = []
+                return m
+            @property
+            def catalog(self):
+                c = MagicMock()
+                c.dropTempView.return_value = None
+                return c
+
+        writer = SparkDataWriter(spark_factory=lambda: FakeSpark())
+        rows = [{
+            "record_key": "rk1", "ticker": "NVDA", "cik": "0001234",
+            "company_name": "NVIDIA", "form_type": "10-K",
+            "filing_date": "2024-01-01",
+            "accepted_ts": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "accession_number": "001-12345", "primary_doc": "filing.htm",
+            "filing_url": "https://sec.gov/filing", "chunk_id": 0,
+            "filing_section": "item1_business", "chunk_text": "Hello world",
+            "chunk_char_count": 11, "source": "sec_edgar",
+            "ingest_ts": datetime.now(timezone.utc),
+            "raw_payload": "<html>test</html>",
+        }]
+        result = writer.append_bronze_rows("cat", "sch", rows)
+        assert result is None, (
+            f"Expected None when DESCRIBE HISTORY fails, got {result}. "
+            "Mutation: code falls back to len(rows) which is a candidate count."
+        )
+
+    def test_embeddings_metrics_none_on_history_failure(self):
+        """_embed_and_write_batch returns None when DESCRIBE HISTORY fails."""
+        from pipelines.build_sec_embeddings import _embed_and_write_batch
+
+        class FakeSpark:
+            def createDataFrame(self, data, schema=None):
+                df = MagicMock()
+                df.createOrReplaceTempView.return_value = None
+                return df
+            def sql(self, q):
+                if "DESCRIBE HISTORY" in q:
+                    raise Exception("table not found")
+                m = MagicMock()
+                m.collect.return_value = []
+                return m
+            @property
+            def catalog(self):
+                c = MagicMock()
+                c.dropTempView.return_value = None
+                return c
+
+        class FakeEmbeddings:
+            def embed_documents(self, texts):
+                return [[0.1] * 384 for _ in texts]
+
+        batch = [{
+            "chunk_id": "c1", "chunk_text": "hello",
+            "accession_number": "001", "ticker": "NVDA",
+            "accepted_epoch": 1704067200,
+        }]
+        lock = threading.Lock()
+        result = _embed_and_write_batch(
+            FakeSpark(), FakeEmbeddings(), batch,
+            datetime.now(timezone.utc), lock,
+        )
+        assert result is None, (
+            f"Expected None when DESCRIBE HISTORY fails, got {result}. "
+            "Mutation: code falls back to len(out_rows) which is a candidate count."
+        )
