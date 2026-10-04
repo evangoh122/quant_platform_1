@@ -989,10 +989,15 @@ def test_warehouse_query_semaphore_bounded(monkeypatch):
     """Stuck queries are capped by the bounded semaphore.
 
     With _MAX_CONCURRENT_QUERIES=2, a 3rd concurrent query should block on
-    semaphore acquire.  The test verifies that at most 2 queries execute
+    semaphore acquire.  The test verifies that exactly 2 queries execute
     concurrently (the rest block until slots free up).
 
-    MUTATION: remove semaphore → 20 concurrent hanging calls all start (FAIL).
+    Uses a SHARED lock-guarded counter (not threading.local) so all workers
+    increment the same state.  The counter increments on cursor.execute entry,
+    sleeps, then decrements on exit — proving the semaphore was actually acquired.
+
+    MUTATION: remove semaphore acquire at db/delta_adapter.py:172 →
+    all 6 workers start immediately → max_concurrent > 2 → FAIL.
     """
     import db.delta_adapter as adapter
     import threading as _threading
@@ -1001,25 +1006,28 @@ def test_warehouse_query_semaphore_bounded(monkeypatch):
     monkeypatch.setattr(adapter, "_MAX_CONCURRENT_QUERIES", 2)
     monkeypatch.setattr(adapter, "_query_semaphore", _threading.Semaphore(2))
 
-    concurrent_count = _threading.local()
-    concurrent_count.value = 0
-    max_concurrent = [0]
-    count_lock = _threading.Lock()
+    # Shared state: lock-guarded counter visible to all threads
+    state = {"cur": 0, "max": 0}
+    state_lock = _threading.Lock()
 
     class HangingCursor:
         def execute(self, query, params=None):
-            with count_lock:
-                concurrent_count.value = getattr(concurrent_count, 'value', 0) + 1
-                if concurrent_count.value > max_concurrent[0]:
-                    max_concurrent[0] = concurrent_count.value
+            with state_lock:
+                state["cur"] += 1
+                if state["cur"] > state["max"]:
+                    state["max"] = state["cur"]
             _time.sleep(9999)
+
         def fetchall(self):
             return []
+
         @property
         def description(self):
             return []
+
         def cancel(self):
             pass
+
         def close(self):
             pass
 
@@ -1043,16 +1051,17 @@ def test_warehouse_query_semaphore_bounded(monkeypatch):
         except Exception as e:
             results.append(("error", i, type(e).__name__))
 
-    threads = [_threading.Thread(target=_run_query, args=(i,)) for i in range(5)]
+    # Launch 6 concurrent queries with semaphore size 2
+    threads = [_threading.Thread(target=_run_query, args=(i,)) for i in range(6)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=30)
 
     # All should eventually resolve to timeout
-    assert len(results) == 5, f"Expected 5 resolved queries, got {results}"
-    # At most 2 should have executed concurrently (the semaphore limit)
-    assert max_concurrent[0] <= 2, f"Max concurrent was {max_concurrent[0]}, expected <= 2"
+    assert len(results) == 6, f"Expected 6 resolved queries, got {results}"
+    # Max concurrent must be exactly 2 — prove the semaphore was reached
+    assert state["max"] == 2, f"Max concurrent was {state['max']}, expected exactly 2"
 
 
 def test_warehouse_query_semaphore_timeout(monkeypatch):
