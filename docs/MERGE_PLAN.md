@@ -187,11 +187,13 @@ Key rewiring:
 > Goal: RAG quality evaluation, agent testing, audit trail.
 
 ### 5.1 RAG evaluation
-- Port `Rag_workbench/evals/` to MLflow Evaluation:
-  - `golden_set.csv` → MLflow evaluation dataset
-  - `ragas_eval.py` → MLflow judge metrics (faithfulness, relevance, correctness)
-  - `run_eval.py` → MLflow evaluation run
-- Port `IBKR_workbench/evals/FINANCEBENCH_EVAL_PLAN.md` benchmark
+- Retrieval evaluation harness: `evals/rag_eval/` (replaces stale `run_eval.py` and `ragas_eval.py`)
+  - Deterministic retrieval metrics: recall@k, MRR@10, nDCG@10
+  - 8 ablation configurations: 4 modes x 2 ticker filters
+  - PIT leakage hard gate, bootstrap CIs, abstention/trap scoring
+  - Run: `python -m evals.rag_eval --adapter jsonl --golden ... --corpus ... --embeddings ...`
+  - See `evals/rag_eval/README.md` for full documentation
+- FinanceBench benchmark: see historical note in `docs/FINANCEBENCH_EVAL_PLAN.md`
 
 ### 5.2 Test suite migration
 From `IBKR_workbench/tests/` — adapt DuckDB assertions to Delta queries:

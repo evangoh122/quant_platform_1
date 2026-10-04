@@ -1,39 +1,41 @@
 filters:
+  point_in_time_universe:
+    sql: "EXISTS (SELECT 1 FROM gold_tradable_universe u WHERE u.symbol = source.symbol AND u.trade_date = (SELECT MAX(snapshot.trade_date) FROM gold_tradable_universe snapshot WHERE snapshot.trade_date <= :as_of_date) AND u.information_available_ts <= :as_of_ts)"
+    tables: [gold_tradable_universe]
+    rule: "Use membership from the snapshot whose trade_date is the maximum trade_date on or before as_of_date, and require that row to be available by as_of_ts; never use today's membership for historical queries."
+  liquidity_rank:
+    sql: "med_adv_60d >= :min_med_adv_60d AND adv_rank <= :max_adv_rank"
+    tables: [gold_tradable_universe]
+  sec_form_type:
+    sql: "form_type IN (:form_types)"
+    tables: [bronze_sec_filings, bronze_sec_filings_v2, silver_sec_sections, silver_sec_entities, gold_sec_features]
+    allowed_examples: [10-K, 10-Q, 8-K]
+  event_date_bounds:
+    sql: "event_ts >= :start_ts AND event_ts < :end_ts"
+    tables: [bronze_ohlcv, silver_ohlcv]
+    rule: "Use a half-open interval [start_ts, end_ts)."
+  daily_date_bounds:
+    sql: "event_date >= :start_date AND event_date < :end_date"
+    tables: [bronze_ohlcv_day, bronze_options_day]
+    rule: "Use a half-open interval [start_date, end_date)."
+  accepted_date_bounds:
+    sql: "accepted_ts >= :start_ts AND accepted_ts < :end_ts"
+    tables: [bronze_sec_filings, bronze_sec_filings_v2]
+    rule: "Filter SEC data by accepted_ts, never filing_date, for PIT analysis."
+  pit_no_lookahead:
+    sql: "information_available_ts <= :as_of_ts"
+    tables: [gold_ohlcv_features, gold_options_features, gold_regime_features, gold_tradable_universe, gold_cot_features, gold_sec_features]
+    critical: true
   regular_session_only:
     sql: "is_regular_session = true"
     tables: [silver_ohlcv]
-
-  stale_signal:
-    sql: "prediction_ts >= current_timestamp() - INTERVAL 5 MINUTES"
-    tables: [gold_trading_signals]
-
-  stale_market_data:
-    sql: "ingest_ts >= current_timestamp() - INTERVAL 2 MINUTES"
-    tables: [bronze_ohlcv, bronze_options_quotes]
-
   exclude_bad_quotes:
-    sql: "is_stale = false AND is_locked = false AND is_crossed = false"
+    sql: "is_stale = false AND COALESCE(is_locked, false) = false AND COALESCE(is_crossed, false) = false"
     tables: [silver_options_quotes]
-
-  pit_no_lookahead:
-    sql: "information_available_ts <= prediction_ts"
-    tables: [gold_ohlcv_features, gold_options_features, gold_sec_features, gold_cot_features]
-    critical: true
-
+    note: "bid and ask are absent in the current source snapshot, so is_locked and is_crossed are NULL; COALESCE treats those unknown flags as false rather than excluding every row."
   cot_forward_fill:
-    rule: "Forward-fill only until next release_ts; never backward-fill"
-
-  min_volume:
-    sql: "volume > 0"
-    tables: [silver_ohlcv, silver_options_trades]
-
-  order_risk_checks:
-    checks:
-      - "Symbol in allow-list"
-      - "Paper-account only"
-      - "quantity > 0, notional <= $25,000"
-      - "Position notional <= $50,000"
-      - "Buying power sufficient"
-      - "No duplicate open order"
-      - "Signal not stale (<5 min)"
-      - "Market session open or limit order"
+    tables: [silver_cot_positions, gold_cot_features]
+    rule: "Forward-fill from release_ts only until the next release; never backward-fill."
+  fed_latest_vintage_as_of:
+    tables: [bronze_fed_series]
+    rule: "Latest value as of t is the row with maximum vintage_date per (series_id, observation_date) among rows where information_available_ts <= t."

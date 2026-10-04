@@ -33,7 +33,8 @@ from langchain_core.documents import Document
 from loguru import logger
 from rank_bm25 import BM25Okapi
 
-from api.services.embeddings import EMBEDDING_DIM, get_embeddings
+from api.services.embeddings import get_embeddings
+from api.services.exceptions import CorpusUnavailableError, EmbeddingConfigError
 
 
 def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
@@ -51,13 +52,6 @@ def _normalize_as_of(as_of: Optional[datetime] = None) -> datetime:
         return as_of.replace(tzinfo=timezone.utc)
     return as_of.astimezone(timezone.utc)
 
-
-class CorpusUnavailableError(Exception):
-    """Raised when the retrieval corpus cannot be loaded from Delta tables.
-
-    Callers must surface this as a structured "retrieval unavailable" result
-    so the agent can report the failure — never silently return an empty list.
-    """
 
 # ── Catalog / schema ─────────────────────────────────────────────────────────
 
@@ -221,6 +215,10 @@ _bm25_index: Optional[BM25Okapi] = None
 # For dense: chunk_id -> embedding vector (numpy float32)
 _embeddings_map: Dict[str, np.ndarray] = {}
 
+# Stored index metadata (recorded at corpus load time)
+_stored_index_dim: Optional[int] = None
+_stored_embedding_model: Optional[str] = None
+
 
 def _get_spark():
     """Get a Spark session, using DatabricksSession outside a Databricks runtime.
@@ -244,6 +242,7 @@ def _load_corpus() -> bool:
     a structured error instead of silently returning empty results.
     """
     global _corpus_loaded, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
+    global _stored_index_dim, _stored_embedding_model
 
     if _corpus_loaded:
         if not _corpus:
@@ -275,16 +274,39 @@ def _load_corpus() -> bool:
 
             # Load embeddings
             embed_df = spark.table(EMBEDDINGS_TABLE).select(
-                "chunk_id", "embedding",
+                "chunk_id", "embedding", "embedding_model",
             )
             embed_rows = embed_df.collect()
 
-            # Build embedding map
+            # Build embedding map + record stored index metadata
+            seen_dims: set[int] = set()
+            seen_models: set[str] = set()
             for row in embed_rows:
                 cid = row["chunk_id"]
                 vec = row["embedding"]
                 if vec is not None:
-                    _embeddings_map[cid] = np.array(vec, dtype=np.float32)
+                    arr = np.array(vec, dtype=np.float32)
+                    _embeddings_map[cid] = arr
+                    seen_dims.add(len(arr))
+                model_name = row["embedding_model"]
+                if model_name:
+                    seen_models.add(model_name)
+
+            # Validate stored dimensions are uniform
+            if seen_dims and len(seen_dims) > 1:
+                raise CorpusUnavailableError(
+                    f"Embedding dimension mismatch in stored index: found {sorted(seen_dims)}. "
+                    f"The index is corrupted — rebuild embeddings."
+                )
+            _stored_index_dim = next(iter(seen_dims), None)
+
+            # Store the model name (prefer the single model; error if mixed)
+            if len(seen_models) > 1:
+                raise CorpusUnavailableError(
+                    f"Multiple embedding models in stored index: {sorted(seen_models)}. "
+                    f"Rebuild embeddings with a single model."
+                )
+            _stored_embedding_model = next(iter(seen_models), None)
 
             # Build corpus map + BM25 lists
             docs: List[Document] = []
@@ -340,10 +362,27 @@ def _load_corpus() -> bool:
             return bool(_corpus)
 
         except CorpusUnavailableError:
+            # Clear partial state so the next call retries from scratch
+            _corpus_loaded = False
+            _corpus.clear()
+            _embeddings_map.clear()
+            _bm25_docs = None
+            _bm25_tokenised = None
+            _bm25_index = None
+            _stored_index_dim = None
+            _stored_embedding_model = None
             raise
         except Exception as e:
             logger.error("Failed to load corpus: {}", e)
-            _corpus_loaded = True
+            # Clear partial state so the next call retries from scratch
+            _corpus_loaded = False
+            _corpus.clear()
+            _embeddings_map.clear()
+            _bm25_docs = None
+            _bm25_tokenised = None
+            _bm25_index = None
+            _stored_index_dim = None
+            _stored_embedding_model = None
             raise CorpusUnavailableError(f"Failed to load corpus: {e}") from e
 
 
@@ -353,6 +392,7 @@ def reload_corpus() -> bool:
     Raises CorpusUnavailableError if the reload fails.
     """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
+    global _stored_index_dim, _stored_embedding_model
     with _corpus_lock:
         _corpus_loaded = False
         _corpus = {}
@@ -360,6 +400,8 @@ def reload_corpus() -> bool:
         _bm25_tokenised = None
         _bm25_index = None
         _embeddings_map = {}
+        _stored_index_dim = None
+        _stored_embedding_model = None
     return _load_corpus()
 
 
@@ -430,6 +472,14 @@ def bm25_search(
     if not docs:
         return []
 
+    # When ticker is set, filter candidates to that ticker before ranking.
+    # This prevents other companies' chunks from leaking through RRF fusion.
+    # The boost path (ticker_boost) is only for ticker resolved from query.
+    if ticker:
+        docs = [d for d in docs if d.metadata.get("ticker") == ticker]
+        if not docs:
+            return []
+
     # Rebuild a temporary BM25 index over the filtered docs for correctness
     # (PIT filter changes which documents are eligible)
     tokenised = [tokenize(d.page_content) for d in docs]
@@ -438,13 +488,7 @@ def bm25_search(
     query_tokens = tokenize(query)
     raw_scores = bm25.get_scores(query_tokens)
 
-    if ticker:
-        boosted = [
-            (idx, s * ticker_boost if docs[idx].metadata.get("ticker") == ticker else s)
-            for idx, s in enumerate(raw_scores)
-        ]
-    else:
-        boosted = list(enumerate(raw_scores))
+    boosted = list(enumerate(raw_scores))
 
     scored = sorted(boosted, key=lambda x: x[1], reverse=True)
     return [docs[idx] for idx, _ in scored[:top_k]]
@@ -476,11 +520,31 @@ def vector_search(
         return []
 
     embeddings = get_embeddings()
-    if embeddings is None:
-        logger.warning("Embeddings not available — vector search skipped")
-        return []
 
     qvec = np.array(embeddings.embed_query(query), dtype=np.float32)
+
+    # Verify query vector dimension matches the STORED index dimension
+    if _stored_index_dim is not None and len(qvec) != _stored_index_dim:
+        raise EmbeddingConfigError(
+            f"query embedding dim {len(qvec)} != stored index dim {_stored_index_dim}; "
+            f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL / EMBEDDING_DIM",
+            user_safe=True,
+        )
+
+    # Verify the active embedding model matches the stored model
+    if _stored_embedding_model is not None:
+        from api.config import config as _cfg
+        provider = _cfg.EMBEDDING_PROVIDER
+        if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
+            active_model = _cfg.ST_EMBEDDING_MODEL
+        else:
+            active_model = _cfg.HF_EMBEDDING_MODEL
+        if active_model and active_model != _stored_embedding_model:
+            raise EmbeddingConfigError(
+                f"embedding model mismatch: active '{active_model}' != stored '{_stored_embedding_model}'; "
+                f"check EMBEDDING_PROVIDER / ST_EMBEDDING_MODEL",
+                user_safe=True,
+            )
 
     # Build candidate docs from corpus entries that have embeddings
     candidates: List[Tuple[float, Document]] = []
@@ -548,6 +612,7 @@ class HybridRetriever:
         ticker: str = "",
         as_of: Optional[datetime] = None,
         top_k: Optional[int] = None,
+        resolve_ticker: bool = True,
     ) -> List[Document]:
         """Run hybrid retrieval with RRF fusion.
 
@@ -556,13 +621,18 @@ class HybridRetriever:
             ticker: Optional ticker filter.
             as_of: Point-in-time cutoff (default: now).
             top_k: Override for number of results.
+            resolve_ticker: If True (default), auto-resolve ticker from query
+                when ticker is empty.  Set to False to honour an explicit
+                empty ticker (eval harness ticker-filter-off ablation).
 
         Returns:
             Fused and optionally reranked list of Documents.
+            If the dense embedder fails at runtime, falls back to BM25-only
+            with _warning="dense_unavailable" metadata on each result.
         """
         as_of = _normalize_as_of(as_of)
         effective_top_k = top_k or self.top_k
-        effective_ticker = resolve_ticker_from_query(query, ticker)
+        effective_ticker = resolve_ticker_from_query(query, ticker) if resolve_ticker else ticker
 
         bm25_docs = bm25_search(
             query,
@@ -571,29 +641,169 @@ class HybridRetriever:
             ticker_boost=self.ticker_boost,
             as_of=as_of,
         )
-        vec_docs = vector_search(
-            query,
-            top_k=effective_top_k * 2,
-            ticker=effective_ticker,
-            as_of=as_of,
-        )
+
+        try:
+            vec_docs = vector_search(
+                query,
+                top_k=effective_top_k * 2,
+                ticker=effective_ticker,
+                as_of=as_of,
+            )
+        except CorpusUnavailableError:
+            # Dimension/model mismatch — configuration error, propagate
+            raise
+        except Exception as e:
+            # Transient embedder failure (network, auth, runtime) — degrade to BM25-only
+            logger.warning("Dense embedding failed ({}: {}), falling back to BM25-only", type(e).__name__, e)
+            vec_docs = []
+
+        bm25_only = not vec_docs
 
         if not bm25_docs and not vec_docs:
             return []
         if not bm25_docs:
             return vec_docs[:effective_top_k]
         if not vec_docs:
-            return bm25_docs[:effective_top_k]
+            results = bm25_docs[:effective_top_k]
+        else:
+            fused = rrf_fuse(
+                [vec_docs, bm25_docs],
+                k=self.rrf_k,
+                boost_ticker=effective_ticker,
+                ticker_boost=self.ticker_boost,
+            )
+            logger.debug(
+                "Hybrid RRF: {} vector + {} BM25 -> {} fused (top_k={}, ticker={}, boost={}x)",
+                len(vec_docs), len(bm25_docs), len(fused),
+                effective_top_k, effective_ticker, self.ticker_boost,
+            )
+            results = fused[:effective_top_k]
 
-        fused = rrf_fuse(
-            [vec_docs, bm25_docs],
-            k=self.rrf_k,
-            boost_ticker=effective_ticker,
-            ticker_boost=self.ticker_boost,
+        if bm25_only:
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "bm25_only"
+                doc.metadata["_warning"] = "dense_unavailable"
+
+        return results
+
+    def retrieve_and_rerank(
+        self,
+        query: str,
+        ticker: str = "",
+        as_of: Optional[datetime] = None,
+        top_k: Optional[int] = None,
+        resolve_ticker: bool = True,
+    ) -> List[Document]:
+        """Run hybrid retrieval (RRF) then rerank — the full production pipeline.
+
+        This is the shared composition used by both ``search_sec_filings``
+        (agent tool) and the eval harness ``hybrid_rerank`` mode.  Calling this
+        ensures parity: the eval harness measures exactly the same code path
+        that production uses.
+
+        Args:
+            query: The search query.
+            ticker: Optional ticker filter.
+            as_of: Point-in-time cutoff (default: now).
+            top_k: Override for number of results.
+            resolve_ticker: If True (default), auto-resolve ticker from query.
+                Set to False to honour an explicit empty ticker.
+
+        Returns:
+            Reranked list of Documents.
+        """
+        docs = self.retrieve(query, ticker=ticker, as_of=as_of, top_k=top_k, resolve_ticker=resolve_ticker)
+        if not docs or not query:
+            return docs
+        if len(docs) <= 1:
+            return docs
+        from api.services.reranker import rerank as _rerank
+        effective_top_k = top_k or self.top_k
+        return _rerank(query, docs, top_k=effective_top_k)
+
+    def retrieve_mode(
+        self,
+        query: str,
+        *,
+        mode: str,
+        ticker: str = "",
+        as_of: Optional[datetime] = None,
+        top_k: Optional[int] = None,
+        rerank: bool = False,
+    ) -> List[Document]:
+        """Run retrieval in a specific mode for evaluation.
+
+        This is the evaluation-safe mode selector used by the eval harness.
+        It uses the same ``bm25_search``, ``vector_search``, ``rrf_fuse``,
+        and ``rerank`` functions as ``retrieve()`` — no duplicated algorithms.
+
+        Args:
+            query: The search query.
+            mode: One of ``bm25``, ``dense``, ``hybrid_rrf``, ``hybrid_rerank``.
+            ticker: Ticker filter (empty string = no filter).
+            as_of: Point-in-time cutoff.
+            top_k: Number of results.
+            rerank: Whether to apply cross-encoder reranking (after fusion).
+
+        Returns:
+            List of Documents with metadata including retrieval_mode and scores.
+        """
+        valid_modes = ("bm25", "dense", "hybrid_rrf", "hybrid_rerank")
+        if mode not in valid_modes:
+            raise ValueError(f"Unknown mode '{mode}'. Valid: {valid_modes}")
+
+        as_of = _normalize_as_of(as_of)
+        effective_top_k = top_k or self.top_k
+
+        # No ticker alias resolution in eval mode — ticker is explicit
+        effective_ticker = ticker
+
+        # ── BM25-only mode ────────────────────────────────────────────────
+        if mode == "bm25":
+            results = bm25_search(
+                query,
+                top_k=effective_top_k,
+                ticker=effective_ticker,
+                ticker_boost=self.ticker_boost,
+                as_of=as_of,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "bm25"
+            return results
+
+        # ── Dense-only mode ───────────────────────────────────────────────
+        if mode == "dense":
+            results = vector_search(
+                query,
+                top_k=effective_top_k,
+                ticker=effective_ticker,
+                as_of=as_of,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "dense"
+            return results
+
+        # ── Hybrid modes — delegate to shared functions ──────────────────
+        if mode == "hybrid_rrf":
+            results = self.retrieve(
+                query=query,
+                ticker=effective_ticker,
+                as_of=as_of,
+                top_k=effective_top_k,
+                resolve_ticker=False,
+            )
+            for doc in results:
+                doc.metadata["retrieval_mode"] = "hybrid_rrf"
+            return results
+
+        # mode == "hybrid_rerank"
+        results = self.retrieve_and_rerank(
+            query=query,
+            ticker=effective_ticker,
+            as_of=as_of,
+            top_k=effective_top_k,
+            resolve_ticker=False,
         )
-        logger.debug(
-            "Hybrid RRF: {} vector + {} BM25 -> {} fused (top_k={}, ticker={}, boost={}x)",
-            len(vec_docs), len(bm25_docs), len(fused),
-            effective_top_k, effective_ticker, self.ticker_boost,
-        )
-        return fused[:effective_top_k]
+        for doc in results:
+            doc.metadata["retrieval_mode"] = "hybrid_rerank"
+        return results

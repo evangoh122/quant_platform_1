@@ -203,7 +203,7 @@ def parse_opra_symbol(ticker):
         strike = int(strike_raw) / 1000.0
     except (ValueError, OverflowError):
         return None
-    right = "call" if right_raw == "C" else "put"
+    right = "CALL" if right_raw == "C" else "PUT"
     return underlying, expiry, right, strike
 
 
@@ -244,8 +244,33 @@ def resolve_snapshot_ts(provider_ts, snapshot_ts):
     return provider_ts if provider_ts is not None else snapshot_ts
 
 
+def canonical_day_right(raw):
+    """Canonicalise a raw day-agg ``right`` value to ``'PUT'`` or ``'CALL'``.
+
+    Accepts every known encoding produced by ingestion writers:
+
+    * ``'PUT'`` / ``'CALL'``  — ``refresh_bronze_options.py`` day-agg path
+    * ``'P'``   / ``'C'``    — ``01_ingest_market_data.py`` Quick Start
+    * ``'put'`` / ``'call'``  — ``refresh_bronze_options.py`` quotes path
+      (only relevant if rows leak into the day table)
+
+    Returns ``None`` for any unrecognised value.
+    """
+    val = (raw or "").upper()
+    if val in ("PUT", "P"):
+        return "PUT"
+    if val in ("CALL", "C"):
+        return "CALL"
+    return None
+
+
 def _right_from_contract_type(contract_type):
-    """Normalise a Polygon ``contract_type`` (call/put) to 'call'/'put'."""
+    """Normalise a Polygon ``contract_type`` (call/put) to 'call'/'put'.
+
+    Quotes path (bronze_options_quotes) uses lowercase to match the existing
+    live-table encoding.  The day-agg path (parse_opra_symbol / _shape_day)
+    emits uppercase 'CALL'/'PUT' separately.
+    """
     ctype = (contract_type or "").lower()
     if ctype in ("call", "c"):
         return "call"
@@ -459,8 +484,15 @@ def log_finish(spark, source_file, dataset, row_count, error_message=None):
 def _shape_day(spark, vol_file, source_file, ingest_ts):
     """Read one staged options day CSV via Spark and shape it into the target
     columns (OPRA parsing + timestamp derivation). Rejects malformed contracts
-    and null event timestamps."""
+    and null event timestamps.
+
+    ``right`` is canonicalised via :func:`canonical_day_right` (the single
+    source of truth for day-agg right encoding).
+    """
     from pyspark.sql import functions as F
+    from pyspark.sql.types import StringType
+
+    _day_right_udf = F.udf(canonical_day_right, StringType())
     pattern = OPRA_REGEX.pattern
     raw = spark.read.option("header", True).csv(vol_file)
     event_ts = (
@@ -473,10 +505,7 @@ def _shape_day(spark, vol_file, source_file, ingest_ts):
         F.to_date(F.regexp_extract("ticker", pattern, 2), "yyMMdd").alias("expiry"),
         (F.regexp_extract("ticker", pattern, 4).cast("double") / F.lit(1000.0))
         .alias("strike"),
-        F.when(F.regexp_extract("ticker", pattern, 3) == F.lit("C"), F.lit("call"))
-        .when(F.regexp_extract("ticker", pattern, 3) == F.lit("P"), F.lit("put"))
-        .otherwise(F.lit(None).cast("string"))
-        .alias("right"),
+        _day_right_udf(F.regexp_extract("ticker", pattern, 3)).alias("right"),
         event_ts.alias("event_ts"),
         F.to_date(event_ts).alias("event_date"),
         F.year(event_ts).alias("event_year"),

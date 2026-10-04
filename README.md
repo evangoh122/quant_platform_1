@@ -49,7 +49,7 @@ etl/slippage.py ───────────────► Cost Calculator
 | `ontology/` | New | Business terms, metric definitions, join hints, table semantics, filters |
 | `pipelines/` | New | Spark Declarative Pipelines (bronze→silver→gold) |
 | `ml/` | New | Model training, walk-forward validation, ablation study |
-| `strategies/` | New | Trading cost model, signal strategies |
+| `strategies/` | New | Trading cost model, signal strategies (uses `silver_ohlcv_day_adjusted` for split-adjusted prices) |
 | `frontend/` | Rag_workbench | React + Vite + Tailwind CSS SPA |
 | `tests/` | Both | Medallion tests (IBKR) + RAG/service tests (Rag_workbench) |
 | `evals/` | Both | FinanceBench eval plan + RAGAS evaluation |

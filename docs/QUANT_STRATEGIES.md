@@ -312,6 +312,12 @@ most common way a market-neutral backtest flatters itself.
 a fraction of ADV (e.g. ≤1%) and report strategy capacity. Without this a
 4,120-name book will show returns it could never realise.
 
+**Price source.** Use `silver_ohlcv_day_adjusted` (split-adjusted via Massive
+splits) for all return computations. `bronze_ohlcv_day` is NOT split-adjusted
+and will produce contaminated returns (e.g. AMZN 2022-06-06 shows −94.9%).
+Masked break days (`data_quality_breaks.is_masked = true`) are excluded from
+signals and P&L — positions held across a masked day earn 0 that day.
+
 ---
 
 ## 6. Feasibility queries (reproduce the verdicts above)

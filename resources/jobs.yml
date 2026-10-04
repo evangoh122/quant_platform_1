@@ -10,6 +10,23 @@ resources:
         - task_key: refresh_silver_gold
           spark_python_task:
             python_file: ../pipelines/run_silver_gold.py
+            parameters: ["--schema", "${var.schema}"]
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+
+    corporate_action_refresh:
+      name: quant-platform-corporate-action-refresh-${bundle.target}
+      tasks:
+        - task_key: refresh_bronze_corporate_actions
+          notebook_task:
+            notebook_path: ../notebooks/refresh_bronze_corporate_actions.py
+            base_parameters:
+              mode: "dry-run"
+              source: "massive"
+              delay_seconds: "0.5"
           environment_key: serverless
       environments:
         - environment_key: serverless
@@ -22,6 +39,23 @@ resources:
         - task_key: run_ablation
           spark_python_task:
             python_file: ../ml/run_ablation.py
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+
+    sec_knowledge_graph_build:
+      name: quant-platform-sec-kg-build-${bundle.target}
+      tasks:
+        - task_key: build_sec_kg
+          spark_python_task:
+            python_file: ../pipelines/build_sec_knowledge_graph.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
           environment_key: serverless
       environments:
         - environment_key: serverless
