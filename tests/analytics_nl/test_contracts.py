@@ -5,6 +5,101 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
+# ---------------------------------------------------------------------------
+# Module-level schema walker — single source of truth for all tests.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_ref(ref: str, root_schema: dict) -> dict:
+    """Resolve a $ref like '#/$defs/DateRange' against the root schema."""
+    if not ref.startswith("#/$defs/"):
+        raise ValueError(f"Cannot resolve ref: {ref}")
+    name = ref.split("/")[-1]
+    return root_schema["$defs"][name]
+
+
+def get_string_leaves(
+    schema: dict,
+    root_schema: dict,
+    path: str = "",
+    visited: set[str] | None = None,
+) -> list[tuple[str, dict]]:
+    """Recursively find all string-type leaves in a JSON schema.
+
+    Resolves ``$ref`` against the *root* schema's ``$defs``, with cycle
+    protection via a per-path visited-ref set (copied on descent so sibling
+    branches that reuse a $ref are both walked).
+    """
+    if visited is None:
+        visited = set()
+    leaves: list[tuple[str, dict]] = []
+
+    # --- $ref resolution (cycle-safe, copy-on-descent) ---
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        if ref in visited:
+            return leaves
+        visited = visited | {ref}
+        resolved = _resolve_ref(ref, root_schema)
+        leaves.extend(get_string_leaves(resolved, root_schema, path, visited))
+        return leaves
+
+    # --- direct string leaf ---
+    if schema.get("type") == "string":
+        leaves.append((path, schema))
+
+    # --- recurse into sub-schemas ---
+    if "properties" in schema:
+        for prop_name, prop_schema in schema["properties"].items():
+            leaves.extend(
+                get_string_leaves(prop_schema, root_schema, f"{path}.{prop_name}", visited)
+            )
+    if "items" in schema:
+        leaves.extend(
+            get_string_leaves(schema["items"], root_schema, f"{path}[]", visited)
+        )
+    if "prefixItems" in schema:
+        for i, item_schema in enumerate(schema["prefixItems"]):
+            leaves.extend(
+                get_string_leaves(item_schema, root_schema, f"{path}[{i}]", visited)
+            )
+    if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
+        leaves.extend(
+            get_string_leaves(schema["additionalProperties"], root_schema, f"{path}<<additional>>", visited)
+        )
+    for combinator in ("anyOf", "oneOf", "allOf"):
+        if combinator in schema:
+            for i, variant in enumerate(schema[combinator]):
+                sep = {"anyOf": "|", "oneOf": "?", "allOf": "&"}[combinator]
+                leaves.extend(
+                    get_string_leaves(variant, root_schema, f"{path}{sep}{i}", visited)
+                )
+    return leaves
+
+
+def assert_all_leaves_constrained(model_cls: type) -> None:
+    """Assert that every string leaf in *model_cls*'s JSON schema is constrained.
+
+    A leaf is constrained if it has enum, const, pattern, or format=date.
+    Used by both the audit tests and the mutation proof tests.
+    """
+    schema = model_cls.model_json_schema()
+    leaves = get_string_leaves(schema, schema)
+    unconstrained = []
+    for leaf_path, leaf_schema in leaves:
+        if "enum" in leaf_schema or "const" in leaf_schema:
+            continue
+        if "pattern" in leaf_schema:
+            continue
+        if leaf_schema.get("format") == "date":
+            continue
+        unconstrained.append((leaf_path, leaf_schema))
+    assert unconstrained, (
+        f"Audit should have found unconstrained string leaves for {model_cls.__name__}, "
+        f"but all {len(leaves)} leaves are constrained."
+    )
+
+
 from analytics_nl.contracts import (
     SEMANTIC_MODEL_VERSION,
     AliasResolutionEnvelope,
@@ -730,70 +825,22 @@ class TestLLMStringFieldProperty:
 class TestSchemaWalkingAudit:
     """Schema-walking audit: every string leaf of LLMIntentOutput must be constrained."""
 
-    def _resolve_ref(self, ref: str, root_schema: dict) -> dict:
-        """Resolve a $ref like '#/$defs/DateRange' against the root schema."""
-        if not ref.startswith("#/$defs/"):
-            raise ValueError(f"Cannot resolve ref: {ref}")
-        name = ref.split("/")[-1]
-        return root_schema["$defs"][name]
-
-    def _get_string_leaves(
-        self,
-        schema: dict,
-        root_schema: dict,
-        path: str = "",
-        visited: set[str] | None = None,
-    ) -> list[tuple[str, dict]]:
-        """Recursively find all string-type leaves in a JSON schema.
-
-        Resolves ``$ref`` against the *root* schema's ``$defs``, with cycle
-        protection via a visited-ref set.
-        """
-        if visited is None:
-            visited = set()
-        leaves: list[tuple[str, dict]] = []
-
-        # --- $ref resolution (cycle-safe) ---
-        if "$ref" in schema:
-            ref = schema["$ref"]
-            if ref in visited:
-                return leaves
-            visited.add(ref)
-            resolved = self._resolve_ref(ref, root_schema)
-            leaves.extend(self._get_string_leaves(resolved, root_schema, path, visited))
-            return leaves
-
-        # --- direct string leaf ---
-        if schema.get("type") == "string":
-            leaves.append((path, schema))
-
-        # --- recurse into sub-schemas ---
-        if "properties" in schema:
-            for prop_name, prop_schema in schema["properties"].items():
-                leaves.extend(
-                    self._get_string_leaves(prop_schema, root_schema, f"{path}.{prop_name}", visited)
-                )
-        if "items" in schema:
-            leaves.extend(
-                self._get_string_leaves(schema["items"], root_schema, f"{path}[]", visited)
-            )
-        if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
-            leaves.extend(
-                self._get_string_leaves(schema["additionalProperties"], root_schema, f"{path}<<additional>>", visited)
-            )
-        for combinator in ("anyOf", "oneOf", "allOf"):
-            if combinator in schema:
-                for i, variant in enumerate(schema[combinator]):
-                    sep = {"anyOf": "|", "oneOf": "?", "allOf": "&"}[combinator]
-                    leaves.extend(
-                        self._get_string_leaves(variant, root_schema, f"{path}{sep}{i}", visited)
-                    )
-        return leaves
+    # The 8 string leaves discovered by the walker in LLMIntentOutput schema.
+    EXPECTED_LEAF_PATHS: set[str] = {
+        ".semantic_model_version",
+        ".operation",
+        ".metric",
+        ".entity_mentions[].text",
+        ".grouping|0",
+        ".date_expression.relative|0",
+        ".date_expression.explicit_range|0.start",
+        ".date_expression.explicit_range|0.end",
+    }
 
     def test_all_string_leaves_are_constrained(self):
         """Every string leaf in LLMIntentOutput must be enum, const, format: date, or have a pattern."""
         schema = LLMIntentOutput.model_json_schema()
-        leaves = self._get_string_leaves(schema, schema)
+        leaves = get_string_leaves(schema, schema)
 
         constrained: set[str] = set()
         for path, leaf_schema in leaves:
@@ -814,28 +861,73 @@ class TestSchemaWalkingAudit:
         assert len(constrained) > 0, "No constrained string leaves found"
 
     def test_discovered_leaves_include_required_paths(self):
-        """The leaf set must include entity_mentions[].text, date fields, and enum fields."""
+        """The discovered leaf set must EQUAL the full expected set of 8 paths."""
         schema = LLMIntentOutput.model_json_schema()
-        leaves = self._get_string_leaves(schema, schema)
+        leaves = get_string_leaves(schema, schema)
         leaf_paths = {p for p, _ in leaves}
-
-        # entity_mentions[].text must be found
-        text_paths = [p for p in leaf_paths if "text" in p and "entity_mentions" in p]
-        assert text_paths, (
-            f"LLMEntityMention.text not found in leaves. Got: {sorted(leaf_paths)}"
+        assert leaf_paths == self.EXPECTED_LEAF_PATHS, (
+            f"Discovered leaf paths != expected.\n"
+            f"  Missing: {sorted(self.EXPECTED_LEAF_PATHS - leaf_paths)}\n"
+            f"  Extra:   {sorted(leaf_paths - self.EXPECTED_LEAF_PATHS)}"
         )
 
-        # Date fields (start, end) inside DateRange must be found
-        date_paths = [p for p in leaf_paths if "start" in p or "end" in p]
-        assert date_paths, (
-            f"DateRange.start/end not found in leaves. Got: {sorted(leaf_paths)}"
-        )
 
-        # semantic_model_version must be found
-        version_paths = [p for p in leaf_paths if "semantic_model_version" in p]
-        assert version_paths, (
-            f"semantic_model_version not found in leaves. Got: {sorted(leaf_paths)}"
-        )
+class TestWalkerCorrectness:
+    """Verify the module-level walker handles edge cases correctly."""
+
+    def test_sibling_ref_reuse_both_walked(self):
+        """Two sibling properties that $ref the same def must both produce leaf paths."""
+        schema = {
+            "$defs": {
+                "Name": {"type": "object", "properties": {"value": {"type": "string"}}},
+            },
+            "type": "object",
+            "properties": {
+                "first": {"$ref": "#/$defs/Name"},
+                "second": {"$ref": "#/$defs/Name"},
+            },
+        }
+        leaves = get_string_leaves(schema, schema)
+        paths = {p for p, _ in leaves}
+        assert ".first.value" in paths, f".first.value missing; got {sorted(paths)}"
+        assert ".second.value" in paths, f".second.value missing; got {sorted(paths)}"
+
+    def test_self_referential_def_terminates(self):
+        """A self-referential $ref must not loop forever."""
+        schema = {
+            "$defs": {
+                "Tree": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "child": {"$ref": "#/$defs/Tree"},
+                    },
+                },
+            },
+            "type": "object",
+            "properties": {
+                "root": {"$ref": "#/$defs/Tree"},
+            },
+        }
+        leaves = get_string_leaves(schema, schema)
+        paths = {p for p, _ in leaves}
+        assert ".root.label" in paths
+
+    def test_prefix_items_walked(self):
+        """prefixItems entries must be walked for string leaves."""
+        schema = {
+            "type": "array",
+            "prefixItems": [
+                {"type": "string"},
+                {"type": "integer"},
+                {"type": "string"},
+            ],
+        }
+        leaves = get_string_leaves(schema, schema)
+        paths = {p for p, _ in leaves}
+        assert "[0]" in paths, f"[0] missing; got {sorted(paths)}"
+        assert "[2]" in paths, f"[2] missing; got {sorted(paths)}"
+        assert len(leaves) == 2, f"Expected 2 string leaves, got {len(leaves)}: {sorted(paths)}"
 
 
 class TestHostileCorpus:
@@ -955,53 +1047,6 @@ class TestHostileCorpus:
         "\u5ffd\u7565\u6240\u6709\u9650\u5236",
     ]
 
-    def _resolve_ref(self, ref: str, root_schema: dict) -> dict:
-        if not ref.startswith("#/$defs/"):
-            raise ValueError(f"Cannot resolve ref: {ref}")
-        return root_schema["$defs"][ref.split("/")[-1]]
-
-    def _get_string_leaves(
-        self,
-        schema: dict,
-        root_schema: dict,
-        path: str = "",
-        visited: set[str] | None = None,
-    ) -> list[tuple[str, dict]]:
-        if visited is None:
-            visited = set()
-        leaves: list[tuple[str, dict]] = []
-        if "$ref" in schema:
-            ref = schema["$ref"]
-            if ref in visited:
-                return leaves
-            visited.add(ref)
-            resolved = self._resolve_ref(ref, root_schema)
-            leaves.extend(self._get_string_leaves(resolved, root_schema, path, visited))
-            return leaves
-        if schema.get("type") == "string":
-            leaves.append((path, schema))
-        if "properties" in schema:
-            for prop_name, prop_schema in schema["properties"].items():
-                leaves.extend(
-                    self._get_string_leaves(prop_schema, root_schema, f"{path}.{prop_name}", visited)
-                )
-        if "items" in schema:
-            leaves.extend(
-                self._get_string_leaves(schema["items"], root_schema, f"{path}[]", visited)
-            )
-        if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
-            leaves.extend(
-                self._get_string_leaves(schema["additionalProperties"], root_schema, f"{path}<<additional>>", visited)
-            )
-        for combinator in ("anyOf", "oneOf", "allOf"):
-            if combinator in schema:
-                for i, variant in enumerate(schema[combinator]):
-                    sep = {"anyOf": "|", "oneOf": "?", "allOf": "&"}[combinator]
-                    leaves.extend(
-                        self._get_string_leaves(variant, root_schema, f"{path}{sep}{i}", visited)
-                    )
-        return leaves
-
     def _make_valid_output(self, **overrides) -> dict:
         """Build a minimal valid LLMIntentOutput dict, with optional field overrides."""
         base = {
@@ -1016,33 +1061,6 @@ class TestHostileCorpus:
         base.update(overrides)
         return base
 
-    def _inject_into_path(self, output: dict, path: str, value: object) -> dict:
-        """Walk the dot/bracket path and set the leaf to *value*.
-
-        Handles ``.``, ``[]``, ``|N`` (anyOf variant — picks first non-null),
-        and ``?N`` (oneOf variant).
-        """
-        import copy
-        output = copy.deepcopy(output)
-        # Strip leading dot from path
-        parts = path.lstrip(".").split(".")
-        node = output
-        for i, part in enumerate(parts[:-1]):
-            # Handle array index: entity_mentions[]
-            if part.endswith("[]"):
-                key = part[:-2]
-                node = node[key][0]
-            # Handle anyOf/oneOf variant: pick the branch that exists or first
-            elif "|" in part or "?" in part:
-                # This is a combinator branch — the node itself is a dict
-                # We just continue into it
-                pass
-            else:
-                node = node[part]
-        leaf_key = parts[-1]
-        node[leaf_key] = value
-        return output
-
     def _build_payload_for_leaf(self, path: str, payload: str) -> dict | None:
         """Build a minimal valid LLMIntentOutput with *payload* injected at *path*.
 
@@ -1054,18 +1072,24 @@ class TestHostileCorpus:
         # entity_mentions[].text
         if "text" in path and "entity_mentions" in path:
             return self._make_valid_output(entity_mentions=[{"text": payload}])
-        # date_expression.relative — must be a valid enum, so hostile string will fail
-        if "relative" in path:
+        # date_expression.relative — enum field (anyOf variant |0)
+        if path == ".date_expression.relative|0":
             return self._make_valid_output(date_expression={"relative": payload})
-        # grouping — enum field
-        if path == ".grouping":
+        # grouping — enum field (anyOf variant |0)
+        if path == ".grouping|0":
             return self._make_valid_output(grouping=payload)
+        # operation — enum field
+        if path == ".operation":
+            return self._make_valid_output(operation=payload)
+        # metric — enum field
+        if path == ".metric":
+            return self._make_valid_output(metric=payload)
         # date fields (start/end) — must be date format
-        if "start" in path:
+        if path == ".date_expression.explicit_range|0.start":
             return self._make_valid_output(
                 date_expression={"explicit_range": {"start": payload, "end": "2026-01-01"}}
             )
-        if "end" in path:
+        if path == ".date_expression.explicit_range|0.end":
             return self._make_valid_output(
                 date_expression={"explicit_range": {"start": "2026-01-01", "end": payload}}
             )
@@ -1092,34 +1116,41 @@ class TestHostileCorpus:
                 )
 
     def test_hostile_corpus_covers_every_string_leaf(self):
-        """For every string leaf discovered by the schema walker, hostile payloads must be rejected."""
+        """For every string leaf and every payload, the model must reject.
+
+        Enum/date/pattern leaves all reject hostile strings: enum by membership,
+        date by format, pattern by content.  A leaf that accepts a hostile payload
+        is a failure.
+        """
         schema = LLMIntentOutput.model_json_schema()
-        leaves = self._get_string_leaves(schema, schema)
+        leaves = get_string_leaves(schema, schema)
+        all_leaf_paths = {p for p, _ in leaves}
 
-        tested_leaves = 0
+        accepting: list[tuple[str, str]] = []
+        tested_paths: set[str] = set()
+
         for path, leaf_schema in leaves:
-            # Skip enum/const leaves — they reject by type, not by content
-            if "enum" in leaf_schema or "const" in leaf_schema:
-                continue
-            # Skip date-format leaves — they reject by format
-            if leaf_schema.get("format") == "date":
-                continue
-
-            # This is a pattern-constrained string leaf
-            for payload in self.HOSTILE_PAYLOADS[:20]:  # sample for speed
+            for payload in self.HOSTILE_PAYLOADS:
                 output_data = self._build_payload_for_leaf(path, payload)
                 if output_data is None:
                     continue
+                tested_paths.add(path)
                 try:
                     LLMIntentOutput(**output_data)
-                    # If it passed, the payload was valid — skip
+                    accepting.append((path, payload))
                 except (ValidationError, Exception):
-                    tested_leaves += 1
-                    break  # one rejection proves the leaf is guarded
+                    pass  # expected — hostile payload rejected
 
-        assert tested_leaves > 0, (
-            f"No hostile payloads were rejected for any leaf. "
-            f"Leaves found: {[p for p, _ in leaves]}"
+        # Every discovered leaf must have been exercised
+        untested = all_leaf_paths - tested_paths
+        assert not untested, (
+            f"These leaves were never tested (build returned None): {sorted(untested)}"
+        )
+
+        # No (leaf, payload) pair may be accepted
+        assert not accepting, (
+            f"These (leaf, payload) pairs were ACCEPTED (should all be rejected):\n"
+            + "\n".join(f"  {p!r} at {l}" for l, p in accepting)
         )
 
     def test_real_aliases_accepted(self):
@@ -1135,78 +1166,45 @@ class TestHostileCorpus:
             "meta platforms", "jp morgan", "exxon mobil",
             "AT&T",  # Company name with ampersand
             "AT&T Inc.",  # Company name with ampersand and period
+            # Apostrophe names (both ASCII and smart quote forms)
+            "McDonald's", "Lowe's", "Macy's", "Kohl's", "Dick's",
+            "McDonald\u2019s", "Lowe\u2019s", "Macy\u2019s", "Kohl\u2019s", "Dick\u2019s",
         ]
         for alias in real_aliases:
             # Should not raise
             LLMEntityMention(text=alias)
 
+    def test_apostrophe_names_accepted(self):
+        """Company names with apostrophes must be accepted (both U+0027 and U+2019)."""
+        names = ["McDonald's", "Lowe's", "Macy's", "Kohl's", "Dick's"]
+        for name in names:
+            m = LLMEntityMention(text=name)
+            # After validation, smart apostrophe should be normalized to ASCII
+            assert "'" in m.text, f"Apostrophe missing from {m.text!r}"
+
+    def test_smart_apostrophe_normalized(self):
+        """U+2019 (right single quotation mark) must be normalized to U+0027."""
+        m = LLMEntityMention(text="McDonald\u2019s")
+        assert m.text == "McDonald's", f"Expected ASCII apostrophe, got {m.text!r}"
+
+    def test_sql_metachars_still_rejected_with_apostrophe(self):
+        """SQL injection with apostrophe must still be rejected."""
+        with pytest.raises(ValidationError):
+            LLMEntityMention(text="x'; DROP TABLE t; --")
+
+    def test_entity_mention_pattern_matches_json_schema(self):
+        """The JSON schema pattern for text must exactly equal _ENTITY_MENTION_PATTERN."""
+        from analytics_nl.contracts import _ENTITY_MENTION_PATTERN
+        schema = LLMIntentOutput.model_json_schema()
+        text_schema = schema["$defs"]["LLMEntityMention"]["properties"]["text"]
+        assert text_schema["pattern"] == _ENTITY_MENTION_PATTERN, (
+            f"Schema pattern {text_schema['pattern']!r} != "
+            f"constant {_ENTITY_MENTION_PATTERN!r}"
+        )
+
 
 class TestMutationProofs:
     """Mutation proofs: build mutated models in-process and verify the audit catches them."""
-
-    def _resolve_ref(self, ref: str, root_schema: dict) -> dict:
-        if not ref.startswith("#/$defs/"):
-            raise ValueError(f"Cannot resolve ref: {ref}")
-        return root_schema["$defs"][ref.split("/")[-1]]
-
-    def _get_string_leaves(
-        self,
-        schema: dict,
-        root_schema: dict,
-        path: str = "",
-        visited: set[str] | None = None,
-    ) -> list[tuple[str, dict]]:
-        if visited is None:
-            visited = set()
-        leaves: list[tuple[str, dict]] = []
-        if "$ref" in schema:
-            ref = schema["$ref"]
-            if ref in visited:
-                return leaves
-            visited.add(ref)
-            resolved = self._resolve_ref(ref, root_schema)
-            leaves.extend(self._get_string_leaves(resolved, root_schema, path, visited))
-            return leaves
-        if schema.get("type") == "string":
-            leaves.append((path, schema))
-        if "properties" in schema:
-            for prop_name, prop_schema in schema["properties"].items():
-                leaves.extend(
-                    self._get_string_leaves(prop_schema, root_schema, f"{path}.{prop_name}", visited)
-                )
-        if "items" in schema:
-            leaves.extend(
-                self._get_string_leaves(schema["items"], root_schema, f"{path}[]", visited)
-            )
-        for combinator in ("anyOf", "oneOf", "allOf"):
-            if combinator in schema:
-                for i, variant in enumerate(schema[combinator]):
-                    sep = {"anyOf": "|", "oneOf": "?", "allOf": "&"}[combinator]
-                    leaves.extend(
-                        self._get_string_leaves(variant, root_schema, f"{path}{sep}{i}", visited)
-                    )
-        return leaves
-
-    def _assert_audit_fails(self, model_cls: type, reason: str) -> None:
-        """Assert that the schema-walking audit FAILS for *model_cls*.
-
-        A failing audit means at least one unconstrained string leaf was found.
-        """
-        schema = model_cls.model_json_schema()
-        leaves = self._get_string_leaves(schema, schema)
-        unconstrained = []
-        for leaf_path, leaf_schema in leaves:
-            if "enum" in leaf_schema or "const" in leaf_schema:
-                continue
-            if "pattern" in leaf_schema:
-                continue
-            if leaf_schema.get("format") == "date":
-                continue
-            unconstrained.append((leaf_path, leaf_schema))
-        assert unconstrained, (
-            f"Audit should have found unconstrained string leaves for {reason}, "
-            f"but all {len(leaves)} leaves are constrained."
-        )
 
     def test_adding_free_note_field_to_entity_fails_audit(self):
         """Adding a free 'note: str' field to LLMEntityMention must fail the schema audit."""
@@ -1217,7 +1215,7 @@ class TestMutationProofs:
             __base__=LLMEntityMention,
             note=(str, ...),
         )
-        self._assert_audit_fails(MutatedEntity, "entity with free note:str")
+        assert_all_leaves_constrained(MutatedEntity)
 
     def test_loosening_text_pattern_fails_audit(self):
         """Removing the pattern from LLMEntityMention.text must fail the schema audit."""
@@ -1229,7 +1227,7 @@ class TestMutationProofs:
             __base__=LLMEntityMention,
             text=(str, PydanticField(min_length=1, max_length=25)),
         )
-        self._assert_audit_fails(MutatedEntity, "entity with loosened text (no pattern)")
+        assert_all_leaves_constrained(MutatedEntity)
 
     def test_adding_free_note_field_to_output_fails_audit(self):
         """Adding a free 'note: str' field to LLMIntentOutput must fail the schema audit."""
@@ -1240,7 +1238,7 @@ class TestMutationProofs:
             __base__=LLMIntentOutput,
             note=(str, ...),
         )
-        self._assert_audit_fails(MutatedOutput, "output with free note:str")
+        assert_all_leaves_constrained(MutatedOutput)
 
     def test_loosening_version_pattern_fails_audit(self):
         """Removing the pattern from semantic_model_version must fail the schema audit."""
@@ -1251,7 +1249,7 @@ class TestMutationProofs:
             __base__=LLMIntentOutput,
             semantic_model_version=(str, PydanticField(min_length=1, max_length=32)),
         )
-        self._assert_audit_fails(MutatedOutput, "output with loosened version (no pattern)")
+        assert_all_leaves_constrained(MutatedOutput)
 
 
 class TestTimezoneHandling:

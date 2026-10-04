@@ -158,12 +158,12 @@ _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
 _SECTOR_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_SQL_METACHAR_RE = re.compile(r"[;'\"]|--|/\*|\*/")
+_SQL_METACHAR_RE = re.compile(r"[;]|--|/\*|\*/")
 _PROMPT_INJECTION_RE = re.compile(
     r"ignore\s+previous|reveal\s+(?:the\s+)?system|you\s+are\s+now|forget\s+(?:your|all)|disregard\s+(?:all|previous)|system\s*:|override\s+(?:safety|all)|bypass\s+(?:safety|all|filters)|ignore\s+(?:all|safety|constraints)|forget\s+(?:all|safety|constraints)",
     re.IGNORECASE,
 )
-_ENTITY_MENTION_PATTERN: str = r"^[A-Za-z0-9][A-Za-z0-9 .&\-/_]{0,24}$"
+_ENTITY_MENTION_PATTERN: str = r"^[A-Za-z0-9][A-Za-z0-9 .&\-/'_]{0,24}$"
 _ENTITY_MENTION_RE = re.compile(_ENTITY_MENTION_PATTERN)
 _SQL_KEYWORD_RE = re.compile(
     r"\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|UNION|EXEC|EXECUTE|TRUNCATE|GRANT|REVOKE)\b",
@@ -327,10 +327,17 @@ class LLMEntityMention(FrozenStrictModel):
 
     text: Annotated[str, Field(min_length=1, max_length=25, pattern=_ENTITY_MENTION_PATTERN)]
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_text(cls, data: dict) -> dict:
+        """Normalize smart apostrophe U+2019 → ASCII apostrophe U+0027 before field validation."""
+        if isinstance(data, dict) and "text" in data and isinstance(data["text"], str):
+            data["text"] = unicodedata.normalize("NFKC", data["text"]).replace("\u2019", "'")
+        return data
+
     @field_validator("text")
     @classmethod
     def validate_text(cls, v: str) -> str:
-        v = unicodedata.normalize("NFKC", v)
         if not _ENTITY_MENTION_RE.match(v):
             raise ValueError(
                 "Entity mention must match allowlist pattern: "
