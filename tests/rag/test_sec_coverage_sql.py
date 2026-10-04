@@ -338,3 +338,51 @@ class TestGoldCoverageAliases:
         rows = _run_coverage_sql_with_aliases(sql)
         googl = next(r for r in rows if r["ticker"] == "GOOGL")
         assert googl["n_chunks"] > 0, "GOOGL must have chunks via canonical GOOG"
+
+    def test_silver_only_ticker_included(self):
+        """A ticker with silver chunks but absent from gold_tradable_universe
+        must still get a coverage row."""
+        import duckdb
+
+        con = duckdb.connect()
+        # Universe: only AAPL
+        con.execute("CREATE TABLE gold_tradable_universe (symbol VARCHAR)")
+        con.executemany("INSERT INTO gold_tradable_universe VALUES (?)", [("AAPL",)])
+
+        con.execute(
+            "CREATE TABLE sec_cik_mapping_log ("
+            "ticker VARCHAR, cik VARCHAR, status VARCHAR, mapped_ts TIMESTAMP)"
+        )
+        con.executemany(
+            "INSERT INTO sec_cik_mapping_log VALUES (?,?,?,?)",
+            [
+                ("AAPL", "0000320193", "mapped", "2024-06-01 00:00:00"),
+                ("NVDA", "0001045810", "mapped", "2024-04-01 00:00:00"),
+            ],
+        )
+
+        con.execute(
+            "CREATE TABLE bronze_sec_filings_v2 ("
+            "accession_number VARCHAR, ticker VARCHAR, filing_section VARCHAR, "
+            "chunk_text VARCHAR, accepted_ts TIMESTAMP, ingest_ts TIMESTAMP)"
+        )
+
+        # Silver has NVDA chunks but NVDA is NOT in gold_tradable_universe
+        con.execute(
+            "CREATE TABLE silver_sec_sections (ticker VARCHAR, chunk_id VARCHAR)"
+        )
+        con.executemany(
+            "INSERT INTO silver_sec_sections VALUES (?,?)",
+            [("AAPL", "ch1"), ("NVDA", "ch2"), ("NVDA", "ch3")],
+        )
+
+        sql = _load_coverage_sql()
+        con.execute(sql)
+        rows = con.execute(
+            "SELECT ticker, n_chunks FROM gold_sec_coverage ORDER BY ticker"
+        ).fetchall()
+        result = {r[0]: r[1] for r in rows}
+        con.close()
+
+        assert "NVDA" in result, "NVDA (silver-only) must appear in coverage"
+        assert result["NVDA"] == 2, "NVDA must have 2 chunks from silver"

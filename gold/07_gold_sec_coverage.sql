@@ -12,9 +12,16 @@
 
 CREATE OR REPLACE TABLE {catalog}.{schema}.gold_sec_coverage AS
 WITH universe AS (
+  -- Primary universe from gold_tradable_universe
   SELECT upper(trim(symbol)) AS ticker
   FROM {catalog}.{schema}.gold_tradable_universe
   GROUP BY upper(trim(symbol))
+  UNION
+  -- Include tickers that have silver chunks but are absent from
+  -- gold_tradable_universe (e.g. newly ingested SEC tickers)
+  SELECT DISTINCT upper(ticker) AS ticker
+  FROM {catalog}.{schema}.silver_sec_sections
+  WHERE ticker IS NOT NULL
 ),
 -- Canonical ticker per CIK: first alphabetically
 canonical AS (
