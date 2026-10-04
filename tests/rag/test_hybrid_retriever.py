@@ -1401,9 +1401,9 @@ class TestSearchSecFilingsError:
         assert len(result) == 1
         r = result[0]
 
-        # Must have the same keys as the hybrid path
+        # Must have the same keys as the hybrid path (including chunk_id)
         expected_keys = {
-            "accession_number", "form_type", "accepted_ts", "source_url",
+            "chunk_id", "accession_number", "form_type", "accepted_ts", "source_url",
             "ticker", "section", "chunk_index", "chunk_text",
             "retrieval_mode", "_warning",
         }
