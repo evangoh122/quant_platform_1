@@ -64,6 +64,46 @@ def test_leverage_wording_says_50pct():
     )
 
 
+def test_render_emits_required_disclosures():
+    """The rendered report must emit all required disclosures: masked-day P&L
+    caveat, DSR trial-count caveat, no untouched holdout, and conclusion."""
+    bm = {
+        "gross_ann_return": 0.01, "net_ann_return": 0.005,
+        "net_2x_ann_return": 0.0, "gross_sharpe": 0.5, "net_sharpe": 0.118,
+        "net_2x_sharpe": -0.445, "gross_max_drawdown": -0.0721,
+        "net_max_drawdown": -0.0949, "net_2x_max_drawdown": -0.1618,
+        "hit_rate": 0.3434, "turnover_avg_daily": 0.2848, "avg_hold_days": 3.85,
+        "deflated_sharpe_ratio": 0.0,
+    }
+    gm = dict(bm)
+    base_res = {"metrics": bm}
+    gated_res = {"metrics": gm}
+    oos_net = pd.Series([0.001, 0.002, 0.003])
+
+    lines = _render(
+        base_res, gated_res, oos_net, n_trials=3, capacity=1e8,
+        book_capital=10_000_000.0, window=60, lookback=5, entry=2.5,
+        exit_thresh=0.5, date_start=pd.Timestamp("2024-01-01"),
+        date_end=pd.Timestamp("2024-12-31"), n_dates=939, n_folds=5,
+        round_num=13, n_masked_breaks=174,
+    )
+    text = "\n".join(lines)
+
+    assert "Masked-day P&L is dropped, not exit-priced" in text, (
+        "missing masked-day P&L caveat"
+    )
+    assert "Deflated Sharpe trial count is understated" in text, (
+        "missing DSR trial-count caveat"
+    )
+    assert "n_trials=3" in text, "missing n_trials in DSR caveat"
+    assert "No untouched holdout" in text, "missing no-untouched-holdout caveat"
+    assert "939 days were seen" in text, "n_dates not in holdout caveat"
+    assert "Conclusion" in text, "missing conclusion"
+    assert "no evidence of a tradable edge" in text, (
+        "conclusion must state no tradable edge"
+    )
+
+
 # ── Round 11: valuation_returns fix ──────────────────────────────────────────
 
 def test_exit_day_pnl_includes_held_name_return():
@@ -244,26 +284,77 @@ def test_signals_unchanged_by_valuation_returns_fix():
 
 # ── Round 12: split-adjusted prices + masked breaks ────────────────────────
 
-def test_adjusted_table_maps_adj_close_as_close():
-    """When price_table='silver_ohlcv_day_adjusted', fetch_data generates SQL
-    that selects `adj_close AS close`."""
-    import inspect
+class _StubFetch:
+    """Captures SQL from _fetch calls and returns DataFrames with correct
+    columns so fetch_data can process them."""
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, w, sql):
+        self.calls.append(sql)
+        if "med_adv_60d" in sql:
+            return pd.DataFrame(columns=["trade_date", "symbol", "med_adv_60d", "adv_rank"])
+        if "breadth_regime" in sql:
+            return pd.DataFrame(columns=["trade_date", "breadth_regime"])
+        return pd.DataFrame(columns=["symbol", "event_date", "close"])
+
+
+def test_adjusted_path_generates_correct_sql():
+    """When price_table='silver_ohlcv_day_adjusted', fetch_data must generate
+    SQL that selects `adj_close AS close`, filters on `adj_close`, and reads
+    from the adjusted table."""
     from strategies.run_residual_reversion import fetch_data
-    src = inspect.getsource(fetch_data)
-    assert "adj_close AS close" in src, (
-        "fetch_data must select 'adj_close AS close' for the adjusted table"
+    import strategies.run_residual_reversion as mod
+
+    stub = _StubFetch()
+    try:
+        mod._fetch = stub
+        fetch_data(None, price_table="silver_ohlcv_day_adjusted")
+    finally:
+        mod._fetch = mod.__dict__.get("_fetch_orig", mod._fetch)
+
+    # Find the closes query (contains the price_table).
+    closes_qs = [s for s in stub.calls if "silver_ohlcv_day_adjusted" in s]
+    assert len(closes_qs) == 1, f"expected 1 closes query, got {len(closes_qs)}"
+    q = closes_qs[0]
+
+    assert "adj_close AS close" in q, (
+        "adjusted path must select `adj_close AS close`"
+    )
+    assert "adj_close IS NOT NULL AND adj_close > 0" in q, (
+        "adjusted path must filter on `adj_close`, not raw `close`"
     )
 
 
-def test_bronze_path_logs_warning():
-    """When price_table='bronze_ohlcv_day', fetch_data must emit a warning
-    about unadjusted prices."""
+def test_bronze_path_generates_correct_sql_and_warns():
+    """When price_table='bronze_ohlcv_day', fetch_data must generate SQL that
+    selects and filters on raw `close` and emit a warning about unadjusted
+    prices."""
     import warnings
-    import inspect
     from strategies.run_residual_reversion import fetch_data
-    src = inspect.getsource(fetch_data)
-    assert "UNADJUSTED" in src or "unadjusted" in src.lower(), (
-        "fetch_data must warn about unadjusted prices for bronze path"
+    import strategies.run_residual_reversion as mod
+
+    stub = _StubFetch()
+    try:
+        mod._fetch = stub
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fetch_data(None, price_table="bronze_ohlcv_day")
+    finally:
+        mod._fetch = mod.__dict__.get("_fetch_orig", mod._fetch)
+
+    assert any("UNADJUSTED" in str(w.message) for w in caught), (
+        "bronze path must warn about unadjusted prices"
+    )
+    closes_qs = [s for s in stub.calls if "bronze_ohlcv_day" in s]
+    assert len(closes_qs) == 1, f"expected 1 closes query, got {len(closes_qs)}"
+    q = closes_qs[0]
+
+    assert "close IS NOT NULL AND close > 0" in q, (
+        "bronze path must filter on raw `close`"
+    )
+    assert "adj_close" not in q, (
+        "bronze path must not reference `adj_close`"
     )
 
 
@@ -311,8 +402,9 @@ def test_masked_break_yields_nan_return():
 
 
 def test_masked_break_no_signal_triggered():
-    """A synthetic panel with a x3 jump flagged as masked must NOT trigger
-    a trade signal on that day."""
+    """A x15 jump after the 60-day residual warmup, flagged as masked, must NOT
+    trigger a trade signal on that day.  The UNMASKED control must open a
+    position on the same day — proving the mask is load-bearing."""
     from strategies.run_residual_reversion import build_signals
 
     dates = pd.date_range("2024-01-01", periods=200, freq="B")
@@ -321,9 +413,9 @@ def test_masked_break_no_signal_triggered():
     spy_prices = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.02, 200)))
     # X and Y: fake symbols (not in tickers.yaml) so both map to __unknown__
     # and share the same industry → non-zero industry factor.
-    # X: moderate daily moves, then a x3 jump on day 100 (return ~200%).
-    x_returns = rng.normal(0, 0.02, 200)
-    x_returns[100] = 2.0  # x3 price jump = 200% return
+    # X: flat daily moves before warmup, then a x15 jump on day 120.
+    x_returns = rng.normal(0, 0.001, 200)
+    x_returns[120] = np.log(15.0)  # x15 price jump after warmup
     x_prices = 50.0 * np.exp(np.cumsum(x_returns))
     y_prices = 30.0 * np.exp(np.cumsum(rng.normal(0, 0.02, 200)))
 
@@ -337,17 +429,26 @@ def test_masked_break_no_signal_triggered():
     universe_rows = [(d, "TESTX") for d in dates] + [(d, "TESTY") for d in dates]
     universe = pd.DataFrame(universe_rows, columns=["trade_date", "symbol"])
 
-    # Flag the x3 jump day as masked.
-    masked_breaks = {("TESTX", dates[100])}
+    # Flag the x15 jump day as masked.
+    masked_breaks = {("TESTX", dates[120])}
 
     signals = build_signals(closes, universe, window=60, lookback=5,
                             entry=2.5, exit_thresh=0.5, max_hold=5,
                             masked_breaks=masked_breaks)
 
     # The masked day must have NaN return → no signal generated.
-    pos_x = signals["positions"].loc[dates[100], "TESTX"]
+    pos_x = signals["positions"].loc[dates[120], "TESTX"]
     assert pos_x == 0.0, (
         f"masked break day must not trigger a trade, got position {pos_x}"
+    )
+
+    # UNMASKED control: the same x15 jump MUST open a position.
+    signals_unmasked = build_signals(closes, universe, window=60, lookback=5,
+                                     entry=2.5, exit_thresh=0.5, max_hold=5,
+                                     masked_breaks=None)
+    pos_x_unmasked = signals_unmasked["positions"].loc[dates[120], "TESTX"]
+    assert pos_x_unmasked != 0.0, (
+        "unmasked x15 jump should trigger a trade, got position 0"
     )
 
 

@@ -78,6 +78,7 @@ def fetch_data(w: WorkspaceClient, price_table: str = "silver_ohlcv_day_adjusted
     is_adjusted = price_table == "silver_ohlcv_day_adjusted"
     if is_adjusted:
         close_col = "adj_close AS close"
+        filter_col = "adj_close"
     else:
         import warnings
         warnings.warn(
@@ -87,6 +88,7 @@ def fetch_data(w: WorkspaceClient, price_table: str = "silver_ohlcv_day_adjusted
             stacklevel=2,
         )
         close_col = "close"
+        filter_col = "close"
 
     closes = _fetch(w, f"""
         SELECT symbol, event_date, {close_col}
@@ -95,7 +97,7 @@ def fetch_data(w: WorkspaceClient, price_table: str = "silver_ohlcv_day_adjusted
             SELECT DISTINCT symbol FROM {FQN}.gold_tradable_universe
             UNION ALL SELECT 'SPY' UNION ALL SELECT 'RSP' UNION ALL SELECT 'QQQ'
         )
-        AND close IS NOT NULL AND close > 0
+        AND {filter_col} IS NOT NULL AND {filter_col} > 0
     """)
     closes = closes.assign(
         event_date=pd.to_datetime(closes["event_date"]),
@@ -368,6 +370,18 @@ CHANGELOG = {
             "rationale": "Returns on (symbol, event_date) where `return_1d IS NULL` in silver or `data_quality_breaks.is_masked` are set to NaN — no signal or P&L contribution on masked days. Positions held across a masked day earn 0 that day",
         },
     ],
+    13: [
+        {
+            "fix": "Filter-column fix in fetch_data WHERE clause",
+            "files": "`strategies/run_residual_reversion.py`",
+            "rationale": "WHERE clause filtered raw `close` while the adjusted path selected `adj_close AS close`. Now applies `IS NOT NULL AND > 0` to the selected price column (adj_close on the adjusted path, close otherwise)",
+        },
+        {
+            "fix": "Rendered report emits required disclosures",
+            "files": "`strategies/run_residual_reversion.py`",
+            "rationale": "Added masked-day P&L caveat, understated trial-count (DSR) caveat, no untouched holdout, and computed conclusion to rendered report",
+        },
+    ],
 }
 
 
@@ -566,6 +580,22 @@ def _render(base_res, gated_res, oos_net, n_trials, capacity, book_capital,
     L.append("  have `return_1d IS NULL` in silver. Positions held across a masked day earn **0** that")
     L.append("  day — the return is NaN and skipped by the P&L summation. No signal is generated on")
     L.append("  masked days.")
+    L.append("- **Masked-day P&L is dropped, not exit-priced.** A position held across a masked day earns 0"
+             " that day. If a masked break was a genuine adverse move, net P&L is flattered. Not yet"
+             " quantified; a follow-up should count masked days that fall on held positions and re-run"
+             " charging them.")
+    L.append(f"- **Deflated Sharpe trial count is understated.** `n_trials={n_trials}` counts only the"
+             " walk-forward `max_hold` grid. The strategy was iterated over ~12 review rounds while"
+             " results were visible, and the NARROW-regime ablation is a further variant, so the true"
+             " number of trials is larger and the DSR (already"
+             f" {_deflated_sharpe(oos_net, n_trials):.3f}) is, if anything, optimistic.")
+    L.append(f"- **No untouched holdout.** All {n_dates} days were seen during development; the"
+             " walk-forward OOS figure is the closest proxy.")
+    L.append(f"- **Conclusion:** after split adjustment the strategy is roughly flat net of costs"
+             f" (net Sharpe {bm['net_sharpe']:.3f}, OOS {_sharpe(oos_net):.3f}) and negative at"
+             f" 2\u00d7 costs, with DSR {_deflated_sharpe(oos_net, n_trials):.3f}. There is **no"
+             " evidence of a tradable edge**; this is a research baseline, not a deployment"
+             " candidate.")
     L.append("")
     return L
 
