@@ -1837,7 +1837,8 @@ class TestDiscoveryCompleteness:
         limiter = RateLimiter(max_requests_per_second=10, clock=clock)
         client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
 
-        filings, failed_hist = discover_filings(client, "1045810", "2024-09-01", {"10-K", "10-Q"})
+        # start_date must be <= filingTo (2024-08-31) so the history file is fetched
+        filings, failed_hist = discover_filings(client, "1045810", "2024-08-01", {"10-K", "10-Q"})
         # Should still get filings from recent (not crash)
         assert len(filings) >= 1
         # Failed history URL should be tracked
@@ -1936,9 +1937,10 @@ class TestPartialCoverageN2:
         writer = FakeDataWriter()
         log_writer = FakeLogWriter()
 
+        # start_date must be <= filingTo (2024-08-31) so history file is fetched
         result = run_ingest(
             catalog="test", schema="test",
-            start_date="2024-09-01",
+            start_date="2024-08-01",
             tickers=["NVDA"],
             universe_reader=FakeUniverseReader(universe),
             accession_reader=FakeAccessionReader(),

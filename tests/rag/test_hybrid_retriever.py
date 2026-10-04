@@ -868,7 +868,13 @@ class TestEmbeddingBuildIdempotency:
             return mock_anti_join_df
 
         mock_spark.table.side_effect = table_side_effect
-        mock_spark.sql.return_value = MagicMock()
+
+        # Mock DESCRIBE HISTORY to return proper metrics
+        mock_hist_row = MagicMock()
+        mock_hist_row.__getitem__ = lambda self, k: {
+            "operationMetrics": {"numTargetRowsInserted": "3"}
+        }.get(k)
+        mock_spark.sql.return_value = MagicMock(**{"collect.return_value": [mock_hist_row]})
 
         class StubEmbeddings:
             def embed_documents(self, texts):

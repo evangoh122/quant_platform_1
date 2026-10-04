@@ -5,6 +5,7 @@ Uses fake dataframe/embedding/store adapters. No network or Databricks calls.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -59,8 +60,37 @@ class TestEmbeddingBuild:
             return mock_anti_join_df
 
         mock_spark.table.side_effect = table_side_effect
-        mock_spark.sql.return_value = MagicMock()
-        mock_spark.createDataFrame.return_value = MagicMock()
+
+        # Track batch sizes by intercepting createDataFrame calls.
+        # Each createDataFrame call corresponds to one batch → one MERGE.
+        batch_size_history = []
+        original_create = mock_spark.createDataFrame
+
+        def tracking_create(data, schema=None):
+            batch_size_history.append(len(data))
+            return MagicMock()
+
+        mock_spark.createDataFrame.side_effect = tracking_create
+
+        # DESCRIBE HISTORY: return the batch size for the corresponding MERGE.
+        describe_idx = [0]
+
+        def sql_side_effect(query):
+            if "DESCRIBE HISTORY" in query:
+                idx = describe_idx[0]
+                describe_idx[0] += 1
+                inserted = batch_size_history[idx] if idx < len(batch_size_history) else 0
+                mock_hist = MagicMock()
+                mock_hist.__getitem__ = lambda self, k, n=str(inserted): {
+                    "operationMetrics": {"numTargetRowsInserted": n}
+                }.get(k)
+                m = MagicMock()
+                m.collect.return_value = [mock_hist]
+                return m
+            return MagicMock()
+
+        mock_spark.sql.side_effect = sql_side_effect
+        mock_spark.catalog = MagicMock()
 
         return mock_spark
 
@@ -759,7 +789,11 @@ class TestJobEntrypointImportsN5:
             if not source_path.exists():
                 continue
 
-            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            raw = source_path.read_bytes()
+            # Strip UTF-8 BOM if present
+            if raw[:3] == b"\xef\xbb\xbf":
+                raw = raw[3:]
+            tree = ast.parse(raw.decode("utf-8"), filename=str(source_path))
 
             # Collect top-level import module names
             imported_modules = set()

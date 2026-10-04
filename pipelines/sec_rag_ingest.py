@@ -1,4 +1,4 @@
-﻿"""pipelines/sec_rag_ingest.py — SEC EDGAR RAG ingestion pipeline.
+"""pipelines/sec_rag_ingest.py — SEC EDGAR RAG ingestion pipeline.
 
 Production CLI and pure/core implementation for SEC filing ingestion.
 All pyspark, delta, and databricks imports are behind the Databricks adapter
@@ -20,6 +20,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,13 +30,13 @@ from typing import (
     List,
     Optional,
     Protocol,
+    Set,
+    Tuple,
+)
 
 # Ensure repo root is on sys.path so ``pipelines.*`` resolves when invoked
 # via ``python_file`` in a Databricks job.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    Set,
-    Tuple,
-)
 
 logger = logging.getLogger(__name__)
 
