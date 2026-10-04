@@ -390,6 +390,21 @@ def create_app() -> FastAPI:
                 # ValueError: malformed path on some platforms.
                 return FileResponse(FRONTEND_DIST / "index.html")
             return FileResponse(FRONTEND_DIST / "index.html")
+    else:
+        _is_app_env = bool(os.environ.get("DATABRICKS_APP_PORT") or _IS_RENDER)
+        if _is_app_env:
+            _log.warning(
+                "frontend/dist not found — run scripts/build_frontend.sh before deploy"
+            )
+
+        @application.get("/", include_in_schema=False)
+        def _no_frontend() -> JSONResponse:
+            return JSONResponse(
+                content={
+                    "detail": "frontend not built",
+                    "hint": "Run scripts/build_frontend.sh before deploy.",
+                },
+            )
 
     return application
 
