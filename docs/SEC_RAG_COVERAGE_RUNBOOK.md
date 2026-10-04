@@ -5,13 +5,37 @@ Operational guide for expanding SEC filing RAG coverage to the full strategy uni
 ## Prerequisites
 
 - Databricks workspace access with Unity Catalog permissions
-- `SEC_EDGAR_USER_AGENT` environment variable set to a descriptive contact string
+- SEC EDGAR User-Agent configured (see [Secret Setup](#secret-setup) below)
 - Bundle target configured (`dev` or `prod`)
+
+## Secret Setup
+
+The pipeline resolves the SEC EDGAR User-Agent in this order:
+
+1. Environment variable `SEC_EDGAR_USER_AGENT`
+2. Databricks secret (via `dbutils.secrets.get` on clusters, or SDK on serverless)
+
+Create the secret (never commit the actual value):
+
+```bash
+databricks secrets put-secret evangoh_capstone sec_edgar_user_agent
+```
+
+When prompted, enter a descriptive string like `YourCompany your-email@example.com`.
+
+To verify the secret exists:
+
+```bash
+databricks secrets list-scope evangoh_capstone
+```
+
+The `resources/jobs.yml` passes `--user-agent-secret-scope evangoh_capstone` and
+`--user-agent-secret-key sec_edgar_user_agent` to the task automatically.
 
 ## Environment Setup
 
 ```bash
-# Set the SEC User-Agent (never commit this value)
+# Optionally set the SEC User-Agent via env (overrides secret if set)
 export SEC_EDGAR_USER_AGENT='<your-app-name> your-email@example.com'
 
 # Verify it is set and not a placeholder

@@ -2919,3 +2919,369 @@ class TestMergeMetricsNoCandidateFallback:
             f"Expected None when DESCRIBE HISTORY fails, got {result}. "
             "Mutation: code falls back to len(out_rows) which is a candidate count."
         )
+
+
+# ── Round 13: User-Agent resolution tests ──────────────────────────────────
+
+
+class TestResolveUserAgent:
+    """_resolve_user_agent: env → Databricks secret fallback, never logs value."""
+
+    def test_env_wins_over_secret(self, monkeypatch):
+        """When SEC_EDGAR_USER_AGENT is set in env, it takes precedence."""
+        from pipelines.sec_rag_ingest import _resolve_user_agent
+
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "EnvAgent env@test.com")
+
+        # Even if a secret exists, env should win
+        result = _resolve_user_agent()
+        assert result == "EnvAgent env@test.com"
+
+    def test_env_empty_falls_through(self, monkeypatch):
+        """Empty env var falls through to secret path (or raises)."""
+        from pipelines.sec_rag_ingest import _resolve_user_agent
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        # No dbutils or SDK available → should raise ValueError
+        with pytest.raises(ValueError, match="SEC_EDGAR_USER_AGENT not found"):
+            _resolve_user_agent()
+
+    def test_missing_both_raises_clear_error_naming_secret(self, monkeypatch):
+        """Missing env and no secret → error names the scope and key."""
+        from pipelines.sec_rag_ingest import _resolve_user_agent
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        with pytest.raises(ValueError, match="evangoh_capstone"):
+            _resolve_user_agent(secret_scope="evangoh_capstone", secret_key="sec_edgar_user_agent")
+
+        with pytest.raises(ValueError, match="sec_edgar_user_agent"):
+            _resolve_user_agent(secret_scope="evangoh_capstone", secret_key="sec_edgar_user_agent")
+
+    def test_placeholder_rejected(self, monkeypatch):
+        """Value containing 'example' is rejected by _validate_user_agent."""
+        from pipelines.sec_rag_ingest import _validate_user_agent
+
+        with pytest.raises(ValueError, match="descriptive application"):
+            _validate_user_agent("example@example.com")
+
+        with pytest.raises(ValueError, match="descriptive application"):
+            _validate_user_agent("This is an Example Agent")
+
+    def test_value_never_appears_in_log(self, monkeypatch, caplog):
+        """The resolved value must not appear in log output."""
+        from pipelines.sec_rag_ingest import _resolve_user_agent
+
+        secret_value = "SuperSecretAgent123 secret@company.com"
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", secret_value)
+
+        with caplog.at_level("INFO", logger="pipelines.sec_rag_ingest"):
+            _resolve_user_agent()
+
+        assert secret_value not in caplog.text, (
+            "SEC_EDGAR_USER_AGENT value leaked into logs. "
+            "Only 'source=env' or 'source=secret' should be logged."
+        )
+        # Verify the source was logged
+        assert "source=env" in caplog.text
+
+    def test_sdk_base64_decode(self, monkeypatch):
+        """WorkspaceClient secret value is base64-decoded."""
+        import base64
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        raw_value = "MyAgent my@email.com"
+        encoded_value = base64.b64encode(raw_value.encode("utf-8")).decode("utf-8")
+
+        mock_response = MagicMock()
+        mock_response.value = encoded_value
+
+        mock_client = MagicMock()
+        mock_client.secrets.get_secret_value.return_value = mock_response
+
+        mock_ws_module = MagicMock()
+        mock_ws_module.WorkspaceClient.return_value = mock_client
+
+        mock_ipython = MagicMock()
+        mock_ipython.get_ipython.return_value.user_ns = {}
+
+        with patch.dict("sys.modules", {
+            "IPython": mock_ipython,
+            "databricks.sdk": mock_ws_module,
+        }):
+            from pipelines.sec_rag_ingest import _resolve_user_agent
+            result = _resolve_user_agent()
+
+        assert result == raw_value, (
+            f"Expected base64-decoded value '{raw_value}', got '{result}'. "
+            "Mutation: skipping base64 decode returns the encoded value."
+        )
+
+    def test_sdk_base64_decode_mutation_skip_fails(self, monkeypatch):
+        """Mutation: skip base64 decode → result is the encoded value (test FAILS)."""
+        import base64
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        raw_value = "MyAgent my@email.com"
+        encoded_value = base64.b64encode(raw_value.encode("utf-8")).decode("utf-8")
+
+        mock_response = MagicMock()
+        mock_response.value = encoded_value
+
+        mock_client = MagicMock()
+        mock_client.secrets.get_secret_value.return_value = mock_response
+
+        mock_ws_module = MagicMock()
+        mock_ws_module.WorkspaceClient.return_value = mock_client
+
+        mock_ipython = MagicMock()
+        mock_ipython.get_ipython.return_value.user_ns = {}
+
+        with patch.dict("sys.modules", {
+            "IPython": mock_ipython,
+            "databricks.sdk": mock_ws_module,
+        }):
+            from pipelines.sec_rag_ingest import _resolve_user_agent
+            result = _resolve_user_agent()
+
+        # This assertion PROVES base64 decode happened:
+        # if skipped, result would be the base64-encoded string
+        assert result != encoded_value, (
+            "Mutation detected: base64 decode was skipped. "
+            "Result is the raw base64-encoded value, not the decoded string."
+        )
+
+    def test_log_value_leak_mutation_fails(self, monkeypatch, caplog):
+        """Mutation: if the value is logged, this test FAILS."""
+        from pipelines.sec_rag_ingest import _resolve_user_agent
+
+        leaked_value = "TopSecretAgent leak@test.com"
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", leaked_value)
+
+        with caplog.at_level("DEBUG", logger="pipelines.sec_rag_ingest"):
+            _resolve_user_agent()
+
+        # Check every log record
+        for record in caplog.records:
+            assert leaked_value not in record.getMessage(), (
+                f"Value leaked in log record: {record.getMessage()}"
+            )
+
+    def test_custom_scope_key_passed_through(self, monkeypatch):
+        """Custom scope/key are used when env is not set."""
+        from pipelines.sec_rag_ingest import _resolve_user_agent
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        mock_ipython = MagicMock()
+        mock_ipython.get_ipython.return_value.user_ns = {
+            "dbutils": MagicMock(),
+        }
+        mock_dbutils = mock_ipython.get_ipython.return_value.user_ns["dbutils"]
+        mock_dbutils.secrets.get.return_value = "CustomAgent custom@test.com"
+
+        with patch.dict("sys.modules", {"IPython": mock_ipython}):
+            result = _resolve_user_agent(
+                secret_scope="my_custom_scope",
+                secret_key="my_custom_key",
+            )
+
+        assert result == "CustomAgent custom@test.com"
+        mock_dbutils.secrets.get.assert_called_once_with(
+            scope="my_custom_scope", key="my_custom_key",
+        )
+
+
+class TestValidateUserAgent:
+    """_validate_user_agent: non-empty, not placeholder."""
+
+    def test_valid_agent_passes(self):
+        from pipelines.sec_rag_ingest import _validate_user_agent
+        # Should not raise
+        _validate_user_agent("MyCompany my@email.com")
+
+    def test_empty_raises(self):
+        from pipelines.sec_rag_ingest import _validate_user_agent
+        with pytest.raises(ValueError, match="descriptive application"):
+            _validate_user_agent("")
+
+    def test_none_raises(self):
+        from pipelines.sec_rag_ingest import _validate_user_agent
+        with pytest.raises(ValueError, match="descriptive application"):
+            _validate_user_agent(None)
+
+    def test_placeholder_example_raises(self):
+        from pipelines.sec_rag_ingest import _validate_user_agent
+        with pytest.raises(ValueError, match="descriptive application"):
+            _validate_user_agent("example@example.com")
+
+    def test_placeholder_mixed_case_raises(self):
+        from pipelines.sec_rag_ingest import _validate_user_agent
+        with pytest.raises(ValueError, match="descriptive application"):
+            _validate_user_agent("This is an Example User Agent")
+
+
+class TestJobsYmlSecretParams:
+    """resources/jobs.yml sec_rag_ingest task must pass secret scope/key params."""
+
+    def test_sec_rag_ingest_task_passes_secret_params(self):
+        """Parse jobs.yml and assert sec_rag_ingest task has --user-agent-secret-scope and --user-agent-secret-key."""
+        import yaml
+
+        jobs_path = Path(__file__).parent.parent.parent / "resources" / "jobs.yml"
+        content = jobs_path.read_text(encoding="utf-8")
+        config = yaml.safe_load(content)
+
+        sec_task = config["resources"]["jobs"]["sec_rag_ingest"]
+        task = sec_task["tasks"][0]
+        params = task["spark_python_task"]["parameters"]
+
+        assert "--user-agent-secret-scope" in params, (
+            "sec_rag_ingest task missing --user-agent-secret-scope parameter"
+        )
+        assert "--user-agent-secret-key" in params, (
+            "sec_rag_ingest task missing --user-agent-secret-key parameter"
+        )
+
+        # Verify the values match the defaults
+        scope_idx = params.index("--user-agent-secret-scope")
+        assert params[scope_idx + 1] == "evangoh_capstone", (
+            f"Expected scope 'evangoh_capstone', got '{params[scope_idx + 1]}'"
+        )
+
+        key_idx = params.index("--user-agent-secret-key")
+        assert params[key_idx + 1] == "sec_edgar_user_agent", (
+            f"Expected key 'sec_edgar_user_agent', got '{params[key_idx + 1]}'"
+        )
+
+
+class TestRunIngestUserAgentResolution:
+    """run_ingest uses _resolve_user_agent and passes validation."""
+
+    def test_run_ingest_with_env(self, monkeypatch):
+        """run_ingest works when SEC_EDGAR_USER_AGENT is set in env."""
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent test@company.com")
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+        assert result.run_id is not None
+
+    def test_run_ingest_missing_env_raises(self, monkeypatch):
+        """run_ingest raises when SEC_EDGAR_USER_AGENT is not set and no secret available."""
+        monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+        clock = FakeClock()
+        http = FakeHttpClient()
+
+        with pytest.raises(ValueError, match="SEC_EDGAR_USER_AGENT not found"):
+            run_ingest(
+                catalog="test", schema="test",
+                start_date="2024-09-01",
+                universe_reader=FakeUniverseReader([]),
+                accession_reader=FakeAccessionReader(),
+                data_writer=FakeDataWriter(),
+                http_client=http,
+                clock=clock,
+                cache_path=str(FIXTURES / "company_tickers.json"),
+            )
+
+    def test_run_ingest_placeholder_raises(self, monkeypatch):
+        """run_ingest raises when SEC_EDGAR_USER_AGENT contains 'example'."""
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "example@example.com")
+
+        clock = FakeClock()
+        http = FakeHttpClient()
+
+        with pytest.raises(ValueError, match="descriptive application"):
+            run_ingest(
+                catalog="test", schema="test",
+                start_date="2024-09-01",
+                universe_reader=FakeUniverseReader([]),
+                accession_reader=FakeAccessionReader(),
+                data_writer=FakeDataWriter(),
+                http_client=http,
+                clock=clock,
+                cache_path=str(FIXTURES / "company_tickers.json"),
+            )
+
+    def test_main_passes_secret_args_to_run_ingest(self, monkeypatch):
+        """main() passes --user-agent-secret-scope and --user-agent-secret-key to run_ingest."""
+        from pipelines.sec_rag_ingest import main
+
+        captured = {}
+
+        def mock_run_ingest(**kwargs):
+            captured["scope"] = kwargs.get("user_agent_secret_scope")
+            captured["key"] = kwargs.get("user_agent_secret_key")
+            from pipelines.sec_rag_ingest import IngestResult
+            return IngestResult(run_id="test", dry_run=True)
+
+        monkeypatch.setattr("pipelines.sec_rag_ingest.run_ingest", mock_run_ingest)
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkUniverseReader", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkAccessionReader", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkDataWriter", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkLogWriter", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkIngestLogReader", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkCikMappingLogWriter", lambda: MagicMock())
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent test@company.com")
+
+        main([
+            "--catalog", "test",
+            "--schema", "test",
+            "--user-agent-secret-scope", "my_scope",
+            "--user-agent-secret-key", "my_key",
+            "--dry-run",
+        ])
+
+        assert captured["scope"] == "my_scope", (
+            f"Expected scope 'my_scope', got '{captured['scope']}'"
+        )
+        assert captured["key"] == "my_key", (
+            f"Expected key 'my_key', got '{captured['key']}'"
+        )
+
+    def test_main_default_secret_args(self, monkeypatch):
+        """main() uses default scope/key when not specified."""
+        from pipelines.sec_rag_ingest import main, DEFAULT_SECRET_SCOPE, DEFAULT_SECRET_KEY
+
+        captured = {}
+
+        def mock_run_ingest(**kwargs):
+            captured["scope"] = kwargs.get("user_agent_secret_scope")
+            captured["key"] = kwargs.get("user_agent_secret_key")
+            from pipelines.sec_rag_ingest import IngestResult
+            return IngestResult(run_id="test", dry_run=True)
+
+        monkeypatch.setattr("pipelines.sec_rag_ingest.run_ingest", mock_run_ingest)
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkUniverseReader", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkAccessionReader", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkDataWriter", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkLogWriter", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkIngestLogReader", lambda: MagicMock())
+        monkeypatch.setattr("pipelines.sec_rag_ingest.SparkCikMappingLogWriter", lambda: MagicMock())
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent test@company.com")
+
+        main(["--catalog", "test", "--schema", "test", "--dry-run"])
+
+        assert captured["scope"] == DEFAULT_SECRET_SCOPE
+        assert captured["key"] == DEFAULT_SECRET_KEY

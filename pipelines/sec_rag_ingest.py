@@ -56,6 +56,8 @@ MAX_REQUESTS_PER_SECOND = 10
 DEFAULT_MAX_WORKERS = 4
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_TICKER_CACHE_TTL = 86400
+DEFAULT_SECRET_SCOPE = "evangoh_capstone"
+DEFAULT_SECRET_KEY = "sec_edgar_user_agent"
 
 # ── Process-wide SEC rate limiter ───────────────────────────────────────────
 # One singleton limiter shared by sec_rag_ingest and xbrl_client so the
@@ -79,6 +81,74 @@ def get_global_limiter(
                     clock=clock,
                 )
     return _global_limiter
+
+
+def _resolve_user_agent(
+    secret_scope: str = DEFAULT_SECRET_SCOPE,
+    secret_key: str = DEFAULT_SECRET_KEY,
+) -> str:
+    """Resolve SEC EDGAR User-Agent from env or Databricks secret.
+
+    Resolution order:
+      1. Environment variable ``SEC_EDGAR_USER_AGENT``
+      2. Databricks secret via ``dbutils.secrets.get`` (cluster notebooks)
+      3. Databricks secret via ``WorkspaceClient().secrets.get_secret_value`` (SDK)
+
+    The SDK returns a base64-encoded value — decoded automatically.
+    Never logs/prints the actual value; logs only the source.
+    """
+    import base64
+
+    env_val = os.environ.get("SEC_EDGAR_USER_AGENT", "").strip()
+    if env_val:
+        logger.info("SEC_EDGAR_USER_AGENT resolved from source=env")
+        return env_val
+
+    # Try dbutils (available on Databricks clusters)
+    try:
+        import IPython  # noqa: F811
+        dbutils = IPython.get_ipython().user_ns.get("dbutils")  # type: ignore[union-attr]
+        if dbutils is not None:
+            secret_val = dbutils.secrets.get(scope=secret_scope, key=secret_key)
+            if secret_val:
+                logger.info(
+                    "SEC_EDGAR_USER_AGENT resolved from source=secret (dbutils, scope=%s)",
+                    secret_scope,
+                )
+                return secret_val
+    except Exception:
+        pass
+
+    # Try WorkspaceClient SDK (base64-encoded response)
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        client = WorkspaceClient()
+        resp = client.secrets.get_secret_value(scope=secret_scope, key=secret_key)
+        if resp.value is not None:
+            decoded = base64.b64decode(resp.value).decode("utf-8")
+            logger.info(
+                "SEC_EDGAR_USER_AGENT resolved from source=secret (sdk, scope=%s)",
+                secret_scope,
+            )
+            return decoded
+    except Exception:
+        pass
+
+    raise ValueError(
+        f"SEC_EDGAR_USER_AGENT not found. Set the environment variable or create "
+        f"a Databricks secret: scope='{secret_scope}', key='{secret_key}'."
+    )
+
+
+def _validate_user_agent(user_agent: str) -> None:
+    """Validate user agent is non-empty and not a placeholder."""
+    if not user_agent or "example" in user_agent.lower():
+        raise ValueError(
+            "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
+            "Set it from environment or Databricks secret."
+        )
+
 
 # ── Section patterns (10-K / 10-Q) ────────────────────────────────────────────
 
@@ -1114,6 +1184,8 @@ def run_ingest(
     refresh_cik_cache: bool = False,
     max_workers: int = DEFAULT_MAX_WORKERS,
     run_id: Optional[str] = None,
+    user_agent_secret_scope: str = DEFAULT_SECRET_SCOPE,
+    user_agent_secret_key: str = DEFAULT_SECRET_KEY,
     # Injected dependencies
     universe_reader: Optional[UniverseReader] = None,
     accession_reader: Optional[ExistingAccessionReader] = None,
@@ -1139,13 +1211,12 @@ def run_ingest(
 
     result = IngestResult(run_id=run_id, dry_run=dry_run)
 
-    # Validate user agent
-    user_agent = os.environ.get("SEC_EDGAR_USER_AGENT", "")
-    if not user_agent or "example" in user_agent.lower():
-        raise ValueError(
-            "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
-            "Set it from environment or Databricks secret."
-        )
+    # Resolve and validate user agent (env → Databricks secret)
+    user_agent = _resolve_user_agent(
+        secret_scope=user_agent_secret_scope,
+        secret_key=user_agent_secret_key,
+    )
+    _validate_user_agent(user_agent)
 
     # Build dependencies if not injected
     _clock = clock or _SystemClock()
@@ -1987,6 +2058,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--refresh-cik-cache", action="store_true")
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--user-agent-secret-scope",
+        default=DEFAULT_SECRET_SCOPE,
+        help="Databricks secret scope for SEC EDGAR User-Agent",
+    )
+    parser.add_argument(
+        "--user-agent-secret-key",
+        default=DEFAULT_SECRET_KEY,
+        help="Databricks secret key for SEC EDGAR User-Agent",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -2020,6 +2101,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         refresh_cik_cache=args.refresh_cik_cache,
         max_workers=args.max_workers,
         run_id=args.run_id,
+        user_agent_secret_scope=args.user_agent_secret_scope,
+        user_agent_secret_key=args.user_agent_secret_key,
         universe_reader=universe_reader,
         accession_reader=accession_reader,
         data_writer=data_writer,

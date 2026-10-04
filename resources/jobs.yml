@@ -58,7 +58,15 @@ resources:
         - task_key: ingest_sec_filings
           spark_python_task:
             python_file: ../pipelines/sec_rag_ingest.py
-            parameters: ["--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+              - "--user-agent-secret-scope"
+              - "evangoh_capstone"
+              - "--user-agent-secret-key"
+              - "sec_edgar_user_agent"
           environment_key: serverless
       environments:
         - environment_key: serverless
