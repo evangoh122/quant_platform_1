@@ -100,6 +100,7 @@ WITH as_of_filtered AS (
         ingest_ts
     FROM ${catalog}.${schema}.bronze_ohlcv_day
     WHERE to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York') <= :as_of
+      AND ingest_ts <= :as_of
 ),
 deduped AS (
     SELECT
@@ -600,6 +601,7 @@ WITH as_of_filtered AS (
         ingest_ts
     FROM ${catalog}.${schema}.bronze_ohlcv_day
     WHERE to_utc_timestamp(concat(event_date, ' 16:30:00'), 'America/New_York') <= :as_of
+      AND ingest_ts <= :as_of
 ),
 deduped AS (
     SELECT

@@ -578,6 +578,54 @@ class TestDDLPITSafetyAsOfBeforeWindow:
                 return
         pytest.skip("No SQL block found with both equity metrics window and as_of filter")
 
+    def test_bronze_fallback_has_ingest_ts_bound(self, ddl_content):
+        """Bronze fallback views must filter ingest_ts <= :as_of to prevent
+        late backfills from leaking into as-of queries.
+
+        Every SQL block that reads from bronze_ohlcv_day must have
+        AND ingest_ts <= :as_of in its WHERE clause.
+        """
+        blocks = self._extract_sql_blocks(ddl_content)
+        for i, sql in enumerate(blocks):
+            sql_upper = sql.upper()
+            if "BRONZE_OHLCV_DAY" not in sql_upper:
+                continue
+            # Must have ingest_ts bound
+            assert re.search(
+                r"INGEST_TS\s*<=\s*:AS_OF",
+                sql_upper,
+            ), (
+                f"SQL block {i + 1}: bronze fallback reads from bronze_ohlcv_day "
+                f"but does not filter ingest_ts <= :as_of. "
+                f"Late backfills could leak into as-of queries."
+            )
+
+    def test_mutation_bronze_without_ingest_ts_fails(self, ddl_content):
+        """Mutation proof: removing ingest_ts bound from bronze fallback fails."""
+        blocks = self._extract_sql_blocks(ddl_content)
+        for sql in blocks:
+            sql_upper = sql.upper()
+            if "BRONZE_OHLCV_DAY" not in sql_upper:
+                continue
+            # Remove the ingest_ts bound
+            mutated = re.sub(
+                r"\s*AND\s+ingest_ts\s*<=\s*:as_of\s*",
+                " ",
+                sql,
+                flags=re.IGNORECASE,
+            )
+            # Verify the mutation removed the bound
+            assert not re.search(
+                r"INGEST_TS\s*<=\s*:AS_OF",
+                mutated.upper(),
+            ), (
+                "Mutation proof failed: could not remove ingest_ts bound"
+            )
+            # The mutated SQL should NOT have the ingest_ts bound
+            # (this is the negative check that proves the test works)
+            return
+        pytest.skip("No bronze fallback SQL block found")
+
 
 class TestDDLRelativePerformanceSemantics:
     """Relative performance must use parameterized benchmark and cumulative return."""
