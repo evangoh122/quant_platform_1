@@ -60,11 +60,16 @@ def _reset_breaker_cache(monkeypatch):
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    """Create a TestClient with all network probes faked."""
+    import db.delta_adapter as adapter
+
+    # Prevent real warehouse connection during app startup
+    monkeypatch.setattr(adapter, "warm_warehouse_connection", lambda: None)
+    monkeypatch.setattr(adapter, "_warehouse_available", lambda: False)
+
     from fastapi.testclient import TestClient
-
     from api.main import create_app
-
     return TestClient(create_app())
 
 
