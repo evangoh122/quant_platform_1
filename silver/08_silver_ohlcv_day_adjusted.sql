@@ -440,3 +440,6 @@ WHEN NOT MATCHED THEN INSERT (
     src.raw_overnight_return, src.adjusted_return_1d_unmasked, src.return_1d,
     src.is_data_quality_break, src.information_available_ts, src.processed_ts
 )
+-- The source is the full adjusted history for every universe symbol, so any target row it no longer produces is
+-- stale (e.g. rows written under an earlier, wrong date derivation) and must be removed.
+WHEN NOT MATCHED BY SOURCE THEN DELETE

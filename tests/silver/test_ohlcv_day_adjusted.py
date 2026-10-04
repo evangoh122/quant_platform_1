@@ -1002,3 +1002,12 @@ class TestApplyOnceSemantics:
         massive_splits = [{"ex_date": dt.date(2022, 6, 6), "split_ratio": 20.0}]
         bar_date = dt.date(2022, 6, 3)
         assert _cumulative_split_ratio(bar_date, massive_splits) == 20.0
+
+def test_silver_merge_deletes_rows_no_longer_in_source():
+    """silver_ohlcv_day_adjusted is rebuilt from the full bronze history each run, so its MERGE must delete stale target rows."""
+    import re
+    from pathlib import Path
+
+    sql = (Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql").read_text(encoding="utf-8")
+    merge = sql[sql.index("MERGE INTO bootcamp_students.evangoh_capstone.silver_ohlcv_day_adjusted"):]
+    assert re.search(r"WHEN\s+NOT\s+MATCHED\s+BY\s+SOURCE\s+THEN\s+DELETE", merge), "silver MERGE must delete stale rows"
