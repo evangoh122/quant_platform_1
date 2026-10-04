@@ -74,7 +74,20 @@ def _install_pyspark_stubs(monkeypatch):
     pyspark_sql.functions = pyspark_sql_functions
     pyspark_sql.types = pyspark_sql_types
 
-    # Attach real types to the stub
+    # Attach real types to the stub, or use fallback stubs
+    class _StubType:
+        """Callable stand-in for pyspark types when pyspark is not installed."""
+        def __init__(self, *a, **kw):
+            pass
+
+    fallback_names = [
+        "BooleanType", "IntegerType", "LongType", "StringType",
+        "TimestampType", "StructField", "StructType",
+    ]
+    for name in fallback_names:
+        if name not in real_types:
+            real_types[name] = type(name, (_StubType,), {})
+
     for name, obj in real_types.items():
         setattr(pyspark_sql_types, name, obj)
 
