@@ -12,16 +12,31 @@ from typing import Any, Optional, Sequence
 from evals.rag_eval.models import CorpusRecord, GoldenItem, ItemResult, RetrievalHit
 
 
+# ── Deduplication helper ──────────────────────────────────────────────────────
+
+def _dedupe_ranking(ranked_ids: Sequence[str]) -> list[str]:
+    """Deduplicate ranked IDs keeping first occurrence, preserving order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for rid in ranked_ids:
+        if rid not in seen:
+            seen.add(rid)
+            result.append(rid)
+    return result
+
+
 # ── Core metric functions ─────────────────────────────────────────────────────
 
 def recall_at_k(ranked_ids: Sequence[str], gold_ids: Sequence[str], k: int) -> float:
     """Fraction of gold IDs found in top-k ranked results.
 
     Returns 0.0 when gold_ids is empty (excluded from aggregation by caller).
+    Ranking is deduplicated (first occurrence kept) before taking top-k.
     """
     if not gold_ids:
         return 0.0
-    top_k = set(ranked_ids[:k])
+    deduped = _dedupe_ranking(ranked_ids)
+    top_k = set(deduped[:k])
     gold = set(gold_ids)
     return len(top_k & gold) / len(gold)
 
@@ -34,11 +49,13 @@ def reciprocal_rank_at_k(
     """1 / rank of first relevant item in top-k.
 
     Returns 0.0 when gold_ids is empty or no gold appears in top-k.
+    Ranking is deduplicated (first occurrence kept) before taking top-k.
     """
     if not gold_ids:
         return 0.0
+    deduped = _dedupe_ranking(ranked_ids)
     gold = set(gold_ids)
-    for i, rid in enumerate(ranked_ids[:k]):
+    for i, rid in enumerate(deduped[:k]):
         if rid in gold:
             return 1.0 / (i + 1)
     return 0.0
@@ -51,19 +68,22 @@ def ndcg_at_k(
 ) -> float:
     """Normalized Discounted Cumulative Gain at k with binary relevance.
 
-    Returns 0.0 when gold_ids is empty.
+    Returns 0.0 when gold_ids is empty.  Result is within [0, 1].
+    Ranking is deduplicated (first occurrence kept) before taking top-k.
+    Ideal DCG uses min(k, |distinct gold|) items.
     """
     if not gold_ids:
         return 0.0
+    deduped = _dedupe_ranking(ranked_ids)
     gold = set(gold_ids)
 
     # DCG
     dcg = 0.0
-    for i, rid in enumerate(ranked_ids[:k]):
+    for i, rid in enumerate(deduped[:k]):
         if rid in gold:
             dcg += 1.0 / math.log2(i + 2)  # i+2 because rank is 1-indexed
 
-    # Ideal DCG
+    # Ideal DCG — min(k, |distinct gold|) items
     ideal_count = min(len(gold), k)
     idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_count))
 
@@ -299,14 +319,23 @@ def aggregate_results(
         "mrr_at_10_section", "ndcg_at_10_section",
     ]
 
+    def _has_gold(ir: ItemResult) -> bool:
+        """Check if an item has at least one gold chunk id."""
+        return bool(ir.item.gold_chunk_ids)
+
     def _avg_metrics(items: list[ItemResult], names: list[str]) -> dict[str, float]:
-        if not items:
+        # Exclude rows with zero gold ids from the mean
+        scored = [ir for ir in items if _has_gold(ir)]
+        if not scored:
             return {n: 0.0 for n in names}
         result: dict[str, float] = {}
         for name in names:
-            vals = [ir.metrics.get(name, 0.0) for ir in items]
+            vals = [ir.metrics.get(name, 0.0) for ir in scored]
             result[name] = sum(vals) / len(vals) if vals else 0.0
         return result
+
+    # Count zero-gold answerable items excluded from aggregation
+    zero_gold_excluded = sum(1 for ir in answerable if not _has_gold(ir))
 
     overall = _avg_metrics(answerable, metric_names)
 
@@ -403,4 +432,5 @@ def aggregate_results(
         "abstention": abstention,
         "leakage_total": leakage_total,
         "leakage_by_config": leakage_by_config,
+        "zero_gold_excluded": zero_gold_excluded,
     }
