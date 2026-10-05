@@ -1,5 +1,5 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+fastapi>=0.142.2
+uvicorn[standard]>=0.54.0
 pydantic>=2.0
 databricks-sdk>=0.20.0
 databricks-sql-connector>=3.0.0
@@ -16,3 +16,9 @@ beautifulsoup4>=4.12.0
 lxml>=4.9.0
 duckdb>=0.10.0
 pytest-timeout>=2.2.0
+# oauthlib: transitive via databricks-sql-connector (requires ^3.1.0, i.e. <4).
+# PYSEC-2026-4114 (CVE-2026-49265) is a PKCE timing side-channel fixed in 4.0.0.
+# Accepted risk: databricks-sql-connector caps oauthlib<4; exploitability is limited
+# (timing oracle requires repeated authorization_code interception with controlled
+# network conditions). See docs/SECURITY.md.
+oauthlib>=3.1.0,<4
