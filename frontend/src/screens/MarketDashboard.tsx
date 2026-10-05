@@ -12,7 +12,7 @@ import { FreshnessBadge } from '../components/FreshnessBadge';
 import type { OHLCVFeature } from '../api/types';
 
 const ohlcvColumns: Column<OHLCVFeature>[] = [
-  { key: 'ts', header: 'Time', render: (r) => r.feature_ts || '—' },
+  { key: 'ts', header: 'Date', render: (r) => r.event_date || '—' },
   { key: 'open', header: 'Open', render: (r) => (r.open ?? '—').toString() },
   { key: 'high', header: 'High', render: (r) => (r.high ?? '—').toString() },
   { key: 'low', header: 'Low', render: (r) => (r.low ?? '—').toString() },
@@ -29,7 +29,10 @@ export function MarketDashboard() {
     [symbol],
   );
 
-  const latest = data?.ohlcv.data[0];
+  const latest = data?.ohlcv.data.reduce((best, r) =>
+    r.event_date > (best?.event_date ?? '') ? r : best,
+    data?.ohlcv.data[0],
+  );
 
   return (
     <div className="space-y-4">
@@ -71,18 +74,18 @@ export function MarketDashboard() {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <StatTile label="Latest Close" value={latest?.close?.toFixed(2) ?? '—'} hint={symbol} />
             <StatTile label="Volume" value={latest?.volume?.toLocaleString() ?? '—'} />
-            <StatTile label="ATM IV" value={data?.options.data[0]?.atm_iv?.toFixed(4) ?? '—'} />
-            <StatTile label="Skew" value={data?.options.data[0]?.skew?.toFixed(4) ?? '—'} />
+            <StatTile label="ATM IV" value={data?.options.data[0]?.iv_atm?.toFixed(4) ?? '—'} />
+            <StatTile label="Skew" value={data?.options.data[0]?.iv_skew?.toFixed(4) ?? '—'} />
           </div>
 
-          <Card title="OHLCV Features" subtitle="gold_ohlcv_features" actions={<FreshnessBadge freshness={data ? data.ohlcv.freshness : { state: 'empty', table: '', detail: '' }} />}>
+          <Card title="OHLCV Features" subtitle="silver_ohlcv_day_adjusted" actions={<FreshnessBadge freshness={data ? data.ohlcv.freshness : { state: 'empty', table: '', detail: '' }} />}>
             {data && data.ohlcv.empty ? (
               <EmptyState
                 title="No market features yet"
-                detail={`gold_ohlcv_features is empty for ${symbol} — features appear once the silver→gold pipeline has run.`}
+                detail={`silver_ohlcv_day_adjusted is empty for ${symbol} — features appear once the silver→gold pipeline has run.`}
               />
             ) : (
-              <Table columns={ohlcvColumns} rows={data?.ohlcv.data ?? []} rowKey={(r) => r.feature_ts || r.symbol} />
+              <Table columns={ohlcvColumns} rows={data?.ohlcv.data ?? []} rowKey={(r) => r.event_date || r.symbol} />
             )}
           </Card>
         </>

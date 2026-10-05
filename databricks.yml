@@ -13,6 +13,10 @@ variables:
     default: evangoh_capstone
 
 sync:
+  # include overrides .gitignore for these paths so that `databricks bundle deploy`
+  # ships frontend/dist even though it is listed in .gitignore.
+  include:
+    - frontend/dist/**
   exclude:
     - frontend/node_modules
     - .agents

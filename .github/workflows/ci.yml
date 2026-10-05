@@ -31,6 +31,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-app.txt
+            requirements-dev.txt
 
       - name: Install Python dependencies
         shell: bash
@@ -40,6 +41,12 @@ jobs:
           python -m pip install -r "${RUNNER_TEMP}/requirements-no-ibapi.txt"
           if [[ -f requirements-app.txt ]]; then
             python -m pip install -r requirements-app.txt
+          fi
+          if [[ -f requirements-dev.txt ]]; then
+            # drop ibapi (not on PyPI) and the '-r requirements.txt' include (already installed above;
+            # relative includes would not resolve from RUNNER_TEMP)
+            grep -viE '^[[:space:]]*(ibapi([<=>~!]|$)|-r[[:space:]])' requirements-dev.txt > "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
+            python -m pip install -r "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
           fi
           python -m pip install pytest pytest-asyncio pytest-timeout httpx numpy pandas polars duckdb scikit-learn pyyaml
 
@@ -164,12 +171,10 @@ jobs:
         run: |
           args=""
           if [[ -f security/pip-audit-ignore.txt ]]; then
-            while IFS= read -r line; do
-              # skip comments and blanks
-              [[ "$line" =~ ^[[:space:]]*# ]] && continue
-              [[ -z "$line" ]] && continue
-              args="$args --ignore-vuln $line"
-            done < security/pip-audit-ignore.txt
+            # one vuln ID per non-comment, non-blank line
+            for id in $(grep -vE '^[[:space:]]*(#|$)' security/pip-audit-ignore.txt | awk '{print $1}'); do
+              args="$args --ignore-vuln $id"
+            done
           fi
           echo "args=$args" >> "${GITHUB_OUTPUT}"
 

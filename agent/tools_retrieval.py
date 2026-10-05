@@ -5,7 +5,8 @@ Read paths are split into two backends:
   * Delta (Unity Catalog) — market/feature/signal/SEC data. Queries use Spark
     column-equality predicates (``F.col(...) == value``), never f-string SQL.
   * Lakebase (Postgres) — operational state (positions, orders, watchlist).
-    Queries are parameterized (``%s`` placeholders only).
+    Queries are parameterized (``%s`` placeholders only for Postgres;
+    ``:name`` named placeholders for the SQL warehouse backend).
 
 Every user-supplied symbol is normalised and allow-listed via
 ``agent.guardrails.normalize_symbol`` before it reaches either backend, so an
@@ -23,6 +24,44 @@ from db.lakebase import get_lakebase
 
 _OPEN_ORDER_STATUSES = ("PENDING_APPROVAL", "APPROVED", "SUBMITTED", "PARTIALLY_FILLED")
 
+# ── Canonical query column lists (used by production + schema contract) ───────
+
+_OPTIONS_COLS = [
+    "symbol", "feature_ts",
+    "put_volume", "call_volume", "put_call_ratio",
+    "iv_atm", "iv_25d_put", "iv_25d_call", "iv_skew",
+    "iv_term_slope", "avg_spread_pct", "volume_anomaly_zscore",
+    "oi_concentration", "net_delta_exposure",
+]
+
+_COT_COLS = [
+    "mapped_asset", "report_date",
+    "lev_money_net", "lev_money_net_chg_1w", "lev_money_pctile_52w",
+    "lev_money_zscore_52w", "asset_mgr_net", "asset_mgr_pctile_52w",
+    "crowding_score", "regime_label",
+]
+
+
+def _build_options_query(symbol: str) -> tuple[str, dict]:
+    """Build the options features query. Returns (sql, params)."""
+    from db.delta_adapter import _fqn
+    cols_sql = ", ".join(_OPTIONS_COLS)
+    query = (
+        f"SELECT {cols_sql} "
+        f"FROM {_fqn('gold_options_features')} "
+        f"WHERE symbol = :symbol "
+        f"ORDER BY feature_ts DESC"
+    )
+    return query, {"symbol": symbol}
+
+
+def _build_cot_query(mapped_asset: str) -> tuple[str, dict]:
+    """Build the COT positioning query. Returns (sql, params)."""
+    from db.delta_adapter import _fqn
+    cols_sql = ", ".join(_COT_COLS)
+    query = f"SELECT {cols_sql} FROM {_fqn('gold_cot_features')} WHERE mapped_asset = :mapped_asset"
+    return query, {"mapped_asset": mapped_asset}
+
 
 def _spark():
     from api.services.hybrid_retriever import _get_spark
@@ -39,29 +78,46 @@ def _fqn(table: str) -> str:
 # ── Delta-backed reads ────────────────────────────────────────────────────────
 def get_latest_signal(symbol: str) -> dict:
     symbol = normalize_symbol(symbol)
-    from db.delta_adapter import latest_signals
+    from db.delta_adapter import as_dicts, latest_signals
 
-    df = latest_signals(symbol, limit=1)
-    rows = df.collect()
-    return rows[0].asDict() if rows else {}
+    rows = as_dicts(latest_signals(symbol, limit=1))
+    return rows[0] if rows else {"status": "no_signals_published"}
 
 
-def get_market_features(symbol: str, start_time: str, end_time: str) -> list:
+def get_market_features(symbol: str, start_time: str, end_time: str, *, limit: int = 5000) -> list:
+    """Daily bars from silver_ohlcv_day_adjusted (split-adjusted, adj_* columns)."""
     symbol = normalize_symbol(symbol)
-    from db.delta_adapter import market_features
+    from db.delta_adapter import as_dicts, market_features
 
-    df = market_features(symbol, start_time, end_time)
-    return [r.asDict() for r in df.collect()]
+    return as_dicts(market_features(symbol, start_time, end_time, limit=limit))
 
 
-def get_options_features(symbol: str, expiry: Optional[str] = None) -> list:
+def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: int = 5000) -> list:
+    """Options features from gold_options_features (real columns).
+
+    The table has no ``expiry`` column — the param is accepted for API compat
+    but ignored.  If ``expiry`` is explicitly passed, returns 422-style dict.
+    """
     symbol = normalize_symbol(symbol)
-    from pyspark.sql import functions as F
+    from db.delta_adapter import _has_pyspark, _warehouse_query, _fqn
 
-    df = _spark().table(_fqn("gold_options_features")).where(F.col("symbol") == symbol)
     if expiry:
-        df = df.where(F.col("expiry") == expiry)
-    return [r.asDict() for r in df.collect()]
+        return [{"error": "expiry_not_supported", "message": "gold_options_features has no expiry column; filter removed"}]
+
+    if _has_pyspark:
+        from pyspark.sql import functions as F
+
+        df = (
+            _spark()
+            .table(_fqn("gold_options_features"))
+            .where(F.col("symbol") == symbol)
+            .select(*_OPTIONS_COLS)
+        )
+        return [r.asDict() for r in df.limit(limit).collect()]
+
+    # Warehouse fallback
+    query, params = _build_options_query(symbol)
+    return _warehouse_query(query, params=params, limit=limit)
 
 
 def search_sec_filings(
@@ -343,14 +399,45 @@ def _get_default_graph():
 
 
 def get_cot_positioning(mapped_asset: str) -> dict:
-    mapped_asset = normalize_symbol(mapped_asset)
-    from pyspark.sql import functions as F
+    """Retrieve CFTC COT positioning and regime features.
 
-    df = _spark().table(_fqn("gold_cot_features")).where(
-        F.col("mapped_asset") == mapped_asset
-    ).limit(1)
-    rows = df.collect()
-    return rows[0].asDict() if rows else {}
+    Accepts either an asset class (rate, other, fx, equity_index, crypto, commodity)
+    or a ticker symbol.  Tickers are mapped via ``TICKER_TO_ASSET_CLASS``.
+    Unknown tickers return ``{"error": "no_mapping", "ticker": ...}``.
+    """
+    from db.schema_contract import COT_ASSET_CLASSES, TICKER_TO_ASSET_CLASS
+
+    # If already a valid asset class, use directly
+    if mapped_asset.lower() in COT_ASSET_CLASSES:
+        asset_class = mapped_asset.lower()
+    else:
+        # Try ticker → asset class mapping
+        normalized = normalize_symbol(mapped_asset)
+        asset_class = TICKER_TO_ASSET_CLASS.get(normalized)
+        if asset_class is None:
+            return {
+                "error": "no_mapping",
+                "ticker": normalized,
+                "message": f"No COT asset class mapping for {normalized!r}. "
+                           f"Valid asset classes: {sorted(COT_ASSET_CLASSES)}",
+            }
+
+    from db.delta_adapter import _has_pyspark, _warehouse_query, _fqn
+
+    if _has_pyspark:
+        from pyspark.sql import functions as F
+
+        cols = [F.col(c) for c in _COT_COLS]
+        df = _spark().table(_fqn("gold_cot_features")).where(
+            F.col("mapped_asset") == asset_class
+        ).select(*cols).limit(1)
+        rows = df.collect()
+        return rows[0].asDict() if rows else {}
+
+    # Warehouse fallback
+    query, params = _build_cot_query(asset_class)
+    rows = _warehouse_query(query, params=params, limit=1)
+    return rows[0] if rows else {}
 
 
 # ── Lakebase-backed reads ─────────────────────────────────────────────────────

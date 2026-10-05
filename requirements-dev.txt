@@ -1,0 +1,13 @@
+# requirements-dev.txt — CI / pipeline / ML dependencies NOT needed by the app.
+#
+# Installed by CI workflows and local development.  NOT installed by
+# Databricks Apps (it uses the root requirements.txt only).
+-r requirements.txt
+pytest-timeout>=2.2.0
+mlflow>=2.10.0
+langchain>=1.0.0
+langchain-community>=0.3.27
+polygon-api-client>=1.12.0
+yfinance>=0.2.30
+beautifulsoup4>=4.12.0
+lxml>=4.9.2

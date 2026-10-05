@@ -4,10 +4,9 @@ command:
   - --host
   - 0.0.0.0
   - --port
-  - "${DATABRICKS_APP_PORT:-8000}"
+  - "8000"
 
-env:
-  - name: CATALOG
-    value: bootcamp_students
-  - name: SCHEMA
-    value: evangoh_capstone
+# CATALOG and SCHEMA are injected by the bundle/app resources.
+# Do NOT hardcode personal defaults here — the bundle sets them via
+# ${var.catalog} and ${var.schema} so direct/UI deployments use the
+# correct environment.

@@ -1,11 +1,14 @@
 """api/routes/market.py — GET /api/market/{symbol}.
 
-OHLCV features (``gold_ohlcv_features``) and options features
-(``gold_options_features``) for a symbol. Reads go through the existing
-``agent.tools_retrieval`` contracts (which normalize the symbol and enforce
-PIT/freshness), never through string-built SQL.
+OHLCV features (``silver_ohlcv_day_adjusted``) and options features
+(``gold_options_features``) for a symbol.  Bounded by default: last 252 trading
+days, explicit row LIMIT, single options query.  Reads go through the existing
+``agent.tools_retrieval`` contracts (which normalize the symbol), never through
+string-built SQL.
 """
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
@@ -21,12 +24,16 @@ from api.schemas import (
 
 router = APIRouter()
 
+_DEFAULT_DAYS = 252
+_MAX_DAYS = 1000
+_MAX_ROWS = 5000
+
 
 @router.get("/{symbol}", response_model=MarketSnapshot)
 def market_features(
     symbol: str = Path(..., min_length=1, max_length=10),
-    start_time: str = Query(default="1970-01-01T00:00:00Z"),
-    end_time: str = Query(default="2999-01-01T00:00:00Z"),
+    days: int = Query(default=_DEFAULT_DAYS, ge=1, le=_MAX_DAYS),
+    limit: int = Query(default=_MAX_ROWS, ge=1, le=_MAX_ROWS),
     _user: AppUser = Depends(get_current_user),
 ) -> MarketSnapshot:
     from agent.guardrails import normalize_symbol
@@ -36,48 +43,66 @@ def market_features(
     except ValueError:
         raise HTTPException(status_code=422, detail="invalid symbol") from None
 
+    # Bounded date window: last N trading days
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days)
+    start_time = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_time = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     def _read_ohlcv() -> list[dict]:
         from agent.tools_retrieval import get_market_features
 
-        return get_market_features(symbol, start_time, end_time)
+        return get_market_features(symbol, start_time, end_time, limit=limit)
 
     def _read_options() -> list[dict]:
         from agent.tools_retrieval import get_options_features
 
-        return get_options_features(symbol)
+        return get_options_features(symbol, limit=min(days, limit))
 
-    ohlcv_rows, ohlcv_state, ohlcv_detail = read_delta(_read_ohlcv)
-    opt_rows, opt_state, opt_detail = read_delta(_read_options)
+    from api.diagnostics import stage
+
+    with stage("delta_read", table="silver_ohlcv_day_adjusted", symbol=symbol):
+        ohlcv_rows, ohlcv_state, ohlcv_detail = read_delta(_read_ohlcv)
+    with stage("delta_read", table="gold_options_features", symbol=symbol):
+        opt_rows, opt_state, opt_detail = read_delta(_read_options)
 
     ohlcv = Envelope(
         data=[
             OHLCVFeature(
                 symbol=str(r.get("symbol", symbol)),
-                feature_ts=iso(r.get("feature_ts")) or "",
+                event_date=iso(r.get("event_date") or r.get("feature_ts")) or "",
                 open=r.get("open"),
                 high=r.get("high"),
                 low=r.get("low"),
                 close=r.get("close"),
                 volume=r.get("volume"),
                 vwap=r.get("vwap"),
+                price_basis="split_adjusted",
             )
             for r in ohlcv_rows
         ],
         count=len(ohlcv_rows),
         empty=not ohlcv_rows,
-        source="gold_ohlcv_features",
-        freshness=Freshness(state=ohlcv_state, table="gold_ohlcv_features", detail=ohlcv_detail),
+        source="silver_ohlcv_day_adjusted",
+        freshness=Freshness(state=ohlcv_state, table="silver_ohlcv_day_adjusted", detail=ohlcv_detail),
     )
     options = Envelope(
         data=[
             OptionsFeature(
                 symbol=str(r.get("symbol", symbol)),
                 feature_ts=iso(r.get("feature_ts")) or "",
-                expiry=iso(r.get("expiry")) or "",
-                atm_iv=r.get("atm_iv"),
-                skew=r.get("skew"),
+                put_volume=r.get("put_volume"),
+                call_volume=r.get("call_volume"),
                 put_call_ratio=r.get("put_call_ratio"),
-                volume_anomaly=r.get("volume_anomaly"),
+                iv_atm=r.get("iv_atm"),
+                iv_25d_put=r.get("iv_25d_put"),
+                iv_25d_call=r.get("iv_25d_call"),
+                iv_skew=r.get("iv_skew"),
+                iv_term_slope=r.get("iv_term_slope"),
+                avg_spread_pct=r.get("avg_spread_pct"),
+                volume_anomaly_zscore=r.get("volume_anomaly_zscore"),
+                oi_concentration=r.get("oi_concentration"),
+                net_delta_exposure=r.get("net_delta_exposure"),
             )
             for r in opt_rows
         ],

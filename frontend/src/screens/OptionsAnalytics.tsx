@@ -10,18 +10,27 @@ import { LoadingState } from '../components/LoadingState';
 import { FreshnessBadge } from '../components/FreshnessBadge';
 
 const columns: Column<OptionsFeature>[] = [
-  { key: 'expiry', header: 'Expiry', render: (r) => r.expiry || '—' },
-  { key: 'iv', header: 'ATM IV', render: (r) => (r.atm_iv == null ? '—' : r.atm_iv.toFixed(4)) },
-  { key: 'skew', header: 'Skew', render: (r) => (r.skew == null ? '—' : r.skew.toFixed(4)) },
+  { key: 'iv_atm', header: 'ATM IV', render: (r) => (r.iv_atm == null ? '—' : r.iv_atm.toFixed(4)) },
+  { key: 'iv_skew', header: 'IV Skew', render: (r) => (r.iv_skew == null ? '—' : r.iv_skew.toFixed(4)) },
   {
     key: 'pc',
     header: 'Put/Call Ratio',
     render: (r) => (r.put_call_ratio == null ? '—' : r.put_call_ratio.toFixed(4)),
   },
   {
-    key: 'vol',
-    header: 'Volume Anomaly',
-    render: (r) => (r.volume_anomaly == null ? '—' : r.volume_anomaly.toFixed(4)),
+    key: 'vol_anom',
+    header: 'Volume Anomaly Z',
+    render: (r) => (r.volume_anomaly_zscore == null ? '—' : r.volume_anomaly_zscore.toFixed(2)),
+  },
+  {
+    key: 'put_vol',
+    header: 'Put Volume',
+    render: (r) => (r.put_volume == null ? '—' : r.put_volume.toLocaleString()),
+  },
+  {
+    key: 'call_vol',
+    header: 'Call Volume',
+    render: (r) => (r.call_volume == null ? '—' : r.call_volume.toLocaleString()),
   },
 ];
 
@@ -72,7 +81,7 @@ export function OptionsAnalytics() {
               detail={`gold_options_features is empty for ${symbol} — IV, skew and volume anomalies appear after the options gold transform runs.`}
             />
           ) : (
-            <Table columns={columns} rows={data?.options.data ?? []} rowKey={(r) => `${r.symbol}-${r.expiry}-${r.feature_ts}`} />
+            <Table columns={columns} rows={data?.options.data ?? []} rowKey={(r) => `${r.symbol}-${r.feature_ts}`} />
           )}
         </Card>
       )}

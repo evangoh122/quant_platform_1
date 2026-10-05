@@ -3,6 +3,10 @@
 Ranked signals from the ``gold_trading_signals`` Delta table. Returns a
 well-formed empty envelope (with an explicit freshness indicator) when the table
 is empty or Delta is unavailable — it never fabricates placeholder signals.
+
+When the table has 0 rows, the detail is ``no_signals_published`` (not a bare
+``0 rows``) so the frontend can distinguish "table exists but empty" from
+"no signal for this symbol".
 """
 from __future__ import annotations
 
@@ -31,12 +35,19 @@ def list_signals(
             raise HTTPException(status_code=422, detail="invalid symbol") from None
 
     def _read() -> list[dict]:
-        from db.delta_adapter import latest_signals
+        from db.delta_adapter import as_dicts, latest_signals
 
-        df = latest_signals(symbol, limit=limit)
-        return [r.asDict() for r in df.collect()]
+        return as_dicts(latest_signals(symbol, limit=limit))
 
-    rows, state, detail = read_delta(_read)
+    from api.diagnostics import stage
+
+    with stage("delta_read", table="gold_trading_signals", symbol=symbol or "all"):
+        rows, state, detail = read_delta(_read)
+
+    # Explicit empty-state label: table exists but has 0 rows published
+    if state == "empty":
+        detail = "no_signals_published"
+
     data = [
         Signal(
             signal_id=str(r.get("signal_id", "")),

@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from './api/client';
+import type { HealthResponse } from './api/types';
 import { MarketDashboard } from './screens/MarketDashboard';
 import { SignalExplorer } from './screens/SignalExplorer';
 import { OptionsAnalytics } from './screens/OptionsAnalytics';
@@ -31,6 +33,25 @@ const SCREENS: { id: ScreenId; label: string }[] = [
 
 export default function App() {
   const [screen, setScreen] = useState<ScreenId>('market');
+  const [healthData, setHealthData] = useState<HealthResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = () => {
+      api.health().then((d) => {
+        if (!cancelled) setHealthData(d);
+      }).catch(() => {
+        // Silently ignore health check failures
+      });
+    };
+    check();
+    const interval = setInterval(check, 30_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const lakebaseDown = healthData?.dependencies.some(
+    (d) => d.name === 'lakebase' && (!d.ok || d.circuit_breaker_state === 'open'),
+  ) ?? false;
 
   return (
     <div className="flex min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
@@ -57,6 +78,11 @@ export default function App() {
       </aside>
 
       <main className="min-w-0 flex-1 p-6">
+        {lakebaseDown && (
+          <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
+            Account services unavailable — write operations (orders, watchlists) are disabled. Read-only data is still accessible.
+          </div>
+        )}
         {screen === 'market' && <MarketDashboard />}
         {screen === 'signals' && <SignalExplorer />}
         {screen === 'options' && <OptionsAnalytics />}

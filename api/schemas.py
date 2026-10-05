@@ -57,24 +57,33 @@ class Signal(BaseModel):
 
 
 class OHLCVFeature(BaseModel):
+    """Split-adjusted daily bars from silver_ohlcv_day_adjusted."""
     symbol: str
-    feature_ts: str = ""
+    event_date: str = ""
     open: Optional[float] = None
     high: Optional[float] = None
     low: Optional[float] = None
     close: Optional[float] = None
     volume: Optional[float] = None
     vwap: Optional[float] = None
+    price_basis: str = "split_adjusted"
 
 
 class OptionsFeature(BaseModel):
     symbol: str
     feature_ts: str = ""
-    expiry: str = ""
-    atm_iv: Optional[float] = None
-    skew: Optional[float] = None
+    put_volume: Optional[float] = None
+    call_volume: Optional[float] = None
     put_call_ratio: Optional[float] = None
-    volume_anomaly: Optional[float] = None
+    iv_atm: Optional[float] = None
+    iv_25d_put: Optional[float] = None
+    iv_25d_call: Optional[float] = None
+    iv_skew: Optional[float] = None
+    iv_term_slope: Optional[float] = None
+    avg_spread_pct: Optional[float] = None
+    volume_anomaly_zscore: Optional[float] = None
+    oi_concentration: Optional[float] = None
+    net_delta_exposure: Optional[float] = None
 
 
 class MarketSnapshot(BaseModel):
@@ -154,6 +163,16 @@ class DependencyStatus(BaseModel):
     name: str
     ok: bool
     detail: str = ""
+    latency_ms: Optional[float] = None
+    last_error: Optional[str] = None
+    last_ok_at: Optional[float] = None
+    circuit_breaker_state: Optional[str] = None
+
+
+class StartupStage(BaseModel):
+    name: str
+    elapsed_ms: float
+    ok: bool
 
 
 class HealthResponse(BaseModel):
@@ -161,6 +180,22 @@ class HealthResponse(BaseModel):
     version: str = ""
     dependencies: List[DependencyStatus] = Field(default_factory=list)
     freshness: Freshness = Field(default_factory=Freshness)
+    role_cache_size: int = 0
+    startup: List[StartupStage] = Field(default_factory=list)
+
+
+class TraceEvent(BaseModel):
+    name: str
+    elapsed_ms: float
+    ok: bool
+    error: Optional[str] = None
+    extra: Dict[str, Any] = Field(default_factory=dict)
+    ts: float = 0.0
+
+
+class HealthTraceResponse(BaseModel):
+    recent: List[TraceEvent] = Field(default_factory=list)
+    slow: List[TraceEvent] = Field(default_factory=list)
 
 
 class AnalyticsItem(BaseModel):

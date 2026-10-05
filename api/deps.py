@@ -8,12 +8,24 @@ Providers for:
 * the Delta / Spark reader (lazy — pyspark is only imported when a read is
   actually attempted, so ``import api.main`` never requires pyspark locally).
 
+Resilience (round 2):
+* **Role cache** — in-process TTL cache (5 min) avoids a DB round-trip on every
+  request for the same user.
+* **Circuit breaker** — after N consecutive Lakebase failures the breaker opens
+  for a cool-down window.  Read-only routes degrade to ``viewer``; write routes
+  get a fast ``503``.
+* **Read/write split** — read-only routes (signals, market, analytics, SEC) never
+  block on Lakebase when the breaker is open.  Write routes (portfolio, watchlist,
+  orders) fail fast with ``503 Account services unavailable``.
+
 All outbound calls (Lakebase, Delta, SEC, market-data, IBKR) stay server-side;
 the browser only ever talks to the ``/api`` endpoints.
 """
 from __future__ import annotations
 
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -36,11 +48,128 @@ _DEV_USER = os.getenv("AUTH_DEV_USER", "default")
 # ``users`` table; this module never assigns it.
 _VIEWER_ROLE = "viewer"
 
+# ── resilience configuration ─────────────────────────────────────────────────
+_ROLE_CACHE_TTL = int(os.getenv("ROLE_CACHE_TTL", "300"))  # 5 min
+_CB_FAILURE_THRESHOLD = int(os.getenv("CB_FAILURE_THRESHOLD", "3"))
+_CB_COOLDOWN_SECONDS = int(os.getenv("CB_COOLDOWN_SECONDS", "30"))
+_LAKEBASE_TIMEOUT = int(os.getenv("LAKEBASE_CONNECT_TIMEOUT", "3"))
+
 
 def _is_dev() -> bool:
     return os.getenv("APP_ENV", "").strip().lower() == "dev"
 
 
+# ── role cache ────────────────────────────────────────────────────────────────
+class _RoleCache:
+    """Thread-safe in-process TTL cache for resolved user roles."""
+
+    def __init__(self, ttl: int = _ROLE_CACHE_TTL):
+        self._ttl = ttl
+        self._store: dict[str, tuple[str, float]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, user_id: str) -> str | None:
+        with self._lock:
+            entry = self._store.get(user_id)
+            if entry is None:
+                return None
+            role, expires_at = entry
+            if time.monotonic() >= expires_at:
+                del self._store[user_id]
+                return None
+            return role
+
+    def put(self, user_id: str, role: str) -> None:
+        with self._lock:
+            self._store[user_id] = (role, time.monotonic() + self._ttl)
+
+    def invalidate(self, user_id: str) -> None:
+        with self._lock:
+            self._store.pop(user_id, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+
+_role_cache = _RoleCache()
+
+
+# ── circuit breaker ───────────────────────────────────────────────────────────
+class _CircuitBreaker:
+    """Simple circuit breaker: opens after N consecutive failures."""
+
+    def __init__(
+        self,
+        threshold: int = _CB_FAILURE_THRESHOLD,
+        cooldown: float = _CB_COOLDOWN_SECONDS,
+    ):
+        self._threshold = threshold
+        self._cooldown = cooldown
+        self._consecutive_failures = 0
+        self._opened_at: float = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._consecutive_failures < self._threshold:
+                return False
+            elapsed = time.monotonic() - self._opened_at
+            if elapsed >= self._cooldown:
+                # Half-open: allow one attempt
+                return False
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            was_open = self._consecutive_failures >= self._threshold
+            self._consecutive_failures = 0
+            self._opened_at = 0.0
+            if was_open:
+                logger.info("circuit breaker CLOSED (recovered)")
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._threshold:
+                self._opened_at = time.monotonic()
+                logger.warning(
+                    "circuit breaker OPEN after %d consecutive failures "
+                    "(cooldown=%ds)",
+                    self._consecutive_failures,
+                    self._cooldown,
+                )
+
+    def reset(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._opened_at = 0.0
+
+    @property
+    def failure_count(self) -> int:
+        with self._lock:
+            return self._consecutive_failures
+
+
+_breaker = _CircuitBreaker()
+
+
+# ── public helpers for health/status ──────────────────────────────────────────
+def lakebase_status() -> dict:
+    """Return breaker + cache state for health endpoints."""
+    return {
+        "circuit_breaker_open": _breaker.is_open,
+        "consecutive_failures": _breaker.failure_count,
+        "cache_entries": _role_cache.size(),
+    }
+
+
+# ── AppUser ───────────────────────────────────────────────────────────────────
 class AppUser:
     """The authenticated principal, mapped to a Lakebase ``user_id``.
 
@@ -49,15 +178,22 @@ class AppUser:
     ``authenticated=False`` so it can never reach a write operation.
     """
 
-    def __init__(self, user_id: str, role: str, authenticated: bool = True):
+    def __init__(
+        self,
+        user_id: str,
+        role: str,
+        authenticated: bool = True,
+        degraded: bool = False,
+    ):
         self.user_id = user_id
         self.role = role
         self.authenticated = authenticated
+        self.degraded = degraded  # True when Lakebase is unavailable
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return (
             f"AppUser(user_id={self.user_id!r}, role={self.role!r}, "
-            f"authenticated={self.authenticated!r})"
+            f"authenticated={self.authenticated!r}, degraded={self.degraded!r})"
         )
 
 
@@ -88,17 +224,50 @@ def _ensure_user(user_id: str) -> str:
     return row[0]
 
 
+def _resolve_role(user_id: str) -> str:
+    """Resolve role with cache + circuit breaker.
+
+    Returns the role string.  Raises on hard failure (breaker closed + DB error).
+    """
+    from api.diagnostics import stage
+
+    # 1. Cache hit
+    cached = _role_cache.get(user_id)
+    if cached is not None:
+        return cached
+
+    # 2. Circuit breaker open → skip DB
+    if _breaker.is_open:
+        logger.debug("circuit breaker open, degrading %r to viewer", user_id)
+        raise _BreakerOpenError("circuit breaker open")
+
+    # 3. DB lookup
+    try:
+        with stage("role_resolve", cache="miss"):
+            role = _ensure_user(user_id)
+        _breaker.record_success()
+        _role_cache.put(user_id, role)
+        return role
+    except Exception:
+        _breaker.record_failure()
+        raise
+
+
+class _BreakerOpenError(Exception):
+    """Raised when the circuit breaker is open."""
+
+
 def get_current_user(request: Request) -> AppUser:
     """Resolve the authenticated user from the single Databricks proxy header.
 
     Fails closed: without the trusted header the request is rejected with
     ``401`` unless ``APP_ENV=dev`` is set explicitly, in which case the
     ``AUTH_DEV_USER`` fallback is used — but that fallback is never treated as an
-    authenticated principal. A database error during role lookup returns ``503``,
-    never a role.
+    authenticated principal.
 
-    In public-demo mode, returns a fixed anonymous viewer immediately — every
-    identity header is ignored and no database is touched.
+    **Resilience (round 2):** when Lakebase is unreachable (circuit breaker open
+    or DB error), read-only routes degrade to ``viewer`` (``user.degraded=True``).
+    Write routes must check ``user.degraded`` and return ``503`` fast.
     """
     from api.demo import PUBLIC_DEMO_ROLE, PUBLIC_DEMO_USER_ID, is_public_demo
 
@@ -120,24 +289,43 @@ def get_current_user(request: Request) -> AppUser:
         raise HTTPException(status_code=401, detail="authentication required")
 
     try:
-        role = _ensure_user(user_id)
+        role = _resolve_role(user_id)
+        return AppUser(user_id=user_id, role=role, authenticated=authenticated)
+    except _BreakerOpenError:
+        # Circuit breaker open → degrade to viewer for read-only access
+        logger.info("lakebase unavailable, degrading %r to viewer", user_id)
+        return AppUser(
+            user_id=user_id,
+            role=_VIEWER_ROLE,
+            authenticated=authenticated,
+            degraded=True,
+        )
     except Exception:  # noqa: BLE001 - fail closed, never leak the cause
         logger.exception("identity/role lookup failed for %r", user_id)
-        raise HTTPException(
-            status_code=503, detail="identity service unavailable"
-        ) from None
-
-    return AppUser(user_id=user_id, role=role, authenticated=authenticated)
+        # Also degrade on unexpected errors (not just breaker)
+        return AppUser(
+            user_id=user_id,
+            role=_VIEWER_ROLE,
+            authenticated=authenticated,
+            degraded=True,
+        )
 
 
 def ensure_role(user: AppUser, *roles: str) -> AppUser:
     """Raise ``401`` unless authenticated, ``403`` unless a role is held.
+
+    If the user is ``degraded`` (Lakebase unavailable), raises ``503`` fast
+    instead of a misleading ``403``.
 
     Callable directly (from routes that perform conditional writes) or via the
     :func:`require_role` dependency factory.
     """
     if not user.authenticated:
         raise HTTPException(status_code=401, detail="authentication required")
+    if user.degraded:
+        raise HTTPException(
+            status_code=503, detail="Account services unavailable"
+        )
     if user.role not in roles:
         raise HTTPException(
             status_code=403,
