@@ -12,9 +12,17 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
   }
   if (tc.name === 'search_sec_filings') {
     const rows = tc.result?.rows;
-    const count = Array.isArray(rows) ? rows.length : undefined;
+    if (!Array.isArray(rows)) {
+      return {
+        label: 'SEC search',
+        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+      };
+    }
+    const nonError = rows.filter(
+      (r) => typeof r === 'object' && r !== null && typeof (r as Record<string, unknown>).error !== 'string',
+    );
     return {
-      label: count !== undefined ? `${count} source${count !== 1 ? 's' : ''}` : 'SEC search',
+      label: `${nonError.length} source${nonError.length !== 1 ? 's' : ''}`,
       cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
     };
   }
@@ -33,7 +41,7 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
       };
     }
     return {
-      label: 'Note saved',
+      label: 'Save not confirmed',
       cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
     };
   }

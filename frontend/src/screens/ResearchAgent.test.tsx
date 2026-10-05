@@ -350,6 +350,11 @@ describe('ResearchAgent', () => {
     const sourceCards = screen.getAllByTestId('source-card');
     expect(sourceCards).toHaveLength(1);
     expect(sourceCards[0]).toHaveTextContent('NVDA');
+
+    // Source count badge should exclude error rows (1 error + 1 good → "1 source")
+    const toolCard = screen.getByTestId('tool-call-0');
+    expect(toolCard).toHaveTextContent('1 source');
+    expect(toolCard).not.toHaveTextContent('2 source');
   });
 
   it('shows Failed badge on tool card when ok is false', async () => {
@@ -397,6 +402,10 @@ describe('ResearchAgent', () => {
 
     // Should NOT show "Research note saved to Lakebase" without note_id
     expect(screen.queryByText(/Research note saved to Lakebase/)).not.toBeInTheDocument();
+
+    // Badge should show honest state, not "Note saved"
+    const toolCard = screen.getByTestId('tool-call-0');
+    expect(toolCard).not.toHaveTextContent('Note saved');
   });
 
   it('shows agent-unavailable state when available is false and no tool calls', async () => {
@@ -441,5 +450,55 @@ describe('ResearchAgent', () => {
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it('does not render model confidence or score values from API response', async () => {
+    const confidenceResponse = {
+      reply: 'Based on analysis, Nvidia shows strong growth potential.',
+      tool_calls: [
+        {
+          name: 'search_sec_filings',
+          arguments: { ticker: 'NVDA' },
+          result: {
+            rows: [
+              {
+                chunk_id: 'chunk-1',
+                accession_number: '0001234567-24-000001',
+                form_type: '10-K',
+                accepted_ts: '2024-02-21',
+                source_url: 'https://sec.gov/filing/1',
+                ticker: 'NVDA',
+                section: 'risk_factors',
+                retrieval_mode: 'hybrid',
+              },
+            ],
+            confidence: 0.92,
+            score: 87,
+          },
+          ok: true,
+        },
+      ],
+      sources: [{ tool: 'search_sec_filings', chunk_id: 'chunk-1' }],
+      available: true,
+      empty: false,
+    };
+    vi.stubGlobal('fetch', mockFetch(confidenceResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Summarize Nvidia/));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Based on analysis/)).toBeInTheDocument();
+    });
+
+    // Confidence and score values from tool call result must never be rendered as UI
+    const toolCard = screen.getByTestId('tool-call-0');
+    // "Confidence:" label must not appear outside the raw JSON developer details
+    const devDetails = toolCard.querySelector('[data-testid="developer-details"]');
+    const visibleText = toolCard.textContent!.replace(devDetails?.textContent ?? '', '');
+    expect(visibleText).not.toMatch(/confidence/i);
+    expect(visibleText).not.toMatch(/92%/);
+    expect(visibleText).not.toMatch(/87%/);
   });
 });
