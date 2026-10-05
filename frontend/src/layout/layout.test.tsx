@@ -245,6 +245,30 @@ describe('Breaker rule', () => {
   });
 });
 
+describe('Collapsed sidebar accessibility', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('preserves full accessible name on collapsed nav buttons via aria-label', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const collapseBtn = screen.getByLabelText('Collapse sidebar');
+    await user.click(collapseBtn);
+
+    const marketButton = screen.getByRole('button', { name: 'Market Explorer' });
+    expect(marketButton).toHaveAttribute('aria-label', 'Market Explorer');
+    expect(marketButton.textContent).toBe('M');
+  });
+});
+
 describe('360px contract', () => {
   beforeEach(() => {
     vi.restoreAllMocks();

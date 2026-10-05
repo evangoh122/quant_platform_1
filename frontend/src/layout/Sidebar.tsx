@@ -47,6 +47,7 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
                   key={item.id}
                   onClick={() => onNavigate(item.id)}
                   aria-current={active ? 'page' : undefined}
+                  aria-label={collapsed ? item.label : undefined}
                   className={`block w-full rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm transition-colors ${
                     active
                       ? 'bg-[var(--accent)] font-medium text-white'
