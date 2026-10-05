@@ -86,6 +86,9 @@ def _reset_retriever_singletons():
     hr._embeddings_map.clear()
     hr._stored_index_dim = None
     hr._stored_embedding_model = None
+    with hr._alias_map_lock:
+        hr._alias_map.clear()
+        hr._alias_map_loaded = False
 
     yield
 
@@ -100,6 +103,9 @@ def _reset_retriever_singletons():
     hr._embeddings_map.clear()
     hr._stored_index_dim = None
     hr._stored_embedding_model = None
+    with hr._alias_map_lock:
+        hr._alias_map.clear()
+        hr._alias_map_loaded = False
 
 
 @pytest.fixture(autouse=True)
@@ -300,13 +306,38 @@ def _clear_ticker_lru_cache():
 
 @pytest.fixture(autouse=True)
 def _mock_check_ticker_coverage(monkeypatch):
-    """Mock check_ticker_coverage to avoid Spark calls in unit tests.
+    """Mock check_ticker_coverage and _resolve_canonical_ticker to avoid Spark calls in unit tests.
 
     Tests that need to test the real coverage check can override this mock.
     """
     try:
         from api.services import hybrid_retriever as hr
         monkeypatch.setattr(hr, "check_ticker_coverage", lambda ticker: (1, None))
+        # Alias resolution uses cached map (no Spark). Identity by default.
+        monkeypatch.setattr(hr, "_resolve_canonical_ticker", lambda ticker: ticker.upper().strip())
+    except (ImportError, AttributeError):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _guard_spark(monkeypatch):
+    """Make _get_spark raise immediately in tests to prevent hangs.
+
+    Any test that accidentally reaches _get_spark() (e.g. via
+    _load_alias_map or _load_ticker_corpus) fails fast with a clear error
+    instead of hanging on a Databricks Connect network timeout.
+    Tests that intentionally need _get_spark should monkeypatch it themselves.
+    """
+    try:
+        from api.services import hybrid_retriever as hr
+
+        def _spark_guard():
+            raise RuntimeError(
+                "_get_spark called in test — must be mocked. "
+                "Use monkeypatch.setattr(hr, '_get_spark', lambda: mock_spark)."
+            )
+
+        monkeypatch.setattr(hr, "_get_spark", _spark_guard)
     except (ImportError, AttributeError):
         pass
 

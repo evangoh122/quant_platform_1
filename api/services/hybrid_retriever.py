@@ -393,48 +393,85 @@ def _insert_ticker_corpus(ticker: str, corpus: TickerCorpus) -> None:
             logger.debug("Evicted ticker corpus: {}", evicted_ticker)
 
 
-# -- Coverage lookup --
+# -- Cached alias map (ticker → canonical ticker) --
 
-def _resolve_canonical_ticker(ticker: str) -> str:
-    """Resolve a share-class alias to its canonical ticker via gold_sec_coverage.
+_alias_map: Dict[str, str] = {}
+_alias_map_lock = threading.Lock()
+_alias_map_loaded = False
 
-    Multiple tickers can share one CIK (e.g. GOOG/GOOGL).  Filings are stored
-    under the canonical ticker.  This function returns the canonical ticker
-    so retrieval loads the correct corpus.
+
+def _load_alias_map() -> Dict[str, str]:
+    """Load the ticker→canonical-ticker alias map from gold_sec_coverage.
+
+    Loads ONCE and caches.  The map groups tickers by CIK and picks the
+    alphabetically-first ticker as the canonical for each group.  Coverage
+    lookup and alias lookup share one cached read.
+
+    Returns the alias map dict.  On failure returns an empty dict and logs
+    once so subsequent calls don't retry.
     """
-    ticker = ticker.upper().strip()
+    global _alias_map, _alias_map_loaded
+
+    with _alias_map_lock:
+        if _alias_map_loaded:
+            return _alias_map
+
     try:
         spark = _get_spark()
         from pyspark.sql import functions as F
 
-        # Find the canonical ticker: same CIK, lowest alphabetically
-        row = (
+        rows = (
             spark.table(COVERAGE_TABLE)
-            .filter(F.col("ticker") == ticker)
-            .select("cik")
+            .select("ticker", "cik")
             .collect()
         )
-        if not row or not row[0]["cik"]:
-            return ticker
+        if not rows:
+            with _alias_map_lock:
+                _alias_map_loaded = True
+            return {}
 
-        cik = row[0]["cik"]
-        # Find all tickers with this CIK, pick the first alphabetically
-        all_rows = (
-            spark.table(COVERAGE_TABLE)
-            .filter(F.col("cik") == cik)
-            .select("ticker")
-            .collect()
-        )
-        if not all_rows:
-            return ticker
+        # Group tickers by CIK → pick canonical (alphabetically first)
+        cik_tickers: Dict[str, List[str]] = {}
+        for r in rows:
+            t = (r["ticker"] or "").upper().strip()
+            c = r["cik"] or ""
+            if t and c:
+                cik_tickers.setdefault(c, []).append(t)
 
-        tickers = sorted(r["ticker"].upper() for r in all_rows)
-        canonical = tickers[0]
-        if canonical != ticker:
-            logger.info("Resolved alias {} → canonical {} (CIK {})", ticker, canonical, cik)
-        return canonical
-    except Exception:
-        return ticker
+        amap: Dict[str, str] = {}
+        for _cik, tickers in cik_tickers.items():
+            tickers_sorted = sorted(tickers)
+            canonical = tickers_sorted[0]
+            for t in tickers_sorted:
+                amap[t] = canonical
+
+        with _alias_map_lock:
+            _alias_map = amap
+            _alias_map_loaded = True
+        logger.info("Loaded ticker alias map: {} entries, {} CIKs", len(amap), len(cik_tickers))
+        return amap
+    except Exception as exc:
+        logger.warning("Failed to load ticker alias map (will use identity): {}", exc)
+        with _alias_map_lock:
+            _alias_map = {}
+            _alias_map_loaded = True
+        return {}
+
+
+def _resolve_canonical_ticker(ticker: str) -> str:
+    """Resolve a share-class alias to its canonical ticker.
+
+    Multiple tickers can share one CIK (e.g. GOOG/GOOGL).  Filings are stored
+    under the canonical ticker.  Uses the cached alias map (loaded once with
+    coverage data).  Falls back to the ticker itself when the map is
+    unavailable.
+    """
+    ticker = ticker.upper().strip()
+    amap = _load_alias_map()
+    canonical = amap.get(ticker, ticker)
+    if canonical != ticker:
+        logger.info("Resolved alias {} → canonical {} via cached map", ticker, canonical)
+    return canonical
 
 
 def check_ticker_coverage(ticker: str) -> Tuple[int, Optional[str]]:
@@ -643,6 +680,10 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
 
     with _ticker_cache_lock:
         _ticker_cache.clear()
+
+    with _alias_map_lock:
+        _alias_map.clear()
+        _alias_map_loaded = False
 
     return True
 

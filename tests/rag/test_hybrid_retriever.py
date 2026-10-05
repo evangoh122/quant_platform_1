@@ -1149,7 +1149,12 @@ class TestSessionSelection:
 
     def test_uses_databricks_session_outside_runtime(self, monkeypatch):
         """Outside Databricks runtime, DatabricksSession must be used."""
+        import importlib
         from api.services import hybrid_retriever as hr
+
+        # Restore real _get_spark (guard overrides it)
+        real_get_spark = importlib.reload(hr)._get_spark
+        monkeypatch.setattr(hr, "_get_spark", real_get_spark)
 
         # Ensure DATABRICKS_RUNTIME_VERSION is NOT set
         monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
@@ -1168,7 +1173,12 @@ class TestSessionSelection:
 
     def test_uses_ambient_session_inside_runtime(self, monkeypatch):
         """Inside Databricks runtime, SparkSession.builder.getOrCreate() is used."""
+        import importlib
         from api.services import hybrid_retriever as hr
+
+        # Restore real _get_spark (guard overrides it)
+        real_get_spark = importlib.reload(hr)._get_spark
+        monkeypatch.setattr(hr, "_get_spark", real_get_spark)
 
         monkeypatch.setenv("DATABRICKS_RUNTIME_VERSION", "15.4")
 
@@ -1536,7 +1546,12 @@ class TestSearchSecFilingsError:
 
     def test_spark_uses_databricks_session_outside_runtime(self, monkeypatch):
         """_spark() must delegate to hybrid_retriever._get_spark."""
+        import importlib
         from api.services import hybrid_retriever as hr
+
+        # Restore real _get_spark (guard overrides it)
+        real_get_spark = importlib.reload(hr)._get_spark
+        monkeypatch.setattr(hr, "_get_spark", real_get_spark)
 
         monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
 
@@ -3252,3 +3267,100 @@ class TestNullTimestampExcludedFromVectorSearch:
 
         accessions = [d.metadata["accession"] for d in results]
         assert "VALID" in accessions, "Valid chunk was excluded"
+
+
+# ── Round 18c: Alias resolution mutation proof ───────────────────────────────
+
+class TestAliasResolutionMutationProof:
+    """Verify _resolve_canonical_ticker is load-bearing for share-class aliases.
+
+    GOOGL → GOOG via the cached alias map.  Dropping alias resolution must
+    break at least one test in this class (mutation proof).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_alias_corpus(self, monkeypatch):
+        """Inject GOOG corpus and a GOOGL→GOOG alias map."""
+        from api.services import hybrid_retriever as hr
+
+        self.docs = [
+            _make_doc("Alphabet Google revenue growth",
+                      ticker="GOOG", accession="GOOG1", accepted_ts="2025-01-01"),
+            _make_doc("Google cloud platform earnings",
+                      ticker="GOOG", accession="GOOG2", accepted_ts="2025-01-01"),
+        ]
+
+        tokenised = [hr.tokenize(d.page_content) for d in self.docs]
+        np.random.seed(42)
+        embeddings_map = {}
+        for doc in self.docs:
+            cid = doc.metadata["accession"]
+            embeddings_map[cid] = np.random.randn(384).astype(np.float32)
+            embeddings_map[cid] /= np.linalg.norm(embeddings_map[cid])
+
+        corpus = hr.TickerCorpus(
+            ticker="GOOG",
+            docs=self.docs,
+            tokenised=tokenised,
+            bm25_index=hr.BM25Okapi(tokenised),
+            embeddings_map=embeddings_map,
+            stored_model="BAAI/bge-small-en-v1.5",
+            stored_dim=384,
+            load_ts=0.0,
+            approx_bytes=0,
+        )
+        hr._insert_ticker_corpus("GOOG", corpus)
+
+        # Install alias map: GOOGL → GOOG
+        with hr._alias_map_lock:
+            hr._alias_map = {"GOOG": "GOOG", "GOOGL": "GOOG"}
+            hr._alias_map_loaded = True
+
+        # Override _resolve_canonical_ticker to use the real cached-map logic
+        def real_resolve(ticker):
+            ticker = ticker.upper().strip()
+            return hr._alias_map.get(ticker, ticker)
+
+        monkeypatch.setattr(hr, "_resolve_canonical_ticker", real_resolve)
+
+        class StubEmbeddings:
+            def embed_query(self, text):
+                np.random.seed(hash(text) % (2**31))
+                v = np.random.randn(384).astype(np.float32)
+                v /= np.linalg.norm(v)
+                return v.tolist()
+
+        monkeypatch.setattr(hr, "get_embeddings", lambda: StubEmbeddings())
+
+    def test_googl_resolves_to_goog_corpus(self):
+        """Querying GOOGL must resolve to GOOG's corpus and return GOOG docs."""
+        from api.services.hybrid_retriever import bm25_search
+
+        results = bm25_search("Google revenue", top_k=5, ticker="GOOGL")
+        assert len(results) > 0, "GOOGL resolved to empty results"
+        tickers = [d.metadata["ticker"] for d in results]
+        assert all(t == "GOOG" for t in tickers), (
+            f"GOOGL should resolve to GOOG docs, got tickers: {tickers}"
+        )
+
+    def test_mutation_drop_alias_resolution_fails(self):
+        """If alias resolution is dropped, GOOGL query raises NoCoverageError."""
+        from api.services import hybrid_retriever as hr
+        from api.services.hybrid_retriever import bm25_search, NoCoverageError
+
+        # Mutation: drop alias resolution (identity)
+        hr._resolve_canonical_ticker = lambda ticker: ticker.upper().strip()
+
+        # GOOGL corpus doesn't exist — mock _load_ticker_corpus to return empty
+        def mock_load_empty(ticker):
+            return hr.TickerCorpus(
+                ticker=ticker, docs=[], tokenised=[], bm25_index=None,
+                embeddings_map={}, stored_model=None, stored_dim=None,
+                load_ts=0.0, approx_bytes=0,
+            )
+
+        hr._load_ticker_corpus = mock_load_empty
+
+        # Without alias resolution, GOOGL has no coverage → NoCoverageError
+        with pytest.raises(NoCoverageError):
+            bm25_search("Google revenue", top_k=5, ticker="GOOGL")
