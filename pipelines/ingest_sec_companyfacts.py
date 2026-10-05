@@ -808,8 +808,17 @@ class SparkCompanyFactsManifestWriter:
         """)
         # Idempotent: add any missing columns from the manifest StructType.
         # Derives column names and types from the schema — no hard-coded list.
+        # If ALTER TABLE fails and columns are still missing, propagate the
+        # error so the caller knows the manifest table is incomplete.
         try:
             existing = set(spark.table(f"{catalog}.{schema}.sec_companyfacts_ingest_log").columns)
+        except Exception:
+            # Table may not exist yet — CREATE TABLE above handles that case
+            existing = set()
+        missing = [
+            f for f in manifest_schema.fields if f.name not in existing
+        ]
+        if missing:
             _TYPE_MAP = {
                 "string": "STRING",
                 "int": "INT",
@@ -824,22 +833,27 @@ class SparkCompanyFactsManifestWriter:
                 "smallint": "SMALLINT",
                 "tinyint": "TINYINT",
             }
-            missing = [
-                f for f in manifest_schema.fields if f.name not in existing
-            ]
-            if missing:
-                parts = []
-                for f in missing:
-                    ddl_type = _TYPE_MAP.get(
-                        f.dataType.simpleString(), f.dataType.simpleString().upper()
-                    )
-                    parts.append(f"{f.name} {ddl_type}")
-                spark.sql(
-                    f"ALTER TABLE {catalog}.{schema}.sec_companyfacts_ingest_log "
-                    f"ADD COLUMNS ({', '.join(parts)})"
+            parts = []
+            for f in missing:
+                ddl_type = _TYPE_MAP.get(
+                    f.dataType.simpleString(), f.dataType.simpleString().upper()
                 )
-        except Exception:
-            pass  # table may not exist yet or other non-critical error
+                parts.append(f"{f.name} {ddl_type}")
+            spark.sql(
+                f"ALTER TABLE {catalog}.{schema}.sec_companyfacts_ingest_log "
+                f"ADD COLUMNS ({', '.join(parts)})"
+            )
+            # Verify the ALTER actually took effect
+            try:
+                after = set(spark.table(f"{catalog}.{schema}.sec_companyfacts_ingest_log").columns)
+            except Exception:
+                after = set()
+            still_missing = [f.name for f in manifest_schema.fields if f.name not in after]
+            if still_missing:
+                raise RuntimeError(
+                    f"ALTER TABLE failed to add columns {still_missing} to "
+                    f"{catalog}.{schema}.sec_companyfacts_ingest_log"
+                )
 
     def write_manifest(
         self,

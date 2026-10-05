@@ -2392,14 +2392,29 @@ class TestEnsureTableIdempotent:
         deriving the column type from the manifest StructType."""
         from unittest.mock import MagicMock, call
 
-        mock_spark = MagicMock()
-        # Simulate table missing http_status column
-        mock_spark.table.return_value.columns = [
+        FullColumns = [
+            "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
+            "payload_hash", "payload_bytes", "fact_count", "http_status",
+            "started_at", "completed_at", "error_category", "error_message",
+            "logged_at",
+        ]
+        MissingColumns = [
             "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
             "payload_hash", "payload_bytes", "fact_count",
             "started_at", "completed_at", "error_category", "error_message",
             "logged_at",
         ]
+
+        mock_spark = MagicMock()
+        call_count = [0]
+        def table_side_effect(name):
+            call_count[0] += 1
+            result = MagicMock()
+            # First call (before ALTER): missing http_status
+            # Second call (verification): full columns
+            result.columns = FullColumns if call_count[0] > 1 else MissingColumns
+            return result
+        mock_spark.table.side_effect = table_side_effect
 
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
         writer.ensure_table("cat", "sch")
@@ -2418,13 +2433,26 @@ class TestEnsureTableIdempotent:
         """
         from unittest.mock import MagicMock
 
-        mock_spark = MagicMock()
-        # Table missing error_category and error_message
-        mock_spark.table.return_value.columns = [
+        FullColumns = [
+            "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
+            "payload_hash", "payload_bytes", "fact_count", "http_status",
+            "started_at", "completed_at", "error_category", "error_message",
+            "logged_at",
+        ]
+        MissingColumns = [
             "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
             "payload_hash", "payload_bytes", "fact_count", "http_status",
             "started_at", "completed_at", "logged_at",
         ]
+
+        mock_spark = MagicMock()
+        call_count = [0]
+        def table_side_effect(name):
+            call_count[0] += 1
+            result = MagicMock()
+            result.columns = FullColumns if call_count[0] > 1 else MissingColumns
+            return result
+        mock_spark.table.side_effect = table_side_effect
 
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
         writer.ensure_table("cat", "sch")
@@ -2434,6 +2462,29 @@ class TestEnsureTableIdempotent:
         ddl = str(alter_calls[0])
         assert "error_category STRING" in ddl
         assert "error_message STRING" in ddl
+
+    def test_ensure_table_raises_when_alter_fails_and_columns_still_missing(self):
+        """When ALTER TABLE fails and columns remain missing, ensure_table
+        must raise RuntimeError so the caller knows the manifest table is
+        incomplete and does not attempt to append rows that will fail."""
+        from unittest.mock import MagicMock
+
+        mock_spark = MagicMock()
+        # Table missing http_status column; ALTER will be attempted
+        # but the column will still be missing after ALTER (simulating failure)
+        columns_before = [
+            "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
+            "payload_hash", "payload_bytes", "fact_count",
+            "started_at", "completed_at", "error_category", "error_message",
+            "logged_at",
+        ]
+        # First call returns columns_before (missing http_status),
+        # second call also returns columns_before (ALTER didn't work)
+        mock_spark.table.return_value.columns = columns_before
+
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
+        with pytest.raises(RuntimeError, match="ALTER TABLE failed"):
+            writer.ensure_table("cat", "sch")
 
 
 class TestCacheMinEntries:
