@@ -3343,13 +3343,13 @@ class TestAliasResolutionMutationProof:
             f"GOOGL should resolve to GOOG docs, got tickers: {tickers}"
         )
 
-    def test_mutation_drop_alias_resolution_fails(self):
+    def test_mutation_drop_alias_resolution_fails(self, monkeypatch):
         """If alias resolution is dropped, GOOGL query raises NoCoverageError."""
         from api.services import hybrid_retriever as hr
         from api.services.hybrid_retriever import bm25_search, NoCoverageError
 
         # Mutation: drop alias resolution (identity)
-        hr._resolve_canonical_ticker = lambda ticker: ticker.upper().strip()
+        monkeypatch.setattr(hr, "_resolve_canonical_ticker", lambda ticker: ticker.upper().strip())
 
         # GOOGL corpus doesn't exist — mock _load_ticker_corpus to return empty
         def mock_load_empty(ticker):
@@ -3359,7 +3359,7 @@ class TestAliasResolutionMutationProof:
                 load_ts=0.0, approx_bytes=0,
             )
 
-        hr._load_ticker_corpus = mock_load_empty
+        monkeypatch.setattr(hr, "_load_ticker_corpus", mock_load_empty)
 
         # Without alias resolution, GOOGL has no coverage → NoCoverageError
         with pytest.raises(NoCoverageError):

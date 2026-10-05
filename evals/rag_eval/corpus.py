@@ -470,6 +470,17 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
 
             hr._corpus_loaded = True
 
+            # Install offline alias map to prevent _load_alias_map() from
+            # attempting a Databricks connection during ticker lookups.
+            # Identity map: each ticker resolves to itself.
+            with hr._alias_map_lock:
+                orig_alias_map = dict(hr._alias_map)
+                orig_alias_loaded = hr._alias_map_loaded
+                hr._alias_map.clear()
+                for t in ticker_docs:
+                    hr._alias_map[t.upper().strip()] = t.upper().strip()
+                hr._alias_map_loaded = True
+
             # Monkey-patch check_ticker_coverage to answer from offline data
             offline_tickers = set(ticker_docs.keys())
 
@@ -507,6 +518,12 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
             with hr._ticker_cache_lock:
                 hr._ticker_cache.clear()
                 hr._ticker_cache.update(orig_ticker_cache)
+
+            # Restore alias map
+            with hr._alias_map_lock:
+                hr._alias_map.clear()
+                hr._alias_map.update(orig_alias_map)
+                hr._alias_map_loaded = orig_alias_loaded
 
 
 # ── Export utilities ──────────────────────────────────────────────────────────

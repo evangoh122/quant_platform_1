@@ -200,6 +200,11 @@ class FakeAccessionReader:
     def read_existing_accessions(self, catalog: str, schema: str) -> Dict[str, Tuple[str, str]]:
         return self._accessions
 
+    def read_existing_accession(
+        self, catalog: str, schema: str, accession_number: str,
+    ) -> Optional[Tuple[str, str]]:
+        return self._accessions.get(accession_number)
+
 
 class FakeDataWriter:
     """Records appended rows. Mirrors production MERGE semantics: re-running
@@ -1454,6 +1459,7 @@ class TestAccessionConflict:
             """Returns empty on first call, conflicting accession on second."""
             def __init__(self):
                 self._call_count = 0
+                self._existing: Dict[str, Tuple[str, str]] = {}
 
             def read_existing_accessions(self, catalog, schema):
                 self._call_count += 1
@@ -1461,6 +1467,15 @@ class TestAccessionConflict:
                     return {}  # Anti-join: nothing exists
                 # Race: conflicting accession appeared
                 return {"0001045810-25-000010": ("9999999999", "OTHER")}
+
+            def read_existing_accession(self, catalog, schema, accession_number):
+                self._call_count += 1
+                if self._call_count <= 1:
+                    return None  # Anti-join: nothing exists
+                # Race: conflicting accession appeared
+                if accession_number == "0001045810-25-000010":
+                    return ("9999999999", "OTHER")
+                return None
 
         result = run_ingest(
             catalog="test", schema="test",

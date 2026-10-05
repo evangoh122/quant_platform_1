@@ -48,6 +48,11 @@ echo "$SEC_EDGAR_USER_AGENT" | grep -qE "@example\.(com|org|net)" && echo "WARNI
 Validate the ingestion plan without fetching any filing bodies:
 
 ```bash
+# Set these variables before running the commands below
+catalog="evangoh_capstone"        # Unity Catalog catalog name
+schema="evangoh_capstone"         # Unity Catalog schema name
+PILOT_TICKERS="AAPL,MSFT,GOOG,AMZN,META,NVDA,TSLA,BRK-B,JPM,JNJ"  # Example pilot tickers
+
 databricks bundle validate -t dev
 databricks bundle deploy -t dev
 databricks bundle run -t dev sec_rag_ingest -- --dry-run --start-date 2024-09-01 --forms 10-K,10-Q --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent
