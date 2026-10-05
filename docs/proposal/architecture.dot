@@ -1,0 +1,49 @@
+// Quant Platform — capstone architecture (source for architecture.png; render: dot -Tpng -Gdpi=150 architecture.dot -o architecture.png)
+digraph QP {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=13, nodesep=0.35, ranksep=0.7, bgcolor="white", pad=0.3,
+         label="Quant Platform — data, serving and agent architecture (status as of 2026-10-05)", labelloc=t, fontsize=18];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, fillcolor="#F4F6F8", color="#5B6770", margin="0.18,0.08"];
+  edge  [fontname="Helvetica", fontsize=9, color="#5B6770", arrowsize=0.7];
+
+  subgraph cluster_src { label="External APIs (batch)"; style="rounded"; color="#9AA5AE";
+    massive [label="Massive / Polygon\nOHLCV · options · splits"];
+    sec     [label="SEC EDGAR\nfilings · XBRL"];
+    cftc    [label="CFTC\nCommitments of Traders"];
+    fed     [label="Federal Reserve / FRED\nmacro series"];
+  }
+
+  subgraph cluster_lake { label="Databricks Lakehouse — Unity Catalog (Delta)"; style="rounded"; color="#1F77B4";
+    spark  [label="PySpark ingestion jobs\n(Databricks Jobs, serverless)", fillcolor="#E8F1FA"];
+    bronze [label="Bronze\nraw append-only\n239.1M rows", fillcolor="#F3E5D8"];
+    silver [label="Silver\ncleaned · split-adjusted\n· PIT availability\n24.3M rows", fillcolor="#E6E6E6"];
+    gold   [label="Gold\nfeatures · universe · COT\n· SEC chunks/embeddings\n23.7M rows", fillcolor="#FFF3C4"];
+    analytics [label="Delta analytics tables\nagent activity · watchlist changes\n· order funnel · usage daily\n[minimal, new]", fillcolor="#E3F2E3"];
+    cdcjob [label="CDC consumer job\n(outbox → Delta MERGE,\nwatermarked, idempotent)\n[minimal, new]", fillcolor="#E3F2E3"];
+  }
+
+  subgraph cluster_app { label="Databricks App (FastAPI + React)"; style="rounded"; color="#2CA02C";
+    react  [label="React frontend\nmarket · signals · analytics\n· agent · system health"];
+    api    [label="FastAPI  api/main.py\nroutes · auth/roles · health"];
+    wh     [label="SQL-warehouse adapter\nnamed params · bounded · timeouts"];
+    rag    [label="Hybrid SEC retrieval\nBM25 + dense + rerank, PIT"];
+    agent  [label="LLM-directed agent\nworkspace model proposes\n→ deterministic validator\n(allowlist · roles · idempotency)\n[minimal, new]", fillcolor="#E3F2E3"];
+  }
+
+  subgraph cluster_oltp { label="Lakebase (Postgres)"; style="rounded"; color="#9467BD";
+    oltp   [label="Operational tables\nusers · watchlists · research notes\n· orders · agent actions · approvals", fillcolor="#EFE7F7"];
+    outbox [label="analytics_outbox\n(transactional triggers)\n[minimal, new]", fillcolor="#E3F2E3"];
+  }
+
+  massive -> spark; sec -> spark; cftc -> spark; fed -> spark;
+  spark -> bronze -> silver -> gold;
+  gold -> wh [label="SELECT"]; gold -> rag [label="chunks + embeddings"];
+  react -> api [label="HTTPS"];
+  api -> wh; api -> rag; api -> agent;
+  agent -> rag [label="read tool"]; agent -> wh [label="read tools"];
+  agent -> oltp [label="save_research_note\n(validated write)"];
+  api -> oltp [label="watchlists · orders"];
+  oltp -> outbox [label="same transaction"];
+  outbox -> cdcjob [label="pending events"];
+  cdcjob -> analytics;
+  analytics -> wh [label="analytics API"];
+}
