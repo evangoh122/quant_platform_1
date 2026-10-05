@@ -123,7 +123,6 @@ resources:
               - "--batch-size"
               - "5000"
           environment_key: serverless
-          libraries: []
       environments:
         - environment_key: serverless
           spec:

@@ -663,7 +663,8 @@ def main() -> None:
         sys.exit(1)
 
     # Acquire Spark (only inside main)
-    spark = SparkSession.builder.getOrCreate()
+    from pipelines._runtime import get_spark
+    spark = get_spark()
 
     # Acquire Postgres connection
     conn_str = os.environ.get("LAKEBASE_URL", "")

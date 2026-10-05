@@ -36,7 +36,9 @@ from typing import (
 
 # Ensure repo root is on sys.path so ``pipelines.*`` resolves when invoked
 # via ``python_file`` in a Databricks job.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pipelines._runtime import get_spark, repo_root
+
+sys.path.insert(0, str(repo_root()))
 
 logger = logging.getLogger(__name__)
 
@@ -543,7 +545,7 @@ def load_cik_overrides(
     if override_path is None:
         # Default: config/sec_cik_overrides.yaml relative to repo root
         override_path = str(
-            Path(__file__).resolve().parent.parent / "config" / "sec_cik_overrides.yaml"
+            repo_root() / "config" / "sec_cik_overrides.yaml"
         )
     path = Path(override_path)
     if not path.exists():
@@ -1875,7 +1877,7 @@ def repair_cik_ownership(
     group_map = _build_cik_group_map(cik_overrides)
     stats = {"scanned": 0, "updated": 0, "skipped": 0}
 
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = get_spark()
     table = f"{catalog}.{schema}.bronze_sec_filings_v2"
 
     for ticker in tickers:
@@ -1949,8 +1951,7 @@ class SparkUniverseReader:
         schema: str,
         include_historical: bool = False,
     ) -> List[TickerEntry]:
-        from databricks.connect import DatabricksSession
-        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        spark = get_spark()
         sql = UNIVERSE_SQL.format(catalog=catalog, schema=schema)
         rows = spark.sql(sql).collect()
         entries = [TickerEntry(ticker=row["ticker"], phase=row["phase"]) for row in rows]
@@ -1967,8 +1968,7 @@ class SparkAccessionReader:
         catalog: str,
         schema: str,
     ) -> Dict[str, Tuple[str, str]]:
-        from databricks.connect import DatabricksSession
-        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        spark = get_spark()
         rows = (
             spark.table(f"{catalog}.{schema}.bronze_sec_filings_v2")
             .select("accession_number", "cik", "ticker")
@@ -1983,9 +1983,8 @@ class SparkAccessionReader:
         schema: str,
         accession_number: str,
     ) -> Optional[Tuple[str, str]]:
-        from databricks.connect import DatabricksSession
         from pyspark.sql import functions as F
-        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        spark = get_spark()
         row = (
             spark.table(f"{catalog}.{schema}.bronze_sec_filings_v2")
             .select("accession_number", "cik", "ticker")
@@ -2022,8 +2021,7 @@ class SparkDataWriter:
     def _get_spark(self):
         if self._spark_factory is not None:
             return self._spark_factory()
-        from databricks.connect import DatabricksSession
-        return DatabricksSession.builder.serverless(True).getOrCreate()
+        return get_spark()
 
     def _ensure_schema(self):
         if SparkDataWriter.BRONZE_SCHEMA is not None:
@@ -2173,8 +2171,7 @@ class SparkLogWriter:
     def _get_spark(self):
         if self._spark_factory is not None:
             return self._spark_factory()
-        from databricks.connect import DatabricksSession
-        return DatabricksSession.builder.serverless(True).getOrCreate()
+        return get_spark()
 
     def _ensure_schema(self):
         if SparkLogWriter.INGEST_LOG_SCHEMA is not None:
@@ -2278,8 +2275,7 @@ class SparkIngestLogReader:
     def _get_spark(self):
         if self._spark_factory is not None:
             return self._spark_factory()
-        from databricks.connect import DatabricksSession
-        return DatabricksSession.builder.serverless(True).getOrCreate()
+        return get_spark()
 
     def read_succeeded_accessions(
         self,
@@ -2345,8 +2341,7 @@ class SparkCikMappingLogWriter:
     def _get_spark(self):
         if self._spark_factory is not None:
             return self._spark_factory()
-        from databricks.connect import DatabricksSession
-        return DatabricksSession.builder.serverless(True).getOrCreate()
+        return get_spark()
 
     def append_mapping_log(
         self,
@@ -2461,8 +2456,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     cik_mapping_log_writer = SparkCikMappingLogWriter()
 
     # Ensure sec_ingest_log exists before any reader/writer touches it
-    from databricks.connect import DatabricksSession
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = get_spark()
     ensure_ingest_log_table(spark, args.catalog, args.schema)
 
     result = run_ingest(

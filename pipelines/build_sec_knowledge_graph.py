@@ -13,11 +13,11 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict, Optional
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pipelines._runtime import get_spark, repo_root
+
+sys.path.insert(0, str(repo_root()))
 
 from sec_kg.build import build_graph, validate_and_raise
 from sec_kg.model import BUILD_VERSION, normalize_unicode
@@ -386,9 +386,8 @@ def main():
     args = parser.parse_args()
 
     # Lazy Spark import
-    from pyspark.sql import SparkSession
 
-    spark = SparkSession.builder.getOrCreate()
+    spark = get_spark()
 
     build(
         spark,
