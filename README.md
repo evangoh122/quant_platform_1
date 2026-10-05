@@ -43,6 +43,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | Lakebase writes from the app | Yes | Yes | **Live** — app service principal has `CAN_USE` + a least-privilege Postgres role |
 | LLM-directed agent (research → save note) | Yes (minimal) | Offline + live | **Live run 2026-10-05**: `search_sec_filings(NVDA)` → `save_research_note` written to Lakebase, logged in `agent_actions` |
 | Lakebase → Delta analytics (outbox CDC) | Yes (minimal) | Offline + real Postgres + live | **Live run 2026-10-05**: outbox → `lakebase_change_events` (9) → all four analytics tables populated |
+| Trading signals (`gold_trading_signals` → Signals page) | Yes | Yes | **35 baseline signals published 2026-10-05** by `scripts/publish_baseline_signals.py` (logistic regression on `gold_model_features`; hold-out AUC 0.47 — pipeline demonstration, no predictive edge claimed) |
 | Streaming DLT pipeline | Yes | Local validation | Not deployed or run |
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
 | IBKR paper execution | Scaffold | Partial | Not live |
@@ -108,3 +109,4 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 - Macro (Fed) series are revised values, not first-release vintages.
 - Strategy research reports are descriptive; several are marked `BLOCKED_DATA` (fewer than two complete out-of-sample years).
 - The streaming DLT pipeline is built but not deployed.
+- Published signals come from an untuned baseline model (hold-out AUC 0.47, all directions UP); they demonstrate the features → model → `gold_trading_signals` → app path, not a trading edge.
