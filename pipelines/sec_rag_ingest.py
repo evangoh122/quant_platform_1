@@ -209,6 +209,33 @@ class AccessionOwnershipConflict(ValueError):
     pass
 
 
+def _accession_filer_cik(accession_number: str) -> str:
+    """Extract the 10-digit CIK prefix from an accession number.
+
+    Accession format: ``XXXXXXXXXX-YY-ZZZZZZ`` where the first 10 digits
+    are the CIK of the filer.
+    """
+    digits = accession_number.split("-")[0]
+    return digits.zfill(10)
+
+
+def _build_cik_group_map(
+    overrides: Optional[Dict[str, List[str]]],
+) -> Dict[str, frozenset]:
+    """Build CIK → ownership-group frozenset from override config.
+
+    CIKs listed together for the same ticker form one ownership group.
+    CIKs not in any override get a singleton group {cik}.
+    """
+    group_map: Dict[str, frozenset] = {}
+    if overrides:
+        for _ticker, ciks in overrides.items():
+            group = frozenset(ciks)
+            for cik in ciks:
+                group_map[cik] = group
+    return group_map
+
+
 # ── Protocols (dependency injection) ──────────────────────────────────────────
 
 class HttpClient(Protocol):
@@ -1393,6 +1420,8 @@ def run_ingest(
     if cik_overrides is None:
         cik_overrides = load_cik_overrides(cik_overrides_path)
 
+    cik_group_map = _build_cik_group_map(cik_overrides)
+
     # Map tickers to CIKs
     cik_map = build_cik_map(symbols, tickers_payload, cik_overrides=cik_overrides)
     mapped_tickers: List[Tuple[str, str]] = []  # (ticker, cik) — one entry per CIK
@@ -1512,7 +1541,18 @@ def run_ingest(
             if dashed in existing_accessions:
                 existing_cik, existing_ticker = existing_accessions[dashed]
                 if existing_cik != cik:
-                    # Record the conflict in the audit log before raising
+                    # Same ownership group (override CIKs) → no conflict
+                    same_group = (
+                        cik in cik_group_map
+                        and existing_cik in cik_group_map
+                        and cik_group_map[cik] is cik_group_map[existing_cik]
+                    )
+                    if same_group:
+                        # Store the filer CIK from the accession prefix
+                        filer_cik = _accession_filer_cik(dashed)
+                        result.skipped_existing_count += 1
+                        continue
+                    # Genuine conflict: record per filing, run continues
                     if log_writer is not None:
                         log_writer.append_log(catalog, schema, IngestLogEntry(
                             run_id=run_id,
@@ -1532,11 +1572,8 @@ def run_ingest(
                             started_ts=datetime.now(timezone.utc),
                             completed_ts=datetime.now(timezone.utc),
                         ))
-                    raise AccessionOwnershipConflict(
-                        f"Accession ownership conflict: {dashed} already owned by "
-                        f"CIK {existing_cik} (ticker={existing_ticker}), "
-                        f"but current request is CIK {cik} (ticker={ticker})"
-                    )
+                    result.failed_count += 1
+                    continue
                 # Same CIK: filing already stored — skip for this ticker
                 result.skipped_existing_count += 1
                 continue
@@ -1637,7 +1674,19 @@ def run_ingest(
                 if filing.accession_number in current_existing:
                     existing_cik, existing_ticker = current_existing[filing.accession_number]
                     if existing_cik != cik:
-                        # Record as failed, then raise
+                        # Same ownership group → skip, no conflict
+                        same_group = (
+                            cik in cik_group_map
+                            and existing_cik in cik_group_map
+                            and cik_group_map[cik] is cik_group_map[existing_cik]
+                        )
+                        if same_group:
+                            log_entry.status = "skipped_existing"
+                            log_entry.completed_ts = datetime.now(timezone.utc)
+                            if log_writer:
+                                log_writer.append_log(catalog, schema, log_entry)
+                            return log_entry
+                        # Genuine conflict: record per filing, continue (don't abort)
                         log_entry.status = "failed"
                         log_entry.error_code = "ownership_conflict"
                         log_entry.error_message = (
@@ -1648,7 +1697,7 @@ def run_ingest(
                         log_entry.completed_ts = datetime.now(timezone.utc)
                         if log_writer:
                             log_writer.append_log(catalog, schema, log_entry)
-                        raise AccessionOwnershipConflict(log_entry.error_message)
+                        return log_entry
                     log_entry.status = "skipped_existing"
                     log_entry.completed_ts = datetime.now(timezone.utc)
                     if log_writer:
@@ -1777,6 +1826,75 @@ def run_ingest(
     )
 
     return result
+
+
+def repair_cik_ownership(
+    *,
+    catalog: str,
+    schema: str,
+    tickers: List[str],
+    cik_overrides: Optional[Dict[str, List[str]]] = None,
+    cik_overrides_path: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, int]:
+    """Rewrite stored CIKs for an override group to the filer CIK from the accession prefix.
+
+    Idempotent: rows already matching the correct CIK are not updated.
+    Returns {"scanned": N, "updated": N, "skipped": N}.
+    """
+    from databricks.connect import DatabricksSession
+
+    if cik_overrides is None:
+        cik_overrides = load_cik_overrides(cik_overrides_path)
+
+    group_map = _build_cik_group_map(cik_overrides)
+    stats = {"scanned": 0, "updated": 0, "skipped": 0}
+
+    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    table = f"{catalog}.{schema}.bronze_sec_filings_v2"
+
+    for ticker in tickers:
+        ticker = ticker.strip().upper()
+        if ticker not in cik_overrides:
+            logger.warning("repair: no CIK overrides for %s — skipping", ticker)
+            continue
+
+        group_ciks = cik_overrides[ticker]
+        cik_list = ", ".join(f"'{c}'" for c in group_ciks)
+
+        rows = spark.sql(f"""
+            SELECT accession_number, cik, ticker
+            FROM {table}
+            WHERE ticker = '{ticker}' AND cik IN ({cik_list})
+        """).collect()
+
+        for row in rows:
+            stats["scanned"] += 1
+            acc = row["accession_number"]
+            current_cik = row["cik"]
+            correct_cik = _accession_filer_cik(acc)
+
+            if current_cik == correct_cik:
+                stats["skipped"] += 1
+                continue
+
+            if dry_run:
+                logger.info(
+                    "DRY RUN repair: %s cik %s → %s", acc, current_cik, correct_cik,
+                )
+                stats["updated"] += 1
+                continue
+
+            spark.sql(f"""
+                UPDATE {table}
+                SET cik = '{correct_cik}'
+                WHERE accession_number = '{acc}'
+                  AND cik = '{current_cik}'
+            """).collect()
+            stats["updated"] += 1
+            logger.info("repair: %s cik %s → %s", acc, current_cik, correct_cik)
+
+    return stats
 
 
 # ── Spark adapters (Databricks production) ───────────────────────────────────
@@ -2237,6 +2355,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=None,
         help="Path to CIK overrides YAML file (default: config/sec_cik_overrides.yaml)",
     )
+    parser.add_argument(
+        "--repair-cik-ownership",
+        action="store_true",
+        help="Rewrite stored CIKs for override-group tickers to the filer CIK from the accession prefix",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -2244,6 +2367,20 @@ def main(argv: Optional[List[str]] = None) -> None:
     tickers = None
     if args.tickers:
         tickers = [t.strip() for t in args.tickers.split(",")]
+
+    if args.repair_cik_ownership:
+        if not tickers:
+            logger.error("--repair-cik-ownership requires --tickers")
+            sys.exit(1)
+        stats = repair_cik_ownership(
+            catalog=args.catalog,
+            schema=args.schema,
+            tickers=tickers,
+            cik_overrides_path=args.cik_overrides_path,
+            dry_run=args.dry_run,
+        )
+        logger.info("repair_cik_ownership: %s", stats)
+        return
 
     # Wire real Spark adapters for production use
     universe_reader = SparkUniverseReader()

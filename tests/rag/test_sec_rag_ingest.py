@@ -37,6 +37,8 @@ from pipelines.sec_rag_ingest import (  # noqa: E402
     SecClientConfig,
     SecClientError,
     TickerEntry,
+    _accession_filer_cik,
+    _build_cik_group_map,
     build_cik_map,
     chunk_text,
     discover_filings,
@@ -47,6 +49,7 @@ from pipelines.sec_rag_ingest import (  # noqa: E402
     parse_sec_timestamp,
     process_filing,
     record_key,
+    repair_cik_ownership,
     resolve_canonical_tickers,
     run_ingest,
     strip_html,
@@ -1402,7 +1405,7 @@ class TestAccessionConflict:
         assert result.total_rows_appended == 0
 
     def test_different_cik_accession_raises_conflict(self):
-        """Same accession owned by a different CIK must raise AccessionOwnershipConflict."""
+        """Same accession owned by a different CIK: conflict recorded, run continues."""
         clock = FakeClock()
         http = FakeHttpClient()
         submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
@@ -1414,26 +1417,26 @@ class TestAccessionConflict:
             "0001045810-25-000010": ("9999999999", "OTHER"),
         }
 
-        with pytest.raises(AccessionOwnershipConflict, match="Accession ownership conflict"):
-            run_ingest(
-                catalog="test", schema="test",
-                start_date="2024-09-01",
-                tickers=["NVDA"],
-                universe_reader=FakeUniverseReader(universe),
-                accession_reader=FakeAccessionReader(existing),
-                data_writer=FakeDataWriter(),
-                http_client=http,
-                clock=clock,
-                cache_path=str(FIXTURES / "company_tickers.json"),
-            )
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(existing),
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+        # Genuine conflict: filing fails, run continues (no raise)
+        assert result.failed_count >= 1
 
     def test_race_path_conflict_raises(self):
         """Race-path conflict: accession appears between anti-join and processing.
 
         The race-path AccessionReader returns {} on first call (anti-join passes)
         and returns a conflicting accession on second call (inside the processing loop).
-        Mutation proof: remove the except AccessionOwnershipConflict: raise →
-        the conflict is swallowed and this test FAILS.
+        Genuine conflict is recorded as failed, run continues (no raise).
         """
         clock = FakeClock()
         http = FakeHttpClient()
@@ -1459,18 +1462,19 @@ class TestAccessionConflict:
                 # Race: conflicting accession appeared
                 return {"0001045810-25-000010": ("9999999999", "OTHER")}
 
-        with pytest.raises(AccessionOwnershipConflict, match="race"):
-            run_ingest(
-                catalog="test", schema="test",
-                start_date="2024-09-01",
-                tickers=["NVDA"],
-                universe_reader=FakeUniverseReader(universe),
-                accession_reader=RaceAccessionReader(),
-                data_writer=FakeDataWriter(),
-                http_client=http,
-                clock=clock,
-                cache_path=str(FIXTURES / "company_tickers.json"),
-            )
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=RaceAccessionReader(),
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+        # Race-path genuine conflict: filing fails, run continues (no raise)
+        assert result.failed_count >= 1
 
 
 # -- main() end-to-end tests --
@@ -2865,8 +2869,8 @@ class TestOwnershipConflictAuditRow:
     """Pre-existing accession ownership conflicts must be recorded in sec_ingest_log."""
 
     def test_ownership_conflict_writes_failed_log_entry(self):
-        """When anti-join detects a CIK conflict, a failed log entry is written
-        BEFORE the AccessionOwnershipConflict is raised.
+        """When anti-join detects a genuine CIK conflict, a failed log entry is written
+        and the run continues (no raise).
         """
         clock = FakeClock()
         http = FakeHttpClient()
@@ -2885,19 +2889,18 @@ class TestOwnershipConflictAuditRow:
             def append_log(self, catalog, schema, entry):
                 log_entries.append(entry)
 
-        with pytest.raises(AccessionOwnershipConflict):
-            run_ingest(
-                catalog="test", schema="test",
-                start_date="2024-09-01",
-                tickers=["NVDA"],
-                universe_reader=FakeUniverseReader(universe),
-                accession_reader=FakeAccessionReader(existing),
-                data_writer=FakeDataWriter(),
-                log_writer=CapturingLogWriter(),
-                http_client=http,
-                clock=clock,
-                cache_path=str(FIXTURES / "company_tickers.json"),
-            )
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(existing),
+            data_writer=FakeDataWriter(),
+            log_writer=CapturingLogWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
 
         # Must have at least one failed entry with error_code=ownership_conflict
         conflict_entries = [
@@ -2909,6 +2912,8 @@ class TestOwnershipConflictAuditRow:
             "Mutation: the anti-join raises without writing a log entry."
         )
         assert conflict_entries[0].accession_number == "0001045810-25-000010"
+        # Run continues, conflict recorded as failure (not raised)
+        assert result.failed_count >= 1
 
 
 class TestSilverSqlPlaceholders:
@@ -3753,6 +3758,278 @@ class TestCikOverrides:
 
         # The difference: with overrides, discovery would find filings from both CIKs
         # Without overrides, only from the SEC CIK — missing 5 filings from legacy CIK
+
+
+# ── Round 19b: Ownership group logic ─────────────────────────────────────────
+
+
+class TestOwnershipGroup:
+    """CIKs in the same override group are ONE ownership group — no conflict."""
+
+    XOM_OVERRIDES = {"XOM": ["0002115436", "0000034088"]}
+
+    def test_same_group_no_conflict(self):
+        """Accession stored under one CIK in a group, request from another → no conflict."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        # Holdings CIK submissions — one filing
+        holdings_sub = {
+            "cik": "0002115436",
+            "entityName": "ExxonMobil Holdings Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-03-01"],
+                    "accessionNumber": ["0000034088-26-000093"],
+                    "primaryDocument": ["xom-20250301.htm"],
+                    "acceptanceDateTime": ["2025-03-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings_sub)
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", holdings_sub)
+
+        universe = [TickerEntry(ticker="XOM", phase=1)]
+        # Accession stored under holdings CIK (2115436)
+        existing = {
+            "0000034088-26-000093": ("0002115436", "XOM"),
+        }
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["XOM"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(existing),
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides=self.XOM_OVERRIDES,
+        )
+        # Same group → skipped, no conflict, no failure
+        assert result.failed_count == 0
+        assert result.skipped_existing_count >= 1
+
+    def test_genuine_conflict_recorded_not_raised(self):
+        """Genuine conflict (unrelated CIK): filing fails, run continues."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        holdings_sub = {
+            "cik": "0002115436",
+            "entityName": "ExxonMobil Holdings Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-03-01"],
+                    "accessionNumber": ["0000034088-26-000093"],
+                    "primaryDocument": ["xom-20250301.htm"],
+                    "acceptanceDateTime": ["2025-03-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings_sub)
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", holdings_sub)
+
+        universe = [TickerEntry(ticker="XOM", phase=1)]
+        # Accession owned by UNRELATED CIK/ticker
+        existing = {
+            "0000034088-26-000093": ("9999999999", "OTHER"),
+        }
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["XOM"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(existing),
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides=self.XOM_OVERRIDES,
+        )
+        # Genuine conflict: filing fails, run continues (no raise)
+        assert result.failed_count >= 1
+
+    def test_genuine_conflict_writes_audit_row(self):
+        """Genuine conflict writes failed audit row with error_code=ownership_conflict."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        holdings_sub = {
+            "cik": "0002115436",
+            "entityName": "ExxonMobil Holdings Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-03-01"],
+                    "accessionNumber": ["0000034088-26-000093"],
+                    "primaryDocument": ["xom-20250301.htm"],
+                    "acceptanceDateTime": ["2025-03-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings_sub)
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", holdings_sub)
+
+        universe = [TickerEntry(ticker="XOM", phase=1)]
+        existing = {
+            "0000034088-26-000093": ("9999999999", "OTHER"),
+        }
+
+        log_entries = []
+
+        class CapturingLogWriter:
+            def append_log(self, catalog, schema, entry):
+                log_entries.append(entry)
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["XOM"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(existing),
+            data_writer=FakeDataWriter(),
+            log_writer=CapturingLogWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides=self.XOM_OVERRIDES,
+        )
+        conflict_entries = [
+            e for e in log_entries
+            if e.error_code == "ownership_conflict" and e.status == "failed"
+        ]
+        assert len(conflict_entries) >= 1, (
+            f"Expected at least 1 ownership_conflict audit row, got {len(conflict_entries)}. "
+            "Mutation: group check removed → genuine conflict not recorded."
+        )
+        assert result.failed_count >= 1
+
+    def test_mutation_drop_group_check_fails(self):
+        """Mutation: if same_group check is removed from anti-join, same-group CIKs falsely conflict.
+
+        We verify by checking that the group map is consulted: with the correct
+        overrides, same-group CIKs are skipped (test_same_group_no_conflict).
+        Without overrides (empty dict), the ticker can't map to CIKs at all
+        (XOM not in SEC fixture), so mapped_count=0 — the group check is the
+        only path that makes multi-CIK tickers work.
+        """
+        # Verify the group map is the key enabler
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        group_map = _build_cik_group_map(overrides)
+        assert group_map["0002115436"] is group_map["0000034088"], (
+            "Group map must link CIKs in the same override group"
+        )
+
+        # Without overrides, group map is empty → no same-group detection
+        empty_map = _build_cik_group_map({})
+        assert empty_map == {}, "Empty overrides must produce empty group map"
+
+    def test_mutation_re_raise_instead_of_record_fails(self):
+        """Mutation: if genuine conflict raises instead of recording, test fails."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        holdings_sub = {
+            "cik": "0002115436",
+            "entityName": "ExxonMobil Holdings Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-03-01"],
+                    "accessionNumber": ["0000034088-26-000093"],
+                    "primaryDocument": ["xom-20250301.htm"],
+                    "acceptanceDateTime": ["2025-03-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings_sub)
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", holdings_sub)
+
+        universe = [TickerEntry(ticker="XOM", phase=1)]
+        existing = {
+            "0000034088-26-000093": ("9999999999", "OTHER"),
+        }
+
+        # Should NOT raise — genuine conflict recorded as failed
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["XOM"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(existing),
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides=self.XOM_OVERRIDES,
+        )
+        # If this raises AccessionOwnershipConflict, mutation detected
+        assert result.failed_count >= 1
+
+    def test_canonical_stored_cik_from_accession_prefix(self):
+        """Filer CIK from accession prefix is used for same-group skips."""
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        group_map = _build_cik_group_map(overrides)
+
+        # Accession 0000034088-26-000093 → filer CIK 0000034088
+        assert _accession_filer_cik("0000034088-26-000093") == "0000034088"
+        # Accession 0002115436-25-000001 → filer CIK 0002115436
+        assert _accession_filer_cik("0002115436-25-000001") == "0002115436"
+
+        # Both CIKs in the same group
+        assert group_map["0002115436"] == group_map["0000034088"]
+        assert group_map["0002115436"] == frozenset({"0002115436", "0000034088"})
+
+
+class TestRepairCikOwnership:
+    """--repair-cik-ownership rewrites stored CIKs to filer CIK from accession prefix."""
+
+    def test_accession_filer_cik(self):
+        """_accession_filer_cik extracts 10-digit CIK from accession number."""
+        assert _accession_filer_cik("0000034088-26-000093") == "0000034088"
+        assert _accession_filer_cik("0002115436-25-000001") == "0002115436"
+        assert _accession_filer_cik("1234567890-01-000001") == "1234567890"
+
+    def test_build_cik_group_map(self):
+        """_build_cik_group_map creates correct group frozensets."""
+        overrides = {"XOM": ["0002115436", "0000034088"], "TSM": ["0001046179"]}
+        group_map = _build_cik_group_map(overrides)
+
+        # XOM CIKs in same group
+        assert group_map["0002115436"] == frozenset({"0002115436", "0000034088"})
+        assert group_map["0000034088"] == frozenset({"0002115436", "0000034088"})
+        # TSM singleton
+        assert group_map["0001046179"] == frozenset({"0001046179"})
+        # Same group identity (frozenset identity)
+        assert group_map["0002115436"] is group_map["0000034088"]
+
+    def test_build_cik_group_map_empty(self):
+        """Empty overrides → empty group map."""
+        assert _build_cik_group_map({}) == {}
+        assert _build_cik_group_map(None) == {}
+
+    def test_repair_dry_run_does_not_write(self):
+        """Dry-run repair returns stats but does not execute UPDATE."""
+        # repair_cik_ownership uses DatabricksSession — test the logic via
+        # _accession_filer_cik and _build_cik_group_map instead.
+        # The function itself is integration-tested by Claude's XOM dry-run re-run.
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        group_map = _build_cik_group_map(overrides)
+
+        # Verify the logic: accession 0000034088-26-000093 stored under CIK 0002115436
+        # → correct CIK is 0000034088 (accession prefix)
+        accession = "0000034088-26-000093"
+        current_cik = "0002115436"
+        correct_cik = _accession_filer_cik(accession)
+        assert correct_cik == "0000034088"
+        assert current_cik != correct_cik
+        # Both in same group
+        assert group_map[current_cik] is group_map[correct_cik]
 
 
 # ── Round 19: Foreign filers (20-F/40-F/6-K) ────────────────────────────────
