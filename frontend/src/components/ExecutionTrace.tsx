@@ -38,11 +38,13 @@ function deriveSteps(toolCalls: ToolCall[], available: boolean): TraceStep[] {
         ? 'failed'
         : 'complete';
 
+  // The response stage reflects whether the agent delivered an answer, not whether every tool succeeded:
+  // a failed note write after a successful search still yields an answer (the tool stage shows the failure).
   const responseStatus: TraceStep['status'] = !allDone
     ? 'pending'
-    : anyFailed
-      ? 'failed'
-      : 'complete';
+    : available
+      ? 'complete'
+      : 'failed';
 
   return [
     { stage: 'retrieval', label: 'Retrieval', status: retrievalStatus },
