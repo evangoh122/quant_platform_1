@@ -1131,7 +1131,9 @@ class TestProcessFiling:
 class TestCikCache:
     def test_cache_hit(self, tmp_path):
         cache_file = tmp_path / "tickers.json"
-        cache_file.write_text(json.dumps({"0": {"cik_str": 1, "ticker": "TEST", "title": "Test"}}))
+        # Create a cache with 1000 entries (valid minimum)
+        payload = {str(i): {"cik_str": i, "ticker": f"TEST{i}", "title": f"Test {i}"} for i in range(1000)}
+        cache_file.write_text(json.dumps(payload))
         meta_file = tmp_path / "tickers.json.meta"
         meta_file.write_text(json.dumps({"fetched_ts": time.time()}))
 
@@ -1142,10 +1144,13 @@ class TestCikCache:
 
         result = load_company_tickers(client, cache_path=str(cache_file), cache_ttl=3600)
         assert "0" in result
+        assert len(result) == 1000
 
     def test_stale_cache_fallback(self, tmp_path):
         cache_file = tmp_path / "tickers.json"
-        cache_file.write_text(json.dumps({"0": {"cik_str": 1, "ticker": "TEST", "title": "Test"}}))
+        # Create a cache with 1000 entries (valid minimum)
+        payload = {str(i): {"cik_str": i, "ticker": f"TEST{i}", "title": f"Test {i}"} for i in range(1000)}
+        cache_file.write_text(json.dumps(payload))
         meta_file = tmp_path / "tickers.json.meta"
         meta_file.write_text(json.dumps({"fetched_ts": time.time() - 7200}))  # 2 hours old
 

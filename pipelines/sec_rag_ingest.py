@@ -1219,16 +1219,18 @@ def load_company_tickers(
     cache_ttl: int = DEFAULT_TICKER_CACHE_TTL,
     force_refresh: bool = False,
     dry_run: bool = False,
+    is_fallback: bool = False,
 ) -> Dict[str, Any]:
     """Load SEC company_tickers.json with optional caching.
 
     Returns the parsed JSON payload. Uses cache sidecar for TTL.
     When dry_run=True, never writes to the persistent cache.
+    is_fallback → apply minimum entry count check (for production fallback path)
     """
     url = "https://www.sec.gov/files/company_tickers.json"
 
     if cache_path and not force_refresh:
-        cached = _try_load_cache(cache_path, cache_ttl)
+        cached = _try_load_cache(cache_path, cache_ttl, is_fallback=is_fallback)
         if cached is not None:
             return cached
 
@@ -1239,7 +1241,7 @@ def load_company_tickers(
         return payload
     except SecClientError as e:
         if cache_path:
-            cached = _try_load_cache(cache_path, ttl=0)
+            cached = _try_load_cache(cache_path, ttl=0, is_fallback=is_fallback)
             if cached is not None:
                 age_str = _cache_age_str(cache_path)
                 logger.warning("Using stale cache (age=%s) after fetch failure: %s", age_str, e)
@@ -1250,11 +1252,13 @@ def load_company_tickers(
 def _try_load_cache(
     cache_path: str,
     ttl: int,
+    is_fallback: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Try to load cached payload if valid.
 
     ttl > 0  → accept cache younger than ttl seconds
     ttl == 0 → accept cache regardless of age (stale fallback)
+    is_fallback → apply minimum entry count check (for production fallback path)
     """
     try:
         path = Path(cache_path)
@@ -1272,6 +1276,14 @@ def _try_load_cache(
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return None
+        
+        # For fallback caches, treat caches with fewer than 1,000 entries as invalid
+        # (likely test pollution or incomplete data; real file has ~10,400)
+        if is_fallback:
+            MIN_VALID_CACHE_ENTRIES = 1000
+            if len(data) < MIN_VALID_CACHE_ENTRIES:
+                return None
+        
         return data
     except Exception:
         return None

@@ -2115,7 +2115,7 @@ class TestCachePathFallback:
         # Also need to monkeypatch os.makedirs for the fallback path
         captured_cache_paths = []
 
-        def mock_load_company_tickers(client, cache_path, dry_run):
+        def mock_load_company_tickers(client, cache_path, dry_run, **kwargs):
             captured_cache_paths.append(cache_path)
             return {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple"}}
 
@@ -2147,3 +2147,110 @@ class TestCachePathFallback:
         assert len(captured_cache_paths) == 1
         assert "/Volumes" not in captured_cache_paths[0]
         assert tempfile.gettempdir() in captured_cache_paths[0]
+
+
+class TestEnsureTableIdempotent:
+    """Test that ensure_table checks column existence before ALTER TABLE."""
+
+    def test_ensure_table_skips_alter_when_http_status_exists(self):
+        """When http_status column already exists, no ALTER TABLE is issued."""
+        from unittest.mock import MagicMock, call
+
+        mock_spark = MagicMock()
+        # Simulate table already has http_status column
+        mock_spark.table.return_value.columns = [
+            "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
+            "payload_hash", "payload_bytes", "fact_count", "http_status",
+            "started_at", "completed_at", "error_category", "error_message",
+            "logged_at",
+        ]
+
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
+        writer.ensure_table("cat", "sch")
+
+        # CREATE TABLE should be called
+        mock_spark.sql.assert_any_call(mock_spark.sql.call_args_list[0][0][0])
+
+        # ALTER TABLE should NOT be called (http_status already in columns)
+        alter_calls = [c for c in mock_spark.sql.call_args_list if "ALTER TABLE" in str(c)]
+        assert len(alter_calls) == 0, f"ALTER TABLE should not be called when column exists: {alter_calls}"
+
+    def test_ensure_table_runs_alter_when_http_status_missing(self):
+        """When http_status column is missing, exactly one ALTER TABLE is issued."""
+        from unittest.mock import MagicMock, call
+
+        mock_spark = MagicMock()
+        # Simulate table missing http_status column
+        mock_spark.table.return_value.columns = [
+            "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
+            "payload_hash", "payload_bytes", "fact_count",
+            "started_at", "completed_at", "error_category", "error_message",
+            "logged_at",
+        ]
+
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
+        writer.ensure_table("cat", "sch")
+
+        # ALTER TABLE should be called exactly once
+        alter_calls = [c for c in mock_spark.sql.call_args_list if "ALTER TABLE" in str(c)]
+        assert len(alter_calls) == 1, f"ALTER TABLE should be called once when column missing: {alter_calls}"
+        assert "http_status INT" in str(alter_calls[0])
+
+
+class TestCacheMinEntries:
+    """Test that caches with fewer than 1,000 entries are treated as invalid."""
+
+    def test_cache_with_few_entries_is_rejected(self, tmp_path):
+        """Cache with <1000 entries should be treated as invalid (re-fetch) when is_fallback=True."""
+        from pipelines.sec_rag_ingest import _try_load_cache
+
+        cache_file = tmp_path / "company_tickers.json"
+        # Create a cache with only 1 entry (test pollution scenario)
+        cache_file.write_text(json.dumps({"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}))
+
+        result = _try_load_cache(str(cache_file), ttl=3600, is_fallback=True)
+        assert result is None, "Cache with <1000 entries should be rejected when is_fallback=True"
+
+    def test_cache_with_valid_entry_count_is_accepted(self, tmp_path):
+        """Cache with >=1000 entries should be accepted when is_fallback=True."""
+        from pipelines.sec_rag_ingest import _try_load_cache
+        import time
+
+        cache_file = tmp_path / "company_tickers.json"
+        sidecar_file = tmp_path / "company_tickers.json.meta"
+
+        # Create a cache with 1000 entries (valid)
+        payload = {str(i): {"cik_str": i, "ticker": f"T{i}", "title": f"Company {i}"} for i in range(1000)}
+        cache_file.write_text(json.dumps(payload))
+        sidecar_file.write_text(json.dumps({"fetched_ts": time.time()}))
+
+        result = _try_load_cache(str(cache_file), ttl=3600, is_fallback=True)
+        assert result is not None, "Cache with >=1000 entries should be accepted"
+        assert len(result) == 1000
+
+    def test_stale_cache_with_few_entries_is_rejected(self, tmp_path):
+        """Even stale fallback cache with <1000 entries should be rejected."""
+        from pipelines.sec_rag_ingest import _try_load_cache
+
+        cache_file = tmp_path / "company_tickers.json"
+        # Create a cache with only 1 entry
+        cache_file.write_text(json.dumps({"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}))
+
+        # ttl=0 means accept regardless of age (stale fallback)
+        result = _try_load_cache(str(cache_file), ttl=0, is_fallback=True)
+        assert result is None, "Stale cache with <1000 entries should also be rejected"
+
+    def test_non_fallback_cache_with_few_entries_is_accepted(self, tmp_path):
+        """Cache with <1000 entries should be accepted when is_fallback=False (default)."""
+        from pipelines.sec_rag_ingest import _try_load_cache
+        import time
+
+        cache_file = tmp_path / "company_tickers.json"
+        sidecar_file = tmp_path / "company_tickers.json.meta"
+
+        # Create a cache with only 1 entry
+        cache_file.write_text(json.dumps({"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}))
+        sidecar_file.write_text(json.dumps({"fetched_ts": time.time()}))
+
+        result = _try_load_cache(str(cache_file), ttl=3600, is_fallback=False)
+        assert result is not None, "Cache with <1000 entries should be accepted when is_fallback=False"

@@ -507,6 +507,7 @@ def run_ingest_companyfacts(
     else:
         raise ValueError("Either tickers or universe_reader must be provided")
 
+    is_fallback = False
     if cache_path is None:
         cache_path = os.environ.get(
             "SEC_COMPANY_TICKERS_CACHE",
@@ -522,9 +523,10 @@ def run_ingest_companyfacts(
                 cache_path, fallback,
             )
             cache_path = fallback
+            is_fallback = True
 
     tickers_payload = load_company_tickers(
-        client, cache_path=cache_path, dry_run=dry_run,
+        client, cache_path=cache_path, dry_run=dry_run, is_fallback=is_fallback,
     )
 
     if cik_overrides is None:
@@ -800,10 +802,13 @@ class SparkCompanyFactsManifestWriter:
             ) USING DELTA
         """)
         # Idempotent: add http_status if the table pre-existed without it
+        # Check columns first to avoid [FIELD_ALREADY_EXISTS] error logging
         try:
-            spark.sql(f"ALTER TABLE {catalog}.{schema}.sec_companyfacts_ingest_log ADD COLUMNS (http_status INT)")
+            columns = spark.table(f"{catalog}.{schema}.sec_companyfacts_ingest_log").columns
+            if "http_status" not in columns:
+                spark.sql(f"ALTER TABLE {catalog}.{schema}.sec_companyfacts_ingest_log ADD COLUMNS (http_status INT)")
         except Exception:
-            pass  # column already exists
+            pass  # table may not exist yet or other non-critical error
 
     def write_manifest(
         self,
