@@ -20,8 +20,8 @@ Train/test split (purged):
 
 Refit for scoring:
   The final model is fitted on labelled rows whose label_ts <= the earliest
-  scoring snapshot time (refit_rows).  The latest snapshot itself is never
-  labelled (it has no forward data).
+  scoring snapshot time (refit_rows).  Scoring never uses a snapshot's own label;
+  the latest snapshot is usually unlabelled, but may be labelled if a later close exists.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -69,6 +69,7 @@ closes["trade_date"] = pd.to_datetime(closes["trade_date"]).dt.date
 df = daily_close_labels(df, closes)
 print("rows", len(df), "symbols", df.symbol.nunique(), df.prediction_ts.min(), "->", df.prediction_ts.max())
 lab = df[df.label.notna()].copy()
+print("rows labelled", len(lab), "| label UP share", round(float(lab.label.mean()), 3))
 tr, te = purged_split(lab)
 Xtr = prepare_features(tr, FEATS).fillna(0.0); Xte = prepare_features(te, FEATS).fillna(0.0)
 m = make_baseline(); m.fit(Xtr, tr.label.astype(int))

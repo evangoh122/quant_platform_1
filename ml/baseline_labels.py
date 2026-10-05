@@ -56,7 +56,7 @@ def forward_labels(
     """
     out = df.copy()
     out["label"] = float("nan")
-    out["label_ts"] = pd.NaT
+    out["label_ts"] = pd.Series(pd.NaT, index=out.index, dtype=out["prediction_ts"].dtype)
 
     # Sort by [symbol, prediction_ts] so shift(-1) gives the true next snapshot.
     sort_keys = ["symbol", "prediction_ts"]
@@ -118,7 +118,7 @@ def daily_close_labels(
     """
     out = features.copy()
     out["label"] = float("nan")
-    out["label_ts"] = pd.NaT
+    out["label_ts"] = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, UTC]")
 
     if closes.empty:
         return out
