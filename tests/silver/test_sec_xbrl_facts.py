@@ -34,21 +34,54 @@ _SQL_PATH = Path(__file__).resolve().parents[2] / "silver" / "09_silver_sec_xbrl
 _ASOF_SQL_PATH = Path(__file__).resolve().parents[2] / "silver" / "09_silver_sec_xbrl_facts_asof.sql"
 
 
-def _extract_cte(sql_text: str, cte_name: str) -> str:
-    """Extract a CTE by name from the SQL."""
-    # For MERGE-based SQL, we need to extract the USING subquery
-    pattern = rf"(WITH\s+{cte_name}\s+AS\s*\(.*?\))"
-    m = re.search(pattern, sql_text, re.DOTALL | re.IGNORECASE)
-    if m:
-        return m.group(1)
-    raise ValueError(f"Could not find CTE '{cte_name}' in SQL file")
+def _extract_merge_using(sql_text: str) -> str:
+    """Extract the full CTE chain + SELECT from a MERGE INTO … USING ( … ) block.
+
+    Production silver SQL uses MERGE INTO tgt USING (WITH … AS (…) SELECT …) AS src.
+    DuckDB doesn't support MERGE, so we extract the inner SELECT for use as an
+    INSERT source.
+    """
+    using_match = re.search(r'\bUSING\s*\(', sql_text, re.IGNORECASE)
+    if not using_match:
+        raise ValueError("Could not find USING clause in MERGE SQL")
+
+    # Start after the USING( opening paren; depth starts at 1
+    start = using_match.end()
+    depth = 1
+    end = -1
+    for i, ch in enumerate(sql_text[start:], start=start):
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:
+        raise ValueError("Could not find balanced parens for USING block")
+
+    inner = sql_text[start:end].strip()
+    with_match = re.search(r'\bWITH\b', inner, re.IGNORECASE)
+    if not with_match:
+        raise ValueError("Could not find WITH CTE inside USING clause")
+
+    return inner[with_match.start():]
 
 
 def _shim_for_duckdb(sql: str) -> str:
-    """Translate Databricks-only syntax to DuckDB-compatible SQL."""
+    """Translate Databricks/Spark-only syntax to DuckDB-compatible SQL.
+
+    Known translations:
+    - {catalog}.{schema}. → stripped (bare table names for DuckDB test tables)
+    - bootcamp_students.evangoh_capstone. → stripped
+    - current_timestamp() → current_timestamp (no parens in DuckDB)
+    - :as_of → ? (DuckDB positional parameter)
+    """
     result = sql
-    # Strip schema prefix
+    result = result.replace("{catalog}.{schema}.", "")
     result = result.replace("bootcamp_students.evangoh_capstone.", "")
+    result = result.replace("current_timestamp()", "current_timestamp")
+    result = result.replace(":as_of", "?")
     return result
 
 
@@ -135,188 +168,94 @@ def _setup_duckdb(conn: duckdb.DuckDBPyConnection) -> None:
 # SQL extraction helpers
 # ---------------------------------------------------------------------------
 
-def _get_silver_merge_sql() -> str:
-    """Extract the MERGE SQL from the silver file and adapt for DuckDB."""
+def _get_production_sql() -> str:
+    """Extract the production CTE chain from silver/09_*.sql and adapt for DuckDB."""
     sql_text = _SQL_PATH.read_text(encoding="utf-8")
-    # DuckDB doesn't support MERGE, so we'll implement the logic directly
-    # We need to extract the CTEs and build INSERT/SELECT logic
+    return _shim_for_duckdb(_extract_merge_using(sql_text))
+
+
+def _run_silver_transform(conn: duckdb.DuckDBPyConnection, sql: str = None) -> None:
+    """Run the silver transform in DuckDB using PRODUCTION SQL.
+
+    Reads silver/09_silver_sec_xbrl_facts.sql, extracts the CTE chain from the
+    MERGE USING clause, translates Spark-only syntax, and executes as INSERT INTO
+    silver_sec_xbrl_facts SELECT … (DuckDB doesn't support MERGE).
+
+    Args:
+        conn: DuckDB connection with bronze tables populated.
+        sql: Optional override SQL. Defaults to production SQL from file.
+    """
+    if sql is None:
+        sql = _get_production_sql()
+    conn.execute("DELETE FROM silver_sec_xbrl_facts")
+    conn.execute(f"INSERT INTO silver_sec_xbrl_facts {sql}")
+
+
+def _get_asof_sql() -> str:
+    """Extract the production as-of SQL from silver/09_silver_sec_xbrl_facts_asof.sql."""
+    sql_text = _ASOF_SQL_PATH.read_text(encoding="utf-8")
+    # The asof file is a plain SELECT; strip leading comments and use directly
     return _shim_for_duckdb(sql_text)
 
 
-def _run_silver_transform(conn: duckdb.DuckDBPyConnection) -> None:
-    """Run the silver transform logic in DuckDB.
-
-    Since DuckDB doesn't support MERGE, we implement the equivalent logic:
-    1. Extract deduped + normalized rows from bronze
-    2. INSERT OR REPLACE into silver (simulating MERGE)
-    """
-    # First, clear existing silver data to simulate MERGE behavior
-    conn.execute("DELETE FROM silver_sec_xbrl_facts")
-
-    # Run the equivalent of the MERGE USING subquery
-    conn.execute("""
-        INSERT INTO silver_sec_xbrl_facts
-        WITH filings_accepted AS (
-            SELECT DISTINCT
-                accession_number,
-                accepted_ts
-            FROM bronze_sec_filings_v2
-            WHERE accession_number IS NOT NULL
-              AND accepted_ts IS NOT NULL
-        ),
-        deduped_bronze AS (
-            SELECT
-                b.cik,
-                b.entity_name,
-                b.ticker,
-                b.taxonomy,
-                b.concept,
-                b.label,
-                b.description,
-                b.unit,
-                b.value_raw,
-                b.value_decimal,
-                b.period_start,
-                b.period_end,
-                b.instant,
-                b.fiscal_year,
-                b.fiscal_period,
-                b.form_type,
-                b.accession_number,
-                b.filed_date,
-                b.frame,
-                b.payload_hash,
-                b.source_updated_at,
-                b.ingested_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY
-                        b.cik,
-                        b.taxonomy,
-                        b.concept,
-                        b.unit,
-                        COALESCE(b.period_start, ''),
-                        COALESCE(b.period_end, ''),
-                        COALESCE(b.instant, ''),
-                        COALESCE(CAST(b.fiscal_year AS VARCHAR), ''),
-                        COALESCE(b.fiscal_period, ''),
-                        COALESCE(b.form_type, ''),
-                        b.accession_number,
-                        COALESCE(b.frame, '')
-                    ORDER BY b.ingested_at DESC
-                ) AS rn,
-                MIN(b.ingested_at) OVER (
-                    PARTITION BY
-                        b.cik,
-                        b.taxonomy,
-                        b.concept,
-                        b.unit,
-                        COALESCE(b.period_start, ''),
-                        COALESCE(b.period_end, ''),
-                        COALESCE(b.instant, ''),
-                        COALESCE(CAST(b.fiscal_year AS VARCHAR), ''),
-                        COALESCE(b.fiscal_period, ''),
-                        COALESCE(b.form_type, ''),
-                        b.accession_number,
-                        COALESCE(b.frame, '')
-                ) AS first_observed_at,
-                MAX(b.ingested_at) OVER (
-                    PARTITION BY
-                        b.cik,
-                        b.taxonomy,
-                        b.concept,
-                        b.unit,
-                        COALESCE(b.period_start, ''),
-                        COALESCE(b.period_end, ''),
-                        COALESCE(b.instant, ''),
-                        COALESCE(CAST(b.fiscal_year AS VARCHAR), ''),
-                        COALESCE(b.fiscal_period, ''),
-                        COALESCE(b.form_type, ''),
-                        b.accession_number,
-                        COALESCE(b.frame, '')
-                ) AS last_observed_at
-            FROM bronze_sec_xbrl_facts b
-        ),
-        normalized AS (
-            SELECT
-                TRIM(d.cik)                                        AS cik,
-                TRIM(d.entity_name)                                AS entity_name,
-                UPPER(TRIM(d.ticker))                              AS ticker,
-                UPPER(TRIM(d.taxonomy))                            AS taxonomy,
-                UPPER(TRIM(d.concept))                             AS concept,
-                TRIM(d.label)                                      AS label,
-                TRIM(d.description)                                AS description,
-                UPPER(TRIM(d.unit))                                AS unit,
-                d.value_raw                                        AS value_raw,
-                d.value_decimal                                    AS value_decimal,
-                d.period_start                                     AS period_start,
-                d.period_end                                       AS period_end,
-                d.instant                                          AS instant,
-                d.fiscal_year                                      AS fiscal_year,
-                UPPER(TRIM(d.fiscal_period))                       AS fiscal_period,
-                UPPER(TRIM(d.form_type))                           AS form_type,
-                TRIM(d.accession_number)                           AS accession_number,
-                d.filed_date                                       AS filed_date,
-                d.frame                                            AS frame,
-                d.payload_hash                                     AS payload_hash,
-                d.source_updated_at                                AS source_updated_at,
-                d.first_observed_at                                AS first_observed_at,
-                d.last_observed_at                                 AS last_observed_at,
-                f.accepted_ts                                      AS information_available_ts,
-                CASE
-                    WHEN f.accepted_ts IS NULL THEN 'unresolved_accession'
-                    ELSE 'ok'
-                END                                                AS quality_status,
-                current_timestamp                                  AS processed_ts
-            FROM deduped_bronze d
-            LEFT JOIN filings_accepted f
-              ON d.accession_number = f.accession_number
-            WHERE d.rn = 1
-        )
-        SELECT * FROM normalized
-    """)
-
-
 def _run_asof_query(conn: duckdb.DuckDBPyConnection, as_of: str) -> list:
-    """Run the as-of PIT query against silver_sec_xbrl_facts."""
-    results = conn.execute("""
-        SELECT
-            f.cik,
-            f.ticker,
-            f.concept,
-            f.unit,
-            f.value_decimal,
-            f.fiscal_year,
-            f.fiscal_period,
-            f.accession_number,
-            f.information_available_ts,
-            f.quality_status
-        FROM (
-            SELECT
-                *,
-                ROW_NUMBER() OVER (
-                    PARTITION BY
-                        cik,
-                        taxonomy,
-                        concept,
-                        unit,
-                        COALESCE(period_start, ''),
-                        COALESCE(period_end, ''),
-                        COALESCE(instant, ''),
-                        COALESCE(CAST(fiscal_year AS VARCHAR), ''),
-                        COALESCE(fiscal_period, '')
-                    ORDER BY
-                        information_available_ts DESC,
-                        filed_date DESC,
-                        accession_number DESC
-                ) AS rn
-            FROM silver_sec_xbrl_facts
-            WHERE information_available_ts <= ?
-              AND quality_status = 'ok'
-        ) f
-        WHERE f.rn = 1
-        ORDER BY f.concept, f.accession_number
-    """, [as_of]).fetchall()
-    return results
+    """Run the production as-of query from silver/09_silver_sec_xbrl_facts_asof.sql."""
+    sql = _get_asof_sql()
+    return conn.execute(sql, [as_of]).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Mutation helpers — each returns production SQL with ONE deliberate defect
+# ---------------------------------------------------------------------------
+
+def _mutate_filed_date_instead_of_accepted_ts() -> str:
+    """Mutation 1: use d.filed_date instead of f.accepted_ts for information_available_ts."""
+    sql = _get_production_sql()
+    mutated = sql.replace(
+        "f.accepted_ts                                      AS information_available_ts",
+        "CAST(d.filed_date AS TIMESTAMP)                    AS information_available_ts"
+    )
+    mutated = mutated.replace(
+        "CASE\n        WHEN f.accepted_ts IS NULL THEN 'unresolved_accession'\n        ELSE 'ok'\n      END                                                AS quality_status",
+        "'ok'                                               AS quality_status"
+    )
+    return mutated
+
+
+def _mutate_drop_accession_from_key() -> str:
+    """Mutation 2: remove accession_number from ROW_NUMBER PARTITION BY in deduped_bronze."""
+    sql = _get_production_sql()
+    mutated = sql.replace(
+        "COALESCE(b.form_type, ''),\n          b.accession_number,\n          COALESCE(b.frame, '')\n        ORDER BY b.ingested_at DESC",
+        "COALESCE(b.form_type, ''),\n          COALESCE(b.frame, '')\n        ORDER BY b.ingested_at DESC"
+    )
+    mutated = mutated.replace(
+        "COALESCE(b.form_type, ''),\n          b.accession_number,\n          COALESCE(b.frame, '')\n      ) AS first_observed_at",
+        "COALESCE(b.form_type, ''),\n          COALESCE(b.frame, '')\n      ) AS first_observed_at"
+    )
+    mutated = mutated.replace(
+        "COALESCE(b.form_type, ''),\n          b.accession_number,\n          COALESCE(b.frame, '')\n      ) AS last_observed_at",
+        "COALESCE(b.form_type, ''),\n          COALESCE(b.frame, '')\n      ) AS last_observed_at"
+    )
+    return mutated
+
+
+def _mutate_asof_oldest_first() -> str:
+    """Mutation 3: reverse as-of sort to ASC (oldest first instead of newest first)."""
+    sql = _get_asof_sql()
+    return sql.replace(
+        "information_available_ts DESC,\n        filed_date DESC,\n        accession_number DESC",
+        "information_available_ts ASC,\n        filed_date ASC,\n        accession_number ASC"
+    )
+
+
+def _mutate_publish_unresolved() -> str:
+    """Mutation 4: change LEFT JOIN to INNER JOIN so unresolved accessions are excluded from silver."""
+    sql = _get_production_sql()
+    return sql.replace(
+        "LEFT JOIN filings_accepted f",
+        "INNER JOIN filings_accepted f"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +487,7 @@ class TestInformationAvailableTs:
 
         # Verify it's excluded from PIT query
         as_of_results = _run_asof_query(duckdb_conn, '2025-12-31 23:59:59')
-        unresolved = [r for r in as_of_results if r[7] == '9999-99']
+        unresolved = [r for r in as_of_results if r[16] == '9999-99']
         assert len(unresolved) == 0, \
             "Unresolved accession should not appear in PIT query results"
 
@@ -601,13 +540,13 @@ class TestAsOfAmendment:
 
         # Query as-of before amendment (Jan 20)
         results = _run_asof_query(duckdb_conn, '2025-01-20 23:59:59')
-        eps_results = [r for r in results if r[2] == 'EARNINGSPERSHAREDILUTED']
+        eps_results = [r for r in results if r[4] == 'EARNINGSPERSHAREDILUTED']
 
         assert len(eps_results) == 1, f"Expected 1 EPS result, got {len(eps_results)}"
-        assert eps_results[0][4] == 3.25, \
-            f"As-of before amendment should return original EPS 3.25, got {eps_results[0][4]}"
-        assert eps_results[0][7] == '0003-01', \
-            f"As-of before amendment should return original accession, got {eps_results[0][7]}"
+        assert eps_results[0][9] == 3.25, \
+            f"As-of before amendment should return original EPS 3.25, got {eps_results[0][9]}"
+        assert eps_results[0][16] == '0003-01', \
+            f"As-of before amendment should return original accession, got {eps_results[0][16]}"
 
     def test_asof_after_amendment_returns_amended(self, duckdb_conn):
         """As-of query after acceptance returns the amended/restated value."""
@@ -651,13 +590,13 @@ class TestAsOfAmendment:
 
         # Query as-of after amendment (Mar 1)
         results = _run_asof_query(duckdb_conn, '2025-03-01 23:59:59')
-        eps_results = [r for r in results if r[2] == 'EARNINGSPERSHAREDILUTED']
+        eps_results = [r for r in results if r[4] == 'EARNINGSPERSHAREDILUTED']
 
         assert len(eps_results) == 1, f"Expected 1 EPS result, got {len(eps_results)}"
-        assert eps_results[0][4] == 3.30, \
-            f"As-of after amendment should return amended EPS 3.30, got {eps_results[0][4]}"
-        assert eps_results[0][7] == '0003-02', \
-            f"As-of after amendment should return amended accession, got {eps_results[0][7]}"
+        assert eps_results[0][9] == 3.30, \
+            f"As-of after amendment should return amended EPS 3.30, got {eps_results[0][9]}"
+        assert eps_results[0][16] == '0003-02', \
+            f"As-of after amendment should return amended accession, got {eps_results[0][16]}"
 
 
 # ---------------------------------------------------------------------------
@@ -667,13 +606,12 @@ class TestAsOfAmendment:
 class TestNamedMutations:
 
     def test_mutation_acceptance_time_replaced_with_filed_date(self, duckdb_conn):
-        """Mutation: replace acceptance time with filed_date.
+        """Mutation: replace acceptance time with filed_date in PRODUCTION SQL.
         This would cause PIT queries to use wrong availability timestamp."""
         duckdb_conn.execute("""
             INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
             VALUES ('0004-01', TIMESTAMP '2025-03-15 14:00:00', 'AMD', '0000002741', '10-K')
         """)
-
         duckdb_conn.execute("""
             INSERT INTO bronze_sec_xbrl_facts (
                 ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
@@ -686,71 +624,28 @@ class TestNamedMutations:
             )
         """)
 
-        # Run CORRECT transform
+        # Correct: production SQL uses accepted_ts (Mar 15)
         _run_silver_transform(duckdb_conn)
+        correct_ts = duckdb_conn.execute(
+            "SELECT information_available_ts FROM silver_sec_xbrl_facts WHERE accession_number = '0004-01'"
+        ).fetchone()[0]
+        assert correct_ts == datetime.datetime(2025, 3, 15, 14, 0, 0), \
+            f"Correct: information_available_ts should be accepted_ts, got {correct_ts}"
 
-        correct_result = duckdb_conn.execute("""
-            SELECT information_available_ts
-            FROM silver_sec_xbrl_facts
-            WHERE accession_number = '0004-01'
-        """).fetchone()
-
-        # Correct: should use accepted_ts (Mar 15)
-        assert correct_result[0] == datetime.datetime(2025, 3, 15, 14, 0, 0), \
-            f"Correct: information_available_ts should be accepted_ts, got {correct_result[0]}"
-
-        # MUTATED: replace with filed_date
-        duckdb_conn.execute("""
-            DELETE FROM silver_sec_xbrl_facts
-        """)
-        duckdb_conn.execute("""
-            INSERT INTO silver_sec_xbrl_facts
-            SELECT
-                TRIM(b.cik) AS cik,
-                TRIM(b.entity_name) AS entity_name,
-                UPPER(TRIM(b.ticker)) AS ticker,
-                UPPER(TRIM(b.taxonomy)) AS taxonomy,
-                UPPER(TRIM(b.concept)) AS concept,
-                TRIM(b.label) AS label,
-                TRIM(b.description) AS description,
-                UPPER(TRIM(b.unit)) AS unit,
-                b.value_raw,
-                b.value_decimal,
-                b.period_start,
-                b.period_end,
-                b.instant,
-                b.fiscal_year,
-                UPPER(TRIM(b.fiscal_period)) AS fiscal_period,
-                UPPER(TRIM(b.form_type)) AS form_type,
-                TRIM(b.accession_number) AS accession_number,
-                b.filed_date,
-                b.frame,
-                b.payload_hash,
-                b.source_updated_at,
-                b.ingested_at AS first_observed_at,
-                b.ingested_at AS last_observed_at,
-                -- MUTATION: use filed_date instead of accepted_ts
-                CAST(b.filed_date AS TIMESTAMP) AS information_available_ts,
-                'ok' AS quality_status,
-                current_timestamp AS processed_ts
-            FROM bronze_sec_xbrl_facts b
-            WHERE b.concept = 'Revenue'
-        """)
-
-        mutated_result = duckdb_conn.execute("""
-            SELECT information_available_ts
-            FROM silver_sec_xbrl_facts
-            WHERE accession_number = '0004-01'
-        """).fetchone()
+        # Mutated: filed_date instead of accepted_ts
+        mutated_sql = _mutate_filed_date_instead_of_accepted_ts()
+        _run_silver_transform(duckdb_conn, sql=mutated_sql)
+        mutated_ts = duckdb_conn.execute(
+            "SELECT information_available_ts FROM silver_sec_xbrl_facts WHERE accession_number = '0004-01'"
+        ).fetchone()[0]
 
         # Mutated: would use filed_date (Mar 10) instead of accepted_ts (Mar 15)
-        assert mutated_result[0] != correct_result[0], \
-            f"Mutation proof: filed_date ({mutated_result[0]}) differs from accepted_ts ({correct_result[0]})"
+        assert mutated_ts != correct_ts, \
+            f"Mutation proof: filed_date ({mutated_ts}) differs from accepted_ts ({correct_ts})"
 
     def test_mutation_drop_accession_from_key(self, duckdb_conn):
-        """Mutation: drop accession_number from the silver key.
-        This would cause different accessions for same concept/period/form to collide,
-        losing the original filing when an amendment exists."""
+        """Mutation: drop accession_number from the dedup PARTITION BY in PRODUCTION SQL.
+        This would cause different accessions for same concept/period to collide."""
         duckdb_conn.execute("""
             INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
             VALUES ('0005-01', TIMESTAMP '2025-01-15 10:00:00', 'AAPL', '0000320193', '10-K')
@@ -759,9 +654,6 @@ class TestNamedMutations:
             INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
             VALUES ('0005-02', TIMESTAMP '2025-02-20 14:00:00', 'AAPL', '0000320193', '10-K')
         """)
-
-        # Two facts with same concept/period/form but different accessions
-        # (e.g., same period reported in two different filings)
         duckdb_conn.execute("""
             INSERT INTO bronze_sec_xbrl_facts (
                 ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
@@ -776,66 +668,26 @@ class TestNamedMutations:
              2025, 'Q1', '10-K', '0005-02', '2025-02-20')
         """)
 
+        # Correct: production SQL keeps both accessions
         _run_silver_transform(duckdb_conn)
-
-        # Correct: should have 2 rows (different accessions)
-        correct_count = duckdb_conn.execute("""
-            SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE concept = 'REVENUE'
-        """).fetchone()[0]
+        correct_count = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE concept = 'REVENUE'"
+        ).fetchone()[0]
         assert correct_count == 2, f"Correct: should have 2 rows, got {correct_count}"
 
-        # Verify both accessions are present
-        accessions = duckdb_conn.execute("""
-            SELECT accession_number, value_decimal FROM silver_sec_xbrl_facts
-            WHERE concept = 'REVENUE' ORDER BY accession_number
-        """).fetchall()
-        assert accessions[0][0] == '0005-01'
-        assert accessions[1][0] == '0005-02'
+        # Mutated: accession_number removed from PARTITION BY
+        mutated_sql = _mutate_drop_accession_from_key()
+        _run_silver_transform(duckdb_conn, sql=mutated_sql)
+        mutated_count = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE concept = 'REVENUE'"
+        ).fetchone()[0]
 
-        # MUTATION PROOF: Demonstrate that without accession in the key,
-        # the ROW_NUMBER partition would collapse both rows into one.
-        deduped_without_accession = duckdb_conn.execute("""
-            SELECT COUNT(*) FROM (
-                SELECT
-                    ROW_NUMBER() OVER (
-                        PARTITION BY cik, taxonomy, concept, unit,
-                            COALESCE(period_start, ''), COALESCE(period_end, ''),
-                            COALESCE(instant, ''), COALESCE(CAST(fiscal_year AS VARCHAR), ''),
-                            COALESCE(fiscal_period, ''), COALESCE(form_type, ''),
-                            COALESCE(frame, '')
-                        ORDER BY ingested_at DESC
-                    ) AS rn
-                FROM bronze_sec_xbrl_facts
-            ) sub
-            WHERE rn = 1
-        """).fetchone()[0]
-
-        # Without accession in key, only 1 row survives dedup (the latest)
-        assert deduped_without_accession == 1, \
-            f"Mutation proof: without accession in key, dedup collapses to {deduped_without_accession} row(s)"
-
-        # Compare: with accession in key, both rows survive
-        deduped_with_accession = duckdb_conn.execute("""
-            SELECT COUNT(*) FROM (
-                SELECT
-                    ROW_NUMBER() OVER (
-                        PARTITION BY cik, taxonomy, concept, unit,
-                            COALESCE(period_start, ''), COALESCE(period_end, ''),
-                            COALESCE(instant, ''), COALESCE(CAST(fiscal_year AS VARCHAR), ''),
-                            COALESCE(fiscal_period, ''), COALESCE(form_type, ''),
-                            accession_number, COALESCE(frame, '')
-                        ORDER BY ingested_at DESC
-                    ) AS rn
-                FROM bronze_sec_xbrl_facts
-            ) sub
-            WHERE rn = 1
-        """).fetchone()[0]
-
-        assert deduped_with_accession == 2, \
-            f"With accession in key, dedup preserves {deduped_with_accession} rows"
+        # Without accession in key, dedup collapses both rows into one
+        assert mutated_count == 1, \
+            f"Mutation proof: without accession in key, dedup collapses to {mutated_count} row(s)"
 
     def test_mutation_sort_restatements_oldest_first(self, duckdb_conn):
-        """Mutation: sort restatements oldest-first.
+        """Mutation: reverse as-of sort to ASC in PRODUCTION SQL.
         This would cause PIT queries to return old values instead of latest."""
         duckdb_conn.execute("""
             INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
@@ -845,7 +697,6 @@ class TestNamedMutations:
             INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
             VALUES ('0006-02', TIMESTAMP '2025-02-20 14:00:00', 'AAPL', '0000320193', '10-K/A')
         """)
-
         duckdb_conn.execute("""
             INSERT INTO bronze_sec_xbrl_facts (
                 ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
@@ -862,75 +713,24 @@ class TestNamedMutations:
 
         _run_silver_transform(duckdb_conn)
 
-        # Correct: as-of after amendment should return amended value
+        # Correct: as-of after amendment returns amended value (395B)
         correct_results = _run_asof_query(duckdb_conn, '2025-03-01 23:59:59')
-        revenue_results = [r for r in correct_results if r[2] == 'REVENUE']
-        assert revenue_results[0][4] == 395000000000.0, \
-            f"Correct: as-of after amendment should return 395B, got {revenue_results[0][4]}"
+        revenue_results = [r for r in correct_results if r[4] == 'REVENUE']
+        assert revenue_results[0][9] == 395000000000.0, \
+            f"Correct: as-of after amendment should return 395B, got {revenue_results[0][9]}"
 
-        # MUTATION: sort oldest-first (ASC instead of DESC)
-        duckdb_conn.execute("DELETE FROM silver_sec_xbrl_facts")
-        duckdb_conn.execute("""
-            INSERT INTO silver_sec_xbrl_facts
-            SELECT
-                f.cik, f.entity_name, f.ticker, f.taxonomy, f.concept, f.label,
-                f.description, f.unit, f.value_raw, f.value_decimal, f.period_start,
-                f.period_end, f.instant, f.fiscal_year, f.fiscal_period, f.form_type,
-                f.accession_number, f.filed_date, f.frame, f.payload_hash,
-                f.source_updated_at, f.first_observed_at, f.last_observed_at,
-                f.information_available_ts, f.quality_status, f.processed_ts
-            FROM (
-                SELECT s.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY cik, taxonomy, concept, unit,
-                            COALESCE(period_start, ''), COALESCE(period_end, ''),
-                            COALESCE(instant, ''), COALESCE(CAST(fiscal_year AS VARCHAR), ''),
-                            COALESCE(fiscal_period, '')
-                        ORDER BY
-                            information_available_ts ASC,  -- MUTATION: oldest first
-                            filed_date ASC,
-                            accession_number ASC
-                    ) AS rn
-                FROM silver_sec_xbrl_facts s
-                WHERE quality_status = 'ok'
-            ) f
-            WHERE f.rn = 1
-        """)
-
-        # Re-run silver to get both rows back
-        duckdb_conn.execute("DELETE FROM silver_sec_xbrl_facts")
-        _run_silver_transform(duckdb_conn)
-
-        # Now mutate the asof query to sort oldest-first
-        mutated_asof = duckdb_conn.execute("""
-            SELECT f.cik, f.ticker, f.concept, f.unit, f.value_decimal,
-                   f.accession_number, f.information_available_ts
-            FROM (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY cik, taxonomy, concept, unit,
-                            COALESCE(period_start, ''), COALESCE(period_end, ''),
-                            COALESCE(instant, ''), COALESCE(CAST(fiscal_year AS VARCHAR), ''),
-                            COALESCE(fiscal_period, '')
-                        ORDER BY
-                            information_available_ts ASC,  -- MUTATION: oldest first
-                            filed_date ASC,
-                            accession_number ASC
-                    ) AS rn
-                FROM silver_sec_xbrl_facts
-                WHERE information_available_ts <= '2025-03-01 23:59:59'
-                  AND quality_status = 'ok'
-            ) f
-            WHERE f.rn = 1 AND f.concept = 'REVENUE'
-        """).fetchall()
+        # Mutated: as-of query with oldest-first sort
+        mutated_asof_sql = _mutate_asof_oldest_first()
+        mutated_results = duckdb_conn.execute(mutated_asof_sql, ['2025-03-01 23:59:59']).fetchall()
+        mutated_revenue = [r for r in mutated_results if r[4] == 'REVENUE']
 
         # Mutation: oldest-first returns original (394B) instead of amended (395B)
-        assert mutated_asof[0][4] == 394328000000.0, \
-            f"Mutation proof: oldest-first returns original value, got {mutated_asof[0][4]}"
+        assert mutated_revenue[0][9] == 394328000000.0, \
+            f"Mutation proof: oldest-first returns original value, got {mutated_revenue[0][9]}"
 
     def test_mutation_publish_unresolved_accessions(self, duckdb_conn):
-        """Mutation: publish unresolved accessions.
-        This would expose facts with unknown availability to downstream consumers."""
+        """Mutation: change LEFT JOIN to INNER JOIN in PRODUCTION SQL.
+        This would exclude unresolved accessions from silver entirely."""
         # NO filing for this accession
 
         duckdb_conn.execute("""
@@ -945,55 +745,26 @@ class TestNamedMutations:
             )
         """)
 
+        # Correct: production SQL assigns 'unresolved_accession' via LEFT JOIN
         _run_silver_transform(duckdb_conn)
-
-        # Correct: unresolved gets quality_status = 'unresolved_accession'
-        result = duckdb_conn.execute("""
-            SELECT quality_status, information_available_ts FROM silver_sec_xbrl_facts
-            WHERE accession_number = '9999-99'
-        """).fetchone()
+        result = duckdb_conn.execute(
+            "SELECT quality_status, information_available_ts FROM silver_sec_xbrl_facts WHERE accession_number = '9999-99'"
+        ).fetchone()
         assert result[0] == 'unresolved_accession', \
             f"Correct: quality_status should be 'unresolved_accession', got {result[0]}"
         assert result[1] is None, \
             f"Correct: information_available_ts should be NULL for unresolved, got {result[1]}"
 
-        # Verify it's excluded from PIT query (because quality_status != 'ok')
-        pit_results = duckdb_conn.execute("""
-            SELECT COUNT(*) FROM silver_sec_xbrl_facts
-            WHERE accession_number = '9999-99'
-              AND information_available_ts <= '2025-12-31 23:59:59'
-              AND quality_status = 'ok'
-        """).fetchone()[0]
-        assert pit_results == 0, \
-            "Correct: unresolved accession excluded from PIT query"
+        # Mutated: INNER JOIN excludes unresolved rows entirely
+        mutated_sql = _mutate_publish_unresolved()
+        _run_silver_transform(duckdb_conn, sql=mutated_sql)
+        mutated_count = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE accession_number = '9999-99'"
+        ).fetchone()[0]
 
-        # MUTATION: set quality_status = 'ok' for unresolved
-        duckdb_conn.execute("""
-            UPDATE silver_sec_xbrl_facts
-            SET quality_status = 'ok',
-                information_available_ts = TIMESTAMP '2025-01-15 10:00:00'
-            WHERE accession_number = '9999-99'
-        """)
-
-        # Now it would appear in PIT queries if quality_status filter was removed
-        # or if we fabricated an information_available_ts
-        mutated_results = duckdb_conn.execute("""
-            SELECT COUNT(*) FROM silver_sec_xbrl_facts
-            WHERE accession_number = '9999-99'
-              AND quality_status = 'ok'
-        """).fetchone()[0]
-        assert mutated_results == 1, \
-            "Mutation proof: setting quality_status = 'ok' makes unresolved appear publishable"
-
-        # The key insight: without the quality_status = 'ok' filter in the PIT query,
-        # unresolved accessions with fabricated timestamps would leak through
-        leaked = duckdb_conn.execute("""
-            SELECT COUNT(*) FROM silver_sec_xbrl_facts
-            WHERE accession_number = '9999-99'
-              AND information_available_ts <= '2025-12-31 23:59:59'
-        """).fetchone()[0]
-        assert leaked == 1, \
-            "Mutation proof: unresolved with fabricated ts would leak into PIT results"
+        # With INNER JOIN, unresolved facts never enter silver
+        assert mutated_count == 0, \
+            f"Mutation proof: INNER JOIN drops unresolved accession, got {mutated_count} rows"
 
 
 # ---------------------------------------------------------------------------

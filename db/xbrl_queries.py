@@ -4,43 +4,45 @@ db/xbrl_queries.py — XBRL facts query helpers.
 Provides asof_facts() for point-in-time retrieval of silver XBRL facts.
 The PIT filter is mandatory even when as_of is omitted (defaults to now).
 
-Every query uses parameterized :name placeholders through the delta adapter.
+The base SQL is read from silver/09_silver_sec_xbrl_facts_asof.sql — the
+single source of truth for the as-of selection rule.
+
+Every query uses parameterized :name placeholders via spark.sql(args={...}).
 No string interpolation of user-supplied values.
 """
 from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-CATALOG = os.getenv("CATALOG", "bootcamp_students")
-SCHEMA = os.getenv("SCHEMA", "evangoh_capstone")
+_ASOF_SQL_PATH = Path(__file__).resolve().parents[1] / "silver" / "09_silver_sec_xbrl_facts_asof.sql"
 
 
-def _fqn(table: str) -> str:
-    return f"{CATALOG}.{SCHEMA}.{table}"
+def _load_asof_sql() -> str:
+    """Load the production as-of SQL from the silver directory."""
+    return _ASOF_SQL_PATH.read_text(encoding="utf-8").strip()
 
 
 def asof_facts(
+    spark,
     as_of: Optional[datetime] = None,
-    cik: Optional[str] = None,
     ticker: Optional[str] = None,
     concept: Optional[str] = None,
-    taxonomy: Optional[str] = None,
     limit: int = 1000,
-) -> tuple[str, Dict[str, Any]]:
-    """Build a parameterized PIT query for silver_sec_xbrl_facts.
+):
+    """Execute a parameterized PIT query for silver_sec_xbrl_facts.
 
     Args:
+        spark: Spark session.
         as_of: Point-in-time timestamp. Defaults to utcnow().
-        cik: Filter by CIK.
         ticker: Filter by ticker (case-insensitive).
         concept: Filter by concept (case-insensitive).
-        taxonomy: Filter by taxonomy (case-insensitive).
         limit: Row cap (1–5000, default 1000).
 
     Returns:
-        (sql, params) tuple for execution via delta_adapter.
+        Spark DataFrame with the as-of facts.
 
     The query filters:
         - information_available_ts <= as_of
@@ -53,80 +55,24 @@ def asof_facts(
 
     limit = max(1, min(5000, limit))
 
-    sql = f"""
-    SELECT
-        f.cik,
-        f.entity_name,
-        f.ticker,
-        f.taxonomy,
-        f.concept,
-        f.label,
-        f.unit,
-        f.value_decimal,
-        f.period_start,
-        f.period_end,
-        f.instant,
-        f.fiscal_year,
-        f.fiscal_period,
-        f.form_type,
-        f.accession_number,
-        f.filed_date,
-        f.frame,
-        f.information_available_ts,
-        f.quality_status
-    FROM (
-        SELECT
-            *,
-            ROW_NUMBER() OVER (
-                PARTITION BY
-                    cik,
-                    taxonomy,
-                    concept,
-                    unit,
-                    COALESCE(period_start, ''),
-                    COALESCE(period_end, ''),
-                    COALESCE(instant, ''),
-                    COALESCE(CAST(fiscal_year AS STRING), ''),
-                    COALESCE(fiscal_period, '')
-                ORDER BY
-                    information_available_ts DESC,
-                    filed_date DESC,
-                    accession_number DESC
-            ) AS rn
-        FROM {_fqn('silver_sec_xbrl_facts')}
-        WHERE information_available_ts <= :as_of
-          AND quality_status = 'ok'
-    ) f
-    WHERE f.rn = 1
-    """
+    base_sql = _load_asof_sql()
 
-    params: Dict[str, Any] = {"as_of": as_of, "limit": limit}
-
-    filters = []
-    if cik is not None:
-        filters.append("f.cik = :cik")
-        params["cik"] = cik
+    # Build optional filter clauses
+    extra_filters = []
+    args: Dict[str, Any] = {"as_of": as_of}
     if ticker is not None:
-        filters.append("UPPER(f.ticker) = UPPER(:ticker)")
-        params["ticker"] = ticker
+        extra_filters.append("UPPER(f.ticker) = UPPER(:ticker)")
+        args["ticker"] = ticker
     if concept is not None:
-        filters.append("UPPER(f.concept) = UPPER(:concept)")
-        params["concept"] = concept
-    if taxonomy is not None:
-        filters.append("UPPER(f.taxonomy) = UPPER(:taxonomy)")
-        params["taxonomy"] = taxonomy
+        extra_filters.append("UPPER(f.concept) = UPPER(:concept)")
+        args["concept"] = concept
 
-    if filters:
-        # Insert additional WHERE clauses into the outer query
-        where_clause = " AND ".join(filters)
-        sql = f"""
-        SELECT * FROM (
-            {sql}
-        ) _asof_filtered
-        WHERE {where_clause}
-        LIMIT :limit
-        """
+    if extra_filters:
+        where_clause = " AND ".join(extra_filters)
+        sql = f"SELECT * FROM ({base_sql}) _asof_filtered WHERE {where_clause} LIMIT :limit"
     else:
-        sql = f"{sql} LIMIT :limit"
+        sql = f"{base_sql} LIMIT :limit"
 
-    return sql.strip(), params
+    args["limit"] = limit
+
+    return spark.sql(sql, args=args)
