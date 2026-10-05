@@ -141,6 +141,8 @@ class TestAsofFacts:
 
 # ---------------------------------------------------------------------------
 # DuckDB-executable tests — prove the generated SQL actually runs
+# All tests call asof_facts() via CapturingSpark to capture production SQL,
+# then execute that SQL in DuckDB. No test-local query reconstruction.
 # ---------------------------------------------------------------------------
 
 import re
@@ -148,9 +150,6 @@ from pathlib import Path
 
 import duckdb
 import pytest
-
-
-_ASOF_SQL_PATH = Path(__file__).resolve().parents[2] / "silver" / "09_silver_sec_xbrl_facts_asof.sql"
 
 
 def _shim_for_duckdb(sql: str) -> str:
@@ -167,23 +166,21 @@ def _translate_spark_to_duckdb_params(sql: str) -> str:
     return re.sub(r':(\w+)', r'$\1', sql)
 
 
-def _build_asof_facts_sql(ticker=None, concept=None, limit=1000):
-    """Replicate the query-building logic from asof_facts() for testing."""
-    base_sql = _shim_for_duckdb(_ASOF_SQL_PATH.read_text(encoding="utf-8").strip())
+class CapturingSpark:
+    """Records sql() calls from asof_facts() for DuckDB execution."""
 
-    extra_filters = []
-    if ticker is not None:
-        extra_filters.append("UPPER(ticker) = UPPER(:ticker)")
-    if concept is not None:
-        extra_filters.append("UPPER(concept) = UPPER(:concept)")
+    def __init__(self):
+        self.calls = []
 
-    if extra_filters:
-        where_clause = " AND ".join(extra_filters)
-        sql = f"SELECT * FROM ({base_sql}) _asof_filtered WHERE {where_clause} LIMIT :limit"
-    else:
-        sql = f"{base_sql} LIMIT :limit"
+    def sql(self, query, args=None):
+        self.calls.append((query, args or {}))
+        return None
 
-    return _translate_spark_to_duckdb_params(sql)
+
+def _run_in_duckdb(sql, args, conn):
+    """Translate captured production SQL for DuckDB and execute it."""
+    duckdb_sql = _translate_spark_to_duckdb_params(_shim_for_duckdb(sql))
+    return conn.execute(duckdb_sql, args).fetchall()
 
 
 def _setup_silver_table(conn):
@@ -241,18 +238,22 @@ def _setup_silver_table(conn):
 
 
 class TestAsofFactsDuckDB:
-    """Execute the generated SQL in DuckDB to prove it is valid."""
+    """Execute production-generated SQL in DuckDB to prove it is valid.
+
+    Every test calls asof_facts() via CapturingSpark, then runs the captured
+    SQL through DuckDB.  No test-local query reconstruction.
+    """
 
     def test_no_filters(self):
         """asof_facts with no ticker/concept filters returns all rows."""
         conn = duckdb.connect()
         _setup_silver_table(conn)
 
-        sql = _build_asof_facts_sql()
-        results = conn.execute(sql, {"as_of": "2025-12-31 23:59:59", "limit": 1000}).fetchall()
+        spark = CapturingSpark()
+        asof_facts(spark, as_of=datetime.datetime(2025, 12, 31, 23, 59, 59))
+        sql, args = spark.calls[-1]
+        results = _run_in_duckdb(sql, args, conn)
 
-        # 3 unique (cik,taxonomy,concept,unit,period) combos after PIT dedup
-        # (two AAPL/REVENUE rows collapse to 1 via ROW_NUMBER)
         assert len(results) == 3, f"Expected 3 rows, got {len(results)}"
         conn.close()
 
@@ -261,12 +262,11 @@ class TestAsofFactsDuckDB:
         conn = duckdb.connect()
         _setup_silver_table(conn)
 
-        sql = _build_asof_facts_sql(ticker="AAPL")
-        results = conn.execute(sql, {
-            "as_of": "2025-12-31 23:59:59", "limit": 1000, "ticker": "AAPL"
-        }).fetchall()
+        spark = CapturingSpark()
+        asof_facts(spark, as_of=datetime.datetime(2025, 12, 31, 23, 59, 59), ticker="AAPL")
+        sql, args = spark.calls[-1]
+        results = _run_in_duckdb(sql, args, conn)
 
-        # AAPL has Revenue + NetIncome = 2 distinct concepts
         assert len(results) == 2, f"Expected 2 AAPL rows, got {len(results)}"
         tickers = {r[2] for r in results}
         assert tickers == {"AAPL"}, f"Expected only AAPL, got {tickers}"
@@ -277,12 +277,11 @@ class TestAsofFactsDuckDB:
         conn = duckdb.connect()
         _setup_silver_table(conn)
 
-        sql = _build_asof_facts_sql(concept="Revenue")
-        results = conn.execute(sql, {
-            "as_of": "2025-12-31 23:59:59", "limit": 1000, "concept": "Revenue"
-        }).fetchall()
+        spark = CapturingSpark()
+        asof_facts(spark, as_of=datetime.datetime(2025, 12, 31, 23, 59, 59), concept="Revenue")
+        sql, args = spark.calls[-1]
+        results = _run_in_duckdb(sql, args, conn)
 
-        # Revenue for AAPL + MSFT = 2 rows
         assert len(results) == 2, f"Expected 2 Revenue rows, got {len(results)}"
         concepts = {r[4] for r in results}
         assert concepts == {"REVENUE"}, f"Expected only REVENUE, got {concepts}"
@@ -293,33 +292,34 @@ class TestAsofFactsDuckDB:
         conn = duckdb.connect()
         _setup_silver_table(conn)
 
-        sql = _build_asof_facts_sql(ticker="AAPL", concept="Revenue")
-        results = conn.execute(sql, {
-            "as_of": "2025-12-31 23:59:59", "limit": 1000,
-            "ticker": "AAPL", "concept": "Revenue"
-        }).fetchall()
+        spark = CapturingSpark()
+        asof_facts(spark, as_of=datetime.datetime(2025, 12, 31, 23, 59, 59),
+                   ticker="AAPL", concept="Revenue")
+        sql, args = spark.calls[-1]
+        results = _run_in_duckdb(sql, args, conn)
 
         assert len(results) == 1, f"Expected 1 row (AAPL Revenue), got {len(results)}"
         assert results[0][2] == "AAPL"
         assert results[0][4] == "REVENUE"
-        # Latest filing (0001-02 at 2025-01-20) should win
         assert results[0][9] == 395000000000.0, f"Expected 395B, got {results[0][9]}"
         conn.close()
 
     def test_mutation_f_alias_breaks_filters(self):
-        """Mutation: putting f. prefix back on filter columns causes DuckDB error."""
+        """Mutation: putting f. prefix back on filter columns causes DuckDB error.
+
+        Captures the production SQL from asof_facts(), then mutates the WHERE
+        clause to re-introduce the f. alias bug, proving DuckDB rejects it.
+        """
         conn = duckdb.connect()
         _setup_silver_table(conn)
 
-        base_sql = _shim_for_duckdb(_ASOF_SQL_PATH.read_text(encoding="utf-8").strip())
-        # Mutated: use f. prefix (the original bug)
-        broken_sql = _translate_spark_to_duckdb_params(
-            f"SELECT * FROM ({base_sql}) _asof_filtered "
-            f"WHERE UPPER(f.ticker) = UPPER(:ticker) LIMIT :limit"
-        )
+        spark = CapturingSpark()
+        asof_facts(spark, as_of=datetime.datetime(2025, 12, 31, 23, 59, 59), ticker="AAPL")
+        prod_sql, prod_args = spark.calls[-1]
+
+        broken_sql = prod_sql.replace("UPPER(ticker)", "UPPER(f.ticker)")
+        duckdb_sql = _translate_spark_to_duckdb_params(_shim_for_duckdb(broken_sql))
 
         with pytest.raises(duckdb.BinderException, match="f"):
-            conn.execute(broken_sql, {
-                "as_of": "2025-12-31 23:59:59", "limit": 1000, "ticker": "AAPL"
-            }).fetchall()
+            conn.execute(duckdb_sql, prod_args).fetchall()
         conn.close()
