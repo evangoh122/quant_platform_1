@@ -1,0 +1,13 @@
+# pip-audit accepted-risk ignore list
+# Each entry must have a justification comment explaining why the
+# vulnerability is accepted rather than fixed.
+#
+# Format: --ignore-vuln <ID>  (one per line, comments start with #)
+
+# PYSEC-2026-4114 / CVE-2026-49265 — oauthlib PKCE timing side-channel
+# Fix requires oauthlib>=4.0.0, but databricks-sql-connector pins
+# oauthlib ^3.1.0 (<4). Exploitability is limited: timing oracle
+# requires repeated authorization_code interception with controlled
+# network conditions. Accepted as transitive-dependency risk until
+# databricks-sql-connector supports oauthlib 4.x.
+PYSEC-2026-4114
