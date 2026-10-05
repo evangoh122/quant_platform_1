@@ -332,6 +332,14 @@ class AgentRuntime:
             try:
                 raw_dict = self._model_client.parse_json_response(response)
             except ModelError as e:
+                plain = (response.text or "").strip()
+                if e.code == "malformed_json" and plain and "{" not in plain:
+                    # The model answered in plain prose. A final answer executes no tool,
+                    # so accept it as the reply (tool calls still require valid JSON).
+                    raw_dict = {"action": "final", "reply": plain[:4000]}
+                else:
+                    raw_dict = None
+            if raw_dict is None:
                 self._audit_sink.emit(AuditEntry(
                     trace_id=tid, step=step, action="parse_error",
                     tool="", validation_outcome=REASON_MALFORMED,

@@ -223,14 +223,26 @@ class TestHappyPath:
 # ── error cases ──────────────────────────────────────────────────────────────
 class TestMalformedResponse:
     def test_malformed_json(self):
-        """Model returns invalid JSON."""
-        model_responses = ["this is not json"]
+        """Broken JSON (looks like a tool call) is rejected — nothing executes."""
+        model_responses = ['{"action": "retrieve", "tool": "search_sec_filings", "args": {']
 
         runtime, sink = _make_runtime(model_responses)
         result = runtime.run("Hello", user_id="u1", role="viewer")
 
         assert result.available is True
         assert result.error_code == "malformed"
+        assert result.tool_calls == []
+
+    def test_plain_prose_is_final_answer(self):
+        """Plain prose (no JSON at all) is accepted as the final reply; no tool runs."""
+        model_responses = ["NVIDIA describes expanding U.S. export controls on data-center GPUs."]
+
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        assert result.reply.startswith("NVIDIA describes")
+        assert result.tool_calls == []
 
     def test_extra_json_fields(self):
         """Model returns valid JSON with extra fields (rejected by strict schema)."""
