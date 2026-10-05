@@ -527,6 +527,63 @@ This is optional and must not block B1–B8. Add only after B2 is stable and PR
   an unavailable result `ok=true`.
 - **Acceptance:** focused agent tests, `pytest -q tests/agent tests/api/test_agent_chat_llm.py`, and frontend acceptance if A4 cards change.
 
+### B10 — Read-only agent action audit browser
+
+- **Files:** add a typed, read-only route such as `api/routes/audit.py` and its
+  Pydantic/frontend contracts; add `frontend/src/screens/AuditLog.tsx` and
+  focused API/UI tests; update `frontend/src/App.tsx` and Evidence navigation
+  only after A4 and the application-shell handoff are stable. Do not import the
+  Rag_workbench review schema, review queue, DuckDB database, or mutation APIs.
+- **Source:** the existing Lakebase `agent_actions` audit records emitted by
+  `agent/runtime.py` and `agent/tools_write.py`, scoped to the authenticated
+  user unless an explicitly authorized operator role exists. Select an
+  allowlisted summary projection: run/action ID, timestamp, tool, action type,
+  sanitized input/output summary, status, error category and trace/correlation
+  ID. Never return prompts, credentials, raw connector errors, or other users'
+  records. Use cursor pagination, deterministic newest-first ordering and
+  allowlisted status/tool filters; no review or approval action belongs here.
+- **States:** loading, empty, populated, filtered-empty, next-page loading,
+  stale retained after refresh failure, unavailable, malformed/redacted legacy
+  row, and unauthorized.
+- **Tests that fail now:** the route and screen do not exist; tests must prove
+  user scoping, parameterized queries, stable cursor pagination, allowlisted
+  filters, redaction/truncation, safe errors, empty versus unavailable UI,
+  accessible row expansion, and no review/mutation controls at 360 px.
+- **Named mutations:** remove the `user_id` predicate; interpolate a filter;
+  return raw input/output or exception text; sort oldest-first; replace the
+  cursor with an unbounded query; turn unavailable into empty; add an approve
+  button; or query `review_queue.duckdb`.
+- **Acceptance:** frontend acceptance plus focused audit API tests and the
+  existing agent runtime/write audit tests.
+
+### B11 — Legal and analytics-transparency surfaces
+
+- **Files:** add `frontend/src/screens/Privacy.tsx` and `Terms.tsx`, a small
+  shared legal layout/footer, and an analytics notice only if telemetry is
+  actually enabled; add route/navigation links and focused tests. Legal text
+  must be owner/counsel-approved configuration or copy, not copied verbatim
+  from Rag_workbench and not invented by the implementer.
+- **Source:** static approved policy content plus the deployed telemetry and
+  authentication configuration. The notice must describe only collection that
+  can be verified in this repository/deployment and link to the matching
+  policy. It is informational, accessible and non-blocking; it is not an
+  investment-advice acceptance gate.
+- **States:** telemetry disabled (no analytics notice), first visit, dismissed
+  notice, storage unavailable, direct legal-route load, missing/unapproved
+  policy content (route withheld), mobile and print-friendly legal content.
+- **Tests that fail now:** legal routes/layout and telemetry-aware notice do not
+  exist; tests must prove footer links, semantic headings, keyboard dismissal,
+  versioned acknowledgement, safe storage failure, no notice when telemetry is
+  off, no false advertising/privacy claim, and 360 px/print readability.
+- **Named mutations:** show the notice when telemetry is disabled; hard-code a
+  claim contradicted by configuration; make acknowledgement blocking; swallow
+  keyboard focus; reuse a disclaimer key; publish placeholder legal text; or
+  omit policy links from the application shell.
+- **Acceptance:** frontend acceptance plus a repository/configuration check
+  that every described telemetry field/provider is real and enabled. Owner or
+  counsel approval of the final policy copy is a release gate, not a test the
+  implementation agent may waive.
+
 ## 5. Ordering and dependencies
 
 The build order is:
@@ -542,6 +599,8 @@ B1 XBRL data → B2 APIs ──┘      │
 gold_sec_features ─────────→ B7 filing insights (after A4/A5)
 B3–B7 mounted targets ─────→ B8 tours
 B2 + A4 + agent PR #39 ────→ B9 optional agent tool
+A4 + Lakebase audit contract ─→ B10 audit browser
+approved policy + telemetry config ─→ B11 legal/transparency
 ```
 
 - The current branch contains A1 and A2 round-three remediation, with a
@@ -569,6 +628,11 @@ B2 + A4 + agent PR #39 ────→ B9 optional agent tool
 - Every round has exclusive ownership of shared files. In particular, do not
   run A3 and B6, A4 and B7/B9, A5 and B3/B4/B7, or B2 and any frontend slice
   that edits API types/client at the same time.
+- B10 waits for A4 so its evidence vocabulary and action identifiers are
+  stable, and for the Lakebase audit schema to be confirmed; it is read-only
+  and is not a review queue. B11 can proceed after the app-shell routes settle,
+  but final copy must wait for owner/counsel approval and verified telemetry
+  configuration. Neither slice blocks B1–B9.
 
 The agent gains a useful, auditable read path only in B9: questions can request
 canonical filed fundamentals as of a stated time, and the answer can cite the
@@ -603,3 +667,55 @@ reviews, the new tests have demonstrated failure on old code and named mutation
 survival, PIT behavior is proved with amendment fixtures, all UI states are
 honest and accessible at 360 px, frontend bundle impact is recorded, and the
 coordinator has verified the actual merge/rollout state of PRs #28 and #39.
+
+## 7. Gap audit (2026-10-06)
+
+The rows below cover every page, component and service named in the audit
+request. `ALREADY-COVERED` means qp1 already has an implementation or a binding
+A/B slice owns the useful behavior; it does not authorize importing the legacy
+module. A matching filename is not sufficient when its runtime depends on a
+prohibited architecture.
+
+| Rag_workbench item | What it does in Rag_workbench | quant_platform_1 equivalent | Decision | Reason |
+| --- | --- | --- | --- | --- |
+| Page `PortfolioHome` | Personal portfolio landing page with project cards, profile/contact links and a tour. | `frontend/src/screens/PlatformOverview.tsx` (A3, planned) and `frontend/src/layout/AppShell.tsx` | **ALREADY-COVERED** | A3 supplies the product landing/evidence narrative; personal-brand chrome is outside the research application. |
+| Page `StocksList` | Static card list of covered companies and filing-range caveats. | `frontend/src/data/symbols.json` and `frontend/src/components/SymbolSelect.tsx`; A5 `SymbolPicker` | **ALREADY-COVERED** | A5 owns data-backed coverage, validation and no-coverage messaging; do not copy a hard-coded universe. |
+| Page `AuditLog` | Fetches audit runs and summary counts, filters them and expands lineage, verification and error detail. | `agent/runtime.py`, `agent/tools_write.py`; no read-only browser | **ADAPT** | B10 exposes a user-scoped, redacted Lakebase action history without the prohibited review queue or DuckDB. |
+| Page `ProductAnalytics` | Displays product-use KPIs and charts from server/PostHog summaries. | `api/routes/analytics.py`, `pipelines/lakebase_analytics.py`; A-phase `ActivityAnalytics.tsx` | **ALREADY-COVERED** | The binding analytics screen uses materialized measured data and honest empty/stale states. |
+| Page `Presentation` | Static case-study slide deck describing the workbench. | A3 `PlatformOverview.tsx` and `ArchitectureEvidence.tsx` (planned) | **SKIP** | A duplicate presentation route adds maintenance and risks stale or fabricated claims. |
+| Page `ConjointStudy` | Shows conjoint experiment results, attribute utilities, role segments and usefulness votes. | none | **SKIP** | Product research/experimentation is not a required research-platform capability and its data contract is absent. |
+| Page `Privacy` | Long-form privacy policy in a shared legal shell. | none | **KEEP** | B11 adds an approved policy surface tied to actual telemetry/deployment behavior. |
+| Page `Terms` | Long-form terms and investment-risk limitations in a shared legal shell. | none | **KEEP** | B11 adds approved terms without treating a disclaimer acknowledgement as authorization or safety control. |
+| Component `MarkdownMessage` | Renders a restricted subset of Markdown with GFM tables and safe links. | A4 grounded-answer/evidence rendering in `frontend/src/screens/ResearchAgent.tsx` (planned) | **ALREADY-COVERED** | A4 owns readable answers and collapsed developer detail; any renderer must stay sanitized and evidence-first. |
+| Component `DataTable` | Renders parsed Markdown table headers/rows with alignment and numeric styling. | `frontend/src/components/Table.tsx`; B3 accessible chart table fallback | **ALREADY-COVERED** | Reuse the native table primitives rather than add a second chat-specific table system. |
+| Component `ChartErrorBoundary` | Catches chart render exceptions and shows a compact fallback. | B3 chart unavailable/error state and accessible table fallback | **ALREADY-COVERED** | B3 already requires independent source failure handling; its implementation may use a local boundary without a separate slice. |
+| Component `Disclaimer` | Blocking acknowledgement modal plus persistent informational footer. | none; B11 legal footer | **ADAPT** | Keep non-blocking, approved disclosures in B11; a local-storage gate is not consent, suitability or investment protection. |
+| Component `LegalLayout` | Shared privacy/terms header, navigation, prose primitives and footer. | none | **KEEP** | B11 needs a small accessible shared layout, with qp1 navigation and approved copy. |
+| Component `AnalyticsNotice` | One-time dismissible notice describing anonymous analytics and linking to privacy. | none | **ADAPT** | B11 shows it only when verified telemetry is enabled and makes claims match configuration. |
+| Component `ConjointGate` | Lets a visitor self-select control/treatment and a professional role. | none | **SKIP** | Role experiment assignment would personalize output without a qp1 product requirement or evaluation contract. |
+| Component `ConjointSurvey` | Runs choice tasks, records preferences and collects a usefulness vote. | none | **SKIP** | It requires the out-of-scope conjoint backend and introduces user-study writes unrelated to governed research. |
+| Service `peer_comparison` | Detects comparison intent, resolves peers and computes filing-derived comparison tables. | `api/services/peer_comparison.py`; B2/B4 replace its implicit-peer behavior | **ALREADY-COVERED** | B4 requires explicit 2–5-symbol sets, canonical metrics, PIT provenance and honest missing values. |
+| Service `financial_calc` | Computes ratios/identities with structured calculation audit trails. | `api/services/financial_calc.py`; B1 canonical derived metrics | **ALREADY-COVERED** | The useful deterministic math exists; B1 tightens period, unit, sign and PIT rules for published fundamentals. |
+| Service `chart_tool` | Detects chart requests and builds annual/quarterly chart specifications. | `api/services/chart_tool.py`; B3 typed chart | **ALREADY-COVERED** | B3 uses bounded typed endpoint data rather than trusting an agent-created arbitrary chart payload. |
+| Service `confidence_scorer` | Assigns confidence/routing tiers from validation triggers and calibrated cut points. | `api/services/confidence_scorer.py` | **SKIP** | Do not expose or newly integrate arbitrary confidence scores; deterministic reason codes may remain internal. |
+| Service `calibration` | Recalculates confidence thresholds from labelled outcomes. | `api/services/calibration.py` | **SKIP** | No approved labelled evaluation/calibration lane is specified, and it depends on the prohibited scoring/review design. |
+| Service `verifier` | Combines schema/semantic checks and optional Polygon corroboration into a verification result. | `api/services/verifier.py`; A4 tool/source status | **ALREADY-COVERED** | The existing qp1 verifier can support grounded status, but B screens must not add Polygon or claim certainty. |
+| Service `semantic_validator` | Checks identities, referential consistency and numeric plausibility. | `api/services/semantic_validator.py` | **ALREADY-COVERED** | Deterministic validation is already present and is preferable to UI confidence decoration. |
+| Service `schema_validator` | Validates extraction fields, accession/CIK formats, units and suspicious scale. | `api/services/schema_validator.py` | **ALREADY-COVERED** | Existing validation plus B1's unit/PIT tests covers the useful behavior. |
+| Service `polygon_verifier` | Fetches Polygon company/financial data and cross-checks extracted figures/auditors. | `api/services/polygon_verifier.py` | **SKIP** | OWNER_PLAN still forbids Polygon panels/integration in this lane; lifting XBRL/graph did not lift Polygon. |
+| Service `drift_detection` | Calculates agreement/concept-spike drift status and logs alerts. | `api/services/drift_detection.py`; Plan B inventory `DriftAlert` decision | **SKIP** | No materialized measured drift contract exists, so defaults could be presented as observations. |
+| Service `metric_router` | Routes named metric requests through deterministic fact calculations. | `api/services/metric_router.py`; B1/B2 canonical metrics | **ALREADY-COVERED** | Keep deterministic helpers, while B1/B2 add reviewed aliases, units, PIT selection and API allowlists. |
+| Service `graph_rag_engine` | Uses a LangGraph workflow to extract entities, query a graph and generate an answer. | `api/services/graph_rag_engine.py`; B5 read-only neighbourhood only | **SKIP** | LangGraph orchestration and generated graph answers remain prohibited; B5 is bounded evidence exploration. |
+| Service `rag_engine` | Combines Polygon, DuckDB vectors, EDGAR embeddings/facts and price context in a LangChain RAG chain. | `agent/tools_retrieval.py` for governed retrieval; no direct port | **SKIP** | It depends on DuckDB, Polygon and an untyped chain; the native agent retrieval contract is the supported path. |
+| Service `chat_engine` | Generates, validates and executes LLM-written DuckDB SQL, then summarizes results. | `api/services/chat_engine.py` exists as legacy code; typed qp1 routes/agent tools are the supported equivalent | **SKIP** | Free-form SQL chat and DuckDB are expressly prohibited even though the legacy file is present. |
+| Service `langgraph_engine` | Orchestrates retrieval, extraction, math, verification, evaluation, output and DuckDB audit nodes. | `api/services/langgraph_engine.py` exists as legacy code; `agent/runtime.py` is the governed runtime | **SKIP** | Do not extend the LangGraph/DuckDB workflow; use typed schemas, allowlists and deterministic execution. |
+| Service `shadow_runner` | Runs a non-blocking comparison pipeline and derives calibration recommendations. | `api/services/shadow_runner.py` | **SKIP** | It feeds the unapproved confidence calibration/review workflow and has no B-slice product requirement. |
+| Service `runtime_snapshot` | Uploads/restores the DuckDB review database as a remote snapshot. | `api/services/runtime_snapshot.py` | **SKIP** | B slices use Lakebase/Delta and must not preserve or revive `review_queue.duckdb`. |
+| Service `llm_health` | Tracks recent LLM success/failure/latency in process memory. | `api/services/llm_health.py`; A-phase `SystemHealth.tsx` | **ALREADY-COVERED** | System Health owns truthful service state; in-memory observations must be labelled and not presented as durable history. |
+| Service `sec_analyzer` | Uses an LLM to extract filing entities, risks and forward-looking statements. | `api/services/sec_analyzer.py`; `silver_sec_entities` and B5/B7 | **ALREADY-COVERED** | B5 consumes persisted evidence-backed entities and B7 stored deterministic features, not request-time invented claims. |
+| Service `edgar_adapter` | Fetches a filing and converts XBRL/HTML facts into extraction fields. | `api/services/edgar_adapter.py`; B1 Spark Company Facts lane | **ALREADY-COVERED** | The helper exists, while B1 defines the governed batch source, identity, manifest and PIT publication rules. |
+| Service `sec_client` | Reads SEC facts/filing sections from the local workbench database. | `api/services/sec_client.py`; B1 tables and B2 typed routes | **ALREADY-COVERED** | B1/B2 replace request-path/local-store assumptions with Delta-backed, bounded contracts. |
+| Service `embeddings` | Selects hosted or local embedding implementations. | `api/services/embeddings.py`; `pipelines/build_sec_embeddings.py` | **ALREADY-COVERED** | Embedding construction already exists; this audit adds no alternate model or storage path. |
+| Service `reranker` | Reorders retrieved documents with a cross-encoder and falls back to original order. | `api/services/reranker.py`; `agent/tools_retrieval.py` | **ALREADY-COVERED** | Retrieval/reranking is already part of the native evidence path and needs no UI slice. |
+| Service `hybrid_retriever` | Combines BM25 and vector results with RRF and ticker/accession metadata. | `api/services/hybrid_retriever.py`; `agent/tools_retrieval.py` | **ALREADY-COVERED** | Governed retrieval already covers the useful hybrid behavior; A4 surfaces its provenance. |
+| Service `_edgar_identity` | Validates and installs a non-placeholder SEC User-Agent. | `api/services/_edgar_identity.py`; B1 SEC client requirements | **ALREADY-COVERED** | B1 explicitly requires this identity behavior, rate limiting, retry policy and tests. |
