@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import App from './App';
+import { markTourSeen } from './components/tours/TourHost';
 
 const healthyResponse = {
   status: 'ok',
@@ -144,6 +145,50 @@ describe('App shell and navigation', () => {
     });
 
     expect(document.querySelector('[data-tour="lakebase-banner"]')).toBeInTheDocument();
+  });
+
+  it('opens the tour dialog when Take a tour is clicked', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    markTourSeen('qp_tour_application_v1');
+    markTourSeen('qp_tour_agent_v1');
+    markTourSeen('qp_tour_architecture_v1');
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument();
+
+    const tourButton = screen.getByRole('button', { name: 'Take a tour' });
+    await user.click(tourButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Guided tour' })).toBeInTheDocument();
+    });
+  });
+
+  it('opens the tour dialog when Take a tour is clicked even if already seen', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    markTourSeen('qp_tour_application_v1');
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument();
+
+    const tourButton = screen.getByRole('button', { name: 'Take a tour' });
+    await user.click(tourButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Guided tour' })).toBeInTheDocument();
+    });
   });
 });
 

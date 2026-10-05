@@ -332,7 +332,7 @@ describe('CoachMarks', () => {
     outside.textContent = 'Outside';
     document.body.appendChild(outside);
 
-    fireEvent.focusIn(outside);
+    outside.focus();
 
     expect(document.activeElement).toBe(card);
 
