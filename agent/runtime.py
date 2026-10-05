@@ -225,7 +225,7 @@ def _sanitize_for_audit(text: str, max_len: int = 200) -> str:
 # "action" only counts when its value is an action type, so prose such as
 # "Action: monitor China exposure" is still accepted as a final answer.
 _TOOL_CALL_LINE_RE = re.compile(
-    r'^\s*"?(?:action"?\s*[:=]\s*"?(?:retrieve|write|final|refuse)\b|(?:tool|args)"?\s*[:=])',
+    r'^\s*(?:[-*]\s+)?"?(?:action"?\s*[:=]\s*"?(?:retrieve|write|final|refuse)\b|(?:tool|args)"?\s*[:=])',
     re.IGNORECASE,
 )
 

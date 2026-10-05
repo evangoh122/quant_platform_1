@@ -850,6 +850,12 @@ class TestProseFallback:
         'I used search_sec_filings to look.',
         'search_sec_filings (AMD)',
         '"search_sec_filings": {"symbol": "AMD"}',
+        # Each case below is caught by exactly one rule (non-registered names), so every rule is load-bearing.
+        "'tool': 'some_unknown_tool'",          # rule 2, single-quote arm
+        '<tool_call>some_unknown_tool</tool_call>',  # rule 3
+        '<action>retrieve</action>',            # rule 3
+        '- tool: some_unknown_tool',            # rule 4, YAML list item
+        '- action: retrieve',                   # rule 4, YAML list item
     ])
     def test_broad_rejected_shapes(self, text):
         """Brace-free shapes assert malformed; brace-containing assert fail-closed."""
