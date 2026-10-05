@@ -61,10 +61,10 @@ def asof_facts(
     extra_filters = []
     args: Dict[str, Any] = {"as_of": as_of}
     if ticker is not None:
-        extra_filters.append("UPPER(f.ticker) = UPPER(:ticker)")
+        extra_filters.append("UPPER(ticker) = UPPER(:ticker)")
         args["ticker"] = ticker
     if concept is not None:
-        extra_filters.append("UPPER(f.concept) = UPPER(:concept)")
+        extra_filters.append("UPPER(concept) = UPPER(:concept)")
         args["concept"] = concept
 
     if extra_filters:
