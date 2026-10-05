@@ -1,14 +1,12 @@
 """Point-in-time labelling and purged train/test split for baseline signals.
 
-Labelling rule
---------------
-For each row at snapshot time *s* for a given symbol, the label is derived from
-the **next** snapshot *s'* of the same symbol **only if**:
-
-1. The gap between *s* and *s'* falls within ``[horizon - tol, horizon + tol]``.
-2. *s* and *s'* fall on the same US/Eastern trading date.
-
-Otherwise the label is NaN (row is excluded from training).
+Two labelling modes
+-------------------
+1. **Intraday** (``forward_labels``): 30-min horizon on snapshot-to-snapshot
+   returns.  Requires a dense snapshot grid.
+2. **Daily** (``daily_close_labels``): 1-trading-day horizon on close-to-close
+   returns.  Works when there is exactly one snapshot per (symbol, day), e.g.
+   the daily feature rows in ``gold_model_features``.
 
 Purged split
 ------------
@@ -80,6 +78,102 @@ def forward_labels(
 
         out.loc[idx[valid], "label"] = (nxt_ret[valid] > 0).astype(float)
         out.loc[idx[valid], "label_ts"] = nxt_ts[valid]
+
+    return out
+
+
+def daily_close_labels(
+    features: pd.DataFrame,
+    closes: pd.DataFrame,
+    max_gap_days: int = 5,
+) -> pd.DataFrame:
+    """Add PIT-safe 1-day-horizon ``label`` and ``label_ts`` columns.
+
+    For each feature row (symbol, prediction_ts):
+
+    * **D** = the latest trade_date of that symbol with ``close_ts <= prediction_ts``.
+    * **N** = the next trade_date after D for that symbol.
+    * ``label`` = 1.0 if ``close_N > close_D`` else 0.0;
+      ``label_ts = close_ts_N``.
+    * NaN label (and NaT label_ts) when D or N is missing or
+      N − D > *max_gap_days* calendar days.
+    * A close with ``close_ts > prediction_ts`` is **never** used as close_D.
+
+    Parameters
+    ----------
+    features : DataFrame
+        Must contain ``symbol`` and ``prediction_ts``.
+    closes : DataFrame
+        One row per (symbol, trade_date) with ``close`` (float) and
+        ``close_ts`` (tz-aware UTC timestamp of the last regular-session
+        minute bar of that US/Eastern date).
+    max_gap_days : int
+        Maximum calendar-day gap between D and N (default 5).  Labels are
+        NaN when the gap exceeds this value (e.g. holidays, delistings).
+
+    Returns
+    -------
+    DataFrame
+        Copy of *features* with ``label`` and ``label_ts`` columns added.
+    """
+    out = features.copy()
+    out["label"] = float("nan")
+    out["label_ts"] = pd.NaT
+
+    if closes.empty:
+        return out
+
+    # Sort closes by symbol, trade_date for deterministic shift.
+    closes = closes.sort_values(["symbol", "trade_date"]).reset_index(drop=True)
+
+    # Next-day lookup: for each (symbol, trade_date) row, the *following*
+    # trade_date's close and close_ts.
+    next_lookup = closes[["symbol", "trade_date"]].copy()
+    next_lookup["N_date"] = closes.groupby("symbol")["trade_date"].shift(-1)
+    next_lookup["N_close"] = closes.groupby("symbol")["close"].shift(-1)
+    next_lookup["N_close_ts"] = closes.groupby("symbol")["close_ts"].shift(-1)
+
+    # Prepare features for merge_asof (preserves original index).
+    feat = (
+        out[["symbol", "prediction_ts"]]
+        .reset_index()
+        .rename(columns={"index": "orig_idx"})
+    )
+    feat = feat.sort_values(["symbol", "prediction_ts"]).reset_index(drop=True)
+
+    # merge_asof: for each prediction_ts, find the latest close_ts <= it.
+    closes_for_merge = closes[["symbol", "close_ts", "trade_date"]].sort_values(
+        ["symbol", "close_ts"]
+    )
+
+    merged = pd.merge_asof(
+        feat,
+        closes_for_merge.rename(
+            columns={"close_ts": "_cts", "trade_date": "D_date"}
+        ),
+        left_on="prediction_ts",
+        right_on="_cts",
+        by="symbol",
+        direction="backward",
+    )
+
+    # Join next-day info.
+    merged = merged.merge(next_lookup, on=["symbol", "D_date"], how="left")
+
+    # Gap in calendar days.
+    d_dt = pd.to_datetime(merged["D_date"])
+    n_dt = pd.to_datetime(merged["N_date"])
+    gap = (n_dt - d_dt).dt.days
+
+    # Valid: N exists, gap > 0, gap <= max_gap_days.
+    valid = merged["N_date"].notna() & (gap > 0) & (gap <= max_gap_days)
+
+    # Assign labels only to valid rows.
+    vr = merged.loc[valid]
+    out.loc[vr["orig_idx"].values, "label"] = (
+        vr["N_close"].values > vr["D_close"].values
+    ).astype(float)
+    out.loc[vr["orig_idx"].values, "label_ts"] = vr["N_close_ts"].values
 
     return out
 
