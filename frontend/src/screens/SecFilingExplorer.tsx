@@ -37,10 +37,13 @@ export function SecFilingExplorer() {
     }
   }
 
-  const tool = result?.tool_calls[0];
-  const rows: Record<string, unknown>[] = (tool?.result && typeof tool.result === 'object' && Array.isArray(tool.result.rows))
-    ? (tool.result.rows as Record<string, unknown>[])
+  const secTool = result?.tool_calls.find((tc) => tc.name === 'search_sec_filings');
+  const rawRows: Record<string, unknown>[] = (secTool?.result && typeof secTool.result === 'object' && Array.isArray(secTool.result.rows))
+    ? (secTool.result.rows as Record<string, unknown>[])
     : [];
+  const isNoCoverage = rawRows.length > 0 && rawRows[0]?.error === 'no_coverage';
+  const noCoverageTicker = isNoCoverage ? String(rawRows[0].ticker ?? input.trim().toUpperCase()) : '';
+  const rows = isNoCoverage ? [] : rawRows;
 
   return (
     <div className="space-y-4">
@@ -70,12 +73,21 @@ export function SecFilingExplorer() {
       {loading && <LoadingState />}
       {error && <ErrorState message={error} onRetry={() => void run()} />}
 
-      {!loading && !error && (
-        <Card title="Extracted Sections & Sources" subtitle="silver_sec_sections">
+      {!loading && !error && result === null && (
+        <EmptyState title="Search a ticker to see its SEC filing sections" />
+      )}
+
+      {!loading && !error && result !== null && isNoCoverage && (
+        <EmptyState
+          title={`No SEC filings have been processed for ${noCoverageTicker} yet.`}
+        />
+      )}
+
+      {!loading && !error && result !== null && !isNoCoverage && (
+        <Card title="Extracted Sections & Sources">
           {rows.length === 0 ? (
             <EmptyState
-              title="No SEC filing sections yet"
-              detail="silver_sec_sections is empty — filing sections and extracted events appear once the SEC ingestion and chunking pipeline has run."
+              title="No SEC filing sections found for this search"
             />
           ) : (
             <ul className="space-y-2">
