@@ -101,6 +101,7 @@ MANIFEST_COLUMNS = [
     "payload_hash",
     "payload_bytes",
     "fact_count",
+    "http_status",
     "started_at",
     "completed_at",
     "error_category",
@@ -269,6 +270,7 @@ class CompanyFactsManifestEntry:
     payload_hash: str = ""
     payload_bytes: int = 0
     fact_count: int = 0
+    http_status: Optional[int] = None  # last HTTP response status per CIK
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_category: str = ""
@@ -281,26 +283,26 @@ class CompanyFactsManifestEntry:
 def fetch_company_facts(
     client: SecClient,
     cik: str,
-) -> Tuple[Dict[str, Any], bytes, str]:
+) -> Tuple[Dict[str, Any], bytes, str, int]:
     """Fetch Company Facts JSON for a CIK.
 
-    Returns (parsed_payload, raw_bytes, payload_hash).
+    Returns (parsed_payload, raw_bytes, payload_hash, http_status).
     Raises SecClientError on failure.
     """
     url = build_source_url(cik)
-    raw_bytes = _fetch_raw_bytes(client, url)
+    raw_bytes, http_status = _fetch_raw_bytes(client, url)
     payload_hash = compute_payload_hash(raw_bytes)
     payload = json.loads(raw_bytes)
-    return payload, raw_bytes, payload_hash
+    return payload, raw_bytes, payload_hash, http_status
 
 
-def _fetch_raw_bytes(client: SecClient, url: str) -> bytes:
+def _fetch_raw_bytes(client: SecClient, url: str) -> Tuple[bytes, int]:
     """Fetch raw bytes from SEC.  Uses the client's get_json internally but
     we need raw bytes for hash — fetch via the internal _request method."""
     # We'll use the underlying HTTP client directly with the same headers
     # to get raw bytes, respecting rate limiting via the existing limiter.
     resp = client._request(url, expect_json=False)
-    return resp.text.encode("utf-8")
+    return resp.text.encode("utf-8"), resp.status_code
 
 
 # ── Spark entry point ──────────────────────────────────────────────────────
@@ -442,10 +444,11 @@ def run_ingest_companyfacts(
         req_before = client.request_count
 
         try:
-            payload, raw_bytes, payload_hash = fetch_company_facts(client, cik)
+            payload, raw_bytes, payload_hash, http_status = fetch_company_facts(client, cik)
             attempt_count = client.request_count - req_before
             manifest.payload_hash = payload_hash
             manifest.payload_bytes = len(raw_bytes)
+            manifest.http_status = http_status
 
             # Skip if same (cik, payload_hash) already written this run
             with lock:
@@ -456,8 +459,6 @@ def run_ingest_companyfacts(
                     if manifest_writer is not None:
                         manifest_writer(catalog, schema, manifest)
                     return
-
-                seen_payloads.add((cik, payload_hash))
 
             # Flatten
             rows = flatten_company_facts(
@@ -479,7 +480,9 @@ def run_ingest_companyfacts(
             if delta_writer is not None and rows:
                 delta_writer(catalog, schema, rows)
 
+            # Mark as seen only AFTER successful Delta write
             with lock:
+                seen_payloads.add((cik, payload_hash))
                 result["fetched_count"] += 1
                 result["total_facts"] += len(rows)
 
@@ -497,6 +500,7 @@ def run_ingest_companyfacts(
                 result["failed_count"] += 1
             manifest.fetch_status = "failed"
             manifest.attempt_count = attempt_count
+            manifest.http_status = e.status_code
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = _classify_error(e)
             manifest.error_message = str(e)[:500]
@@ -656,6 +660,7 @@ class SparkCompanyFactsManifestWriter:
                 payload_hash    STRING,
                 payload_bytes   INT,
                 fact_count      INT,
+                http_status     INT,
                 started_at      TIMESTAMP,
                 completed_at    TIMESTAMP,
                 error_category  STRING,
@@ -681,6 +686,7 @@ class SparkCompanyFactsManifestWriter:
             "payload_hash": entry.payload_hash,
             "payload_bytes": entry.payload_bytes,
             "fact_count": entry.fact_count,
+            "http_status": entry.http_status,
             "started_at": entry.started_at,
             "completed_at": entry.completed_at,
             "error_category": entry.error_category,
