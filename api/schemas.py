@@ -209,3 +209,6 @@ class AnalyticsResponse(BaseModel):
     agent_activity: Envelope[AnalyticsItem] = Field(default_factory=Envelope)
     latency: Envelope[AnalyticsItem] = Field(default_factory=Envelope)
     stream_freshness: Envelope[AnalyticsItem] = Field(default_factory=Envelope)
+    watchlist_changes: Envelope[Dict[str, Any]] = Field(default_factory=Envelope)
+    order_funnel: Envelope[Dict[str, Any]] = Field(default_factory=Envelope)
+    usage_daily: Envelope[Dict[str, Any]] = Field(default_factory=Envelope)
