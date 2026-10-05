@@ -30,23 +30,31 @@ export interface Signal {
 
 export interface OHLCVFeature {
   symbol: string;
-  feature_ts: string;
+  event_date: string;
   open: number | null;
   high: number | null;
   low: number | null;
   close: number | null;
   volume: number | null;
   vwap: number | null;
+  price_basis: string;
 }
 
 export interface OptionsFeature {
   symbol: string;
   feature_ts: string;
-  expiry: string;
-  atm_iv: number | null;
-  skew: number | null;
+  put_volume: number | null;
+  call_volume: number | null;
   put_call_ratio: number | null;
-  volume_anomaly: number | null;
+  iv_atm: number | null;
+  iv_25d_put: number | null;
+  iv_25d_call: number | null;
+  iv_skew: number | null;
+  iv_term_slope: number | null;
+  avg_spread_pct: number | null;
+  volume_anomaly_zscore: number | null;
+  oi_concentration: number | null;
+  net_delta_exposure: number | null;
 }
 
 export interface MarketSnapshot {
@@ -113,6 +121,16 @@ export interface DependencyStatus {
   name: string;
   ok: boolean;
   detail: string;
+  latency_ms: number | null;
+  last_error: string | null;
+  last_ok_at: number | null;
+  circuit_breaker_state: string | null;
+}
+
+export interface StartupStage {
+  name: string;
+  elapsed_ms: number;
+  ok: boolean;
 }
 
 export interface HealthResponse {
@@ -120,6 +138,22 @@ export interface HealthResponse {
   version: string;
   dependencies: DependencyStatus[];
   freshness: Freshness;
+  role_cache_size: number;
+  startup: StartupStage[];
+}
+
+export interface TraceEvent {
+  name: string;
+  elapsed_ms: number;
+  ok: boolean;
+  error: string | null;
+  extra: Record<string, unknown>;
+  ts: number;
+}
+
+export interface HealthTraceResponse {
+  recent: TraceEvent[];
+  slow: TraceEvent[];
 }
 
 export interface AnalyticsItem {

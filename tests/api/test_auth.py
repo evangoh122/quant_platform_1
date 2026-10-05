@@ -28,10 +28,10 @@ def test_unknown_user_provisioned_as_viewer(client, fake_lakebase):
     assert fake_lakebase.roles["new@example.com"] == "viewer"
 
 
-def test_db_failure_in_role_lookup_returns_503(client, fake_lakebase):
+def test_db_failure_in_role_lookup_degrades_read_route(client, fake_lakebase):
     fake_lakebase.fail = True
     resp = client.get(
         "/api/signals", headers={"x-forwarded-email": "user@example.com"}
     )
-    assert resp.status_code == 503
-    assert "identity service unavailable" in resp.json()["detail"]
+    # Read routes degrade to viewer when Lakebase is unavailable
+    assert resp.status_code == 200

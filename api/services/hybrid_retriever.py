@@ -171,7 +171,11 @@ def _approx_corpus_bytes(
 # -- Spark session --
 
 def _get_spark():
-    """Get a Spark session."""
+    """Get a Spark session, using DatabricksSession outside a Databricks runtime.
+
+    Inside a Databricks runtime (DATABRICKS_RUNTIME_VERSION set), the ambient
+    session is used.  Outside, DatabricksSession (databricks-connect) is required.
+    """
     if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
         from pyspark.sql import SparkSession
         return SparkSession.builder.getOrCreate()
@@ -187,39 +191,78 @@ def _get_embedding_model() -> str:
     return os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
 
+def _fetch_ticker_rows(ticker: str) -> Tuple[list, list]:
+    """Return (chunk rows, embedding rows) for a single ticker.
+
+    Uses Spark when available (notebooks, jobs, local dev with databricks-connect);
+    otherwise the SQL warehouse via db.delta_adapter (Databricks Apps has no Spark).
+    Ticker is bound as a parameter in the warehouse path — no f-string user values.
+    """
+    try:
+        spark = _get_spark()
+    except ImportError:
+        spark = None  # no pyspark / databricks-connect (Databricks Apps) -> SQL warehouse
+
+    if spark is not None:
+        from pyspark.sql import functions as F
+
+        chunks_rows = (
+            spark.table(CHUNKS_TABLE)
+            .filter(F.col("ticker") == ticker)
+            .select(
+                "chunk_id", "ticker", "chunk_text", "accession_number",
+                F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+                "form_type", "filing_section", "chunk_index",
+                "source_url",
+            )
+            .collect()
+        )
+        embed_rows = (
+            spark.table(EMBEDDINGS_TABLE)
+            .filter(
+                (F.col("ticker") == ticker)
+                & (F.col("embedding_model") == _get_embedding_model())
+            )
+            .select("chunk_id", "embedding", "embedding_model")
+            .collect()
+        )
+        return chunks_rows, embed_rows
+
+    from db.delta_adapter import _get_warehouse_connection
+
+    conn = _get_warehouse_connection()
+    out = []
+    for sql, params in (
+        (
+            f"SELECT chunk_id, ticker, chunk_text, accession_number, "
+            f"unix_timestamp(accepted_ts) AS accepted_epoch, form_type, filing_section, "
+            f"chunk_index, source_url FROM {CHUNKS_TABLE} WHERE ticker = ?",
+            [ticker],
+        ),
+        (
+            f"SELECT chunk_id, embedding, embedding_model FROM {EMBEDDINGS_TABLE} "
+            f"WHERE ticker = ? AND embedding_model = ?",
+            [ticker, _get_embedding_model()],
+        ),
+    ):
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            out.append([dict(zip(cols, r)) for r in cur.fetchall()])
+        finally:
+            cur.close()
+    return out[0], out[1]
+
+
 def _load_ticker_corpus(ticker: str) -> TickerCorpus:
     """Load corpus for a single ticker from Delta tables.
 
     Pushes ticker predicate into both Spark reads before collect().
+    Falls back to SQL warehouse when Spark is unavailable (Databricks Apps).
     """
     t0 = time.monotonic()
-    spark = _get_spark()
-
-    from pyspark.sql import functions as F
-
-    # Load chunks for this ticker only
-    chunks_df = (
-        spark.table(CHUNKS_TABLE)
-        .filter(F.col("ticker") == ticker)
-        .select(
-            "chunk_id", "ticker", "chunk_text", "accession_number",
-            F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
-            "form_type", "filing_section", "chunk_index",
-            "source_url",
-        )
-    )
-    chunks_rows = chunks_df.collect()
-
-    # Load embeddings for this ticker and configured model
-    embed_df = (
-        spark.table(EMBEDDINGS_TABLE)
-        .filter(
-            (F.col("ticker") == ticker)
-            & (F.col("embedding_model") == _get_embedding_model())
-        )
-        .select("chunk_id", "embedding", "embedding_model")
-    )
-    embed_rows = embed_df.collect()
+    chunks_rows, embed_rows = _fetch_ticker_rows(ticker)
 
     # Build embedding map
     embeddings_map: Dict[str, np.ndarray] = {}
@@ -417,14 +460,31 @@ def _load_alias_map() -> Dict[str, str]:
             return _alias_map
 
     try:
-        spark = _get_spark()
-        from pyspark.sql import functions as F
+        try:
+            spark = _get_spark()
+        except ImportError:
+            spark = None
 
-        rows = (
-            spark.table(COVERAGE_TABLE)
-            .select("ticker", "cik")
-            .collect()
-        )
+        if spark is not None:
+            from pyspark.sql import functions as F
+
+            rows = (
+                spark.table(COVERAGE_TABLE)
+                .select("ticker", "cik")
+                .collect()
+            )
+        else:
+            from db.delta_adapter import _get_warehouse_connection
+
+            conn = _get_warehouse_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(f"SELECT ticker, cik FROM {COVERAGE_TABLE}")
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            finally:
+                cur.close()
+
         if not rows:
             with _alias_map_lock:
                 _alias_map_loaded = True
@@ -481,15 +541,35 @@ def check_ticker_coverage(ticker: str) -> Tuple[int, Optional[str]]:
     """
     ticker = ticker.upper().strip()
     try:
-        spark = _get_spark()
-        from pyspark.sql import functions as F
+        try:
+            spark = _get_spark()
+        except ImportError:
+            spark = None
 
-        row = (
-            spark.table(COVERAGE_TABLE)
-            .filter(F.col("ticker") == ticker)
-            .select("n_chunks", "cik")
-            .collect()
-        )
+        if spark is not None:
+            from pyspark.sql import functions as F
+
+            row = (
+                spark.table(COVERAGE_TABLE)
+                .filter(F.col("ticker") == ticker)
+                .select("n_chunks", "cik")
+                .collect()
+            )
+        else:
+            from db.delta_adapter import _get_warehouse_connection
+
+            conn = _get_warehouse_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    f"SELECT n_chunks, cik FROM {COVERAGE_TABLE} WHERE ticker = ?",
+                    [ticker],
+                )
+                cols = [d[0] for d in cur.description]
+                row = [dict(zip(cols, r)) for r in cur.fetchall()]
+            finally:
+                cur.close()
+
         if not row:
             raise NoCoverageError(ticker)
 
@@ -531,22 +611,42 @@ def _load_corpus() -> bool:
 
         t0 = time.monotonic()
         try:
-            spark = _get_spark()
+            try:
+                spark = _get_spark()
+            except ImportError:
+                spark = None
 
-            from pyspark.sql import functions as F
+            if spark is not None:
+                from pyspark.sql import functions as F
 
-            chunks_df = spark.table(CHUNKS_TABLE).select(
-                "chunk_id", "ticker", "chunk_text", "accession_number",
-                F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
-                "form_type", "filing_section", "chunk_index",
-                "source_url",
-            )
-            chunks_rows = chunks_df.collect()
+                chunks_rows = spark.table(CHUNKS_TABLE).select(
+                    "chunk_id", "ticker", "chunk_text", "accession_number",
+                    F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+                    "form_type", "filing_section", "chunk_index",
+                    "source_url",
+                ).collect()
+                embed_rows = spark.table(EMBEDDINGS_TABLE).select(
+                    "chunk_id", "embedding", "embedding_model",
+                ).collect()
+            else:
+                from db.delta_adapter import _get_warehouse_connection
 
-            embed_df = spark.table(EMBEDDINGS_TABLE).select(
-                "chunk_id", "embedding", "embedding_model",
-            )
-            embed_rows = embed_df.collect()
+                conn = _get_warehouse_connection()
+                out = []
+                for sql in (
+                    f"SELECT chunk_id, ticker, chunk_text, accession_number, "
+                    f"unix_timestamp(accepted_ts) AS accepted_epoch, form_type, filing_section, "
+                    f"chunk_index, source_url FROM {CHUNKS_TABLE}",
+                    f"SELECT chunk_id, embedding, embedding_model FROM {EMBEDDINGS_TABLE}",
+                ):
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(sql)
+                        cols = [d[0] for d in cur.description]
+                        out.append([dict(zip(cols, r)) for r in cur.fetchall()])
+                    finally:
+                        cur.close()
+                chunks_rows, embed_rows = out[0], out[1]
 
             seen_dims: set[int] = set()
             seen_models: set[str] = set()

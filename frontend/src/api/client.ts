@@ -4,6 +4,7 @@ import type {
   ChatResponse,
   Envelope,
   HealthResponse,
+  HealthTraceResponse,
   MarketSnapshot,
   OrderActionResult,
   OrderIntentRequest,
@@ -47,6 +48,7 @@ function post<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   health: (): Promise<HealthResponse> => request<HealthResponse>('/api/health'),
+  healthTrace: (): Promise<HealthTraceResponse> => request<HealthTraceResponse>('/api/health/trace'),
   signals: (symbol?: string): Promise<Envelope<Signal>> => {
     const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
     return request<Envelope<Signal>>(`/api/signals${query}`);

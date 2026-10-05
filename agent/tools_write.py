@@ -214,25 +214,64 @@ def add_to_watchlist(symbol: str, user_id: str = "default", *, db: Optional[Lake
 # ── research notes ────────────────────────────────────────────────────────────
 def save_research_note(
     symbol: str, note_text: str, signal_id: Optional[str] = None,
-    user_id: str = "default", *, db: Optional[Lakebase] = None,
+    user_id: str = "default", idempotency_key: Optional[str] = None,
+    *, db: Optional[Lakebase] = None,
 ) -> dict:
-    """INSERT into research_notes."""
+    """INSERT into research_notes. Idempotent when idempotency_key is provided.
+
+    A replay with the same idempotency_key returns the original note ID and
+    does not create a second note or second effective analytics event.
+    """
     _reject_public_demo_write()
     db = db or get_lakebase()
     note_id = _id("note")
     with db.transaction() as conn:
         with conn.cursor() as cur:
             _ensure_user(cur, user_id)
-            cur.execute(
-                """
-                INSERT INTO research_notes
-                    (note_id, user_id, symbol, signal_id, note_text, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, now(), now())
-                RETURNING note_id, symbol
-                """,
-                (note_id, user_id, symbol, signal_id, note_text),
-            )
-            row = cur.fetchone()
+            if idempotency_key:
+                cur.execute(
+                    """
+                    INSERT INTO research_notes
+                        (note_id, user_id, symbol, signal_id, note_text,
+                         idempotency_key, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, now(), now())
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+                    RETURNING note_id, symbol
+                    """,
+                    (note_id, user_id, symbol, signal_id, note_text, idempotency_key),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    # Idempotent replay: read back the existing note.
+                    cur.execute(
+                        """
+                        SELECT note_id, symbol FROM research_notes
+                        WHERE idempotency_key = %s
+                        """,
+                        (idempotency_key,),
+                    )
+                    row = cur.fetchone()
+                    _log_action(
+                        cur, user_id, "save_research_note", "write",
+                        f"symbol={symbol}, key={idempotency_key}",
+                        f"idempotent replay note_id={row[0]}", "success",
+                    )
+                    return {
+                        "note_id": row[0], "symbol": row[1],
+                        "status": "saved", "replay": True,
+                    }
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO research_notes
+                        (note_id, user_id, symbol, signal_id, note_text,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, now(), now())
+                    RETURNING note_id, symbol
+                    """,
+                    (note_id, user_id, symbol, signal_id, note_text),
+                )
+                row = cur.fetchone()
             _log_action(
                 cur, user_id, "save_research_note", "write",
                 f"symbol={symbol}", f"note_id={row[0]}", "success",

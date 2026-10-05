@@ -14,7 +14,7 @@ Databricks Apps reverse proxy expects **one** process bound to
 - **Frontend** — the built React SPA in `frontend/dist/`, served as static files
   by the backend when `frontend/dist/` exists.
 
-`app.yaml` starts `uvicorn api.main:app` bound to `0.0.0.0:${DATABRICKS_APP_PORT:-8000}`.
+`app.yaml` starts `uvicorn api.main:app` bound to `0.0.0.0:8000`.
 
 ## 2. Pre-deploy build
 
@@ -22,16 +22,21 @@ The frontend must be built **before** the app is deployed so the backend can
 serve it (the Databricks App runtime does not run `vite build`).
 
 ```bash
-cd frontend && npm install && npm run build
+# From the repo root — installs deps + builds in one step:
+./scripts/build_frontend.sh
 # produces frontend/dist/
 ```
+
+The script runs `npm ci && npm run build` inside `frontend/` and exits
+non-zero on any failure.  `frontend/dist/` is gitignored but included in
+the bundle via `sync.include` in `databricks.yml`.
 
 ## 3. Create the app
 
 1. Workspace → **Compute → Apps → Create app** (or `databricks apps init` /
    `databricks apps deploy` for a CLI/DABs workflow — see §7).
 2. Point the source at this repository directory.
-3. Set the `app.yaml` command to `uvicorn api.main:app --host 0.0.0.0 --port ${DATABRICKS_APP_PORT:-8000}`.
+3. Set the `app.yaml` command to `uvicorn api.main:app --host 0.0.0.0 --port 8000`.
 4. Deploy.
 
 ## 4. Required Unity Catalog permissions
@@ -92,6 +97,80 @@ Least-privilege guidance:
   `positions`, `agent_actions`, `research_notes`, `accounts`), and nothing else.
 - Do **not** grant `CREATE DATABASE`/`DROP` or any admin role.
 
+### Lakebase resource declaration (DABs)
+
+The Lakebase database is declared in `resources/app.yml` so Databricks Apps
+provisioning connects the app to the correct instance:
+
+```yaml
+resources:
+  apps:
+    quant_platform:
+      # ...
+      resources:
+        - name: lakebase
+          database:
+            instance: evangoh-capstone-lakebase
+            permission: CAN_CONNECT_AND_CREATE
+```
+
+### Required Postgres grants
+
+The app's database role needs these grants on the `public` schema. Run these
+as the Lakebase database owner:
+
+```sql
+-- Schema access
+GRANT USAGE ON SCHEMA public TO "<app-database-role>";
+
+-- User identity (read own role, upsert new users)
+GRANT SELECT, INSERT ON TABLE public.users TO "<app-database-role>";
+
+-- Operational tables used by portfolio/watchlist/orders
+GRANT SELECT, INSERT, UPDATE ON TABLE public.watchlists TO "<app-database-role>";
+GRANT SELECT, INSERT, UPDATE ON TABLE public.orders TO "<app-database-role>";
+GRANT SELECT, INSERT, UPDATE ON TABLE public.positions TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.approvals TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.executions TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.agent_actions TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.research_notes TO "<app-database-role>";
+GRANT SELECT, INSERT ON TABLE public.accounts TO "<app-database-role>";
+```
+
+Replace `<app-database-role>` with the Lakebase database role for the app's
+service principal. Do **not** grant `CREATE` on the schema or `ALL` on any table.
+
+### SQL warehouse resource declaration (DABs)
+
+The app reads Delta/Unity Catalog tables via a SQL warehouse when pyspark is
+not available (i.e., in the Databricks Apps production environment). The
+warehouse is declared in `resources/app.yml`:
+
+```yaml
+resources:
+  apps:
+    quant_platform:
+      # ...
+      config:
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            value: b15d3d6f837ba428
+      resources:
+        - name: sql_warehouse
+          sql_warehouse:
+            id: b15d3d6f837ba428
+            permission: CAN_USE
+```
+
+The app's service principal needs `CAN USE` on the warehouse. Auth is handled
+by the Databricks SDK default chain (service principal credentials injected by
+the Databricks Apps runtime).
+
+| Env var | Purpose |
+| :-- | :-- |
+| `DATABRICKS_WAREHOUSE_ID` | SQL warehouse ID for Delta reads (default `b15d3d6f837ba428`) |
+| `DATABRICKS_WAREHOUSE_TIMEOUT` | Statement timeout in seconds (default `30`) |
+
 ## 6. Secrets — Databricks secrets only
 
 No secret, token, or connection string is ever committed. Every credential is
@@ -115,11 +194,29 @@ Lakebase password in `app.yaml`, `requirements-*.txt`, or any committed file.
 
 ## 7. CLI / DABs deployment (alternative to the UI)
 
+Deploying the Databricks App via CLI follows this sequence:
+
 ```bash
-databricks apps validate --profile <PROFILE>
-databricks apps deploy --profile <PROFILE>
-databricks apps get <app-name> --profile <PROFILE>   # confirm status RUNNING + url
+# 1. Build the frontend (produces frontend/dist/)
+./scripts/build_frontend.sh
+
+# 2. Validate the bundle
+databricks bundle validate --profile <PROFILE>
+
+# 3. Deploy the bundle (syncs code + resources to the workspace)
+databricks bundle deploy --profile <PROFILE>
+
+# 4. Start the app
+databricks apps start --profile <PROFILE>
+
+# 5. Smoke-test the deployed app
+python scripts/smoke_app.py <APP_URL>
 ```
+
+The `sync.include` directive in `databricks.yml` ensures `frontend/dist/`
+is uploaded even though it is gitignored. If `frontend/dist/` does not
+exist at deploy time the API still starts, but `GET /` returns a hint
+instead of the SPA.
 
 ## 8. Smoke tests (rubric §11)
 

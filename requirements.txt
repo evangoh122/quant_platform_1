@@ -1,18 +1,36 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+# requirements.txt — Databricks App runtime dependencies.
+#
+# Databricks Apps installs THIS file.  Every top-level third-party import
+# reachable from api/ and agent/ MUST be declared here.  Non-app deps
+# (pyspark, mlflow, yfinance, ibapi, etc.) live in requirements-dev.txt
+# or requirements-pipelines.txt and are installed by CI, not by the app.
+fastapi>=0.142.2
+uvicorn[standard]>=0.54.0
 pydantic>=2.0
 databricks-sdk>=0.20.0
-databricks-sql-connector>=3.0.0
-langchain>=0.1.0
-langchain-community>=0.1.0
-langgraph>=0.0.20
-mlflow>=2.10.0
-polygon-api-client>=1.12.0
-ibapi>=10.19.0
-requests>=2.31.0
+databricks-sql-connector>=3.0.0,<5
+psycopg[binary]>=3.1
+psycopg-pool>=3.1
 loguru>=0.7.0
-yfinance>=0.2.30
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
+requests>=2.33.0
+tenacity>=8.2.0
+numpy>=1.24.0
+pandas>=2.0.0
+polars>=0.20.0
+openai>=1.0.0
+langchain-core>=1.2.22
+langchain-openai>=0.1.0
+langgraph>=0.0.20
+sentence-transformers>=2.2.0
+rank-bm25>=0.2.2
+huggingface-hub>=0.19.0
 duckdb>=0.10.0
-pytest-timeout>=2.2.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+langsmith>=0.8.18
+edgartools>=2.0.0
+finvizfinance>=0.14.0
+# oauthlib: transitive via databricks-sql-connector (requires ^3.1.0, i.e. <4).
+# PYSEC-2026-4114 (CVE-2026-49265) is a PKCE timing side-channel fixed in 4.0.0.
+# Accepted risk: databricks-sql-connector caps oauthlib<4; see docs/SECURITY.md.
+oauthlib>=3.1.0,<4

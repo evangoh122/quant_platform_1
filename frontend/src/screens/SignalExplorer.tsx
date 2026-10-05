@@ -25,6 +25,10 @@ const columns: Column<Signal>[] = [
 export function SignalExplorer() {
   const { data, loading, error, reload } = useApi<Envelope<Signal>>(() => api.signals());
 
+  const isNoSignalsPublished =
+    data?.freshness?.detail === 'no_signals_published' ||
+    (data?.freshness?.state === 'empty' && data?.freshness?.table === 'gold_trading_signals');
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -41,8 +45,12 @@ export function SignalExplorer() {
         >
           {data && data.empty ? (
             <EmptyState
-              title="No signals yet"
-              detail="gold_trading_signals is empty — signals appear once the model inference pipeline produces predictions."
+              title={isNoSignalsPublished ? 'No signals published yet' : 'No signals yet'}
+              detail={
+                isNoSignalsPublished
+                  ? 'gold_trading_signals is empty — no signals have been published by the model inference pipeline yet.'
+                  : 'gold_trading_signals is empty — signals appear once the model inference pipeline produces predictions.'
+              }
             />
           ) : (
             <Table columns={columns} rows={data?.data ?? []} rowKey={(r) => r.signal_id} />

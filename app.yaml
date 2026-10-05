@@ -4,10 +4,25 @@ command:
   - --host
   - 0.0.0.0
   - --port
-  - "${DATABRICKS_APP_PORT:-8000}"
+  - "8000"
+
+# CATALOG and SCHEMA are injected by the bundle/app resources.
+# Do NOT hardcode personal defaults here — the bundle sets them via
+# ${var.catalog} and ${var.schema} so direct/UI deployments use the
+# correct environment.
 
 env:
-  - name: CATALOG
-    value: bootcamp_students
-  - name: SCHEMA
-    value: evangoh_capstone
+  - name: DATABRICKS_WAREHOUSE_ID
+    value: b15d3d6f837ba428
+  # Lakebase: connect as the app's own service principal (Postgres role + grants created by the database owner;
+  # CAN_USE on the instance). Databricks Apps reads env from app.yaml, overriding the bundle config.
+  - name: LAKEBASE_INSTANCE
+    value: evangoh-capstone-lakebase
+  - name: LAKEBASE_HOST
+    value: ep-steep-truth-d1ex36nr.database.us-west-2.cloud.databricks.com
+  - name: LAKEBASE_DBNAME
+    value: databricks_postgres
+  - name: LAKEBASE_USER
+    value: 5d55da45-1154-4b01-9838-9e0d2dd80e8e
+  - name: LAKEBASE_CONNECT_TIMEOUT
+    value: "8"

@@ -1,17 +1,5 @@
-# requirements-app.txt — backend dependencies added by the app-scaffold slice.
+# requirements-app.txt — DEPRECATED: app deps are now in the root requirements.txt.
 #
-# The base requirements.txt is owned by another lane; this file is additive.
-# `pyspark` is intentionally NOT listed here: it is only available inside
-# Databricks (where the app runs) and the API degrades gracefully to an
-# "unavailable" freshness state when it is absent in local development.
-#
-# fastapi/uvicorn/pydantic already appear in requirements.txt but are re-stated
-# with the versions the app was validated against.
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.0
-psycopg[binary]>=3.1
-psycopg-pool>=3.1
-# RAG dependencies — hybrid retrieval (BM25 + dense + RRF + rerank)
-sentence-transformers>=2.2.0
-rank-bm25>=0.2.2
+# This file is kept for backward compatibility.  The canonical app dependency
+# set is requirements.txt (installed by Databricks Apps).
+-r requirements.txt

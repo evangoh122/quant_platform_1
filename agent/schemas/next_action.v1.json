@@ -1,0 +1,403 @@
+{
+  "$defs": {
+    "AddToWatchlistArgs": {
+      "additionalProperties": false,
+      "description": "Arguments for add_to_watchlist.",
+      "properties": {
+        "symbol": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "title": "AddToWatchlistArgs",
+      "type": "object"
+    },
+    "GetLatestSignalArgs": {
+      "additionalProperties": false,
+      "description": "Arguments for get_latest_signal.",
+      "properties": {
+        "symbol": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "title": "GetLatestSignalArgs",
+      "type": "object"
+    },
+    "GetMarketFeaturesArgs": {
+      "additionalProperties": false,
+      "description": "Arguments for get_market_features.",
+      "properties": {
+        "symbol": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "title": "GetMarketFeaturesArgs",
+      "type": "object"
+    },
+    "GetOptionsFeaturesArgs": {
+      "additionalProperties": false,
+      "description": "Arguments for get_options_features.",
+      "properties": {
+        "symbol": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "title": "GetOptionsFeaturesArgs",
+      "type": "object"
+    },
+    "SaveResearchNoteArgs": {
+      "additionalProperties": false,
+      "description": "Arguments for save_research_note.\n\n``evidence_ids`` binds the note to evidence (chunk IDs) returned in the\nsame trace. The runtime enforces this binding; the model cannot fabricate\nevidence IDs that were not returned by a retrieval step.",
+      "properties": {
+        "evidence_ids": {
+          "description": "Chunk IDs from retrieval results in this trace",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "note": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        },
+        "symbol": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "note"
+      ],
+      "title": "SaveResearchNoteArgs",
+      "type": "object"
+    },
+    "SearchSecFilingsArgs": {
+      "additionalProperties": false,
+      "description": "Arguments for search_sec_filings.",
+      "properties": {
+        "query": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "symbol": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "title": "SearchSecFilingsArgs",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The closed model-output contract for the agent runtime.",
+  "oneOf": [
+    {
+      "$defs": {
+        "GetLatestSignalArgs": {
+          "additionalProperties": false,
+          "description": "Arguments for get_latest_signal.",
+          "properties": {
+            "symbol": {
+              "maxLength": 10,
+              "minLength": 1,
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "GetLatestSignalArgs",
+          "type": "object"
+        },
+        "GetMarketFeaturesArgs": {
+          "additionalProperties": false,
+          "description": "Arguments for get_market_features.",
+          "properties": {
+            "symbol": {
+              "maxLength": 10,
+              "minLength": 1,
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "GetMarketFeaturesArgs",
+          "type": "object"
+        },
+        "GetOptionsFeaturesArgs": {
+          "additionalProperties": false,
+          "description": "Arguments for get_options_features.",
+          "properties": {
+            "symbol": {
+              "maxLength": 10,
+              "minLength": 1,
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "GetOptionsFeaturesArgs",
+          "type": "object"
+        },
+        "SearchSecFilingsArgs": {
+          "additionalProperties": false,
+          "description": "Arguments for search_sec_filings.",
+          "properties": {
+            "query": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Query"
+            },
+            "symbol": {
+              "maxLength": 10,
+              "minLength": 1,
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "SearchSecFilingsArgs",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "The model proposes a retrieval tool call.",
+      "properties": {
+        "action": {
+          "const": "retrieve",
+          "default": "retrieve",
+          "title": "Action",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GetLatestSignalArgs"
+            },
+            {
+              "$ref": "#/$defs/GetMarketFeaturesArgs"
+            },
+            {
+              "$ref": "#/$defs/GetOptionsFeaturesArgs"
+            },
+            {
+              "$ref": "#/$defs/SearchSecFilingsArgs"
+            }
+          ],
+          "title": "Args"
+        },
+        "tool": {
+          "enum": [
+            "get_latest_signal",
+            "get_market_features",
+            "get_options_features",
+            "search_sec_filings"
+          ],
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "args"
+      ],
+      "title": "RetrieveAction",
+      "type": "object"
+    },
+    {
+      "$defs": {
+        "AddToWatchlistArgs": {
+          "additionalProperties": false,
+          "description": "Arguments for add_to_watchlist.",
+          "properties": {
+            "symbol": {
+              "maxLength": 10,
+              "minLength": 1,
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "AddToWatchlistArgs",
+          "type": "object"
+        },
+        "SaveResearchNoteArgs": {
+          "additionalProperties": false,
+          "description": "Arguments for save_research_note.\n\n``evidence_ids`` binds the note to evidence (chunk IDs) returned in the\nsame trace. The runtime enforces this binding; the model cannot fabricate\nevidence IDs that were not returned by a retrieval step.",
+          "properties": {
+            "evidence_ids": {
+              "description": "Chunk IDs from retrieval results in this trace",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20,
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "note": {
+              "maxLength": 4000,
+              "minLength": 1,
+              "title": "Note",
+              "type": "string"
+            },
+            "symbol": {
+              "maxLength": 10,
+              "minLength": 1,
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "note"
+          ],
+          "title": "SaveResearchNoteArgs",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "The model proposes a write tool call.\n\nThe runtime must still validate: request-scoped write authorization,\nauthenticated role, public-demo guard, symbol/evidence binding, and\nidempotency key before execution.",
+      "properties": {
+        "action": {
+          "const": "write",
+          "default": "write",
+          "title": "Action",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AddToWatchlistArgs"
+            },
+            {
+              "$ref": "#/$defs/SaveResearchNoteArgs"
+            }
+          ],
+          "title": "Args"
+        },
+        "tool": {
+          "enum": [
+            "add_to_watchlist",
+            "save_research_note"
+          ],
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "args"
+      ],
+      "title": "WriteAction",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The model proposes a final answer to return to the user.",
+      "properties": {
+        "action": {
+          "const": "final",
+          "default": "final",
+          "title": "Action",
+          "type": "string"
+        },
+        "reply": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Reply",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reply"
+      ],
+      "title": "FinalAction",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The model refuses the request (e.g. out-of-scope, dangerous).",
+      "properties": {
+        "action": {
+          "const": "refuse",
+          "default": "refuse",
+          "title": "Action",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "RefuseAction",
+      "type": "object"
+    }
+  ],
+  "title": "NextAction"
+}

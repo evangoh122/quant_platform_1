@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -23,18 +24,21 @@ from typing import Any, Callable, Iterator, Optional
 
 import psycopg
 from psycopg_pool import ConnectionPool
+from psycopg_pool import PoolTimeout
 
 # ── configuration (env-var driven; names only — no secrets in this file) ─────
 LAKEBASE_INSTANCE = os.getenv("LAKEBASE_INSTANCE", "evangoh-capstone-lakebase")
-LAKEBASE_HOST = os.getenv(
-    "LAKEBASE_HOST", "ep-steep-truth-d1ex36nr.database.us-west-2.cloud.databricks.com"
+# Databricks Apps injects PGHOST/PGPORT/PGDATABASE/PGUSER for a declared database
+# resource (PGUSER = the app service principal's client id); prefer those.
+LAKEBASE_HOST = os.getenv("LAKEBASE_HOST") or os.getenv(
+    "PGHOST", "ep-steep-truth-d1ex36nr.database.us-west-2.cloud.databricks.com"
 )
-LAKEBASE_PORT = int(os.getenv("LAKEBASE_PORT", "5432"))
-LAKEBASE_DBNAME = os.getenv("LAKEBASE_DBNAME", "databricks_postgres")
-LAKEBASE_USER = os.getenv("LAKEBASE_USER", "evangohsg@gmail.com")
+LAKEBASE_PORT = int(os.getenv("LAKEBASE_PORT") or os.getenv("PGPORT", "5432"))
+LAKEBASE_DBNAME = os.getenv("LAKEBASE_DBNAME") or os.getenv("PGDATABASE", "databricks_postgres")
+LAKEBASE_USER = os.getenv("LAKEBASE_USER") or os.getenv("PGUSER", "evangohsg@gmail.com")
 LAKEBASE_SCHEMA = os.getenv("LAKEBASE_SCHEMA", "public")
 LAKEBASE_SSLMODE = os.getenv("LAKEBASE_SSLMODE", "require")
-LAKEBASE_CONNECT_TIMEOUT = int(os.getenv("LAKEBASE_CONNECT_TIMEOUT", "10"))
+LAKEBASE_CONNECT_TIMEOUT = int(os.getenv("LAKEBASE_CONNECT_TIMEOUT", "3"))
 
 POOL_MIN_SIZE = int(os.getenv("LAKEBASE_POOL_MIN_SIZE", "1"))
 POOL_MAX_SIZE = int(os.getenv("LAKEBASE_POOL_MAX_SIZE", "5"))
@@ -45,6 +49,22 @@ TOKEN_REFRESH_MARGIN_SECONDS = int(os.getenv("LAKEBASE_TOKEN_REFRESH_MARGIN", "3
 DEFAULT_TOKEN_TTL_SECONDS = 3600
 
 
+def _mint_token_via_sdk(instance_name: str, request_id: str) -> dict:
+    """Mint via databricks-sdk (used when the CLI is unavailable, e.g. Databricks Apps)."""
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        cred = WorkspaceClient().database.generate_database_credential(
+            instance_names=[instance_name], request_id=request_id
+        )
+    except Exception as exc:  # noqa: BLE001 - never leak raw error text (may hold auth material)
+        raise RuntimeError(
+            f"Lakebase credential mint failed via SDK ({type(exc).__name__}, "
+            f"request_id={request_id})"
+        ) from exc
+    return {"token": cred.token, "expiration_time": cred.expiration_time}
+
+
 def mint_token_via_cli(instance_name: str = LAKEBASE_INSTANCE) -> dict:
     """Mint a short-lived OAuth token for the Lakebase instance.
 
@@ -52,15 +72,26 @@ def mint_token_via_cli(instance_name: str = LAKEBASE_INSTANCE) -> dict:
     Returns ``{"token": ..., "expiration_time": ...}``. Never persisted.
     """
     request_id = str(uuid.uuid4())
+    if shutil.which("databricks") is None:
+        # Databricks Apps containers have no CLI: use the SDK with the app's
+        # own service-principal credentials (default auth chain).
+        return _mint_token_via_sdk(instance_name, request_id)
     payload = json.dumps(
         {"request_id": request_id, "instance_names": [instance_name]}
     )
-    proc = subprocess.run(
-        ["databricks", "api", "post", "/api/2.0/database/credentials", "--json", payload],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["databricks", "api", "post", "/api/2.0/database/credentials", "--json", payload],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=LAKEBASE_CONNECT_TIMEOUT + 2,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Lakebase credential mint timed out after {exc.timeout}s, "
+            f"request_id={request_id}"
+        ) from exc
     if proc.returncode != 0:
         # Never propagate raw CLI stderr/stdout: it may contain credential or
         # session material. Report only the exit code and request id.
@@ -148,14 +179,22 @@ class Lakebase:
         conn.autocommit = False
 
     def _build_pool(self) -> ConnectionPool:
-        pool = ConnectionPool(
-            kwargs=self._conninfo(),
-            min_size=POOL_MIN_SIZE,
-            max_size=POOL_MAX_SIZE,
-            open=True,
-            configure=self._configure,
-            **self._pool_kwargs,
-        )
+        from api.diagnostics import stage
+
+        with stage("lakebase_pool_build"):
+            pool = ConnectionPool(
+                kwargs=self._conninfo(),
+                min_size=POOL_MIN_SIZE,
+                max_size=POOL_MAX_SIZE,
+                open=False,
+                configure=self._configure,
+                **self._pool_kwargs,
+            )
+            # Open the pool (starts background connection establishment)
+            # then wait for min_size connections to be ready within timeout.
+            # PoolTimeout is raised if min_size connections are not ready in time.
+            pool.open(wait=False)
+            pool.wait(timeout=LAKEBASE_CONNECT_TIMEOUT)
         return pool
 
     def _ensure_pool(self) -> ConnectionPool:
