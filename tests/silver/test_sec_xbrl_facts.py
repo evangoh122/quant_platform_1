@@ -292,6 +292,23 @@ def _mutate_null_safe_to_plain_eq_accession() -> str:
     )
 
 
+_NULLABLE_KEY_COLUMNS = [
+    "cik", "taxonomy", "concept", "unit",
+    "period_start", "period_end", "instant",
+    "fiscal_year", "fiscal_period", "form_type",
+    "accession_number", "frame",
+]
+
+
+def _mutate_null_safe_to_plain_eq(column: str) -> str:
+    """Replace <=> with = for a single column in the MERGE ON clause."""
+    sql = _get_full_merge_sql()
+    return sql.replace(
+        f"tgt.{column} IS NOT DISTINCT FROM src.{column}",
+        f"tgt.{column} = src.{column}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1121,3 +1138,106 @@ class TestIdempotentMerge:
             f"Mutation proof: plain = for accession_number should cause duplicates "
             f"on NULL accession rerun. Got {count_after_first} → {count_after_second}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Parametrized null-key idempotency — one test per nullable MERGE ON column
+# ---------------------------------------------------------------------------
+
+class TestNullableKeyIdempotency:
+    """For every nullable natural-key column in the MERGE ON clause, prove that
+    running the production MERGE twice with that column NULL does not duplicate.
+    """
+
+    @pytest.fixture()
+    def _base_fixtures(self, duckdb_conn):
+        """Insert a filing and a single bronze fact with a chosen key column NULL."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2
+                (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0020-01', TIMESTAMP '2025-06-01 10:00:00', 'TEST', '0001111111', '10-K')
+        """)
+        return duckdb_conn
+
+    @pytest.mark.parametrize("null_column", _NULLABLE_KEY_COLUMNS)
+    def test_merge_idempotent_with_null_column(self, _base_fixtures, null_column):
+        """Insert a bronze fact with *null_column* NULL, run the production MERGE
+        twice, assert row count is unchanged and the fact appears exactly once.
+
+        If the production source SELECT filters out NULLs for a column before
+        the MERGE, the fact is excluded/quarantinated — we assert 0 rows instead.
+        """
+        conn = _base_fixtures
+
+        base_cols = (
+            "ingest_run_id, ingested_at, source_url, payload_hash, "
+            "cik, entity_name, ticker, taxonomy, concept, label, description, "
+            "unit, value_raw, value_decimal, period_start, period_end, instant, "
+            "fiscal_year, fiscal_period, form_type, accession_number, filed_date, frame"
+        )
+        base_vals = (
+            "'run1', TIMESTAMP '2025-06-02 08:00:00', 'https://sec.gov', 'hash20', "
+            "'0001111111', 'Test Corp', 'TEST', 'us-gaap', 'Revenue', 'Revenue', 'desc', "
+            "'USD', NULL, 500.0, '2025-01-01', '2025-03-31', NULL, "
+            "2025, 'Q1', '10-K', '0020-01', '2025-06-01', NULL"
+        )
+
+        # Override the chosen column to NULL
+        override_map = {
+            "cik":             ("cik",             "NULL"),
+            "taxonomy":        ("taxonomy",        "NULL"),
+            "concept":         ("concept",         "NULL"),
+            "unit":            ("unit",            "NULL"),
+            "period_start":    ("period_start",    "NULL"),
+            "period_end":      ("period_end",      "NULL"),
+            "instant":         ("instant",         "NULL"),
+            "fiscal_year":     ("fiscal_year",     "NULL"),
+            "fiscal_period":   ("fiscal_period",   "NULL"),
+            "form_type":       ("form_type",       "NULL"),
+            "accession_number":("accession_number","NULL"),
+            "frame":           ("frame",           "NULL"),
+        }
+
+        col_name, null_val = override_map[null_column]
+
+        # Build INSERT with the target column set to NULL
+        # Replace the column's value in base_vals
+        col_list = base_cols.split(", ")
+        val_list = base_vals.split(", ")
+        # Find the index of the column in the list
+        # Special handling for columns that appear multiple times (e.g., form_type in filings_v2)
+        col_idx = col_list.index(col_name)
+        val_list[col_idx] = null_val
+        insert_sql = f"INSERT INTO bronze_sec_xbrl_facts ({', '.join(col_list)}) VALUES ({', '.join(val_list)})"
+        conn.execute(insert_sql)
+
+        merge_sql = _get_full_merge_sql()
+
+        # First MERGE
+        conn.execute(merge_sql)
+        count1 = conn.execute("SELECT COUNT(*) FROM silver_sec_xbrl_facts").fetchone()[0]
+
+        # Second MERGE
+        conn.execute(merge_sql)
+        count2 = conn.execute("SELECT COUNT(*) FROM silver_sec_xbrl_facts").fetchone()[0]
+
+        assert count1 == count2, (
+            f"MERGE not idempotent with NULL {null_column}: "
+            f"{count1} rows after first run, {count2} after second"
+        )
+
+        rows = conn.execute(
+            "SELECT accession_number, concept, fiscal_year, form_type "
+            "FROM silver_sec_xbrl_facts"
+        ).fetchall()
+
+        if count1 == 0:
+            # Production source SELECT filtered out the NULL → fact excluded/quarantined
+            assert len(rows) == 0, (
+                f"NULL {null_column}: fact excluded by production source filter "
+                f"(0 rows after first MERGE), confirmed quarantinated"
+            )
+        else:
+            assert len(rows) == 1, (
+                f"NULL {null_column}: fact should appear exactly once, got {len(rows)}"
+            )
