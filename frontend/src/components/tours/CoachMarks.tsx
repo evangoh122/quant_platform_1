@@ -158,11 +158,15 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
           width: rect.width + PAD * 2,
           height: rect.height + PAD * 2,
         };
+        const clampedLeft = Math.max(0, Math.min(raw.left, vw));
+        const clampedRight = Math.max(0, Math.min(raw.left + raw.width, vw));
+        const clampedTop = Math.max(0, Math.min(raw.top, vh));
+        const clampedBottom = Math.max(0, Math.min(raw.top + raw.height, vh));
         const clamped = {
-          left: Math.max(0, raw.left),
-          top: Math.max(0, raw.top),
-          width: Math.min(raw.width, vw - Math.max(0, raw.left)),
-          height: Math.min(raw.height, vh - Math.max(0, raw.top)),
+          left: clampedLeft,
+          top: clampedTop,
+          width: Math.max(0, clampedRight - clampedLeft),
+          height: Math.max(0, clampedBottom - clampedTop),
         };
         return (
         <div
