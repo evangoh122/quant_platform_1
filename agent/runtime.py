@@ -245,6 +245,7 @@ _XML_TAG_RE = re.compile(
 # Rule 1: any registered tool name as a whole word anywhere in the text.
 _TOOL_NAME_RE = re.compile(
     r'\b(?:' + '|'.join(re.escape(t) for t in ALL_TOOLS) + r')\b',
+    re.IGNORECASE,
 )
 
 

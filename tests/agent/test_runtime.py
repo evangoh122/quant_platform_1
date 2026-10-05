@@ -856,6 +856,8 @@ class TestProseFallback:
         '<action>retrieve</action>',            # rule 3
         '- tool: some_unknown_tool',            # rule 4, YAML list item
         '- action: retrieve',                   # rule 4, YAML list item
+        'Search_sec_filings (AMD)',             # rule 1 is case-insensitive
+        'SEARCH_SEC_FILINGS(symbol="AMD")',
     ])
     def test_broad_rejected_shapes(self, text):
         """Brace-free shapes assert malformed; brace-containing assert fail-closed."""
