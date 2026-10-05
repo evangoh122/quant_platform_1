@@ -169,6 +169,21 @@ export interface AnalyticsResponse {
   stream_freshness: Envelope<AnalyticsItem>;
 }
 
+export interface SecCoverageItem {
+  ticker: string;
+  cik: string;
+  n_filings: number;
+  n_chunks: number;
+  first_filed: string | null;
+  last_filed: string | null;
+}
+
+export interface SecCoverageResponse {
+  data: SecCoverageItem[];
+  count: number;
+  status: 'ok' | 'unavailable';
+}
+
 export interface OrderIntentRequest {
   symbol: string;
   side: 'BUY' | 'SELL';

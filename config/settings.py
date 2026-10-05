@@ -5,7 +5,7 @@ CATALOG = os.getenv("CATALOG", "bootcamp_students")
 SCHEMA  = os.getenv("SCHEMA", "evangoh_capstone")
 
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
-EDGAR_EMAIL     = os.getenv("EDGAR_EMAIL", "research@example.com")
+EDGAR_EMAIL = os.getenv("EDGAR_EMAIL", "")  # Validated at first use
 
 TWS_HOST      = os.getenv("TWS_HOST", "127.0.0.1")
 TWS_PORT      = int(os.getenv("TWS_PORT", "7497"))

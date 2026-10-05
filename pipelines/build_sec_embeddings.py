@@ -1,22 +1,43 @@
 """
-pipelines/build_sec_embeddings.py — Idempotent batch embedding builder.
+pipelines/build_sec_embeddings.py -- Idempotent batch embedding builder.
 
 Reads chunk text from silver_sec_sections, embeds with BAAI/bge-small-en-v1.5
 (384-d), and MERGEs into gold_sec_chunk_embeddings.  Only chunks whose
 chunk_id is NOT already present for that embedding_model are embedded.
 
+Uses Spark left anti-join for incremental processing -- never collects all
+chunk IDs into the driver at once.
+
+Embedding runs in parallel via a bounded ThreadPoolExecutor (max_workers =
+partitions).  Each worker initialises its own model instance so there is no
+contention on the shared model object.
+
 Run via databricks-connect serverless:
     python pipelines/build_sec_embeddings.py
+    python pipelines/build_sec_embeddings.py --ticker NVDA --batch-size 256
 
 Expected: ~10,720 rows on first run, 0 on second run (idempotent).
 """
 from __future__ import annotations
 
+import argparse
+import logging
 import os
+import sys
+import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import Optional
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# Ensure repo root is on sys.path so ``api.*`` and ``pipelines.*`` resolve
+# when invoked via ``python_file`` in a Databricks job.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+logger = logging.getLogger(__name__)
+
+# -- Config --
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
 SCHEMA = os.getenv("SCHEMA", "evangoh_capstone")
@@ -27,7 +48,8 @@ EMBEDDINGS_TABLE = f"{FQN}.gold_sec_chunk_embeddings"
 
 EMBEDDING_MODEL = os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
+DEFAULT_BATCH_SIZE = 256
+DEFAULT_PARTITIONS = 4
 
 EMBEDDINGS_SCHEMA = (
     "chunk_id STRING, accession_number STRING, ticker STRING, "
@@ -52,103 +74,263 @@ def _ensure_table(spark) -> None:
     """)
 
 
-def build(spark) -> dict:
+def build(
+    spark,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    partitions: int = DEFAULT_PARTITIONS,
+    ticker: str = "",
+    limit: int = 0,
+) -> dict:
     """Build embeddings for chunks not yet embedded.
+
+    Uses Spark left anti-join to find unembedded chunks -- never collects
+    all chunk IDs into the driver at once. Processes in bounded batches
+    via toLocalIterator() to keep driver memory bounded.
+
+    Embedding runs in parallel via a bounded ThreadPoolExecutor so that
+    N batches can be embedded concurrently (N = partitions).
 
     Returns dict with keys: rows_written, embedding_dim, rows_already_embedded.
     """
     from api.services.embeddings import get_embeddings
 
-    embeddings = get_embeddings()
-
     t0 = time.monotonic()
 
-    # 0. Ensure target table exists
     _ensure_table(spark)
 
-    # 1. Get chunk_ids already embedded for this model
-    existing_df = spark.table(EMBEDDINGS_TABLE).filter(
-        f"embedding_model = '{EMBEDDING_MODEL}'"
-    ).select("chunk_id")
-    existing_ids = set(r["chunk_id"] for r in existing_df.collect())
-
-    # 2. Get all chunks (including metadata columns)
-    # Use unix_timestamp to avoid client-tz drift on Spark TIMESTAMP columns.
     from pyspark.sql import functions as F
 
-    chunks_df = spark.table(CHUNKS_TABLE).select(
-        "chunk_id", "chunk_text", "accession_number", "ticker",
-        F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
-    ).filter("chunk_text IS NOT NULL AND chunk_id IS NOT NULL")
-    all_rows = chunks_df.collect()
+    # Anti-join: chunks NOT already embedded for this model
+    chunks_df = (
+        spark.table(CHUNKS_TABLE)
+        .filter("chunk_text IS NOT NULL AND chunk_id IS NOT NULL")
+        .select(
+            "chunk_id", "chunk_text", "accession_number", "ticker",
+            F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+        )
+    )
 
-    # 3. Filter to only unembedded chunks
-    new_rows = [r for r in all_rows if r["chunk_id"] not in existing_ids]
-    rows_already_embedded = len(all_rows) - len(new_rows)
+    if ticker:
+        tickers = [t.strip().upper() for t in ticker.split(",") if t.strip()]
+        if len(tickers) == 1:
+            chunks_df = chunks_df.filter(F.col("ticker") == tickers[0])
+        else:
+            chunks_df = chunks_df.filter(F.col("ticker").isin(tickers))
 
-    if not new_rows:
-        elapsed = time.monotonic() - t0
-        return {
-            "rows_written": 0,
-            "embedding_dim": EMBEDDING_DIM,
-            "rows_already_embedded": rows_already_embedded,
-            "elapsed_seconds": round(elapsed, 1),
-        }
+    embedded_df = (
+        spark.table(EMBEDDINGS_TABLE)
+        .filter(F.col("embedding_model") == EMBEDDING_MODEL)
+        .select(F.col("chunk_id").alias("emb_chunk_id"))
+    )
 
-    # 4. Embed in batches
+    anti_join_df = (
+        chunks_df
+        .join(embedded_df, chunks_df.chunk_id == embedded_df.emb_chunk_id, "left_anti")
+    )
+
+    if limit > 0:
+        anti_join_df = anti_join_df.limit(limit)
+
+    if partitions > 1:
+        anti_join_df = anti_join_df.repartition(partitions)
+
+    # Collect batches from the iterator
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    out_rows = []
-    total = len(new_rows)
+    total_processed = 0
+    rows_written = 0
+    rows_unknown = False
 
-    for batch_start in range(0, total, EMBEDDING_BATCH_SIZE):
-        batch = new_rows[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
-        texts = [r["chunk_text"] for r in batch]
-        vecs = embeddings.embed_documents(texts)
+    # get_embeddings() is a singleton — all workers share the same model
+    # instance.  Bounded by max_workers=partitions.
+    max_workers = max(1, partitions)
 
-        for r, vec in zip(batch, vecs):
-            # Convert epoch to UTC datetime for storage
-            epoch = r["accepted_epoch"]
-            accepted_ts = (
-                datetime.fromtimestamp(int(epoch), tz=timezone.utc)
-                if epoch is not None
-                else None
-            )
-            out_rows.append((
-                r["chunk_id"],
-                r["accession_number"],
-                r["ticker"],
-                accepted_ts,
-                vec,
-                EMBEDDING_MODEL,
-                now,
-            ))
+    # Serialize MERGEs to avoid Delta concurrent-write conflicts
+    _merge_lock = threading.Lock()
 
-        done = min(batch_start + EMBEDDING_BATCH_SIZE, total)
-        if done % 500 == 0 or done == total:
-            print(f"  Embedded {done}/{total}")
+    def _embed_batch(batch):
+        """Worker: embed a batch and write to Delta.  Returns row count (None if unknown)."""
+        from api.services.embeddings import get_embeddings as _get
+        worker_embeddings = _get()
+        return _embed_and_write_batch(spark, worker_embeddings, batch, now, _merge_lock)
 
-    # 5. Write to Delta via MERGE
-    src_df = spark.createDataFrame(out_rows, schema=EMBEDDINGS_SCHEMA)
-    src_df.createOrReplaceTempView("_embed_src")
+    def _accumulate(result):
+        nonlocal rows_written, rows_unknown
+        if result is None:
+            rows_unknown = True
+        elif not rows_unknown:
+            rows_written += result
 
-    spark.sql(f"""
-        MERGE INTO {EMBEDDINGS_TABLE} AS tgt
-        USING _embed_src AS src
-        ON tgt.chunk_id = src.chunk_id AND tgt.embedding_model = src.embedding_model
-        WHEN MATCHED THEN UPDATE SET *
-        WHEN NOT MATCHED THEN INSERT *
-    """)
+    # Submit batches to the pool as they come off the iterator.
+    # At most max_workers futures are in-flight at any time (bounded memory).
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pending = set()
+        batch = []
+
+        for row in anti_join_df.toLocalIterator():
+            chunk_text_val = row["chunk_text"]
+            if not chunk_text_val:
+                continue
+
+            batch.append({
+                "chunk_id": row["chunk_id"],
+                "chunk_text": chunk_text_val,
+                "accession_number": row["accession_number"],
+                "ticker": row["ticker"],
+                "accepted_epoch": row["accepted_epoch"],
+            })
+
+            if len(batch) >= batch_size:
+                # Wait for a slot if we've hit the concurrency limit
+                if len(pending) >= max_workers:
+                    done, pending = _drain_one(pending)
+                    for f in done:
+                        _accumulate(f.result())
+                pending.add(pool.submit(_embed_batch, batch))
+                total_processed += len(batch)
+                if total_processed % 500 == 0:
+                    print(f"  Processed {total_processed} chunks")
+                batch = []
+
+        # Submit the last partial batch
+        if batch:
+            pending.add(pool.submit(_embed_batch, batch))
+            total_processed += len(batch)
+
+        # Wait for all remaining futures
+        for f in as_completed(pending):
+            _accumulate(f.result())
 
     elapsed = time.monotonic() - t0
     return {
-        "rows_written": len(out_rows),
+        "rows_written": None if rows_unknown else rows_written,
         "embedding_dim": EMBEDDING_DIM,
-        "rows_already_embedded": rows_already_embedded,
+        "rows_already_embedded": -1,  # unknown with anti-join
         "elapsed_seconds": round(elapsed, 1),
     }
 
 
+def _drain_one(pending):
+    """Wait for exactly one future to complete. Returns (done_set, remaining_set)."""
+    from concurrent.futures import as_completed
+    done = set()
+    for f in as_completed(pending):
+        done.add(f)
+        break
+    return done, pending - done
+
+
+def _embed_and_write_batch(
+    spark,
+    embeddings,
+    batch: list,
+    now: datetime,
+    merge_lock: threading.Lock,
+) -> Optional[int]:
+    """Embed a batch of chunks and MERGE into the embeddings table.
+
+    Uses a unique temp view name per batch to avoid concurrent-view conflicts.
+    Serialises the MERGE via merge_lock to avoid Delta concurrent-write errors.
+    Returns the actual inserted row count from MERGE operationMetrics.
+    """
+    if not batch:
+        return 0
+
+    texts = [r["chunk_text"] for r in batch]
+    vecs = embeddings.embed_documents(texts)
+
+    out_rows = []
+    for r, vec in zip(batch, vecs):
+        if len(vec) != EMBEDDING_DIM:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected {EMBEDDING_DIM}, "
+                f"got {len(vec)} for chunk {r['chunk_id']}"
+            )
+
+        epoch = r["accepted_epoch"]
+        accepted_ts = (
+            datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+            if epoch is not None
+            else None
+        )
+        out_rows.append((
+            r["chunk_id"],
+            r["accession_number"],
+            r["ticker"],
+            accepted_ts,
+            vec,
+            EMBEDDING_MODEL,
+            now,
+        ))
+
+    src_df = spark.createDataFrame(out_rows, schema=EMBEDDINGS_SCHEMA)
+    view_name = f"_embed_src_{uuid.uuid4().hex[:12]}"
+    src_df.createOrReplaceTempView(view_name)
+
+    with merge_lock:
+        spark.sql(f"""
+            MERGE INTO {EMBEDDINGS_TABLE} AS tgt
+            USING {view_name} AS src
+            ON tgt.chunk_id = src.chunk_id AND tgt.embedding_model = src.embedding_model
+            WHEN NOT MATCHED THEN INSERT (
+                chunk_id, accession_number, ticker, accepted_ts,
+                embedding, embedding_model, embedded_ts
+            ) VALUES (
+                src.chunk_id, src.accession_number, src.ticker, src.accepted_ts,
+                src.embedding, src.embedding_model, src.embedded_ts
+            )
+        """)
+
+        # Get actual inserted count from MERGE operationMetrics
+        inserted: Optional[int] = None
+        try:
+            hist = spark.sql(f"DESCRIBE HISTORY {EMBEDDINGS_TABLE} LIMIT 1").collect()
+            if hist:
+                metrics = hist[0]["operationMetrics"]
+                if metrics and "numTargetRowsInserted" in metrics:
+                    inserted = int(metrics["numTargetRowsInserted"])
+                else:
+                    logger.warning(
+                        "DESCRIBE HISTORY returned no operationMetrics or "
+                        "numTargetRowsInserted key; reporting inserted count as unknown"
+                    )
+            else:
+                logger.warning(
+                    "DESCRIBE HISTORY returned no rows; "
+                    "reporting inserted count as unknown"
+                )
+        except Exception:
+            logger.warning(
+                "Could not read MERGE metrics from DESCRIBE HISTORY; "
+                "reporting inserted count as unknown"
+            )
+
+    # Drop the unique temp view
+    try:
+        spark.catalog.dropTempView(view_name)
+    except Exception:
+        pass
+
+    return inserted
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Build SEC chunk embeddings")
+    parser.add_argument("--catalog", default=os.getenv("CATALOG", "bootcamp_students"))
+    parser.add_argument("--schema", default=os.getenv("SCHEMA", "evangoh_capstone"))
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--partitions", type=int, default=DEFAULT_PARTITIONS)
+    parser.add_argument("--ticker", default="", help="Filter to specific ticker(s), comma-separated")
+    parser.add_argument("--limit", type=int, default=0, help="Limit chunks to process")
+    args = parser.parse_args()
+
+    global CATALOG, SCHEMA, FQN, CHUNKS_TABLE, EMBEDDINGS_TABLE
+    CATALOG = args.catalog
+    SCHEMA = args.schema
+    FQN = f"{CATALOG}.{SCHEMA}"
+    CHUNKS_TABLE = f"{FQN}.silver_sec_sections"
+    EMBEDDINGS_TABLE = f"{FQN}.gold_sec_chunk_embeddings"
+
     from databricks.connect import DatabricksSession
 
     spark = DatabricksSession.builder.serverless(True).getOrCreate()
@@ -157,16 +339,18 @@ def main():
     print(f"Model: {EMBEDDING_MODEL} ({EMBEDDING_DIM}-d)")
     print(f"Source: {CHUNKS_TABLE}")
     print(f"Target: {EMBEDDINGS_TABLE}")
+    if args.ticker:
+        print(f"Ticker filter: {args.ticker}")
     print()
 
-    result = build(spark)
-    print(f"\nFirst run:  {result['rows_written']} rows written in {result['elapsed_seconds']}s")
-
-    # Second run to verify idempotency
-    result2 = build(spark)
-    print(f"Second run: {result2['rows_written']} rows written (expect 0)")
-
-    return result
+    result = build(
+        spark,
+        batch_size=args.batch_size,
+        partitions=args.partitions,
+        ticker=args.ticker,
+        limit=args.limit,
+    )
+    print(f"\n  {result['rows_written']} rows written in {result['elapsed_seconds']}s")
 
 
 if __name__ == "__main__":

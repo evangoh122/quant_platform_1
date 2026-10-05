@@ -474,6 +474,42 @@
   status                             string NOT NULL
   processed_ts                       timestamp NOT NULL
 
+### sec_ingest_log  (16 cols)
+  run_id                             string NOT NULL
+  ticker                             string NOT NULL
+  cik                                string NOT NULL
+  accession_number                   string NOT NULL
+  form_type                          string NOT NULL
+  filing_date                        string
+  accepted_ts                        timestamp
+  status                             string NOT NULL
+  rows_appended                      int
+  attempt                            int
+  error_code                         string
+  error_message                      string
+  started_ts                         timestamp
+  completed_ts                       timestamp
+  dry_run                            boolean
+  logged_ts                          timestamp NOT NULL
+
+### sec_cik_mapping_log  (7 cols)
+  ticker                             string NOT NULL
+  lookup_symbol                      string
+  cik                                string
+  status                             string NOT NULL   (mapped | missing | ambiguous)
+  reason                             string
+  mapped_ts                          timestamp
+  run_id                             string
+
+### gold_sec_coverage  (7 cols)
+  ticker                             string NOT NULL
+  cik                                string
+  n_filings                          bigint NOT NULL
+  n_chunks                           bigint NOT NULL
+  first_filed                        timestamp
+  last_filed                         timestamp
+  last_ingest_ts                     timestamp
+
 ### gold_sec_kg_nodes  (7 cols)
   node_id                            string NOT NULL
   node_type                          string NOT NULL

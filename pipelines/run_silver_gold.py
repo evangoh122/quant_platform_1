@@ -52,6 +52,7 @@ STEPS = [
     ("gold_ohlcv_features", "gold/01_gold_ohlcv_features.sql", "sql"),
     ("gold_options_features", "gold/02_gold_options_features.sql", "sql"),
     ("gold_sec_features", "gold/gold_sec_features.py", "py"),
+    ("gold_sec_coverage", "gold/07_gold_sec_coverage.sql", "sql"),
     ("gold_cot_features", "gold/04_gold_cot_features.sql", "sql"),
     ("gold_model_features", "gold/05_gold_model_features.sql", "sql"),
     ("gold_tradable_universe", "gold/06_gold_tradable_universe.sql", "sql"),
@@ -63,7 +64,7 @@ TARGET_TABLES = [
     "silver_options_trades", "silver_sec_sections", "silver_sec_entities",
     "silver_cot_positions", "silver_ohlcv_day_adjusted", "data_quality_breaks",
     "gold_ohlcv_features", "gold_options_features", "gold_sec_features",
-    "gold_cot_features", "gold_model_features",
+    "gold_sec_coverage", "gold_cot_features", "gold_model_features",
     "gold_tradable_universe", "gold_regime_features",
 ]
 
@@ -86,6 +87,12 @@ def get_spark() -> DatabricksSession:
 
 
 def register_universe(spark) -> list[str]:
+    """Register the expanded SEC universe as a temp view.
+
+    Combines gold_tradable_universe (all symbols ever traded) with the
+    16 hardcoded SEC tickers, so silver transforms can ingest new tickers
+    beyond the original MVP universe.
+    """
     symbols = load_universe()
     df = spark.createDataFrame([(s,) for s in symbols], schema="symbol string")
     df.createOrReplaceTempView("universe")
@@ -145,7 +152,11 @@ def run_step(spark, name, path, kind, symbols):
         n = mod.build(spark, symbols)
     else:
         sql_text = open(os.path.join(HERE, path), encoding="utf-8").read()
-        sql = sql_text.replace("{date_start}", DATE_START).replace("{date_end}", DATE_END)
+        sql = (sql_text
+               .replace("{date_start}", DATE_START)
+               .replace("{date_end}", DATE_END)
+               .replace("{catalog}", CATALOG)
+               .replace("{schema}", SCHEMA))
         for stmt in split_statements(sql):
             spark.sql(stmt)
         n = count(spark, name)

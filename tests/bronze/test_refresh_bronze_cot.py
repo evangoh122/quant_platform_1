@@ -42,27 +42,27 @@ requires_spark = pytest.mark.skipif(not _HAS_SPARK, reason="PySpark not availabl
 
 @pytest.fixture(scope="session")
 def spark():
-    """Create a Spark session for tests. Tries Databricks Connect first, then local."""
+    """Create a local Spark session for tests."""
+    from unittest.mock import MagicMock
+
     try:
-        from databricks.connect import DatabricksSession
-        session = DatabricksSession.builder.serverless(True).getOrCreate()
-    except Exception:
-        try:
-            from pyspark.sql import SparkSession
-            session = (
-                SparkSession.builder
-                .master("local[2]")
-                .appName("test_bronze_cot")
-                .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-                .config(
-                    "spark.sql.catalog.spark_catalog",
-                    "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-                )
-                .config("spark.ui.enabled", "false")
-                .getOrCreate()
+        from pyspark.sql import SparkSession
+        session = (
+            SparkSession.builder
+            .master("local[2]")
+            .appName("test_bronze_cot")
+            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+            .config(
+                "spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog",
             )
-        except Exception:
-            pytest.skip("No Spark session available (neither Databricks Connect nor local)")
+            .config("spark.ui.enabled", "false")
+            .getOrCreate()
+        )
+    except Exception:
+        pytest.skip("No local PySpark session available")
+    if isinstance(session, MagicMock):
+        pytest.skip("Spark session is a MagicMock (sys.modules pollution from another test module)")
     yield session
 
 

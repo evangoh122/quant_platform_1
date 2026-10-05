@@ -14,44 +14,62 @@
 -- deliberately excludes xbrl_fact rows), so it is a soft reference.
 --
 -- Idempotent: MERGE on the natural composite key with null-safe sentinels.
+-- Source anti-join: only processes accessions absent from silver.
+--
+-- Universe: all symbols ever in gold_tradable_universe (CTE) unioned with
+--   the 16 SEC-hardcoded tickers. Do NOT filter by config/universe.yaml.
 
-MERGE INTO bootcamp_students.evangoh_capstone.silver_sec_entities AS tgt
+MERGE INTO {catalog}.{schema}.silver_sec_entities AS tgt
 USING (
+  WITH sec_universe AS (
+    SELECT DISTINCT upper(trim(symbol)) AS ticker
+    FROM {catalog}.{schema}.gold_tradable_universe
+    UNION
+    SELECT ticker FROM (VALUES
+      ('NVDA'),('TSM'),('AVGO'),('MU'),('AMD'),('ASML'),('ADI'),('TXN'),
+      ('LRCX'),('AMAT'),('QCOM'),('INTC'),('MRVL'),('KLAC'),('CDNS'),('SNPS')
+    ) AS hardcoded(ticker)
+  )
   -- 1. XBRL facts
   SELECT
-    cik,
-    ticker,
-    accession_number,
-    form_type,
-    accepted_ts,
+    src.cik,
+    src.ticker,
+    src.accession_number,
+    src.form_type,
+    src.accepted_ts,
     'xbrl_fact'                                                  AS entity_type,
-    get_json_object(chunk_text, '$.concept')                     AS entity_key,
-    get_json_object(chunk_text, '$.value')                       AS entity_value,
-    get_json_object(chunk_text, '$.unit')                        AS entity_unit,
-    CAST(get_json_object(chunk_text, '$.period_start') AS DATE)  AS period_start,
-    CAST(get_json_object(chunk_text, '$.period_end')   AS DATE)  AS period_end,
+    get_json_object(src.chunk_text, '$.concept')                 AS entity_key,
+    get_json_object(src.chunk_text, '$.value')                   AS entity_value,
+    get_json_object(src.chunk_text, '$.unit')                    AS entity_unit,
+    CAST(get_json_object(src.chunk_text, '$.period_start') AS DATE)  AS period_start,
+    CAST(get_json_object(src.chunk_text, '$.period_end')   AS DATE)  AS period_end,
     1.0                                                          AS confidence,
-    record_key                                                   AS source_chunk_id,
+    src.record_key                                               AS source_chunk_id,
     current_timestamp()                                          AS processed_ts
-  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
-  WHERE filing_section LIKE 'xbrl_fact_%'
-    AND ticker IN (SELECT symbol FROM universe)
-    AND chunk_text IS NOT NULL
-    AND cik IS NOT NULL AND accession_number IS NOT NULL
-    AND form_type IS NOT NULL AND accepted_ts IS NOT NULL
+  FROM {catalog}.{schema}.bronze_sec_filings_v2 src
+  LEFT JOIN (
+    SELECT DISTINCT accession_number
+    FROM {catalog}.{schema}.silver_sec_entities
+  ) existing ON src.accession_number = existing.accession_number
+  WHERE existing.accession_number IS NULL
+    AND src.filing_section LIKE 'xbrl_fact_%'
+    AND src.ticker IN (SELECT ticker FROM sec_universe)
+    AND src.chunk_text IS NOT NULL
+    AND src.cik IS NOT NULL AND src.accession_number IS NOT NULL
+    AND src.form_type IS NOT NULL AND src.accepted_ts IS NOT NULL
 
   UNION ALL
 
   -- 2. Company entity
   SELECT
-    cik,
-    ticker,
-    accession_number,
-    form_type,
-    accepted_ts,
+    sub.cik,
+    sub.ticker,
+    sub.accession_number,
+    sub.form_type,
+    sub.accepted_ts,
     'company'        AS entity_type,
     'company_name'   AS entity_key,
-    company_name     AS entity_value,
+    sub.company_name AS entity_value,
     NULL             AS entity_unit,
     NULL             AS period_start,
     NULL             AS period_end,
@@ -59,48 +77,58 @@ USING (
     NULL             AS source_chunk_id,
     current_timestamp() AS processed_ts
   FROM (
-    SELECT cik, ticker, accession_number, form_type, accepted_ts, company_name,
-           ROW_NUMBER() OVER (PARTITION BY accession_number ORDER BY cik) AS rn
-    FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
-    WHERE company_name IS NOT NULL
-      AND ticker IN (SELECT symbol FROM universe)
-  )
-  WHERE rn = 1
+    SELECT src.cik, src.ticker, src.accession_number, src.form_type, src.accepted_ts, src.company_name,
+           ROW_NUMBER() OVER (PARTITION BY src.accession_number ORDER BY src.cik) AS rn
+    FROM {catalog}.{schema}.bronze_sec_filings_v2 src
+    LEFT JOIN (
+      SELECT DISTINCT accession_number
+      FROM {catalog}.{schema}.silver_sec_entities
+    ) existing ON src.accession_number = existing.accession_number
+    WHERE existing.accession_number IS NULL
+      AND src.company_name IS NOT NULL
+      AND src.ticker IN (SELECT ticker FROM sec_universe)
+  ) sub
+  WHERE sub.rn = 1
 
   UNION ALL
 
   -- 3. Risk-factor entity
   SELECT
-    cik,
-    ticker,
-    accession_number,
-    form_type,
-    accepted_ts,
+    src.cik,
+    src.ticker,
+    src.accession_number,
+    src.form_type,
+    src.accepted_ts,
     'risk_factor'                                AS entity_type,
     'item1a'                                     AS entity_key,
-    left(chunk_text, 200)                        AS entity_value,
+    left(src.chunk_text, 200)                    AS entity_value,
     NULL                                         AS entity_unit,
     NULL                                         AS period_start,
     NULL                                         AS period_end,
     0.9                                          AS confidence,
-    record_key                                   AS source_chunk_id,
+    src.record_key                               AS source_chunk_id,
     current_timestamp()                          AS processed_ts
-  FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
-  WHERE filing_section = 'item1a_risk_factors'
-    AND ticker IN (SELECT symbol FROM universe)
-    AND chunk_text IS NOT NULL
-    AND cik IS NOT NULL AND accession_number IS NOT NULL
-    AND form_type IS NOT NULL AND accepted_ts IS NOT NULL
+  FROM {catalog}.{schema}.bronze_sec_filings_v2 src
+  LEFT JOIN (
+    SELECT DISTINCT accession_number
+    FROM {catalog}.{schema}.silver_sec_entities
+  ) existing ON src.accession_number = existing.accession_number
+  WHERE existing.accession_number IS NULL
+    AND src.filing_section = 'item1a_risk_factors'
+    AND src.ticker IN (SELECT ticker FROM sec_universe)
+    AND src.chunk_text IS NOT NULL
+    AND src.cik IS NOT NULL AND src.accession_number IS NOT NULL
+    AND src.form_type IS NOT NULL AND src.accepted_ts IS NOT NULL
 
   UNION ALL
 
   -- 4. Event entity (one per 8-K filing)
   SELECT
-    cik,
-    ticker,
-    accession_number,
-    form_type,
-    accepted_ts,
+    sub.cik,
+    sub.ticker,
+    sub.accession_number,
+    sub.form_type,
+    sub.accepted_ts,
     'event'              AS entity_type,
     '8-K'                AS entity_key,
     'material_event'     AS entity_value,
@@ -111,13 +139,18 @@ USING (
     NULL                 AS source_chunk_id,
     current_timestamp()  AS processed_ts
   FROM (
-    SELECT cik, ticker, accession_number, form_type, accepted_ts,
-           ROW_NUMBER() OVER (PARTITION BY accession_number ORDER BY cik) AS rn
-    FROM bootcamp_students.evangoh_capstone.bronze_sec_filings_v2
-    WHERE form_type = '8-K'
-      AND ticker IN (SELECT symbol FROM universe)
-  )
-  WHERE rn = 1
+    SELECT src.cik, src.ticker, src.accession_number, src.form_type, src.accepted_ts,
+           ROW_NUMBER() OVER (PARTITION BY src.accession_number ORDER BY src.cik) AS rn
+    FROM {catalog}.{schema}.bronze_sec_filings_v2 src
+    LEFT JOIN (
+      SELECT DISTINCT accession_number
+      FROM {catalog}.{schema}.silver_sec_entities
+    ) existing ON src.accession_number = existing.accession_number
+    WHERE existing.accession_number IS NULL
+      AND src.form_type = '8-K'
+      AND src.ticker IN (SELECT ticker FROM sec_universe)
+  ) sub
+  WHERE sub.rn = 1
 ) AS src
 ON tgt.accession_number = src.accession_number
    AND tgt.entity_type = src.entity_type

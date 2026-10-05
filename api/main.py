@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.deps import FRONTEND_DIST
-from api.routes import analytics, health, market, signals
+from api.routes import analytics, health, market, sec, signals
 
 APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
 
@@ -281,9 +281,13 @@ def _get_client_ip(request: Request) -> str:
 
 
 def _warm_sec_corpus_in_background() -> None:
-    """Load the SEC retrieval corpus off the request path (~40 s cold via the warehouse),
-    so the agent's first search does not hit the proxy timeout. Failures are logged and
-    retried lazily on first use."""
+    """Pre-warm the SEC retrieval alias map and coverage data off the request path,
+    so the agent's first search does not hit the cold-start penalty. Failures are
+    logged and retried lazily on first use.
+
+    With per-ticker lazy loading, we warm the alias map (coverage + CIK grouping)
+    rather than loading the entire corpus upfront. Individual ticker corpora are
+    loaded on demand and cached in the LRU."""
     import os
     import threading
 
@@ -294,11 +298,11 @@ def _warm_sec_corpus_in_background() -> None:
 
     def _run() -> None:
         try:
-            from api.services.hybrid_retriever import _load_corpus
+            from api.services.hybrid_retriever import _load_alias_map
             with stage("startup_sec_corpus_warm"):
-                _load_corpus()
+                _load_alias_map()
         except Exception as exc:  # noqa: BLE001
-            _log.warning("SEC corpus warm-up failed (%s); will load lazily", type(exc).__name__)
+            _log.warning("SEC alias map warm-up failed (%s); will load lazily", type(exc).__name__)
 
     threading.Thread(target=_run, name="sec-corpus-warm", daemon=True).start()
 
@@ -370,6 +374,7 @@ def create_app() -> FastAPI:
         application.include_router(signals.router, prefix="/api/signals", tags=["signals"])
         application.include_router(market.router, prefix="/api/market", tags=["market"])
         application.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
+        application.include_router(sec.router, prefix="/api/sec", tags=["sec"])
 
     if not demo:
         from api.routes import agent_chat, orders, portfolio, watchlists
