@@ -22,10 +22,10 @@ Diagram source: [`docs/proposal/architecture.dot`](docs/proposal/architecture.do
 | Third-party APIs | Massive/Polygon (OHLCV, options, splits), SEC EDGAR, CFTC COT, Federal Reserve/FRED | Implemented, run |
 | Two Big Data Vs | **Volume:** 287.1M rows (239.1M bronze) · **Variety:** structured prices/options/COT/macro + unstructured SEC filing text | Measured 2026-10-05 |
 | Lakebase data model | 8+ relational tables (`db/migrations/`): users, watchlists, research notes, orders, executions, positions, agent actions, approvals | Implemented |
-| Action-taking AI agent | Workspace model proposes a tool call → deterministic validator (allowlist, roles, write scope, idempotency) → read tools + `save_research_note` | Minimal version, see status below |
-| Analytics pipeline | Lakebase transactional outbox → watermarked, idempotent Delta MERGE job → 4 analytics tables → analytics API | Minimal version, see status below |
+| Action-taking AI agent | Workspace model proposes a tool call → deterministic validator (allowlist, roles, write scope, idempotency) → read tools + `save_research_note` | Implemented, demonstrated live |
+| Analytics pipeline | Lakebase transactional outbox → watermarked, idempotent Delta MERGE job → 4 analytics tables → analytics API | Implemented, run live |
 | Frontend | React + Vite + Tailwind: market, signals, analytics, agent, system health | Implemented |
-| Deployed application | Databricks App with SQL-warehouse data path, Lakebase resilience and health diagnostics | See status below |
+| Deployed application | Databricks App with SQL-warehouse data path, Lakebase resilience and health diagnostics | Deployed, healthy |
 
 Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 [`docs/proposal/row_counts_2026-10-05.tsv`](docs/proposal/row_counts_2026-10-05.tsv)
@@ -39,10 +39,10 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | Split-adjusted daily prices (Massive corporate actions) | Yes | Yes | Run |
 | SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run — 16 semiconductor tickers embedded; universe-wide rollout pending ([#28](https://github.com/evangoh122/quant_platform_1/pull/28)) |
 | SEC knowledge graph + governed NL analytics contracts | Yes | Yes | Merged |
-| Databricks App (FastAPI + React), warehouse data path, health/trace | Yes | Yes | Deployed |
-| Lakebase writes from the app | Yes | Yes | Requires the app service principal's Lakebase grants ([`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)) |
-| LLM-directed agent (research → save note) | Minimal | Offline + one live run | Fast-tracked for submission; reviewed once |
-| Lakebase → Delta analytics (outbox CDC) | Minimal | Offline | Fast-tracked for submission; reviewed once |
+| Databricks App (FastAPI + React), warehouse data path, health/trace | Yes | Yes | **Deployed and verified 2026-10-05** — `/api/health`: Lakebase ok, SQL warehouse ok |
+| Lakebase writes from the app | Yes | Yes | **Live** — app service principal has `CAN_USE` + a least-privilege Postgres role |
+| LLM-directed agent (research → save note) | Yes (minimal) | Offline + live | **Live run 2026-10-05**: `search_sec_filings(NVDA)` → `save_research_note` written to Lakebase, logged in `agent_actions` |
+| Lakebase → Delta analytics (outbox CDC) | Yes (minimal) | Offline + real Postgres + live | **Live run 2026-10-05**: outbox → `lakebase_change_events` (9) → all four analytics tables populated |
 | Streaming DLT pipeline | Yes | Local validation | Not deployed or run |
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
 | IBKR paper execution | Scaffold | Partial | Not live |
@@ -104,7 +104,7 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 ## Known limitations
 
 - SEC retrieval covers 16 tickers until the universe-wide ingest (#28) is rolled out.
-- The agent and the analytics pipeline are minimal versions built for the capstone deadline.
+- The agent and the analytics pipeline are minimal versions built for the capstone deadline (one DeepSeek check + live validation; a Codex review is pending). The analytics job is run on demand (it needs a short-lived `LAKEBASE_URL` at run time).
 - Macro (Fed) series are revised values, not first-release vintages.
 - Strategy research reports are descriptive; several are marked `BLOCKED_DATA` (fewer than two complete out-of-sample years).
 - The streaming DLT pipeline is built but not deployed.
