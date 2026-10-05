@@ -721,6 +721,62 @@ class TestSecClient:
         assert result == {"ok": True}
         assert call_count[0] == 2
 
+    def test_403_retry_with_backoff(self):
+        """HTTP 403 is retried with bounded exponential backoff."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return HttpResponse(403, "Forbidden", {})
+            return HttpResponse(200, json.dumps({"ok": True}), {})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+        result = client.get_json("https://example.com")
+        assert result == {"ok": True}
+        assert call_count[0] == 3
+
+    def test_403_retry_respects_retry_after(self):
+        """HTTP 403 with Retry-After header is honoured."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return HttpResponse(403, "Forbidden", {"Retry-After": "5"})
+            return HttpResponse(200, json.dumps({"ok": True}), {})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+        result = client.get_json("https://example.com")
+        assert result == {"ok": True}
+        assert call_count[0] == 2
+
+    def test_403_exhausted_max_retries(self):
+        """HTTP 403 repeated max_retries times → failure."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+
+        call_count = [0]
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            return HttpResponse(403, "Forbidden", {})
+
+        http.get = mock_get
+        config = SecClientConfig(user_agent="Test", max_retries=3)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(config, http, limiter, clock)
+        with pytest.raises(SecClientError):
+            client.get_json("https://example.com")
+        assert call_count[0] == 3
+
     def test_permanent_4xx_no_retry(self):
         clock = FakeClock()
         http = FakeHttpClient()
@@ -3084,11 +3140,12 @@ class TestResolveUserAgent:
             _validate_user_agent("your-email@example.com")
 
     def test_valid_address_with_example_accepted(self, monkeypatch):
-        """Valid address containing 'example' (e.g. myexample.org) is accepted."""
+        """Valid address containing 'example' (e.g. myexample.org) is accepted
+        when paired with a name token."""
         from pipelines.sec_rag_ingest import _validate_user_agent
 
-        # Should NOT raise — "myexample.org" is a valid domain
-        _validate_user_agent("analyst@myexample.org")
+        # Should NOT raise — "myexample.org" is a valid domain when paired with name
+        _validate_user_agent("Analyst analyst@myexample.org")
 
     def test_value_never_appears_in_log(self, monkeypatch, caplog):
         """The resolved value must not appear in log output."""

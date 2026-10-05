@@ -570,6 +570,34 @@ class TestUserAgentValidation:
         with pytest.raises(ValueError, match="descriptive"):
             _validate_user_agent("your-email@test.com/1.0")
 
+    def test_reject_bare_word(self):
+        """Bare word without email is rejected."""
+        with pytest.raises(ValueError, match="<application name> <contact email>"):
+            _validate_user_agent("foo")
+
+    def test_reject_two_words_no_email(self):
+        """Two words without email is rejected."""
+        with pytest.raises(ValueError, match="<application name> <contact email>"):
+            _validate_user_agent("foo bar")
+
+    def test_reject_email_without_name(self):
+        """Email without a name token is rejected."""
+        with pytest.raises(ValueError, match="<application name> <contact email>"):
+            _validate_user_agent("a@b")
+
+    def test_reject_email_without_domain_dot(self):
+        """Email without a dot in domain is rejected."""
+        with pytest.raises(ValueError, match="<application name> <contact email>"):
+            _validate_user_agent("App user@localhost")
+
+    def test_accept_company_name_with_email(self):
+        """Company name + email passes."""
+        _validate_user_agent("Acme Corp contact@acme.com")
+
+    def test_accept_app_version_with_email(self):
+        """App version + email passes."""
+        _validate_user_agent("MyApp/2.0 support@myapp.org")
+
 
 # ── Ingestion orchestrator tests ───────────────────────────────────────────
 
@@ -706,6 +734,59 @@ class TestRunIngestCompanyFacts:
         assert len(skipped) == 1
         assert skipped[0].payload_hash == payload_hash
 
+    def test_first_write_failure_allows_second_write(self):
+        """MUTATION: if seen_payloads.add happens before Delta write,
+        a failed first write prevents the identical second payload from being written."""
+        payload = _make_company_facts_payload()
+        payload_bytes = json.dumps(payload).encode()
+        payload_hash = compute_payload_hash(payload_bytes)
+
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+            _payload_200(payload),
+            _payload_200(payload),
+        ])
+        clock = FakeClock()
+
+        call_count = [0]
+        def failing_delta_writer_first_call(cat, sch, rows):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("Delta write failed")
+
+        manifest_entries = []
+        def mock_manifest_writer(cat, sch, entry):
+            manifest_entries.append(entry)
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL", "AAPL2"],
+                run_id="run_fail_first",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
+                delta_writer=failing_delta_writer_first_call,
+                manifest_writer=mock_manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        # First CIK failed (Delta write error), second CIK succeeded
+        assert result["failed_count"] == 1
+        assert result["fetched_count"] == 1
+
     def test_manifest_fields_complete(self):
         """Manifest entry has all required fields populated."""
         entry = CompanyFactsManifestEntry(
@@ -717,6 +798,7 @@ class TestRunIngestCompanyFacts:
             payload_hash="abc123",
             payload_bytes=12345,
             fact_count=42,
+            http_status=200,
             started_at=datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
             completed_at=datetime(2025, 1, 15, 10, 0, 5, tzinfo=timezone.utc),
             error_category="",
@@ -730,6 +812,7 @@ class TestRunIngestCompanyFacts:
         assert entry.payload_hash == "abc123"
         assert entry.payload_bytes == 12345
         assert entry.fact_count == 42
+        assert entry.http_status == 200
         assert entry.started_at is not None
         assert entry.completed_at is not None
         assert entry.error_category == ""
@@ -751,6 +834,87 @@ class TestRunIngestCompanyFacts:
         assert entry.fetch_status == "failed"
         assert entry.attempt_count == 3
         assert entry.error_category == "rate_limited"
+
+    def test_manifest_http_status_on_success(self):
+        """MUTATION: manifest http_status is set to 200 on successful fetch."""
+        payload = _make_company_facts_payload()
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+            _payload_200(payload),
+        ])
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL"],
+                run_id="run_http_status",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["fetched_count"] == 1
+        success_entries = [e for e in manifest_entries if e.fetch_status == "success"]
+        assert len(success_entries) == 1
+        assert success_entries[0].http_status == 200
+
+    def test_manifest_http_status_on_failure(self):
+        """MUTATION: manifest http_status is set on failed fetch."""
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+            HttpResponse(status_code=404, text="Not Found", headers={}),
+        ])
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL"],
+                run_id="run_http_fail",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["failed_count"] == 1
+        failed_entries = [e for e in manifest_entries if e.fetch_status == "failed"]
+        assert len(failed_entries) == 1
+        assert failed_entries[0].http_status == 404
 
     def test_xom_two_cik_fetch(self):
         """XOM override maps to 2 CIKs; both are fetched."""
@@ -1206,3 +1370,22 @@ class TestMutationProofs:
         # But > 10 should raise
         with pytest.raises(ValueError, match="exceeds hard limit"):
             RateLimiter(max_requests_per_second=11, clock=clock)
+
+    def test_mutation_403_not_retried(self):
+        """MUTATION: if 403 is not retried, this test fails."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return HttpResponse(403, "Forbidden", {})
+            return HttpResponse(200, '{"ok": true}', {})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+        result = client.get_json("https://example.com")
+        assert result == {"ok": True}
+        assert call_count[0] == 2  # retried once

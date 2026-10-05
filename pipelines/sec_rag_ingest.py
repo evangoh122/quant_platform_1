@@ -154,14 +154,19 @@ def _resolve_user_agent(
 
 
 def _validate_user_agent(user_agent: str) -> None:
-    """Validate user agent is non-empty and not a placeholder."""
+    """Validate user agent matches '<name> <email>' format.
+
+    Requires a non-empty application/company name token AND a valid-looking
+    contact email (with @ and a domain containing a dot). Rejects bare words,
+    emails without a name, and placeholder addresses.
+    """
     if not user_agent:
         raise ValueError(
             "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
             "Set it from environment or Databricks secret."
         )
     ua_lower = user_agent.lower()
-    # Reject placeholder domains/addresses, not any occurrence of "example"
+    # Reject placeholder domains/addresses
     _placeholder_re = re.compile(
         r"@example\.(com|org|net)\b"
         r"|^your[-_]email@"
@@ -173,6 +178,15 @@ def _validate_user_agent(user_agent: str) -> None:
         raise ValueError(
             "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
             "Set it from environment or Databricks secret."
+        )
+    # Require '<name> <email>' format: at least one name token followed by an email
+    _ua_format_re = re.compile(
+        r"^[^\s]+(\s+[^\s]+)*\s+[^\s]+@[^\s]+\.[^\s]+$"
+    )
+    if not _ua_format_re.match(user_agent.strip()):
+        raise ValueError(
+            "SEC_EDGAR_USER_AGENT must match '<application name> <contact email>' format "
+            "(e.g. 'MyApp/2.0 contact@company.com'). Got: " + repr(user_agent)
         )
 
 
@@ -827,7 +841,7 @@ class SecClient:
                 if resp.status_code == 200:
                     return resp
 
-                if resp.status_code in (429, 503):
+                if resp.status_code in (403, 429, 503):
                     retry_after = self._parse_retry_after(resp.headers)
                     if retry_after is not None:
                         # Cap Retry-After; above cap → hard failure
