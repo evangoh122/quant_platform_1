@@ -794,15 +794,16 @@ class TestProseFallback:
         assert result.error_code is None
         assert "China exposure" in result.reply
 
-    def test_tool_name_with_parenthetical_prose_accepted(self):
-        """A parenthetical after a tool name in prose is not an argument list."""
-        text = "search_sec_filings (the tool) found that NVDA's 10-K lists export-control risks."
+    @pytest.mark.parametrize("text", [
+        "search_sec_filings (symbol='AMD')",
+        "search_sec_filings (AMD)",
+        "search_sec_filings (123)",
+        "search_sec_filings ({'symbol': 'AMD'})",
+        "search_sec_filings (['AMD'])",
+    ])
+    def test_tool_call_with_space_before_args_rejected(self, text):
+        """Spaced tool calls fail closed whatever the argument shape."""
         runtime, sink = _make_runtime([text])
-        result = runtime.run("Hello", user_id="u1", role="viewer")
-        assert result.error_code is None
-
-    def test_tool_call_with_space_before_args_rejected(self):
-        runtime, sink = _make_runtime(["search_sec_filings (symbol='AMD')"])
         result = runtime.run("Hello", user_id="u1", role="viewer")
         assert result.error_code == "malformed"
 

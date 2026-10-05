@@ -236,7 +236,9 @@ _QUOTED_KEY_COLON_RE = re.compile(
     re.IGNORECASE,
 )
 
-_TOOL_ARGS_OPEN = r"""(?:\s*:|\(|\s+\(\s*(?:[A-Za-z_]\w*\s*=|["']|\)))"""
+# Any "(" or ":" after a tool name, with or without spaces. Deliberately fail-closed: prose such as
+# "search_sec_filings (the tool) found..." is rejected too, because "search_sec_filings (AMD)" must be.
+_TOOL_ARGS_OPEN = r"\s*[(:]"
 
 
 def _looks_like_tool_call(text: str) -> bool:
@@ -251,8 +253,6 @@ def _looks_like_tool_call(text: str) -> bool:
         if _TOOL_CALL_LINE_RE.match(line):
             return True
     for tool_name in ALL_TOOLS:
-        # name:, name( — or name (...) when the parenthesis opens an argument list (kwarg, quoted value
-        # or empty), so prose like "search_sec_filings (the tool) found..." is accepted.
         if re.search(re.escape(tool_name) + _TOOL_ARGS_OPEN, text):
             return True
     if _QUOTED_KEY_COLON_RE.search(text):
