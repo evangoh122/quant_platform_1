@@ -18,6 +18,7 @@ Design constraints (from spec):
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -220,9 +221,11 @@ def _sanitize_for_audit(text: str, max_len: int = 200) -> str:
     return text
 
 
-# Regex for tool-call-shaped key-value lines (case-insensitive)
-_TOOL_CALL_LINE_RE = __import__("re").compile(
-    r'^\s*"?(action|tool|args)"?\s*[:=]', __import__("re").IGNORECASE
+# Tool-call-shaped key-value lines (case-insensitive). "action" only counts when its value is an action
+# type, so prose such as "Action: monitor China exposure" is still accepted as a final answer.
+_TOOL_CALL_LINE_RE = re.compile(
+    r'^\s*"?(?:action"?\s*[:=]\s*"?(?:retrieve|write|final|refuse)\b|(?:tool|args)"?\s*[:=])',
+    re.IGNORECASE,
 )
 
 
@@ -230,7 +233,7 @@ def _looks_like_tool_call(text: str) -> bool:
     """Return True if *text* looks like a failed tool call rather than prose.
 
     Checks for:
-    - Lines matching ``^\\s*"?(action|tool|args)"?\\s*[:=]`` (case-insensitive)
+    - Lines starting ``action: <retrieve|write|final|refuse>``, ``tool:`` or ``args:`` (case-insensitive)
     - Any registered tool name followed by ``(`` or ``:``
     """
     for line in text.splitlines():

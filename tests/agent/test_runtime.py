@@ -780,6 +780,20 @@ class TestProseFallback:
         assert result.available is True
         assert result.error_code == "malformed"
 
+    def test_action_line_with_action_type_rejected(self):
+        """An `action: <type>` line on its own is a tool-call attempt."""
+        runtime, sink = _make_runtime(["Action: write"])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code == "malformed"
+
+    def test_prose_starting_with_action_label_accepted(self):
+        """Prose that starts with "Action:" followed by advice is a final answer, not a tool call."""
+        text = "Action: monitor China exposure and revisit next quarter."
+        runtime, sink = _make_runtime([text])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert "China exposure" in result.reply
+
     def test_plain_prose_mentioning_filing_accepted(self):
         """Normal prose mentioning a 10-K filing is accepted as a final answer."""
         text = "NVIDIA's 10-K filing discusses export control risks in detail."
