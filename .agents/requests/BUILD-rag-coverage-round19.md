@@ -14,3 +14,9 @@ while Exxon's 10-K/10-Q history is under CIK 34088. Discovery found 1 of 8 filin
    Tests with a 20-F fixture. Document in the runbook: run `--forms 20-F,6-K --tickers <foreign list>` as a separate pass.
 3. Runbook: add the override file + the foreign-filer pass.
 Run: python3 -m pytest tests/rag tests/bronze -q --timeout 30. Verdict: .agents/mimo/VERDICT-rag-coverage-round19.md.
+
+## Also fix DeepSeek round-18 blockers (`.agents/deepseek/VERDICT-rag-coverage-round18.md`)
+4. Runbook: every `databricks bundle run … sec_embeddings -- …` (lines ~90, 167, 182, 203) and any other job command repeats
+   `--catalog ${catalog} --schema ${schema}`; add a test that parses the runbook's `bundle run` commands and fails if any omits them.
+5. Test that `api/services/xbrl_client._get_user_agent` delegates to the pipeline resolver (monkeypatch `_resolve_user_agent` and assert it is
+   called and its value used; env `EDGAR_USER_AGENT` alone must NOT be used). Mutation: restore the old `os.getenv("EDGAR_USER_AGENT")` → FAIL.
