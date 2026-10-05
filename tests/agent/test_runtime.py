@@ -729,3 +729,142 @@ class TestValidationRetry:
         result = runtime.run("Hello", user_id="u1", role="viewer")
         assert result.error_code is None
         assert result.reply == "Recovered answer"
+
+    def test_reject_to_valid_emits_validation_retry_audit(self):
+        """First rejection emits validation_retry; valid re-proposal succeeds."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered answer"}),
+        ]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        retry_entries = [e for e in sink.entries if e.action == "validation_retry"]
+        failed_entries = [e for e in sink.entries if e.action == "validation_failed"]
+        assert len(retry_entries) == 1, f"Expected 1 validation_retry, got {len(retry_entries)}"
+        assert len(failed_entries) == 0
+
+    def test_reject_to_reject_emits_retry_then_failed_audit(self):
+        """First rejection emits validation_retry; second emits validation_failed."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+        ]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code == "malformed"
+        retry_entries = [e for e in sink.entries if e.action == "validation_retry"]
+        failed_entries = [e for e in sink.entries if e.action == "validation_failed"]
+        assert len(retry_entries) == 1, f"Expected 1 validation_retry, got {len(retry_entries)}"
+        assert len(failed_entries) == 1, f"Expected 1 validation_failed, got {len(failed_entries)}"
+
+
+class TestProseFallback:
+    def test_tool_call_shaped_text_key_value_pairs_rejected(self):
+        """Text with action/tool/key-value lines looks like a tool call, not prose."""
+        text = "action: retrieve\ntool: search_sec_filings\nargs: symbol: NVDA"
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_tool_call_shaped_text_with_registered_tool_name_rejected(self):
+        """Text containing a registered tool name followed by ( or : is rejected."""
+        text = "save_research_note(NVDA, 'risk analysis')"
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_plain_prose_mentioning_filing_accepted(self):
+        """Normal prose mentioning a 10-K filing is accepted as a final answer."""
+        text = "NVIDIA's 10-K filing discusses export control risks in detail."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert "10-K" in result.reply
+
+    def test_plain_prose_mentioning_search_accepted(self):
+        """Prose mentioning 'search' as a word (not a tool call) is accepted."""
+        text = "You should search SEC filings for more information about NVDA."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+
+    def test_tool_name_in_prose_context_accepted(self):
+        """Prose mentioning a tool name in a sentence (not followed by ( or :) is accepted."""
+        text = "The search_sec_filings tool can help find relevant 10-K sections."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+
+
+class TestRetryFeedback:
+    def test_retry_feedback_has_no_validation_error(self):
+        """Retry feedback message must not contain 'ValidationError'."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered"}),
+        ]
+
+        captured_messages = []
+
+        class TrackingTransport:
+            def query(self, **kwargs):
+                captured_messages.append(kwargs.get("messages", []))
+                if len(captured_messages) == 1:
+                    return {"text": model_responses[0], "input_tokens": 100, "output_tokens": 50}
+                return {"text": model_responses[1], "input_tokens": 100, "output_tokens": 50}
+
+        transport = TrackingTransport()
+        model_client = ModelClient(transport=transport)
+        registry = ToolRegistry()
+        sink = FakeAuditSink()
+        runtime = AgentRuntime(model_client=model_client, tool_registry=registry, audit_sink=sink)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        # The second call (retry) should have the feedback message
+        assert len(captured_messages) >= 2
+        retry_messages = captured_messages[1]
+        # Find the user feedback message
+        user_msgs = [m for m in retry_messages if m.get("role") == "user"]
+        feedback = user_msgs[-1]["content"] if user_msgs else ""
+        assert "ValidationError" not in feedback, f"Feedback contains 'ValidationError': {feedback}"
+
+    def test_retry_feedback_has_no_pydantic_diagnostic(self):
+        """Retry feedback must not contain pydantic diagnostic text like 'extra_fields_forbidden'."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered"}),
+        ]
+
+        captured_messages = []
+
+        class TrackingTransport:
+            def query(self, **kwargs):
+                captured_messages.append(kwargs.get("messages", []))
+                if len(captured_messages) == 1:
+                    return {"text": model_responses[0], "input_tokens": 100, "output_tokens": 50}
+                return {"text": model_responses[1], "input_tokens": 100, "output_tokens": 50}
+
+        transport = TrackingTransport()
+        model_client = ModelClient(transport=transport)
+        registry = ToolRegistry()
+        sink = FakeAuditSink()
+        runtime = AgentRuntime(model_client=model_client, tool_registry=registry, audit_sink=sink)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        assert len(captured_messages) >= 2
+        retry_messages = captured_messages[1]
+        user_msgs = [m for m in retry_messages if m.get("role") == "user"]
+        feedback = user_msgs[-1]["content"] if user_msgs else ""
+        assert "extra_fields_forbidden" not in feedback.lower(), f"Feedback contains pydantic diagnostic: {feedback}"

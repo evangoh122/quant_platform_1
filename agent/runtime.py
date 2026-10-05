@@ -220,6 +220,31 @@ def _sanitize_for_audit(text: str, max_len: int = 200) -> str:
     return text
 
 
+# Regex for tool-call-shaped key-value lines (case-insensitive)
+_TOOL_CALL_LINE_RE = __import__("re").compile(
+    r'^\s*"?(action|tool|args)"?\s*[:=]', __import__("re").IGNORECASE
+)
+
+
+def _looks_like_tool_call(text: str) -> bool:
+    """Return True if *text* looks like a failed tool call rather than prose.
+
+    Checks for:
+    - Lines matching ``^\\s*"?(action|tool|args)"?\\s*[:=]`` (case-insensitive)
+    - Any registered tool name followed by ``(`` or ``:``
+    """
+    for line in text.splitlines():
+        if _TOOL_CALL_LINE_RE.match(line):
+            return True
+    for tool_name in ALL_TOOLS:
+        idx = text.find(tool_name)
+        if idx >= 0:
+            after = text[idx + len(tool_name) : idx + len(tool_name) + 1]
+            if after in ("(", ":"):
+                return True
+    return False
+
+
 # ── runtime ──────────────────────────────────────────────────────────────────
 @dataclass
 class RuntimeConfig:
@@ -338,7 +363,7 @@ class AgentRuntime:
                 raw_dict = self._model_client.parse_json_response(response)
             except ModelError as e:
                 plain = (response.text or "").strip()
-                if e.code == "malformed_json" and plain and "{" not in plain:
+                if e.code == "malformed_json" and plain and "{" not in plain and not _looks_like_tool_call(plain):
                     # The model answered in plain prose. A final answer executes no tool,
                     # so accept it as the reply (tool calls still require valid JSON).
                     raw_dict = {"action": "final", "reply": plain[:4000]}
@@ -363,11 +388,16 @@ class AgentRuntime:
             except Exception as verr:
                 if not validation_retried and model_calls < self._config.max_model_calls:
                     validation_retried = True
+                    self._audit_sink.emit(AuditEntry(
+                        trace_id=tid, step=step, action="validation_retry",
+                        tool="", validation_outcome=REASON_MALFORMED,
+                        result_status="error", endpoint=response.endpoint,
+                        latency_ms=response.latency_ms,
+                    ))
                     messages.append({"role": "assistant", "content": json.dumps(raw_dict)[:2000]})
                     messages.append({"role": "user", "content": (
-                        "That action was rejected by the validator: "
-                        f"{type(verr).__name__}: {str(verr)[:300]}. "
-                        "Re-propose ONE valid action using only the allowed tools and argument keys.")})
+                        "Your previous output was not a valid action. Reply with ONE JSON "
+                        "object using only the documented tools and argument keys, or a final answer.")})
                     continue
                 self._audit_sink.emit(AuditEntry(
                     trace_id=tid, step=step, action="validation_failed",
