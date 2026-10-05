@@ -598,6 +598,15 @@ class TestUserAgentValidation:
         """App version + email passes."""
         _validate_user_agent("MyApp/2.0 support@myapp.org")
 
+    def test_error_message_does_not_leak_ua_value(self):
+        """MUTATION: error message must not contain the input UA value
+        (which may carry a real contact email)."""
+        bad_ua = "AdminContact@company-domain.com"
+        with pytest.raises(ValueError) as exc_info:
+            _validate_user_agent(bad_ua)
+        msg = str(exc_info.value)
+        assert bad_ua not in msg, f"Error message leaks UA value: {msg}"
+
 
 # ── Ingestion orchestrator tests ───────────────────────────────────────────
 
