@@ -736,7 +736,12 @@ class TestRunIngestCompanyFacts:
 
     def test_first_write_failure_allows_second_write(self):
         """MUTATION: if seen_payloads.add happens before Delta write,
-        a failed first write prevents the identical second payload from being written."""
+        a failed first write prevents the identical second payload from being written.
+
+        Uses sequential execution (max_workers=1) so ordering is deterministic:
+        first fetch fails at Delta write → second fetch must still write the
+        identical payload (because seen_payloads.add only happens after success).
+        """
         payload = _make_company_facts_payload()
         payload_bytes = json.dumps(payload).encode()
         payload_hash = compute_payload_hash(payload_bytes)
