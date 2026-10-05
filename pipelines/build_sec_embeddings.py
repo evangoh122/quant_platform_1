@@ -33,7 +33,9 @@ from typing import Optional
 
 # Ensure repo root is on sys.path so ``api.*`` and ``pipelines.*`` resolve
 # when invoked via ``python_file`` in a Databricks job.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Serverless spark_python_task does not define __file__; sys.argv[0] is the script path there.
+_SCRIPT = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_SCRIPT))))
 
 logger = logging.getLogger(__name__)
 
