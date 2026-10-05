@@ -2,6 +2,11 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import App from '../App';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const css: string = readFileSync(join(__dirname, '../index.css'), 'utf-8');
 
 const healthyResponse = {
   status: 'ok',
@@ -560,9 +565,15 @@ function contrastRatio(fg: string, bg: string): number {
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
-const SURFACE = '#ffffff';
-const TEXT_MUTED = '#64748b';
-const WARNING = '#9a3412';
+function parseCssVar(raw: string, name: string): string {
+  const match = raw.match(new RegExp(`${name}\\s*:\\s*(#[0-9a-fA-F]{6})`));
+  if (!match) throw new Error(`CSS variable ${name} not found`);
+  return match[1];
+}
+
+const SURFACE = parseCssVar(css, '--surface');
+const TEXT_MUTED = parseCssVar(css, '--text-muted');
+const WARNING = parseCssVar(css, '--warning');
 
 describe('WCAG AA contrast tokens', () => {
   it('--text-muted meets 4.5:1 on --surface', () => {
@@ -571,13 +582,5 @@ describe('WCAG AA contrast tokens', () => {
 
   it('--warning text meets 4.5:1 on --surface', () => {
     expect(contrastRatio(WARNING, SURFACE)).toBeGreaterThanOrEqual(4.5);
-  });
-
-  it('mutation: changing --text-muted to #94a3b8 fails contrast', () => {
-    expect(contrastRatio('#94a3b8', SURFACE)).toBeLessThan(4.5);
-  });
-
-  it('mutation: changing --warning to #d97706 fails contrast', () => {
-    expect(contrastRatio('#d97706', SURFACE)).toBeLessThan(4.5);
   });
 });
