@@ -4209,7 +4209,7 @@ class TestRepairCikOwnership:
                 sql_calls.append((query, args))
                 if query.strip().upper().startswith("SELECT"):
                     return FakeDF([
-                        FakeRow(accession_number="0000034088-26-000093", cik="0002115436", ticker="XOM"),
+                        FakeRow(accession_number="0000034088-26-000093", cik="0002115436"),
                     ])
                 return FakeDF([])
 
@@ -4233,13 +4233,22 @@ class TestRepairCikOwnership:
             assert "'XOM'" not in query, f"Ticker literal in SQL: {query}"
             assert "'0002115436'" not in query, f"CIK literal in SQL: {query}"
             assert "'0000034088'" not in query, f"CIK literal in SQL: {query}"
-        # UPDATE call should carry args with the correct values
+        # SELECT should use DISTINCT
+        select_calls = [(q, a) for q, a in sql_calls if q.strip().upper().startswith("SELECT")]
+        assert len(select_calls) == 1
+        assert "DISTINCT" in select_calls[0][0].upper()
+        # UPDATE call should carry args with the correct values including filing_url
         update_calls = [(q, a) for q, a in sql_calls if q.strip().upper().startswith("UPDATE")]
         assert len(update_calls) == 1
-        _, update_args = update_calls[0]
+        update_query, update_args = update_calls[0]
+        assert "filing_url" in update_query.lower(), "UPDATE should rewrite filing_url"
         assert "0000034088" in update_args  # correct_cik
         assert "0000034088-26-000093" in update_args  # accession
         assert "XOM" in update_args  # ticker
+        # Verify filing_url format: .../edgar/data/{int(correct_cik)}/...
+        filing_url_arg = [a for a in update_args if isinstance(a, str) and "edgar/data" in a]
+        assert len(filing_url_arg) == 1, "Should have one filing_url arg"
+        assert "/34088/" in filing_url_arg[0], "filing_url should use int(correct_cik)"
 
     def test_repair_invalid_ticker_rejected(self):
         """Ticker with invalid characters raises ValueError."""
@@ -4351,6 +4360,117 @@ class TestRepairCikOwnership:
         assert stats["updated"] == 0
         update_calls = [c for c in sql_calls if c[0].strip().upper().startswith("UPDATE")]
         assert len(update_calls) == 0
+
+    def test_repair_distinct_one_update_per_filing(self):
+        """SELECT DISTINCT ensures one UPDATE per filing, not per chunk.
+
+        Even if the SELECT returns multiple rows with the same accession_number,
+        the DISTINCT clause should deduplicate them so only one UPDATE is issued.
+        """
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        sql_calls = []
+
+        class FakeRow:
+            def __init__(self, **kw):
+                self._d = kw
+            def __getitem__(self, k):
+                return self._d[k]
+
+        class FakeDF:
+            def __init__(self, rows):
+                self._rows = rows
+            def collect(self):
+                return self._rows
+
+        class FakeSpark:
+            def sql(self, query, args=None):
+                sql_calls.append((query, args))
+                if query.strip().upper().startswith("SELECT"):
+                    # Simulate DISTINCT: return one row per filing
+                    return FakeDF([
+                        FakeRow(accession_number="0000034088-26-000093", cik="0002115436"),
+                    ])
+                return FakeDF([])
+
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = FakeSpark()
+        mock_session = MagicMock()
+        mock_session.builder = mock_builder
+
+        import sys as _sys
+        from unittest.mock import patch as _patch
+        fake_connect = MagicMock()
+        fake_connect.DatabricksSession = mock_session
+        with _patch.dict(_sys.modules, {"databricks.connect": fake_connect}):
+            stats = repair_cik_ownership(
+                catalog="cat", schema="sch",
+                tickers=["XOM"], cik_overrides=overrides, dry_run=False,
+            )
+        # Should have scanned 1 filing (not multiple chunks)
+        assert stats["scanned"] == 1
+        assert stats["updated"] == 1
+        # Verify SELECT uses DISTINCT
+        select_calls = [(q, a) for q, a in sql_calls if q.strip().upper().startswith("SELECT")]
+        assert len(select_calls) == 1
+        assert "DISTINCT" in select_calls[0][0].upper()
+        # Verify only one UPDATE was issued
+        update_calls = [(q, a) for q, a in sql_calls if q.strip().upper().startswith("UPDATE")]
+        assert len(update_calls) == 1
+
+    def test_repair_filing_url_rewrite(self):
+        """UPDATE rewrites filing_url to use correct filer CIK."""
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        sql_calls = []
+
+        class FakeRow:
+            def __init__(self, **kw):
+                self._d = kw
+            def __getitem__(self, k):
+                return self._d[k]
+
+        class FakeDF:
+            def __init__(self, rows):
+                self._rows = rows
+            def collect(self):
+                return self._rows
+
+        class FakeSpark:
+            def sql(self, query, args=None):
+                sql_calls.append((query, args))
+                if query.strip().upper().startswith("SELECT"):
+                    return FakeDF([
+                        FakeRow(accession_number="0000034088-26-000093", cik="0002115436"),
+                    ])
+                return FakeDF([])
+
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = FakeSpark()
+        mock_session = MagicMock()
+        mock_session.builder = mock_builder
+
+        import sys as _sys
+        from unittest.mock import patch as _patch
+        fake_connect = MagicMock()
+        fake_connect.DatabricksSession = mock_session
+        with _patch.dict(_sys.modules, {"databricks.connect": fake_connect}):
+            stats = repair_cik_ownership(
+                catalog="cat", schema="sch",
+                tickers=["XOM"], cik_overrides=overrides, dry_run=False,
+            )
+        assert stats["updated"] == 1
+        # Verify UPDATE includes filing_url
+        update_calls = [(q, a) for q, a in sql_calls if q.strip().upper().startswith("UPDATE")]
+        assert len(update_calls) == 1
+        update_query, update_args = update_calls[0]
+        assert "filing_url" in update_query.lower(), "UPDATE should rewrite filing_url"
+        # Verify filing_url format: .../edgar/data/{int(correct_cik)}/...
+        # correct_cik = 0000034088, int() = 34088
+        filing_url_arg = [a for a in update_args if isinstance(a, str) and "edgar/data" in a]
+        assert len(filing_url_arg) == 1, "Should have one filing_url arg"
+        assert "/34088/" in filing_url_arg[0], "filing_url should use int(correct_cik)"
+        assert "0000034088-26-000093" in filing_url_arg[0], "filing_url should include accession"
 
 
 # ── Round 19: Foreign filers (20-F/40-F/6-K) ────────────────────────────────

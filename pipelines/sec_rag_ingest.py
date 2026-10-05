@@ -1850,6 +1850,9 @@ def repair_cik_ownership(
 
     Idempotent: rows already matching the correct CIK are not updated.
     Returns {"scanned": N, "updated": N, "skipped": N}.
+
+    Uses DISTINCT accession_number so there is one UPDATE per filing (not per chunk).
+    Also rewrites filing_url to use the correct filer CIK.
     """
     _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
     from databricks.connect import DatabricksSession
@@ -1875,8 +1878,9 @@ def repair_cik_ownership(
         placeholders = ", ".join(["?"] * len(group_ciks))
         args_list = [ticker] + list(group_ciks)
 
+        # DISTINCT accession_number, cik so there is one row per filing (not per chunk)
         rows = spark.sql(
-            f"SELECT accession_number, cik, ticker FROM {table} "
+            f"SELECT DISTINCT accession_number, cik FROM {table} "
             f"WHERE ticker = ? AND cik IN ({placeholders})",
             args=args_list,
         ).collect()
@@ -1906,13 +1910,18 @@ def repair_cik_ownership(
                 stats["updated"] += 1
                 continue
 
+            # Build the correct filing_url with the filer CIK
+            acc_clean = acc.replace("-", "")
+            correct_cik_int = int(correct_cik)
+            new_filing_url = f"https://www.sec.gov/Archives/edgar/data/{correct_cik_int}/{acc_clean}/{acc}-index.htm"
+
             spark.sql(
-                f"UPDATE {table} SET cik = ? "
+                f"UPDATE {table} SET cik = ?, filing_url = ? "
                 "WHERE accession_number = ? AND cik = ? AND ticker = ?",
-                args=[correct_cik, acc, current_cik, ticker],
+                args=[correct_cik, new_filing_url, acc, current_cik, ticker],
             ).collect()
             stats["updated"] += 1
-            logger.info("repair: %s cik %s → %s", acc, current_cik, correct_cik)
+            logger.info("repair: %s cik %s → %s, filing_url updated", acc, current_cik, correct_cik)
 
     return stats
 
