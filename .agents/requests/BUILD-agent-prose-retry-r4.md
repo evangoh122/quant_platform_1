@@ -20,3 +20,10 @@ Tests (parametrized; must fail on HEAD where applicable — show the red phase):
   `The company's tools: GPUs and CUDA.` (unquoted, mid-line), `The function of the board is oversight.`
 Update/replace older tests that asserted the opposite (e.g. "tool name in prose accepted") and say which in the verdict.
 Acceptance: `python3 -m pytest tests/agent tests/api -q` green. Verdict `.agents/mimo/VERDICT-agent-prose-retry-r4.md`.
+
+## RESUME NOTE (Claude, after your run crashed on an edit-tool schema error)
+Your uncommitted edits to agent/runtime.py (rules 1–4) are good — keep them. Your stray test_s*.py / test_shapes.py files were removed.
+One test fails: `"search_sec_filings": {"symbol": "AMD"}` returns `exhausted`, not `malformed`. That is correct behaviour: text containing `{`
+goes through the JSON path (the inner object parses, the validator rejects it, the one retry is used, then it fails closed) — never the prose
+path. For brace-containing shapes assert fail-closed instead: `result.error_code is not None`, `result.reply` does not contain the raw text,
+and no tool executed. Keep `malformed` for the brace-free shapes. Then finish the round (all tests, red phase, verdict) and COMMIT.
