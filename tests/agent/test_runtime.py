@@ -223,19 +223,33 @@ class TestHappyPath:
 # ── error cases ──────────────────────────────────────────────────────────────
 class TestMalformedResponse:
     def test_malformed_json(self):
-        """Model returns invalid JSON."""
-        model_responses = ["this is not json"]
+        """Broken JSON (looks like a tool call) is rejected — nothing executes."""
+        model_responses = ['{"action": "retrieve", "tool": "search_sec_filings", "args": {']
 
         runtime, sink = _make_runtime(model_responses)
         result = runtime.run("Hello", user_id="u1", role="viewer")
 
         assert result.available is True
         assert result.error_code == "malformed"
+        assert result.tool_calls == []
+
+    def test_plain_prose_is_final_answer(self):
+        """Plain prose (no JSON at all) is accepted as the final reply; no tool runs."""
+        model_responses = ["NVIDIA describes expanding U.S. export controls on data-center GPUs."]
+
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        assert result.reply.startswith("NVIDIA describes")
+        assert result.tool_calls == []
 
     def test_extra_json_fields(self):
         """Model returns valid JSON with extra fields (rejected by strict schema)."""
+        # Rejected twice (one corrective retry is allowed) -> fails closed.
         model_responses = [
-            json.dumps({"action": "final", "reply": "Hello", "extra": "field"})
+            json.dumps({"action": "final", "reply": "Hello", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Hello", "extra": "field"}),
         ]
 
         runtime, sink = _make_runtime(model_responses)
@@ -247,8 +261,10 @@ class TestMalformedResponse:
 
     def test_unknown_tool(self):
         """Model proposes an unknown tool."""
+        # Unknown tool proposed twice (one corrective retry) -> fails closed, nothing executes.
         model_responses = [
-            json.dumps({"action": "retrieve", "tool": "hack_database", "args": {"symbol": "NVDA"}})
+            json.dumps({"action": "retrieve", "tool": "hack_database", "args": {"symbol": "NVDA"}}),
+            json.dumps({"action": "retrieve", "tool": "hack_database", "args": {"symbol": "NVDA"}}),
         ]
 
         runtime, sink = _make_runtime(model_responses)
@@ -701,3 +717,263 @@ class TestEvidenceBinding:
         assert result.available is True
         assert result.error_code == "no_evidence"
         assert write_fn.call_count == 0
+
+class TestValidationRetry:
+    def test_one_corrective_retry_then_valid_action(self):
+        """A rejected action gets one corrective retry; a valid re-proposal proceeds."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered answer"}),
+        ]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert result.reply == "Recovered answer"
+
+    def test_reject_to_valid_emits_validation_retry_audit(self):
+        """First rejection emits validation_retry; valid re-proposal succeeds."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered answer"}),
+        ]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        retry_entries = [e for e in sink.entries if e.action == "validation_retry"]
+        failed_entries = [e for e in sink.entries if e.action == "validation_failed"]
+        assert len(retry_entries) == 1, f"Expected 1 validation_retry, got {len(retry_entries)}"
+        assert len(failed_entries) == 0
+
+    def test_reject_to_reject_emits_retry_then_failed_audit(self):
+        """First rejection emits validation_retry; second emits validation_failed."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+        ]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code == "malformed"
+        retry_entries = [e for e in sink.entries if e.action == "validation_retry"]
+        failed_entries = [e for e in sink.entries if e.action == "validation_failed"]
+        assert len(retry_entries) == 1, f"Expected 1 validation_retry, got {len(retry_entries)}"
+        assert len(failed_entries) == 1, f"Expected 1 validation_failed, got {len(failed_entries)}"
+
+
+class TestProseFallback:
+    def test_tool_call_shaped_text_key_value_pairs_rejected(self):
+        """Text with action/tool/key-value lines looks like a tool call, not prose."""
+        text = "action: retrieve\ntool: search_sec_filings\nargs: symbol: NVDA"
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_tool_call_shaped_text_with_registered_tool_name_rejected(self):
+        """Text containing a registered tool name followed by ( or : is rejected."""
+        text = "save_research_note(NVDA, 'risk analysis')"
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_action_line_with_action_type_rejected(self):
+        """An `action: <type>` line on its own is a tool-call attempt."""
+        runtime, sink = _make_runtime(["Action: write"])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code == "malformed"
+
+    def test_prose_starting_with_action_label_accepted(self):
+        """Prose that starts with "Action:" followed by advice is a final answer, not a tool call."""
+        text = "Action: monitor China exposure and revisit next quarter."
+        runtime, sink = _make_runtime([text])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert "China exposure" in result.reply
+
+    @pytest.mark.parametrize("text", [
+        "search_sec_filings (symbol='AMD')",
+        "search_sec_filings (AMD)",
+        "search_sec_filings (123)",
+        "search_sec_filings ({'symbol': 'AMD'})",
+        "search_sec_filings (['AMD'])",
+    ])
+    def test_tool_call_with_space_before_args_rejected(self, text):
+        """Spaced tool calls fail closed whatever the argument shape."""
+        runtime, sink = _make_runtime([text])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code == "malformed"
+
+    def test_plain_prose_mentioning_filing_accepted(self):
+        """Normal prose mentioning a 10-K filing is accepted as a final answer."""
+        text = "NVIDIA's 10-K filing discusses export control risks in detail."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert "10-K" in result.reply
+
+    def test_plain_prose_mentioning_search_accepted(self):
+        """Prose mentioning 'search' as a word (not a tool call) is accepted."""
+        text = "You should search SEC filings for more information about NVDA."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+
+    def test_tool_name_in_prose_context_rejected(self):
+        """A registered tool name as a whole word is always rejected (fail-closed)."""
+        text = "The search_sec_filings tool can help find relevant 10-K sections."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code == "malformed"
+
+    def test_second_occurrence_of_tool_name_rejected(self):
+        """If a tool name appears in prose, it is rejected at first occurrence (fail-closed)."""
+        text = "I will use search_sec_filings to look. search_sec_filings(symbol='AMD')"
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    @pytest.mark.parametrize("text", [
+        "`search_sec_filings`(symbol='AMD')",
+        '["action": "retrieve"]',
+        "'tool': 'search_sec_filings'",
+        '<tool>search_sec_filings</tool>',
+        '<tool_call>{...}',
+        'I used search_sec_filings to look.',
+        'search_sec_filings (AMD)',
+        '"search_sec_filings": {"symbol": "AMD"}',
+        # Each case below is caught by exactly one rule (non-registered names), so every rule is load-bearing.
+        "'tool': 'some_unknown_tool'",          # rule 2, single-quote arm
+        '<tool_call>some_unknown_tool</tool_call>',  # rule 3
+        '<action>retrieve</action>',            # rule 3
+        '- tool: some_unknown_tool',            # rule 4, YAML list item
+        '- action: retrieve',                   # rule 4, YAML list item
+        'Search_sec_filings (AMD)',             # rule 1 is case-insensitive
+        'SEARCH_SEC_FILINGS(symbol="AMD")',
+    ])
+    def test_broad_rejected_shapes(self, text):
+        """Brace-free shapes assert malformed; brace-containing assert fail-closed."""
+        runtime, sink = _make_runtime([text])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        if '{' in text:
+            # Brace-containing: goes through JSON path, fails closed generically
+            assert result.error_code is not None, f"Expected fail-closed: {text!r}"
+            assert text not in (result.reply or ""), f"Raw text leaked: {text!r}"
+            assert result.tool_calls == [], f"Tool executed: {text!r}"
+        else:
+            assert result.error_code == "malformed", f"Expected rejected: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        "Action: monitor China exposure and revisit next quarter.",
+        "Risk factors: export controls remain a concern.",
+        "NVIDIA's 10-K filing discusses export control risks.",
+        "You should search SEC filings for more information.",
+        "The company's tools: GPUs and CUDA.",
+        "The function of the board is oversight.",
+    ])
+    def test_broad_accepted_prose(self, text):
+        """Legitimate prose is accepted."""
+        runtime, sink = _make_runtime([text])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None, f"Expected accepted: {text!r}"
+
+
+    def test_brace_free_json_like_fragment_rejected(self):
+        """A brace-free JSON-like fragment with quoted keys must be treated as a tool call."""
+        text = '["action": "retrieve", "tool": "search_sec_filings"]'
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_quoted_tool_key_in_sentence_rejected(self):
+        """A quoted "tool": inside a sentence must fail closed."""
+        text = 'I think "tool": "search_sec_filings" is the right approach here.'
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_risk_factors_colon_prose_accepted(self):
+        """'Risk factors: export controls' is plain prose and must be accepted."""
+        text = "Risk factors: export controls remain the primary concern for NVDA."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert "export controls" in result.reply
+
+
+class TestRetryFeedback:
+    def test_retry_feedback_has_no_validation_error(self):
+        """Retry feedback message must not contain 'ValidationError'."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered"}),
+        ]
+
+        captured_messages = []
+
+        class TrackingTransport:
+            def query(self, **kwargs):
+                captured_messages.append(kwargs.get("messages", []))
+                if len(captured_messages) == 1:
+                    return {"text": model_responses[0], "input_tokens": 100, "output_tokens": 50}
+                return {"text": model_responses[1], "input_tokens": 100, "output_tokens": 50}
+
+        transport = TrackingTransport()
+        model_client = ModelClient(transport=transport)
+        registry = ToolRegistry()
+        sink = FakeAuditSink()
+        runtime = AgentRuntime(model_client=model_client, tool_registry=registry, audit_sink=sink)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        # The second call (retry) should have the feedback message
+        assert len(captured_messages) >= 2
+        retry_messages = captured_messages[1]
+        # Find the user feedback message
+        user_msgs = [m for m in retry_messages if m.get("role") == "user"]
+        feedback = user_msgs[-1]["content"] if user_msgs else ""
+        assert "ValidationError" not in feedback, f"Feedback contains 'ValidationError': {feedback}"
+
+    def test_retry_feedback_has_no_pydantic_diagnostic(self):
+        """Retry feedback must not contain pydantic diagnostic text like 'extra_fields_forbidden'."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered"}),
+        ]
+
+        captured_messages = []
+
+        class TrackingTransport:
+            def query(self, **kwargs):
+                captured_messages.append(kwargs.get("messages", []))
+                if len(captured_messages) == 1:
+                    return {"text": model_responses[0], "input_tokens": 100, "output_tokens": 50}
+                return {"text": model_responses[1], "input_tokens": 100, "output_tokens": 50}
+
+        transport = TrackingTransport()
+        model_client = ModelClient(transport=transport)
+        registry = ToolRegistry()
+        sink = FakeAuditSink()
+        runtime = AgentRuntime(model_client=model_client, tool_registry=registry, audit_sink=sink)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+
+        assert result.error_code is None
+        assert len(captured_messages) >= 2
+        retry_messages = captured_messages[1]
+        user_msgs = [m for m in retry_messages if m.get("role") == "user"]
+        feedback = user_msgs[-1]["content"] if user_msgs else ""
+        assert "extra_fields_forbidden" not in feedback.lower(), f"Feedback contains pydantic diagnostic: {feedback}"
+
