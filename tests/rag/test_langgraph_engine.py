@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 pytest.importorskip("edgar", reason="edgar (sec-edgar-downloader) is an optional dependency")
+pytest.importorskip("api.services.rag_engine", reason="legacy Rag_workbench module not present in this repo; engine scheduled for removal in cleanup PR 4")
 
 from unittest.mock import MagicMock, patch
 import pytest
