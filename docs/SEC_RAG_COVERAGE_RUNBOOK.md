@@ -21,7 +21,7 @@ Create the secret (never commit the actual value):
 databricks secrets put-secret evangoh_capstone sec_edgar_user_agent
 ```
 
-When prompted, enter `<app-name> <your real contact email>` (SEC requires a real contact; the validator rejects placeholder domains `@example.(com|org|net)` and prefixes `example.com`, `example.org`, `example.net` — a real address like `analyst@yourcompany.com` passes).
+When prompted, enter `<app-name> <your real contact email>` (SEC requires a real contact; the validator rejects placeholder domains `@example.(com|org|net)` and addresses starting with `your-email@`/`your_email@`, `user@`, `test@` or `example@example` — a real address like `analyst@yourcompany.com` passes).
 
 To verify the secret exists:
 
