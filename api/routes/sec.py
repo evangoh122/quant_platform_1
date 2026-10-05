@@ -9,8 +9,10 @@ from __future__ import annotations
 import logging
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+
+from api.deps import AppUser, get_current_user, read_delta
 
 router = APIRouter()
 
@@ -48,14 +50,12 @@ def _read_coverage_rows() -> List[dict]:
 
 
 @router.get("/coverage", response_model=SecCoverageResponse)
-def sec_coverage() -> SecCoverageResponse:
-    try:
-        rows = _read_coverage_rows()
-    except ImportError:
-        _log.warning("sec/coverage: pyspark/Delta not available")
-        return SecCoverageResponse(data=[], count=0, status="unavailable")
-    except Exception as exc:
-        _log.warning("sec/coverage: read failed (%s)", type(exc).__name__)
+def sec_coverage(
+    _user: AppUser = Depends(get_current_user),
+) -> SecCoverageResponse:
+    rows, state, _detail = read_delta(_read_coverage_rows)
+
+    if state == "unavailable":
         return SecCoverageResponse(data=[], count=0, status="unavailable")
 
     items = [

@@ -5,6 +5,8 @@ Verifies:
 - Rows with n_chunks = 0 are excluded
 - Missing table → 200 with empty list + status "unavailable"
 - Pydantic response model structure
+- Identity dependency required (401 without auth header)
+- Public-demo mode never calls live warehouse
 """
 from __future__ import annotations
 
@@ -20,6 +22,9 @@ def client(fake_lakebase):
     from api.main import create_app
 
     return TestClient(create_app())
+
+
+_AUTH = {"x-forwarded-email": "test@example.com"}
 
 
 def _make_coverage_rows(tickers_nchunks: list[tuple[str, int]]) -> list[dict]:
@@ -42,7 +47,7 @@ def test_returns_rows_sorted_by_ticker(client):
     # SQL has ORDER BY ticker, so mock returns pre-sorted data as the warehouse would
     rows = _make_coverage_rows([("AAPL", 100), ("MSFT", 50), ("NVDA", 30)])
     with patch("api.routes.sec._read_coverage_rows", return_value=rows):
-        resp = client.get("/api/sec/coverage")
+        resp = client.get("/api/sec/coverage", headers=_AUTH)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -62,7 +67,7 @@ def test_excludes_nchunks_zero(client):
     # The real SQL has WHERE n_chunks > 0, so simulate that filter
     filtered = [r for r in rows if r["n_chunks"] > 0]
     with patch("api.routes.sec._read_coverage_rows", return_value=filtered):
-        resp = client.get("/api/sec/coverage")
+        resp = client.get("/api/sec/coverage", headers=_AUTH)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -73,7 +78,7 @@ def test_excludes_nchunks_zero(client):
 def test_missing_table_returns_unavailable(client):
     """When the table doesn't exist, returns 200 with empty list + status unavailable."""
     with patch("api.routes.sec._read_coverage_rows", side_effect=Exception("Table not found")):
-        resp = client.get("/api/sec/coverage")
+        resp = client.get("/api/sec/coverage", headers=_AUTH)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -85,7 +90,7 @@ def test_missing_table_returns_unavailable(client):
 def test_import_error_returns_unavailable(client):
     """When pyspark/Delta is not available, returns unavailable."""
     with patch("api.routes.sec._read_coverage_rows", side_effect=ImportError("no pyspark")):
-        resp = client.get("/api/sec/coverage")
+        resp = client.get("/api/sec/coverage", headers=_AUTH)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -96,7 +101,7 @@ def test_import_error_returns_unavailable(client):
 def test_empty_result(client):
     """When no tickers have chunks, returns ok with empty list."""
     with patch("api.routes.sec._read_coverage_rows", return_value=[]):
-        resp = client.get("/api/sec/coverage")
+        resp = client.get("/api/sec/coverage", headers=_AUTH)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -118,7 +123,7 @@ def test_fields_mapped_correctly(client):
         }
     ]
     with patch("api.routes.sec._read_coverage_rows", return_value=rows):
-        resp = client.get("/api/sec/coverage")
+        resp = client.get("/api/sec/coverage", headers=_AUTH)
 
     assert resp.status_code == 200
     item = resp.json()["data"][0]
@@ -128,6 +133,36 @@ def test_fields_mapped_correctly(client):
     assert item["n_chunks"] == 500
     assert item["first_filed"] == "2020-03-15"
     assert item["last_filed"] == "2025-09-30"
+
+
+def test_coverage_requires_auth(client, fake_lakebase):
+    """Mutation check: /api/sec/coverage must require authentication.
+
+    Without the trusted identity header the endpoint returns 401.
+    Removing the Depends(get_current_user) from sec.py would cause this
+    test to fail (endpoint would return 200 instead of 401).
+    """
+    resp = client.get("/api/sec/coverage")
+    assert resp.status_code == 401
+
+
+def test_coverage_demo_mode_no_live_warehouse(client, fake_lakebase, monkeypatch):
+    """In public-demo mode, /api/sec/coverage must NOT call the live warehouse.
+
+    read_delta intercepts the call and returns unavailable without invoking
+    the wrapped function. This prevents ambient credentials from reaching
+    the warehouse in a demo deployment.
+    """
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    rows = _make_coverage_rows([("AAPL", 100)])
+    with patch("api.routes.sec._read_coverage_rows", return_value=rows) as mock_read:
+        resp = client.get("/api/sec/coverage", headers=_AUTH)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "unavailable"
+    assert data["count"] == 0
+    mock_read.assert_not_called()
 
 
 def test_nchunks_zero_tickers_included_in_mock():
@@ -180,8 +215,7 @@ def test_read_coverage_rows_excludes_nchunks_zero_via_sql():
     # The SQL must contain the n_chunks > 0 filter
     assert len(captured_sql) == 1
     sql = captured_sql[0]
-    assert "n_chunks" in sql, f"SQL must reference n_chunks column: {sql}"
-    assert ">" in sql or "WHERE" in sql.upper(), f"SQL must have a WHERE clause: {sql}"
+    assert "WHERE n_chunks > 0" in sql, f"SQL must filter n_chunks > 0: {sql}"
     # Verify no user-supplied values are interpolated (all values are constants)
     # The SQL should be a static query with no string formatting of user input
     assert "PENNY" not in sql, "SQL must not contain user-supplied ticker values"
