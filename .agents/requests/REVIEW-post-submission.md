@@ -6,6 +6,7 @@ db/migrations/005_agent_runtime.sql), #37 agent-in-app fixes (warehouse corpus l
 in api/main.py, tolerant JSON parse, plain-prose final answer, one corrective retry), #34 CDC (db/migrations/004_analytics_outbox.sql,
 pipelines/lakebase_analytics.py, analytics API), #33 Lakebase auth (db/lakebase.py SDK token mint, PG* env, app.yaml env), #36 signals script
 (scripts/publish_baseline_signals.py) + company dropdowns.
+Gate: DeepSeek APPROVED in .agents/deepseek/VERDICT-post-submission.md (older per-lane verdicts are superseded by it).
 Do NOT edit repo files; mutation copies via `git archive HEAD | tar -x -C /tmp/<dir>` (never run git inside a copy). Use `git log` / `gh pr view`
 for each PR's diff.
 Review as the final reviewer: safety of the agent (model can never execute an unvalidated tool; write authorisation + idempotency; prompt-injection
