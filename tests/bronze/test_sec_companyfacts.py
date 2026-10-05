@@ -1073,6 +1073,55 @@ class TestRunIngestCompanyFacts:
         # 2 HTTP requests: 429 + retry success
         assert success_entries[0].attempt_count == 2
 
+    def test_concurrent_attempt_count_per_cik(self):
+        """Two concurrent fetches each get their own attempt count."""
+        payload = _make_company_facts_payload()
+        # TK0: 429 then success (2 attempts). TK1: direct success (1 attempt).
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "TK0", "cik_str": 0, "title": "Corp 0"},
+                "1": {"ticker": "TK1", "cik_str": 1, "title": "Corp 1"},
+            }),
+            HttpResponse(status_code=429, text="rate limited", headers={"Retry-After": "1"}),
+            _payload_200(payload),  # TK0 retry succeeds
+            _payload_200(payload),  # TK1 direct success
+        ])
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["TK0", "TK1"],
+                run_id="run_concurrent_attempts",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"TK0": ["0000000000"], "TK1": ["0000000001"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["fetched_count"] == 2
+        success_entries = sorted(
+            [e for e in manifest_entries if e.fetch_status == "success"],
+            key=lambda e: e.cik,
+        )
+        assert len(success_entries) == 2
+        assert success_entries[0].attempt_count == 2  # TK0: 429 + retry
+        assert success_entries[1].attempt_count == 1  # TK1: direct
+
     def test_bounded_concurrency_max_workers(self):
         """ThreadPoolExecutor uses at most 4 workers."""
         import pipelines.ingest_sec_companyfacts as mod
