@@ -115,7 +115,6 @@ export interface ChatResponse {
   sources: Record<string, unknown>[];
   available: boolean;
   empty: boolean;
-  follow_ups?: string[];
 }
 
 export interface DependencyStatus {

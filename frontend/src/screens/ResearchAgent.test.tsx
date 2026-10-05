@@ -430,28 +430,108 @@ describe('ResearchAgent', () => {
     });
   });
 
-  it('renders follow-up questions when API returns them', async () => {
-    const followUpResponse = {
-      ...mockChatResponse,
-      follow_ups: ['How did NVDA grow?', 'What are the risks?'],
+  it('keeps all conversation turns after two consecutive questions', async () => {
+    const secondResponse = {
+      reply: 'AMD describes risks related to competition and supply chain...',
+      tool_calls: [
+        {
+          name: 'search_sec_filings',
+          arguments: { ticker: 'AMD', form_type: '10-K' },
+          result: {
+            rows: [
+              {
+                chunk_id: 'chunk-2',
+                accession_number: '0009876543-24-000001',
+                form_type: '10-K',
+                accepted_ts: '2024-02-15',
+                source_url: 'https://sec.gov/filing/2',
+                ticker: 'AMD',
+                section: 'risk_factors',
+                retrieval_mode: 'hybrid',
+              },
+            ],
+          },
+          ok: true,
+        },
+      ],
+      sources: [{ tool: 'search_sec_filings', chunk_id: 'chunk-2' }],
+      available: true,
+      empty: false,
     };
-    vi.stubGlobal('fetch', mockFetch(followUpResponse));
+
+    let callCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/agent/chat' && init?.method === 'POST') {
+          callCount++;
+          const body = callCount === 1 ? mockChatResponse : secondResponse;
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }),
+    );
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
     await user.click(screen.getByText(/Summarize Nvidia/));
 
     await waitFor(() => {
-      expect(screen.getByText('How did NVDA grow?')).toBeInTheDocument();
-      expect(screen.getByText('What are the risks?')).toBeInTheDocument();
+      expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
     });
 
-    // Clicking a follow-up should submit it
-    await user.click(screen.getByText('How did NVDA grow?'));
+    const input = screen.getByPlaceholderText('Ask the research agent…');
+    await user.type(input, 'What risks does AMD describe?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => {
-      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(/AMD describes risks/)).toBeInTheDocument();
     });
+
+    // Both turns should be visible
+    expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
+    expect(screen.getByText(/AMD describes risks/)).toBeInTheDocument();
+
+    // Both user messages should be visible
+    expect(screen.getByText(/Summarize Nvidia/)).toBeInTheDocument();
+    expect(screen.getByText('What risks does AMD describe?')).toBeInTheDocument();
+  });
+
+  it('keeps earlier turns and preserves question text when follow-up fails', async () => {
+    let callCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/agent/chat' && init?.method === 'POST') {
+          callCount++;
+          if (callCount === 1) {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve(mockChatResponse) });
+          }
+          return Promise.resolve({ ok: false, status: 500, statusText: 'Internal Server Error', json: () => Promise.resolve({ detail: 'Server error' }) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Summarize Nvidia/));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText('Ask the research agent…');
+    await user.type(input, 'What about AMD?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // Earlier turn should still be visible
+    await waitFor(() => {
+      expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
+    });
+
+    // Failed question text should be preserved in input
+    expect(screen.getByDisplayValue('What about AMD?')).toBeInTheDocument();
   });
 
   it('does not render model confidence or score values from API response', async () => {

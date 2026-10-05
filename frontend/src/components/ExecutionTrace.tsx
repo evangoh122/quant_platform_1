@@ -9,26 +9,34 @@ export interface TraceStep {
 }
 
 function deriveSteps(toolCalls: ToolCall[], available: boolean): TraceStep[] {
-  const hasRetrieval = toolCalls.some(
+  const retrievalTools = toolCalls.filter(
     (tc) => tc.name === 'search_sec_filings' || tc.name === 'get_latest_signal',
   );
-  const hasWrite = toolCalls.some(
+  const writeTools = toolCalls.filter(
     (tc) => tc.name === 'save_research_note' || tc.name === 'add_to_watchlist',
   );
+  const hasRetrieval = retrievalTools.length > 0;
+  const hasWrite = writeTools.length > 0;
+  const retrievalFailed = retrievalTools.some((tc) => !tc.ok);
+  const writeFailed = writeTools.some((tc) => !tc.ok);
   const anyFailed = toolCalls.some((tc) => !tc.ok);
   const allDone = toolCalls.length > 0;
 
   const retrievalStatus: TraceStep['status'] = !hasRetrieval
     ? 'skipped'
-    : anyFailed
+    : retrievalFailed
       ? 'failed'
       : 'complete';
 
   const toolStatus: TraceStep['status'] = toolCalls.length === 0
     ? 'pending'
-    : anyFailed
-      ? 'failed'
-      : 'complete';
+    : hasWrite
+      ? writeFailed
+        ? 'failed'
+        : 'complete'
+      : anyFailed
+        ? 'failed'
+        : 'complete';
 
   const responseStatus: TraceStep['status'] = !allDone
     ? 'pending'

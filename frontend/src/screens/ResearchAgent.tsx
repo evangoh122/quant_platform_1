@@ -19,7 +19,6 @@ interface Message {
   text: string;
   toolCalls: ChatResponse['tool_calls'];
   available: boolean;
-  followUps: string[];
 }
 
 export function ResearchAgent() {
@@ -40,12 +39,12 @@ export function ResearchAgent() {
     setInput('');
     setSending(true);
     setError(null);
-    setMessages((prev) => [...prev, { role: 'user', text: message, toolCalls: [], available: true, followUps: [] }]);
+    setMessages((prev) => [...prev, { role: 'user', text: message, toolCalls: [], available: true }]);
     try {
       const resp = await api.chat(message);
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', text: resp.reply, toolCalls: resp.tool_calls, available: resp.available, followUps: resp.follow_ups ?? [] },
+        { role: 'assistant', text: resp.reply, toolCalls: resp.tool_calls, available: resp.available },
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -93,24 +92,6 @@ export function ResearchAgent() {
                 {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && tc.result?.note_id) && (
                   <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
                     Research note saved to Lakebase.
-                  </div>
-                )}
-                {m.role === 'assistant' && m.followUps.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Follow-up questions</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {m.followUps.map((fq) => (
-                        <button
-                          key={fq}
-                          type="button"
-                          disabled={sending}
-                          onClick={() => void send(fq)}
-                          className="rounded border border-slate-200 bg-white px-2 py-1 text-left text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
-                        >
-                          {fq}
-                        </button>
-                      ))}
-                    </div>
                   </div>
                 )}
               </div>
