@@ -84,25 +84,28 @@ _STATUS_TO_STAGE = {
     "FAILED": "failure",
 }
 
-CHANGE_EVENTS_SCHEMA = StructType([
-    StructField("event_id", LongType(), False),
-    StructField("source_table", StringType(), False),
-    StructField("source_pk", StringType(), False),
-    StructField("operation", StringType(), False),
-    StructField("before_payload", StringType(), True),
-    StructField("after_payload", StringType(), True),
-    StructField("occurred_at", TimestampType(), False),
-    StructField("ingested_at", TimestampType(), False),
-])
+CHANGE_EVENTS_SCHEMA = None
+STATE_SCHEMA = None
+if _has_pyspark:
+    CHANGE_EVENTS_SCHEMA = StructType([
+        StructField("event_id", LongType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("source_pk", StringType(), False),
+        StructField("operation", StringType(), False),
+        StructField("before_payload", StringType(), True),
+        StructField("after_payload", StringType(), True),
+        StructField("occurred_at", TimestampType(), False),
+        StructField("ingested_at", TimestampType(), False),
+    ])
 
-STATE_SCHEMA = StructType([
-    StructField("run_id", StringType(), False),
-    StructField("completed_at", StringType(), False),
-    StructField("max_event_id", LongType(), False),
-    StructField("pending_count", LongType(), False),
-    StructField("source_target_lag_s", DoubleType(), False),
-    StructField("status", StringType(), False),
-])
+    STATE_SCHEMA = StructType([
+        StructField("run_id", StringType(), False),
+        StructField("completed_at", StringType(), False),
+        StructField("max_event_id", LongType(), False),
+        StructField("pending_count", LongType(), False),
+        StructField("source_target_lag_s", DoubleType(), False),
+        StructField("status", StringType(), False),
+    ])
 
 
 # ── dataclass ────────────────────────────────────────────────────────────────
