@@ -128,8 +128,24 @@ class Portfolio(BaseModel):
 
 
 # ── agent chat ────────────────────────────────────────────────────────────────
+class WriteAuthorization(BaseModel):
+    """Request-scoped write authority.
+
+    Carries exactly one allowed write tool and a caller-supplied bounded
+    idempotency key. A read-only request has no write authorization. The
+    runtime must match the proposed write tool to this field, the authenticated
+    principal, and evidence produced in the same trace. A model proposal is
+    never authorization.
+    """
+    model_config = {"extra": "forbid"}
+
+    tool: Literal["add_to_watchlist", "save_research_note"]
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
+    write_authorization: Optional[WriteAuthorization] = None
 
 
 class ToolCall(BaseModel):
