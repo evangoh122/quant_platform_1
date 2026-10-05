@@ -1,0 +1,12 @@
+# SEC CIK overrides — maps a ticker to one or more CIKs.
+#
+# Some companies have multiple CIKs (e.g. holding company + operating entity).
+# The default company_tickers.json may map to only one CIK, missing filings
+# under the other(s).  This file overrides that mapping so discovery unions
+# filings from every listed CIK (deduped by accession number).
+#
+# CIKs must be 10-digit zero-padded strings.
+
+XOM:
+  - "0002115436"  # ExxonMobil Holdings Corp (new holding company)
+  - "0000034088"  # Exxon Mobil Corp (historical 10-K/10-Q)

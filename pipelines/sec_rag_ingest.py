@@ -186,6 +186,23 @@ SECTION_PATTERNS: List[Tuple[str, str]] = [
     (r"(?i)item\s*8[^0-9a].*?(?=item\s*9|$)", "item8_financial_statements"),
 ]
 
+# 20-F section patterns — foreign private issuers
+# Item 3.D = Risk Factors, Item 4 = Business, Item 5 = Operating/Financial Review,
+# Item 8 = Financial Statements
+SECTION_PATTERNS_20F: List[Tuple[str, str]] = [
+    (r"(?i)item\s*3\.?d.*?(?=item\s*[4-9]|$)", "item3d_risk_factors"),
+    (r"(?i)item\s*4[^0-9a].*?(?=item\s*[5-9]|$)", "item4_business"),
+    (r"(?i)item\s*5[^0-9a].*?(?=item\s*[6-9]|$)", "item5_operating_review"),
+    (r"(?i)item\s*8[^0-9a].*?(?=item\s*9|$)", "item8_financial_statements"),
+]
+
+
+def get_section_patterns(form_type: str) -> List[Tuple[str, str]]:
+    """Return section extraction patterns for the given form type."""
+    if form_type in ("20-F", "40-F"):
+        return SECTION_PATTERNS_20F
+    return SECTION_PATTERNS
+
 
 class AccessionOwnershipConflict(ValueError):
     """Raised when an accession number is already owned by a different CIK."""
@@ -430,14 +447,16 @@ def chunk_text(
     return chunks
 
 
-def extract_sections(plain_text: str) -> List[Tuple[str, str]]:
+def extract_sections(plain_text: str, form_type: str = "10-K") -> List[Tuple[str, str]]:
     """Extract named sections from plain text using regex patterns.
 
     Falls back to full_document if no sections match.
+    Uses 20-F patterns for foreign filer forms.
     """
     sections_found: List[Tuple[str, str]] = []
+    patterns = get_section_patterns(form_type)
 
-    for pattern, section_name in SECTION_PATTERNS:
+    for pattern, section_name in patterns:
         match = re.search(pattern, plain_text, flags=re.DOTALL)
         if not match:
             continue
@@ -479,9 +498,36 @@ def normalize_sec_ticker(symbol: str) -> List[str]:
     return result
 
 
+def load_cik_overrides(
+    override_path: Optional[str] = None,
+) -> Dict[str, List[str]]:
+    """Load CIK overrides from YAML file.
+
+    Returns ticker -> list of zero-padded CIK strings.
+    Returns empty dict if file does not exist or path is None.
+    """
+    if override_path is None:
+        # Default: config/sec_cik_overrides.yaml relative to repo root
+        override_path = str(
+            Path(__file__).resolve().parent.parent / "config" / "sec_cik_overrides.yaml"
+        )
+    path = Path(override_path)
+    if not path.exists():
+        return {}
+    import yaml  # local import to avoid hard dependency at module level
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    result: Dict[str, List[str]] = {}
+    for ticker, ciks in data.items():
+        if isinstance(ciks, list):
+            result[ticker.strip().upper()] = [str(c).zfill(10) for c in ciks]
+    return result
+
+
 def build_cik_map(
     symbols: List[str],
     company_tickers_payload: Dict[str, Any],
+    cik_overrides: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, "CikMappingResult"]:
     """Build ticker-to-CIK mapping from SEC company_tickers.json payload.
 
@@ -497,11 +543,28 @@ def build_cik_map(
             cik = str(entry["cik_str"]).zfill(10)
             ticker_to_ciks.setdefault(raw_ticker, set()).add(cik)
 
+    overrides = cik_overrides or {}
     results: Dict[str, CikMappingResult] = {}
     now = datetime.now(timezone.utc)
 
     for symbol in symbols:
         variants = normalize_sec_ticker(symbol)
+        sym_upper = symbol.strip().upper()
+
+        # Override takes precedence over SEC lookup
+        if sym_upper in overrides:
+            override_ciks = overrides[sym_upper]
+            results[symbol] = CikMappingResult(
+                ticker=symbol,
+                lookup_symbol=sym_upper,
+                cik=override_ciks[0],  # primary CIK for backward compat
+                status="mapped",
+                reason=f"CIK override: {', '.join(override_ciks)}",
+                mapped_ts=now,
+                ciks=list(override_ciks),
+            )
+            continue
+
         matched_ciks: Optional[Set[str]] = None
         matched_lookup: Optional[str] = None
 
@@ -522,13 +585,15 @@ def build_cik_map(
                     mapped_ts=now,
                 )
             else:
+                cik_val = next(iter(matched_ciks))
                 results[symbol] = CikMappingResult(
                     ticker=symbol,
                     lookup_symbol=matched_lookup,
-                    cik=next(iter(matched_ciks)),
+                    cik=cik_val,
                     status="mapped",
                     reason="",
                     mapped_ts=now,
+                    ciks=[cik_val],
                 )
         else:
             results[symbol] = CikMappingResult(
@@ -579,6 +644,7 @@ class CikMappingResult:
     status: str  # mapped | missing | ambiguous
     reason: str
     mapped_ts: Optional[datetime] = None
+    ciks: List[str] = field(default_factory=list)  # all CIKs (overrides may list multiple)
 
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
@@ -1062,7 +1128,7 @@ def process_filing(
     if not plain_text:
         return []
 
-    sections = extract_sections(plain_text)
+    sections = extract_sections(plain_text, form_type=filing.form_type)
     accession_clean = filing.accession_number.replace("-", "")
     filing_url = (
         f"{EDGAR_WWW_BASE}/Archives/edgar/data/"
@@ -1251,6 +1317,7 @@ def run_ingest(
     run_id: Optional[str] = None,
     user_agent_secret_scope: str = DEFAULT_SECRET_SCOPE,
     user_agent_secret_key: str = DEFAULT_SECRET_KEY,
+    cik_overrides_path: Optional[str] = None,
     # Injected dependencies
     universe_reader: Optional[UniverseReader] = None,
     accession_reader: Optional[ExistingAccessionReader] = None,
@@ -1261,6 +1328,7 @@ def run_ingest(
     http_client: Optional[HttpClient] = None,
     clock: Optional[Clock] = None,
     cache_path: Optional[str] = None,
+    cik_overrides: Optional[Dict[str, List[str]]] = None,
 ) -> IngestResult:
     """Run the SEC RAG ingestion pipeline.
 
@@ -1270,9 +1338,9 @@ def run_ingest(
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     forms = set(f.strip() for f in forms_str.split(","))
-    invalid = forms - {"10-K", "10-Q"}
+    invalid = forms - {"10-K", "10-Q", "20-F", "40-F", "6-K"}
     if invalid:
-        raise ValueError(f"Unsupported forms: {invalid}. Only 10-K and 10-Q are in scope.")
+        raise ValueError(f"Unsupported forms: {invalid}. Allowed: 10-K, 10-Q, 20-F, 40-F, 6-K.")
 
     result = IngestResult(run_id=run_id, dry_run=dry_run)
 
@@ -1321,13 +1389,20 @@ def run_ingest(
 
     symbols = [e.ticker for e in entries]
 
+    # Load CIK overrides
+    if cik_overrides is None:
+        cik_overrides = load_cik_overrides(cik_overrides_path)
+
     # Map tickers to CIKs
-    cik_map = build_cik_map(symbols, tickers_payload)
-    mapped_tickers: List[Tuple[str, str]] = []  # (ticker, cik)
+    cik_map = build_cik_map(symbols, tickers_payload, cik_overrides=cik_overrides)
+    mapped_tickers: List[Tuple[str, str]] = []  # (ticker, cik) — one entry per CIK
 
     for symbol, mapping in cik_map.items():
         if mapping.status == "mapped" and mapping.cik:
-            mapped_tickers.append((symbol, mapping.cik))
+            # If ciks list is populated (override or single), use all CIKs
+            ciks_to_use = mapping.ciks if mapping.ciks else [mapping.cik]
+            for cik in ciks_to_use:
+                mapped_tickers.append((symbol, cik))
             result.mapped_count += 1
         elif mapping.status == "ambiguous":
             result.missing_count += 1
@@ -1364,12 +1439,21 @@ def run_ingest(
     result.existing_count = len(existing_accessions)
 
     # Discover filings — record failures per ticker, never silently succeed
+    # For override tickers with multiple CIKs, union filings and dedup by accession
     all_filings: Dict[str, List[FilingMeta]] = {}
+    seen_accessions_by_ticker: Dict[str, Set[str]] = {}
     failed_tickers: Set[str] = set()
     for ticker, cik in mapped_tickers:
         try:
             filings, failed_hist = discover_filings(client, cik, start_date, forms)
-            all_filings[ticker] = filings
+            # Dedup by accession across CIKs for the same ticker
+            if ticker not in seen_accessions_by_ticker:
+                seen_accessions_by_ticker[ticker] = set()
+                all_filings[ticker] = []
+            for f in filings:
+                if f.accession_number not in seen_accessions_by_ticker[ticker]:
+                    seen_accessions_by_ticker[ticker].add(f.accession_number)
+                    all_filings[ticker].append(f)
             result.discovered_count += len(filings)
             if failed_hist:
                 # History-file fetch failures → partial coverage
@@ -2148,6 +2232,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=DEFAULT_SECRET_KEY,
         help="Databricks secret key for SEC EDGAR User-Agent",
     )
+    parser.add_argument(
+        "--cik-overrides-path",
+        default=None,
+        help="Path to CIK overrides YAML file (default: config/sec_cik_overrides.yaml)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -2183,6 +2272,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         run_id=args.run_id,
         user_agent_secret_scope=args.user_agent_secret_scope,
         user_agent_secret_key=args.user_agent_secret_key,
+        cik_overrides_path=args.cik_overrides_path,
         universe_reader=universe_reader,
         accession_reader=accession_reader,
         data_writer=data_writer,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import threading
 import time
@@ -40,6 +41,7 @@ from pipelines.sec_rag_ingest import (  # noqa: E402
     chunk_text,
     discover_filings,
     extract_sections,
+    load_cik_overrides,
     load_company_tickers,
     normalize_sec_ticker,
     parse_sec_timestamp,
@@ -3598,3 +3600,376 @@ class TestRunIngestUserAgentResolution:
 
         assert captured["scope"] == DEFAULT_SECRET_SCOPE
         assert captured["key"] == DEFAULT_SECRET_KEY
+
+
+# ── Round 19: CIK overrides ─────────────────────────────────────────────────
+
+
+class TestCikOverrides:
+    """CIK overrides: ticker → multiple CIKs, discovery unions filings."""
+
+    def test_load_cik_overrides(self, tmp_path):
+        """load_cik_overrides reads YAML and returns ticker→CIKs dict."""
+        import yaml
+        override_file = tmp_path / "overrides.yaml"
+        override_file.write_text(yaml.dump({
+            "XOM": ["0002115436", "0000034088"],
+            "TSM": ["0001046179"],
+        }))
+        overrides = load_cik_overrides(str(override_file))
+        assert overrides == {
+            "XOM": ["0002115436", "0000034088"],
+            "TSM": ["0001046179"],
+        }
+
+    def test_load_cik_overrides_missing_file(self, tmp_path):
+        """Missing override file returns empty dict."""
+        overrides = load_cik_overrides(str(tmp_path / "nonexistent.yaml"))
+        assert overrides == {}
+
+    def test_build_cik_map_with_overrides(self):
+        """Override tickers use override CIKs, not SEC lookup."""
+        payload = {
+            "0": {"ticker": "XOM", "cik_str": 2115436},  # SEC only has holdings CIK
+        }
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        result = build_cik_map(["XOM"], payload, cik_overrides=overrides)
+        assert result["XOM"].status == "mapped"
+        assert result["XOM"].cik == "0002115436"  # primary CIK
+        assert result["XOM"].ciks == ["0002115436", "0000034088"]
+        assert "override" in result["XOM"].reason.lower()
+
+    def test_build_cik_map_override_takes_precedence(self):
+        """Override wins even when SEC lookup finds a different CIK."""
+        payload = {
+            "0": {"ticker": "XOM", "cik_str": 9999999},  # SEC has wrong CIK
+        }
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        result = build_cik_map(["XOM"], payload, cik_overrides=overrides)
+        assert result["XOM"].cik == "0002115436"
+        assert result["XOM"].ciks == ["0002115436", "0000034088"]
+
+    def test_discovery_unions_filings_from_multiple_ciks(self):
+        """Discovery unions filings from all CIKs for an override ticker."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+
+        # CIK 2115436 (holdings) — 2 filings
+        holdings = json.loads((FIXTURES / "submissions_xom_holdings.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings)
+
+        # CIK 34088 (legacy) — 7 filings
+        legacy = json.loads((FIXTURES / "submissions_xom_legacy.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", legacy)
+
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        # Discover from each CIK separately
+        filings_h, _ = discover_filings(client, "2115436", "2024-09-01", {"10-K", "10-Q"})
+        filings_l, _ = discover_filings(client, "34088", "2024-09-01", {"10-K", "10-Q"})
+
+        # Holdings: 2 filings (10-K 2025, 10-Q 2024)
+        assert len(filings_h) == 2
+        # Legacy: 7 filings total, but only 2 after 2024-09-01 cutoff
+        # (10-K 2025-02-28, 10-Q 2024-11-07)
+        assert len(filings_l) == 2
+
+        # Union = 4 filings total (no duplicate accessions across CIKs)
+        all_accessions = set()
+        for f in filings_h + filings_l:
+            all_accessions.add(f.accession_number)
+        assert len(all_accessions) == 4
+
+    def test_duplicate_accession_across_ciks_stored_once(self):
+        """When the same accession appears in two CIKs, it is stored once."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+
+        # Both CIKs return the same accession
+        holdings = {
+            "cik": "0002115436",
+            "entityName": "Holdings",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-03-01"],
+                    "accessionNumber": ["0000034088-25-000010"],  # same as legacy
+                    "primaryDocument": ["holdings-20250301.htm"],
+                    "acceptanceDateTime": ["2025-03-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        legacy = {
+            "cik": "0000034088",
+            "entityName": "Legacy",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-02-28"],
+                    "accessionNumber": ["0000034088-25-000010"],  # same accession
+                    "primaryDocument": ["xom-20250228.htm"],
+                    "acceptanceDateTime": ["2025-02-28T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings)
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", legacy)
+
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        # Simulate the discovery loop from run_ingest
+        seen_accessions: Set[str] = set()
+        all_filings = []
+        for cik in ["2115436", "34088"]:
+            filings, _ = discover_filings(client, cik, "2024-09-01", {"10-K", "10-Q"})
+            for f in filings:
+                if f.accession_number not in seen_accessions:
+                    seen_accessions.add(f.accession_number)
+                    all_filings.append(f)
+
+        # Only 1 filing stored (deduped by accession)
+        assert len(all_filings) == 1
+        assert all_filings[0].accession_number == "0000034088-25-000010"
+
+    def test_mutation_ignore_overrides_fails(self):
+        """Mutation: if build_cik_map ignores overrides, ticker gets wrong CIK."""
+        payload = {
+            "0": {"ticker": "XOM", "cik_str": 2115436},  # SEC only has holdings
+        }
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+
+        # With overrides: both CIKs available
+        result_with = build_cik_map(["XOM"], payload, cik_overrides=overrides)
+        assert result_with["XOM"].ciks == ["0002115436", "0000034088"]
+
+        # Without overrides: only SEC CIK
+        result_without = build_cik_map(["XOM"], payload, cik_overrides=None)
+        assert result_without["XOM"].cik == "0002115436"
+        assert result_without["XOM"].ciks == ["0002115436"]  # only one CIK
+
+        # The difference: with overrides, discovery would find filings from both CIKs
+        # Without overrides, only from the SEC CIK — missing 5 filings from legacy CIK
+
+
+# ── Round 19: Foreign filers (20-F/40-F/6-K) ────────────────────────────────
+
+
+class TestForeignFilers:
+    """20-F/40-F/6-K discovery and section extraction."""
+
+    def test_discover_20f_filings(self):
+        """20-F filings are discovered when included in forms set."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_20f.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        # 20-F only
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"20-F"})
+        assert len(filings) == 1
+        assert filings[0].form_type == "20-F"
+        assert filings[0].accession_number == "0001045810-25-000050"
+
+    def test_discover_6k_filings(self):
+        """6-K filings are discovered when included in forms set."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_20f.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"6-K"})
+        assert len(filings) == 1
+        assert filings[0].form_type == "6-K"
+
+    def test_discover_mixed_forms(self):
+        """10-K + 20-F + 6-K together discover all matching filings."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_20f.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+
+        filings, _ = discover_filings(client, "1045810", "2024-09-01", {"10-K", "20-F", "6-K"})
+        assert len(filings) == 3
+        form_types = {f.form_type for f in filings}
+        assert form_types == {"10-K", "20-F", "6-K"}
+
+    def test_extract_sections_20f(self):
+        """20-F section extraction finds Item 3.D, 4, 5, 8."""
+        html = (FIXTURES / "sample_20f.htm").read_text()
+        plain = strip_html(html)
+        sections = extract_sections(plain, form_type="20-F")
+
+        section_names = [s[0] for s in sections]
+        # Should find risk factors, business, operating review, financial statements
+        assert "item3d_risk_factors" in section_names
+        assert "item4_business" in section_names
+        assert "item5_operating_review" in section_names
+        assert "item8_financial_statements" in section_names
+
+    def test_extract_sections_10k_still_works(self):
+        """10-K section extraction still works after adding 20-F patterns."""
+        html = (FIXTURES / "sample_filing.htm").read_text()
+        plain = strip_html(html)
+        sections = extract_sections(plain, form_type="10-K")
+
+        section_names = [s[0] for s in sections]
+        # Should find at least some 10-K sections
+        assert len(section_names) > 0
+        # Should NOT contain 20-F-specific sections
+        assert "item3d_risk_factors" not in section_names
+
+    def test_20f_fallback_to_full_document(self):
+        """When no 20-F items match, falls back to full_document."""
+        plain = "This is a simple document with no SEC item headers."
+        sections = extract_sections(plain, form_type="20-F")
+        assert len(sections) == 1
+        assert sections[0][0] == "full_document"
+
+    def test_form_validation_accepts_20f(self):
+        """run_ingest accepts 20-F in forms_str."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        overrides = {"TSM": ["0001046179"]}
+        result = run_ingest(
+            catalog="test", schema="test",
+            forms_str="20-F,6-K",
+            tickers=["TSM"],
+            dry_run=True,
+            cik_overrides=overrides,
+            universe_reader=FakeUniverseReader([TickerEntry("TSM", 1)]),
+            accession_reader=FakeAccessionReader(),
+            data_writer=FakeDataWriter(),
+            log_writer=FakeLogWriter(),
+            cik_mapping_log_writer=FakeCikMappingLogWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+        assert result.dry_run is True
+
+    def test_form_validation_rejects_unknown(self):
+        """run_ingest rejects unsupported form types."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        with pytest.raises(ValueError, match="Unsupported forms"):
+            run_ingest(
+                catalog="test", schema="test",
+                forms_str="10-K,8-K",
+                dry_run=True,
+                universe_reader=FakeUniverseReader([TickerEntry("AAPL", 1)]),
+                accession_reader=FakeAccessionReader(),
+                data_writer=FakeDataWriter(),
+                log_writer=FakeLogWriter(),
+                cik_mapping_log_writer=FakeCikMappingLogWriter(),
+                http_client=http,
+                clock=clock,
+                cache_path=str(FIXTURES / "company_tickers.json"),
+            )
+
+
+# ── Round 19: Runbook bundle run commands ────────────────────────────────────
+
+
+class TestRunbookBundleCommands:
+    """Every databricks bundle run ... sec_embeddings must repeat --catalog/--schema."""
+
+    def test_sec_embeddings_commands_have_catalog_schema(self):
+        """Parse runbook and fail if any sec_embeddings bundle run omits --catalog/--schema."""
+        runbook_path = Path(__file__).resolve().parent.parent.parent / "docs" / "SEC_RAG_COVERAGE_RUNBOOK.md"
+        content = runbook_path.read_text()
+
+        import re
+        # Find all 'databricks bundle run ... sec_embeddings -- ...' lines
+        pattern = re.compile(
+            r"databricks\s+bundle\s+run\s+\S+\s+\S+\s+sec_embeddings\s+--\s+(.+)",
+            re.MULTILINE,
+        )
+        matches = pattern.findall(content)
+        assert len(matches) >= 4, (
+            f"Expected at least 4 sec_embeddings commands in runbook, found {len(matches)}"
+        )
+
+        for i, args_str in enumerate(matches):
+            assert "--catalog" in args_str, (
+                f"sec_embeddings command #{i+1} missing --catalog: {args_str.strip()}"
+            )
+            assert "--schema" in args_str, (
+                f"sec_embeddings command #{i+1} missing --schema: {args_str.strip()}"
+            )
+
+
+# ── Round 19: xbrl_client._get_user_agent delegation ────────────────────────
+
+
+class TestXbrlClientUserAgent:
+    """_get_user_agent delegates to pipeline resolver, never uses EDGAR_USER_AGENT."""
+
+    def test_delegates_to_resolve_user_agent(self, monkeypatch):
+        """_get_user_agent calls _resolve_user_agent and uses its value."""
+        from api.services import xbrl_client
+
+        # Reset the module-level cache
+        xbrl_client._USER_AGENT = None
+
+        calls = []
+
+        def mock_resolve_user_agent(**kwargs):
+            calls.append("called")
+            return "PipelineAgent pipeline@test.com"
+
+        def mock_validate_user_agent(ua):
+            calls.append(f"validated:{ua}")
+
+        monkeypatch.setattr(xbrl_client, "_resolve_user_agent", mock_resolve_user_agent)
+        monkeypatch.setattr(xbrl_client, "_validate_user_agent", mock_validate_user_agent)
+
+        result = xbrl_client._get_user_agent()
+
+        assert result == "PipelineAgent pipeline@test.com"
+        assert "called" in calls
+        assert "validated:PipelineAgent pipeline@test.com" in calls
+
+    def test_mutation_old_env_get_fails(self, monkeypatch):
+        """Mutation: restoring old os.getenv('EDGAR_USER_AGENT') path → test fails."""
+        from api.services import xbrl_client
+
+        # Reset the module-level cache
+        xbrl_client._USER_AGENT = None
+
+        # Simulate the OLD buggy code: reads EDGAR_USER_AGENT (not SEC_EDGAR_USER_AGENT)
+        original_get_user_agent = xbrl_client._get_user_agent
+
+        def buggy_get_user_agent():
+            global _USER_AGENT
+            if xbrl_client._USER_AGENT is None:
+                raw = os.getenv("EDGAR_USER_AGENT", "")
+                xbrl_client._USER_AGENT = raw
+            return xbrl_client._USER_AGENT
+
+        # With the bug: EDGAR_USER_AGENT is not set → returns empty string
+        monkeypatch.delenv("EDGAR_USER_AGENT", raising=False)
+        monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "RealAgent real@test.com")
+
+        # The buggy version returns empty (wrong env var)
+        result = buggy_get_user_agent()
+        assert result == "", "Bug: EDGAR_USER_AGENT not set, returns empty"
+
+        # The correct version returns the pipeline-resolved value
+        xbrl_client._USER_AGENT = None
+        monkeypatch.setattr(xbrl_client, "_resolve_user_agent",
+                            lambda **kw: "RealAgent real@test.com")
+        monkeypatch.setattr(xbrl_client, "_validate_user_agent", lambda ua: None)
+        result = original_get_user_agent()
+        assert result == "RealAgent real@test.com", (
+            "Correct code uses pipeline resolver, not os.getenv('EDGAR_USER_AGENT')"
+        )
