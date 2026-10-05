@@ -274,10 +274,14 @@ describe('360px contract', () => {
     vi.restoreAllMocks();
   });
 
+  function getFixedWidthPx(className: string): number[] {
+    const matches = className.matchAll(/(?:^|\s)(?:w|min-w)-\[(\d+)px\]/g);
+    return [...matches].map((m) => parseInt(m[1], 10));
+  }
+
   it('enforces layout contract at 360px viewport width', async () => {
     vi.stubGlobal('fetch', mockFetch(healthyResponse));
 
-    // Mock window.innerWidth for mobile
     Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
 
     const { container } = render(<App />);
@@ -286,23 +290,82 @@ describe('360px contract', () => {
       expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
     });
 
-    // Check that the shell header does not have a fixed width class like w-[400px]
-    const header = container.querySelector('header');
-    expect(header).toBeTruthy();
-    expect(header!.className).not.toContain('w-[400px]');
-    expect(header!.className).not.toMatch(/\bw-\[\d+px\]/);
+    const allElements = container.querySelectorAll('*');
+    allElements.forEach((el) => {
+      const widths = getFixedWidthPx(el.className);
+      widths.forEach((w) => {
+        expect(w).toBeLessThanOrEqual(360);
+      });
+    });
 
-    // Check that main content uses min-w-0
     const mainContent = container.querySelector('main');
     expect(mainContent).toBeTruthy();
     expect(mainContent!.className).toContain('min-w-0');
 
-    // Check that the flex container uses min-w-0
     const flexContainer = container.querySelector('.min-w-0.flex-1.flex-col');
     expect(flexContainer).toBeTruthy();
+  });
 
-    // Check that tables are wrapped in horizontally scrollable containers
-    const tables = container.querySelectorAll('table');
+  it('catches min-w-[400px] mutation on the shell root', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const shellRoot = container.firstElementChild as HTMLElement;
+    shellRoot.classList.add('min-w-[400px]');
+
+    const allElements = container.querySelectorAll('*');
+    let foundViolation = false;
+    allElements.forEach((el) => {
+      const widths = getFixedWidthPx(el.className);
+      widths.forEach((w) => {
+        if (w > 360) foundViolation = true;
+      });
+    });
+    expect(foundViolation).toBe(true);
+  });
+
+  it('wraps real tables in horizontally scrollable containers', async () => {
+    const marketWithData = {
+      symbol: 'NVDA',
+      ohlcv: {
+        data: [{ symbol: 'NVDA', event_date: '2025-01-01', open: 100, high: 110, low: 95, close: 105, volume: 1000000, vwap: 102.5 }],
+        count: 1,
+        empty: false,
+        source: 'silver_ohlcv_day_adjusted',
+        freshness: { state: 'fresh', table: '', detail: '' },
+      },
+      options: { data: [], count: 0, empty: true, source: 'gold_options_features', freshness: { state: 'empty', table: '', detail: '' } },
+    };
+    const fetchWithData = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/health') return Promise.resolve({ ok: true, json: () => Promise.resolve(healthyResponse) });
+      if (url.startsWith('/api/market/')) return Promise.resolve({ ok: true, json: () => Promise.resolve(marketWithData) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+    vi.stubGlobal('fetch', fetchWithData);
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Market Explorer' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Market Explorer' })).toBeInTheDocument();
+    });
+
+    const tables = document.querySelectorAll('table');
+    expect(tables.length).toBeGreaterThan(0);
+
     tables.forEach((table) => {
       const parent = table.parentElement;
       expect(parent).toBeTruthy();
