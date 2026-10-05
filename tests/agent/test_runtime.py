@@ -246,8 +246,10 @@ class TestMalformedResponse:
 
     def test_extra_json_fields(self):
         """Model returns valid JSON with extra fields (rejected by strict schema)."""
+        # Rejected twice (one corrective retry is allowed) -> fails closed.
         model_responses = [
-            json.dumps({"action": "final", "reply": "Hello", "extra": "field"})
+            json.dumps({"action": "final", "reply": "Hello", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Hello", "extra": "field"}),
         ]
 
         runtime, sink = _make_runtime(model_responses)
@@ -259,8 +261,10 @@ class TestMalformedResponse:
 
     def test_unknown_tool(self):
         """Model proposes an unknown tool."""
+        # Unknown tool proposed twice (one corrective retry) -> fails closed, nothing executes.
         model_responses = [
-            json.dumps({"action": "retrieve", "tool": "hack_database", "args": {"symbol": "NVDA"}})
+            json.dumps({"action": "retrieve", "tool": "hack_database", "args": {"symbol": "NVDA"}}),
+            json.dumps({"action": "retrieve", "tool": "hack_database", "args": {"symbol": "NVDA"}}),
         ]
 
         runtime, sink = _make_runtime(model_responses)
@@ -713,3 +717,15 @@ class TestEvidenceBinding:
         assert result.available is True
         assert result.error_code == "no_evidence"
         assert write_fn.call_count == 0
+
+class TestValidationRetry:
+    def test_one_corrective_retry_then_valid_action(self):
+        """A rejected action gets one corrective retry; a valid re-proposal proceeds."""
+        model_responses = [
+            json.dumps({"action": "final", "reply": "x", "extra": "field"}),
+            json.dumps({"action": "final", "reply": "Recovered answer"}),
+        ]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert result.reply == "Recovered answer"
