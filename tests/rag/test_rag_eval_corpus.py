@@ -287,3 +287,41 @@ class TestOfflineAliasMap:
         assert hr._alias_map_loaded == orig_loaded, (
             "install_offline_corpus did not restore _alias_map_loaded on exit"
         )
+
+    def test_alias_map_restored_on_early_setup_error(self, tmp_path):
+        """Alias-map originals are restored when adapter.records() raises.
+
+        Before the fix, orig_alias_map and orig_alias_loaded were assigned
+        inside try, after adapter.records(). An early error left them unbound
+        and finally raised UnboundLocalError, hiding the real error.
+        """
+        from evals.rag_eval.corpus import install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        # Pre-populate alias map with known values
+        with hr._alias_map_lock:
+            hr._alias_map["FAKE"] = "FAKE"
+            hr._alias_map_loaded = True
+
+        orig_map = dict(hr._alias_map)
+        orig_loaded = hr._alias_map_loaded
+
+        class BrokenAdapter:
+            def records(self):
+                raise RuntimeError("adapter setup failed")
+            def embedding_map(self):
+                return {}
+            def has_embeddings(self):
+                return False
+
+        with pytest.raises(RuntimeError, match="adapter setup failed"):
+            with install_offline_corpus(BrokenAdapter()):
+                pass
+
+        # Alias map must be restored — no UnboundLocalError
+        assert hr._alias_map == orig_map, (
+            "alias map not restored after early setup error"
+        )
+        assert hr._alias_map_loaded == orig_loaded, (
+            "_alias_map_loaded not restored after early setup error"
+        )
