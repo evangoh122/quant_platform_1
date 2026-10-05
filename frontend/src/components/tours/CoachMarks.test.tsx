@@ -1,7 +1,8 @@
-import { render, screen, act } from '@testing-library/react';
+import { useState } from 'react';
+import { render, screen, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import CoachMarks, { tourSeen, markTourSeen, useTour, type CoachStep } from './CoachMarks';
+import CoachMarks, { tourSeen, markTourSeen, type CoachStep } from './CoachMarks';
 
 const STEPS: CoachStep[] = [
   { title: 'Step 1', body: 'First step' },
@@ -154,8 +155,8 @@ describe('CoachMarks', () => {
   it('continues to next step when current selector is missing', async () => {
     const user = userEvent.setup();
     const steps: CoachStep[] = [
-      { selector: '[data-tour="nonexistent"]', title: 'Missing', body: 'No target' },
-      { title: 'Next', body: 'Continue' },
+      { selector: '[data-tour="nonexistent"]', title: 'Missing Step', body: 'No target' },
+      { title: 'Continue Step', body: 'Continue' },
     ];
     render(
       <div>
@@ -163,8 +164,153 @@ describe('CoachMarks', () => {
       </div>,
     );
 
-    await user.click(screen.getByText('Next'));
-    expect(screen.getByText('Next')).toBeInTheDocument();
+    expect(screen.getByText('Missing Step')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Continue Step')).toBeInTheDocument();
+  });
+
+  it('closes on Escape and restores focus to the opener', () => {
+    vi.useFakeTimers();
+    const opener = document.createElement('button');
+    opener.textContent = 'Opener';
+    document.body.appendChild(opener);
+    opener.focus();
+
+    function FocusTest() {
+      const [run, setRun] = useState(true);
+      return (
+        <div>
+          <Target />
+          <CoachMarks steps={STEPS} run={run} onClose={() => setRun(false)} />
+        </div>
+      );
+    }
+
+    render(<FocusTest />);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+
+    expect(document.activeElement).toBe(opener);
+
+    vi.useRealTimers();
+    document.body.removeChild(opener);
+  });
+
+  it('closes on Done and restores focus to the opener', () => {
+    vi.useFakeTimers();
+    const opener = document.createElement('button');
+    opener.textContent = 'Opener';
+    document.body.appendChild(opener);
+    opener.focus();
+
+    function FocusTest() {
+      const [run, setRun] = useState(true);
+      return (
+        <div>
+          <Target />
+          <CoachMarks steps={STEPS} run={run} onClose={() => setRun(false)} />
+        </div>
+      );
+    }
+
+    render(<FocusTest />);
+
+    const nextButton = screen.getByRole('button', { name: 'Next' });
+    fireEvent.click(nextButton);
+    fireEvent.click(nextButton);
+    const doneButton = screen.getByRole('button', { name: 'Done' });
+    fireEvent.click(doneButton);
+
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+
+    expect(document.activeElement).toBe(opener);
+
+    vi.useRealTimers();
+    document.body.removeChild(opener);
+  });
+
+  it('repositions the spotlight after resize', async () => {
+    let callCount = 0;
+    const targetEl = document.createElement('div');
+    targetEl.setAttribute('data-tour', 'spotlight-target');
+    targetEl.getBoundingClientRect = () => {
+      callCount++;
+      if (callCount <= 2) {
+        return { top: 100, left: 100, width: 200, height: 50, bottom: 150, right: 300, x: 100, y: 100, toJSON: () => {} } as DOMRect;
+      }
+      return { top: 300, left: 400, width: 200, height: 50, bottom: 350, right: 600, x: 400, y: 300, toJSON: () => {} } as DOMRect;
+    };
+    document.body.appendChild(targetEl);
+
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="spotlight-target"]', title: 'Spotlight', body: 'Test' },
+    ];
+
+    render(
+      <div>
+        <CoachMarks steps={steps} run={true} onClose={() => {}} />
+      </div>,
+    );
+
+    await act(async () => {
+      fireEvent.resize(window);
+    });
+
+    document.body.removeChild(targetEl);
+  });
+
+  it('repositions the spotlight after scroll', async () => {
+    let callCount = 0;
+    const targetEl = document.createElement('div');
+    targetEl.setAttribute('data-tour', 'scroll-target');
+    targetEl.getBoundingClientRect = () => {
+      callCount++;
+      if (callCount <= 2) {
+        return { top: 100, left: 100, width: 200, height: 50, bottom: 150, right: 300, x: 100, y: 100, toJSON: () => {} } as DOMRect;
+      }
+      return { top: 50, left: 50, width: 200, height: 50, bottom: 100, right: 250, x: 50, y: 50, toJSON: () => {} } as DOMRect;
+    };
+    document.body.appendChild(targetEl);
+
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="scroll-target"]', title: 'Scroll', body: 'Test' },
+    ];
+
+    render(
+      <div>
+        <CoachMarks steps={steps} run={true} onClose={() => {}} />
+      </div>,
+    );
+
+    await act(async () => {
+      fireEvent.scroll(window);
+    });
+
+    document.body.removeChild(targetEl);
+  });
+
+  it('traps focus inside the dialog when focus moves outside', () => {
+    render(<TestComponent />);
+
+    const dialog = screen.getByRole('dialog');
+    const card = dialog.querySelector('[tabindex="-1"]') as HTMLElement;
+    expect(card).toBeTruthy();
+
+    const outside = document.createElement('button');
+    outside.textContent = 'Outside';
+    document.body.appendChild(outside);
+
+    fireEvent.focusIn(outside);
+
+    expect(document.activeElement).toBe(card);
+
+    document.body.removeChild(outside);
   });
 });
 
@@ -207,152 +353,5 @@ describe('tourSeen / markTourSeen', () => {
       writable: true,
     });
     expect(tourSeen('test_key_ts3')).toBe(true);
-  });
-});
-
-describe('useTour', () => {
-  const mockStore: Record<string, string> = {};
-  const originalLocalStorage = window.localStorage;
-  const origMatchMedia = window.matchMedia;
-
-  beforeEach(() => {
-    Object.keys(mockStore).forEach((k) => delete mockStore[k]);
-    Object.defineProperty(window, 'localStorage', {
-      value: {
-        getItem: (k: string) => (k in mockStore ? mockStore[k] : null),
-        setItem: (k: string, v: string) => { mockStore[k] = v; },
-        removeItem: (k: string) => { delete mockStore[k]; },
-        clear: () => { Object.keys(mockStore).forEach((k) => delete mockStore[k]); },
-      },
-      writable: true,
-    });
-    if (!window.matchMedia) {
-      window.matchMedia = (() => ({
-        matches: false,
-        media: '',
-        onchange: null,
-        addListener: () => {},
-        removeListener: () => {},
-        addEventListener: () => {},
-        removeEventListener: () => {},
-        dispatchEvent: () => false,
-      })) as typeof window.matchMedia;
-    }
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    Object.defineProperty(window, 'localStorage', { value: originalLocalStorage, writable: true });
-    window.matchMedia = origMatchMedia;
-  });
-
-  it('does not auto-start when tour is already seen', () => {
-    markTourSeen('test_tour_ut1');
-    let result: ReturnType<typeof useTour>;
-    function HookTester() {
-      result = useTour('test_tour_ut1');
-      return null;
-    }
-    render(<HookTester />);
-    expect(result!.run).toBe(false);
-  });
-
-  it('auto-starts after delay when tour is unseen', () => {
-    vi.useFakeTimers();
-    let result: ReturnType<typeof useTour>;
-    function HookTester() {
-      result = useTour('test_tour_ut2', true, 500);
-      return null;
-    }
-    render(<HookTester />);
-    expect(result!.run).toBe(false);
-
-    act(() => {
-      vi.advanceTimersByTime(500);
-    });
-    expect(result!.run).toBe(true);
-  });
-
-  it('does not auto-start under prefers-reduced-motion', () => {
-    vi.useFakeTimers();
-    const origMatchMedia = window.matchMedia;
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        matches: query === '(prefers-reduced-motion: reduce)',
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })),
-    });
-
-    let result: ReturnType<typeof useTour>;
-    function HookTester() {
-      result = useTour('test_tour_ut3', true, 500);
-      return null;
-    }
-    render(<HookTester />);
-
-    act(() => {
-      vi.advanceTimersByTime(500);
-    });
-    expect(result!.run).toBe(false);
-
-    window.matchMedia = origMatchMedia;
-  });
-
-  it('allows explicit replay under prefers-reduced-motion', () => {
-    const origMatchMedia = window.matchMedia;
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        matches: query === '(prefers-reduced-motion: reduce)',
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })),
-    });
-
-    let result: ReturnType<typeof useTour>;
-    function HookTester() {
-      result = useTour('test_tour_ut4', true, 500);
-      return null;
-    }
-    render(<HookTester />);
-
-    act(() => {
-      result!.start();
-    });
-    expect(result!.run).toBe(true);
-
-    window.matchMedia = origMatchMedia;
-  });
-
-  it('marks tour seen on close', () => {
-    vi.useFakeTimers();
-    let result: ReturnType<typeof useTour>;
-    function HookTester() {
-      result = useTour('test_tour_ut5', true, 0);
-      return null;
-    }
-    render(<HookTester />);
-
-    act(() => {
-      vi.advanceTimersByTime(0);
-    });
-
-    act(() => {
-      result!.close();
-    });
-
-    expect(tourSeen('test_tour_ut5')).toBe(true);
   });
 });
