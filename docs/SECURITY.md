@@ -36,13 +36,17 @@ To add a new accepted risk:
 Aikido PR #12 ("Fix 1 critical issue in langchain and 26 other issues") was
 rejected by all four reviewers because it exact-pinned blindly (downgraded
 langchain to ==0.2.0, pinned starlette==1.0.1 independently of fastapi,
-lxml==4.9.1). This change supersedes that PR:
+lxml==4.9.1). Aikido PR #29 was also unsatisfiable (langchain==0.2.0 needs
+langsmith<0.2 but pins langsmith==0.10.9; lxml==4.9.1 fails to build on CI).
+
+This change supersedes both PRs:
 
 - **requirements-render.txt**: fastapi bumped to 0.142.2 (pulls starlette 1.7.0),
   resolving all 14 starlette CVEs. Exact pins retained as the deploy lockfile.
-- **requirements.txt**: lower bounds raised for fastapi/uvicorn to match the
-  render lockfile. All other packages (langchain, mlflow, gunicorn, websockets,
-  protobuf, lxml) resolve clean per pip-audit; lower bounds unchanged.
+- **requirements.txt**: lower bounds raised for all Aikido-flagged packages to
+  first non-vulnerable versions (langchain>=1.0.0, langchain-core>=1.0.0,
+  langchain-community>=0.3.0, langsmith>=0.2.0, lxml>=4.9.2, requests>=2.32.0,
+  fastapi>=0.142.2, uvicorn>=0.54.0).
 - **oauthlib**: documented as accepted risk (transitive via
   databricks-sql-connector).
 
@@ -66,3 +70,17 @@ grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements.txt | pip-audit -r /dev/s
 | CVE-2026-48817 | HTTPEndpoint method dispatch | >=1.1.0 |
 | CVE-2026-54283 | urlencoded form limit bypass | >=1.3.1 |
 | CVE-2026-54282 | request URL path injection | >=1.3.0 |
+
+## Other CVEs resolved by lower-bound raises
+
+| CVE | Package | Description | New floor |
+|-----|---------|-------------|-----------|
+| CVE-2024-8309 | langchain | SQL injection via GraphCypherQAChain | >=1.0.0 |
+| CVE-2025-68664 | langchain-core | Serialization injection in dumps()/dumpd() | >=1.0.0 |
+| CVE-2026-34070 | langchain-core | Prompt loading path traversal | >=1.0.0 |
+| GHSA-f4xh-w4cj-qxq8 | langsmith | Tracing header arbitrary file read | >=0.2.0 |
+| AIKIDO-2026-944829 | langsmith | Signing key leak in trace metadata | >=0.2.0 |
+| CVE-2025-6984 | langchain-community | XXE in EverNoteLoader | >=0.3.0 |
+| CVE-2022-2309 | lxml | NULL ptr dereference in iterwalk | >=4.9.2 |
+| AIKIDO-2026-106840 | requests | Proxy bypass via no_proxy matching | >=2.32.0 |
+| CVE-2026-25645 | requests | Predictable filename in extract_zipped_paths | >=2.32.0 |
