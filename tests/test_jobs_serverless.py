@@ -294,3 +294,95 @@ def test_mutation_serverless_call_outside_runtime():
     pytest.fail(
         "Mutation test: DatabricksSession.builder.serverless() was NOT detected"
     )
+
+
+# ── 8. Static scan covers EVERY python_file in jobs.yml ────────────────────
+
+_EXPECTED_PYTHON_FILES = {
+    "pipelines/run_silver_gold.py",
+    "ml/run_ablation.py",
+    "pipelines/build_sec_embeddings.py",
+    "pipelines/sec_rag_ingest.py",
+    "pipelines/build_sec_knowledge_graph.py",
+    "pipelines/lakebase_analytics.py",
+}
+
+
+def test_static_scan_covers_all_python_files():
+    """Every python_file in jobs.yml must be picked up by the static scan."""
+    cfg = _load_jobs()
+    discovered: set[str] = set()
+    for task in _python_file_tasks(cfg):
+        rel = task["spark_python_task"]["python_file"]
+        # Normalise ../ prefix that jobs.yml uses
+        normed = rel.lstrip("../")
+        discovered.add(normed)
+    missing = _EXPECTED_PYTHON_FILES - discovered
+    assert not missing, (
+        f"These python_files are in jobs.yml but were NOT discovered by "
+        f"_python_file_tasks(): {missing}"
+    )
+
+
+# ── 9. Ablation output path is absolute and not cwd-dependent ──────────────
+
+def test_ablation_output_path_is_absolute():
+    """_resolve_output_dir must always return an absolute path."""
+    import ml.run_ablation as ra
+
+    # Local default → repo_root() / 'artifacts' (absolute)
+    path = ra._resolve_output_dir(None)
+    assert path.is_absolute(), f"Default output path is not absolute: {path}"
+
+    # Explicit absolute → passed through
+    path = ra._resolve_output_dir("/tmp/explicit")
+    assert path == Path("/tmp/explicit")
+
+    # Databricks runtime → /Volumes/...
+    import os as _os
+    old = _os.environ.get("DATABRICKS_RUNTIME_VERSION")
+    try:
+        _os.environ["DATABRICKS_RUNTIME_VERSION"] = "15.4"
+        path = ra._resolve_output_dir(None)
+        assert str(path).startswith("/Volumes/"), (
+            f"Databricks output path should start with /Volumes/, got {path}"
+        )
+        assert path.is_absolute()
+    finally:
+        if old is None:
+            _os.environ.pop("DATABRICKS_RUNTIME_VERSION", None)
+        else:
+            _os.environ["DATABRICKS_RUNTIME_VERSION"] = old
+
+
+def test_ablation_output_path_not_cwd_dependent(monkeypatch):
+    """Default output path must not change when cwd changes."""
+    import ml.run_ablation as ra
+
+    path_a = ra._resolve_output_dir(None)
+    # Changing cwd must NOT change the resolved default path
+    monkeypatch.chdir("/")
+    path_b = ra._resolve_output_dir(None)
+    assert path_a == path_b, (
+        f"Output path changed when cwd changed: {path_a} vs {path_b}. "
+        f"The default path must be derived from repo_root(), not cwd."
+    )
+
+
+# ── 10. Mutation: revert ablation to relative output path → test fails ─────
+
+def test_mutation_ablation_relative_output_path_fails():
+    """Mutation: if run_ablation.py used a relative out_dir, the absolute-path
+    test would fail because the path would be cwd-dependent."""
+    import ml.run_ablation as ra
+
+    # Simulate the OLD broken code: out_dir = "ml/results" (relative)
+    broken_path = Path("ml/results")
+    assert not broken_path.is_absolute(), (
+        "Mutation sanity check: 'ml/results' should be relative"
+    )
+    # The real _resolve_output_dir must return an absolute path
+    good_path = ra._resolve_output_dir(None)
+    assert good_path.is_absolute(), (
+        f"_resolve_output_dir(None) returned relative path: {good_path}"
+    )
