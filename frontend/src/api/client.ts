@@ -10,6 +10,7 @@ import type {
   OrderIntentRequest,
   OrderIntentResult,
   Portfolio,
+  SecCoverageResponse,
   Signal,
   WatchlistItem,
 } from './types';
@@ -64,6 +65,8 @@ export const api = {
   portfolio: (): Promise<Portfolio> => request<Portfolio>('/api/portfolio'),
   analytics: (): Promise<AnalyticsResponse> =>
     request<AnalyticsResponse>('/api/analytics'),
+  secCoverage: (): Promise<SecCoverageResponse> =>
+    request<SecCoverageResponse>('/api/sec/coverage'),
   createIntent: (body: OrderIntentRequest): Promise<OrderIntentResult> =>
     post<OrderIntentResult>('/api/orders/intents', body),
   approveOrder: (orderId: string): Promise<OrderActionResult> =>
