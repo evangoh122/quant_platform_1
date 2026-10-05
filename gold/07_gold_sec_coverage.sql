@@ -39,13 +39,25 @@ latest_mapping AS (
   )
   WHERE rn = 1
 ),
--- Canonical ticker per CIK: first alphabetically among all tickers sharing that CIK
+-- Per-ticker chunk counts from silver (used to pick the canonical ticker)
+ticker_chunk_counts AS (
+  SELECT
+    upper(ticker) AS ticker,
+    count(*) AS n_chunks
+  FROM {catalog}.{schema}.silver_sec_sections
+  GROUP BY upper(ticker)
+),
+-- Canonical ticker per CIK: the ticker holding the most chunks; tie → alphabetical
 canonical_per_cik AS (
   SELECT
-    cik,
-    min(ticker) AS canonical_ticker
-  FROM latest_mapping
-  GROUP BY cik
+    lm.cik,
+    lm.ticker AS canonical_ticker
+  FROM latest_mapping lm
+  LEFT JOIN ticker_chunk_counts tcc ON lm.ticker = tcc.ticker
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY lm.cik
+    ORDER BY coalesce(tcc.n_chunks, 0) DESC, lm.ticker ASC
+  ) = 1
 ),
 -- Universe tickers resolved to their canonical ticker for data joins
 universe_resolved AS (
