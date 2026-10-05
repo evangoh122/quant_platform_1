@@ -13,12 +13,17 @@ resources:
             value: ${var.schema}
           - name: DATABRICKS_WAREHOUSE_ID
             value: b15d3d6f837ba428
+          # Lakebase: the app connects as its own service principal (Postgres role created and granted by the
+          # database owner — see docs/DEPLOYMENT.md). An app `database` resource would need MANAGE on the instance.
+          - name: LAKEBASE_INSTANCE
+            value: evangoh-capstone-lakebase
+          - name: LAKEBASE_HOST
+            value: ep-steep-truth-d1ex36nr.database.us-west-2.cloud.databricks.com
+          - name: LAKEBASE_DBNAME
+            value: databricks_postgres
+          - name: LAKEBASE_USER
+            value: 5d55da45-1154-4b01-9838-9e0d2dd80e8e
       resources:
-        - name: lakebase
-          database:
-            instance_name: evangoh-capstone-lakebase
-            database_name: databricks_postgres
-            permission: CAN_CONNECT_AND_CREATE
         - name: sql_warehouse
           sql_warehouse:
             id: b15d3d6f837ba428
