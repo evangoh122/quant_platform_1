@@ -966,6 +966,20 @@ class TestIdempotentMerge:
             )
         """)
 
+        # Quarantined fact with NULL accession_number and NULL frame: the case Codex flagged —
+        # a plain `=` in the MERGE ON clause never matches NULLs, so a rerun would insert it again.
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_xbrl_facts (
+                ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                form_type, accession_number, filed_date, frame
+            ) VALUES (
+                'run3', TIMESTAMP '2025-03-01 08:00:00', '0001045810', 'NVIDIA Corp', 'NVDA',
+                'us-gaap', 'Assets', 'USD', 300.0, NULL, '2025-01-26',
+                2025, 'FY', '10-K', NULL, '2025-02-26', NULL
+            )
+        """)
+
         merge_sql = _get_full_merge_sql()
 
         # First MERGE run
@@ -991,7 +1005,8 @@ class TestIdempotentMerge:
             FROM silver_sec_xbrl_facts
             ORDER BY accession_number
         """).fetchall()
-        assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}"
+        assert len(rows) == 3, f"Expected 3 rows (incl. one quarantined NULL-accession fact), got {len(rows)}"
+        assert sum(1 for r in rows if r[0] is None) == 1, "the NULL-accession fact must appear exactly once"
         assert rows[0][0] == '0008-01'
         assert rows[0][2] == 100.0
         assert rows[1][0] == '0008-02'
