@@ -406,6 +406,8 @@ describe('ResearchAgent', () => {
     // Badge should show honest state, not "Note saved"
     const toolCard = screen.getByTestId('tool-call-0');
     expect(toolCard).not.toHaveTextContent('Note saved');
+    expect(toolCard).toHaveTextContent('Save not confirmed');
+    expect(toolCard).not.toHaveTextContent('undefined');
   });
 
   it('shows agent-unavailable state when available is false and no tool calls', async () => {
