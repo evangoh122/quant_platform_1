@@ -107,12 +107,16 @@ resources:
               - "evangoh_capstone"
               - "--user-agent-secret-key"
               - "sec_edgar_user_agent"
-
           environment_key: serverless
+          libraries:
+            - pypi:
+                package: "pyyaml>=6.0"
       environments:
         - environment_key: serverless
           spec:
             client: "1"
+            dependencies:
+              - "pyyaml>=6.0"
 
     sec_knowledge_graph_build:
       name: quant-platform-sec-kg-build-${bundle.target}
