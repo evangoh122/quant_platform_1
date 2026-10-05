@@ -1069,6 +1069,14 @@ class TestRunIngestCompanyFacts:
         import pipelines.ingest_sec_companyfacts as mod
         import concurrent.futures
 
+        captured_max_workers = []
+        _OrigTE = concurrent.futures.ThreadPoolExecutor
+
+        class TrackingThreadPool(_OrigTE):
+            def __init__(self, *args, **kwargs):
+                captured_max_workers.append(kwargs.get("max_workers", args[0] if args else None))
+                super().__init__(*args, **kwargs)
+
         payloads = []
         http_responses = []
         tickers = []
@@ -1118,6 +1126,9 @@ class TestRunIngestCompanyFacts:
         mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
         mod._validate_user_agent = lambda ua: None
 
+        original_te = mod.ThreadPoolExecutor
+        mod.ThreadPoolExecutor = TrackingThreadPool
+
         try:
             result = run_ingest_companyfacts(
                 catalog="test_cat",
@@ -1132,12 +1143,17 @@ class TestRunIngestCompanyFacts:
                 cache_path="/dev/null",
             )
         finally:
+            mod.ThreadPoolExecutor = original_te
             mod._resolve_user_agent = original_resolve
             mod._validate_user_agent = original_validate
 
         assert result["mapped_count"] == 6
         assert result["fetched_count"] == 6
         assert result["total_facts"] == 6
+        assert captured_max_workers, "ThreadPoolExecutor was not called"
+        assert all(mw <= 4 for mw in captured_max_workers), (
+            f"max_workers exceeds 4: {captured_max_workers}"
+        )
 
     def test_rate_limiter_holds_with_concurrency(self):
         """Rate limiter ≤10 req/s still holds under concurrent fetches."""
