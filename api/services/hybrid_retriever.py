@@ -1080,12 +1080,9 @@ def vector_search(
                 )
 
         candidates: List[Tuple[float, Document]] = []
+        doc_by_id = {d.metadata.get("chunk_id"): d for d in corpus.docs}
         for cid, vec in corpus.embeddings_map.items():
-            doc = None
-            for d in corpus.docs:
-                if d.metadata.get("chunk_id") == cid:
-                    doc = d
-                    break
+            doc = doc_by_id.get(cid)
             if doc is None:
                 continue
 
@@ -1140,13 +1137,9 @@ def vector_search(
                 )
 
         candidates: List[Tuple[float, Document]] = []
+        bm25_by_id = {d.metadata.get("chunk_id"): d for d in _bm25_docs} if _bm25_docs else {}
         for cid, vec in _embeddings_map.items():
-            doc = None
-            if _bm25_docs:
-                for d in _bm25_docs:
-                    if d.metadata.get("chunk_id") == cid:
-                        doc = d
-                        break
+            doc = bm25_by_id.get(cid)
             if doc is None:
                 # Build doc from _corpus if _bm25_docs doesn't have it
                 entry = _corpus.get(cid)
