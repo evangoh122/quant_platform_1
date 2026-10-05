@@ -1453,8 +1453,8 @@ def run_ingest(
         if ticker != canonical:
             logger.info("Share-class alias: %s → %s (same CIK)", ticker, canonical)
 
-    # Write CIK mapping log
-    if cik_mapping_log_writer is not None:
+    # Write CIK mapping log (skip during dry run unless --log-dry-run)
+    if cik_mapping_log_writer is not None and (not dry_run or log_dry_run):
         for symbol, mapping in cik_map.items():
             cik_log_entry = CikMappingLogEntry(
                 ticker=mapping.ticker,

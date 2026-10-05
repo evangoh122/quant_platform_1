@@ -1201,6 +1201,37 @@ class TestCikMappingLog:
             "Mutation: per-ticker writes would need N flushes."
         )
 
+    def test_cik_mapping_log_skipped_on_dry_run(self):
+        """CIK mapping log is not written during a dry run unless --log-dry-run."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        cik_log = FakeCikMappingLogWriter()
+
+        run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            dry_run=True,
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(set()),
+            data_writer=FakeDataWriter(),
+            cik_mapping_log_writer=cik_log,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        assert len(cik_log.entries) == 0, (
+            "CIK mapping log should not be written during dry run"
+        )
+        assert cik_log.flush_count == 0, (
+            "flush() should not be called during dry run"
+        )
+
 
 class TestSparkCikMappingLogWriterSchema:
     """Mutation-proof tests for SparkCikMappingLogWriter schema and batching.
