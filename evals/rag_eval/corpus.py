@@ -498,7 +498,8 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
                         from api.services.hybrid_retriever import NoCoverageError
                         raise NoCoverageError(ticker)
                     return n_chunks, ""
-                return _orig(ticker)
+                from api.services.hybrid_retriever import NoCoverageError
+                raise NoCoverageError(ticker)
 
             hr.check_ticker_coverage = _offline_check_ticker_coverage  # type: ignore[assignment]
 

@@ -203,6 +203,28 @@ class TestOfflineCoverageCheck:
             # All tickers from the corpus should be in cache
             assert len(hr._ticker_cache) > 0
 
+    def test_offline_ticker_outside_corpus_raises_no_coverage(self, tmp_path):
+        """Tickers not in the offline corpus raise NoCoverageError.
+
+        Before the fix, the offline checker delegated to the live
+        check_ticker_coverage, which calls Spark/warehouse. In an offline
+        eval that leaks a Databricks connection.
+        """
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        from api.services.hybrid_retriever import NoCoverageError
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # The offline checker is now installed. A ticker outside the
+            # corpus must raise NoCoverageError, not delegate to the live
+            # checker (which would attempt a Databricks connection).
+            with pytest.raises(NoCoverageError):
+                hr.check_ticker_coverage("ZZZZNONEXIST")
+
 
 class TestDeltaImportIsLazy:
     """test_delta_import_is_lazy"""
