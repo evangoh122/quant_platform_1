@@ -36,8 +36,15 @@ export function SignalExplorer() {
         {data && <FreshnessBadge freshness={data.freshness} />}
       </div>
       <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
-        <strong>Baseline demonstration:</strong> model baseline-logreg-v0-2026-10-05, hold-out AUC 0.47.
-        Pipeline demonstration &mdash; no validated trading edge claimed.
+        <strong>Baseline demonstration</strong>
+        {data?.data && data.data.length > 0 && (
+          <>
+            {': '}
+            {Array.from(new Set(data.data.map((r) => r.model_version).filter(Boolean))).join(', ')}
+            {data.data[0]?.horizon && ` · ${data.data[0].horizon}`}
+          </>
+        )}
+        {' '}&mdash; no validated trading edge claimed.
       </div>
 
       {loading && <LoadingState />}
