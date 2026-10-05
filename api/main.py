@@ -280,6 +280,29 @@ def _get_client_ip(request: Request) -> str:
     return peer
 
 
+def _warm_sec_corpus_in_background() -> None:
+    """Load the SEC retrieval corpus off the request path (~40 s cold via the warehouse),
+    so the agent's first search does not hit the proxy timeout. Failures are logged and
+    retried lazily on first use."""
+    import os
+    import threading
+
+    # Only inside Databricks Apps (DATABRICKS_APP_NAME is set there) unless forced;
+    # never in tests or local dev.
+    if os.environ.get("SEC_CORPUS_WARMUP") != "1" and not os.environ.get("DATABRICKS_APP_NAME"):
+        return
+
+    def _run() -> None:
+        try:
+            from api.services.hybrid_retriever import _load_corpus
+            with stage("startup_sec_corpus_warm"):
+                _load_corpus()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("SEC corpus warm-up failed (%s); will load lazily", type(exc).__name__)
+
+    threading.Thread(target=_run, name="sec-corpus-warm", daemon=True).start()
+
+
 def create_app() -> FastAPI:
     """Application factory.
 
@@ -307,6 +330,7 @@ def create_app() -> FastAPI:
     if not demo:
         from db.delta_adapter import warm_warehouse_connection
         warm_warehouse_connection()
+        _warm_sec_corpus_in_background()
 
     with stage("startup_fastapi_init"):
         application = FastAPI(
