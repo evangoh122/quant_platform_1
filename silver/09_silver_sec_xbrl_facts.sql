@@ -26,7 +26,7 @@ USING (
     WHERE accession_number IS NOT NULL
       AND accepted_ts IS NOT NULL
   ),
-  deduped_bronze AS (
+  bronze_with_ts AS (
     SELECT
       b.cik,
       b.entity_name,
@@ -50,22 +50,6 @@ USING (
       b.payload_hash,
       b.source_updated_at,
       b.ingested_at,
-      ROW_NUMBER() OVER (
-        PARTITION BY
-          b.cik,
-          b.taxonomy,
-          b.concept,
-          b.unit,
-          COALESCE(b.period_start, ''),
-          COALESCE(b.period_end, ''),
-          COALESCE(b.instant, ''),
-          COALESCE(CAST(b.fiscal_year AS STRING), ''),
-          COALESCE(b.fiscal_period, ''),
-          COALESCE(b.form_type, ''),
-          b.accession_number,
-          COALESCE(b.frame, '')
-        ORDER BY b.ingested_at DESC
-      ) AS rn,
       MIN(b.ingested_at) OVER (
         PARTITION BY
           b.cik,
@@ -111,30 +95,88 @@ USING (
       d.value_raw                                        AS value_raw,
       d.value_decimal                                    AS value_decimal,
       d.period_start                                     AS period_start,
-      d.period_end                                       AS period_end,
-      d.instant                                          AS instant,
+      TRIM(d.period_end)                                 AS period_end,
+      TRIM(d.instant)                                    AS instant,
       d.fiscal_year                                      AS fiscal_year,
       UPPER(TRIM(d.fiscal_period))                       AS fiscal_period,
       UPPER(TRIM(d.form_type))                           AS form_type,
       TRIM(d.accession_number)                           AS accession_number,
       d.filed_date                                       AS filed_date,
-      d.frame                                            AS frame,
+      TRIM(d.frame)                                      AS frame,
       d.payload_hash                                     AS payload_hash,
       d.source_updated_at                                AS source_updated_at,
       d.first_observed_at                                AS first_observed_at,
       d.last_observed_at                                 AS last_observed_at,
+      d.ingested_at                                      AS ingested_at
+    FROM bronze_with_ts d
+  ),
+  deduped_normalized AS (
+    SELECT
+      n.cik                                              AS cik,
+      n.entity_name                                      AS entity_name,
+      n.ticker                                           AS ticker,
+      n.taxonomy                                         AS taxonomy,
+      n.concept                                          AS concept,
+      n.label                                            AS label,
+      n.description                                      AS description,
+      n.unit                                             AS unit,
+      n.value_raw                                        AS value_raw,
+      n.value_decimal                                    AS value_decimal,
+      n.period_start                                     AS period_start,
+      n.period_end                                       AS period_end,
+      n.instant                                          AS instant,
+      n.fiscal_year                                      AS fiscal_year,
+      n.fiscal_period                                    AS fiscal_period,
+      n.form_type                                        AS form_type,
+      n.accession_number                                 AS accession_number,
+      n.filed_date                                       AS filed_date,
+      n.frame                                            AS frame,
+      n.payload_hash                                     AS payload_hash,
+      n.source_updated_at                                AS source_updated_at,
+      n.first_observed_at                                AS first_observed_at,
+      n.last_observed_at                                 AS last_observed_at,
       f.accepted_ts                                      AS information_available_ts,
       CASE
+        WHEN MAX(n.value_decimal) OVER (
+          PARTITION BY
+            n.cik, n.taxonomy, n.concept, n.unit,
+            COALESCE(n.period_start, ''), COALESCE(n.period_end, ''),
+            COALESCE(n.instant, ''), COALESCE(CAST(n.fiscal_year AS STRING), ''),
+            COALESCE(n.fiscal_period, ''), COALESCE(n.form_type, ''),
+            n.accession_number, COALESCE(n.frame, '')
+        ) IS DISTINCT FROM MIN(n.value_decimal) OVER (
+          PARTITION BY
+            n.cik, n.taxonomy, n.concept, n.unit,
+            COALESCE(n.period_start, ''), COALESCE(n.period_end, ''),
+            COALESCE(n.instant, ''), COALESCE(CAST(n.fiscal_year AS STRING), ''),
+            COALESCE(n.fiscal_period, ''), COALESCE(n.form_type, ''),
+            n.accession_number, COALESCE(n.frame, '')
+        ) THEN 'conflicting_values'
         WHEN f.accepted_ts IS NULL THEN 'unresolved_accession'
         ELSE 'ok'
       END                                                AS quality_status,
-      current_timestamp()                                AS processed_ts
-    FROM deduped_bronze d
+      current_timestamp()                                AS processed_ts,
+      ROW_NUMBER() OVER (
+        PARTITION BY
+          n.cik, n.taxonomy, n.concept, n.unit,
+          COALESCE(n.period_start, ''), COALESCE(n.period_end, ''),
+          COALESCE(n.instant, ''), COALESCE(CAST(n.fiscal_year AS STRING), ''),
+          COALESCE(n.fiscal_period, ''), COALESCE(n.form_type, ''),
+          n.accession_number, COALESCE(n.frame, '')
+        ORDER BY n.ingested_at DESC, n.value_decimal DESC NULLS LAST
+      ) AS rn
+    FROM normalized n
     LEFT JOIN filings_accepted f
-      ON d.accession_number = f.accession_number
-    WHERE d.rn = 1
+      ON n.accession_number = f.accession_number
   )
-  SELECT * FROM normalized
+  SELECT
+    cik, entity_name, ticker, taxonomy, concept, label, description, unit,
+    value_raw, value_decimal, period_start, period_end, instant,
+    fiscal_year, fiscal_period, form_type, accession_number, filed_date, frame,
+    payload_hash, source_updated_at, first_observed_at, last_observed_at,
+    information_available_ts, quality_status, processed_ts
+  FROM deduped_normalized
+  WHERE rn = 1
 ) AS src
 ON tgt.cik <=> src.cik
    AND tgt.taxonomy <=> src.taxonomy

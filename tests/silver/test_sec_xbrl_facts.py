@@ -213,31 +213,51 @@ def _mutate_filed_date_instead_of_accepted_ts() -> str:
     sql = _get_production_sql()
     mutated = sql.replace(
         "f.accepted_ts                                      AS information_available_ts",
-        "CAST(d.filed_date AS TIMESTAMP)                    AS information_available_ts"
+        "CAST(n.filed_date AS TIMESTAMP)                    AS information_available_ts"
     )
-    mutated = mutated.replace(
-        "CASE\n        WHEN f.accepted_ts IS NULL THEN 'unresolved_accession'\n        ELSE 'ok'\n      END                                                AS quality_status",
-        "'ok'                                               AS quality_status"
+    # Replace the entire CASE...END quality_status block (spans multiple lines
+    # with nested window functions) with a simple 'ok'.
+    mutated = re.sub(
+        r"CASE\s+WHEN MAX\(n\.value_decimal\).*?END\s+AS quality_status",
+        "'ok'                                               AS quality_status",
+        mutated,
+        flags=re.DOTALL,
     )
     return mutated
 
 
 def _mutate_drop_accession_from_key() -> str:
-    """Mutation 2: remove accession_number from ROW_NUMBER PARTITION BY in deduped_bronze."""
+    """Mutation 2: remove accession_number from all PARTITION BY clauses in deduped_normalized."""
     sql = _get_production_sql()
+
+    # ROW_NUMBER PARTITION BY (followed by ORDER BY)
     mutated = sql.replace(
-        "COALESCE(b.form_type, ''),\n          b.accession_number,\n          COALESCE(b.frame, '')\n        ORDER BY b.ingested_at DESC",
-        "COALESCE(b.form_type, ''),\n          COALESCE(b.frame, '')\n        ORDER BY b.ingested_at DESC"
+        "n.accession_number, COALESCE(n.frame, '')\n        ORDER BY n.ingested_at DESC",
+        "COALESCE(n.frame, '')\n        ORDER BY n.ingested_at DESC"
     )
+    # MAX window function PARTITION BY (inside CASE, first occurrence)
     mutated = mutated.replace(
-        "COALESCE(b.form_type, ''),\n          b.accession_number,\n          COALESCE(b.frame, '')\n      ) AS first_observed_at",
-        "COALESCE(b.form_type, ''),\n          COALESCE(b.frame, '')\n      ) AS first_observed_at"
+        "n.accession_number, COALESCE(n.frame, '')\n        ) IS DISTINCT FROM MIN",
+        "COALESCE(n.frame, '')\n        ) IS DISTINCT FROM MIN",
+        1,
     )
+    # MIN window function PARTITION BY (inside CASE, ends with THEN)
     mutated = mutated.replace(
-        "COALESCE(b.form_type, ''),\n          b.accession_number,\n          COALESCE(b.frame, '')\n      ) AS last_observed_at",
-        "COALESCE(b.form_type, ''),\n          COALESCE(b.frame, '')\n      ) AS last_observed_at"
+        "n.accession_number, COALESCE(n.frame, '')\n        ) THEN 'conflicting_values'",
+        "COALESCE(n.frame, '')\n        ) THEN 'conflicting_values'",
+        1,
     )
     return mutated
+
+
+def _mutate_remove_dedup_filter() -> str:
+    """Mutation: remove WHERE rn = 1 so all duplicate rows pass through.
+
+    This causes (a) silver to have multiple rows per key and (b) the source
+    SELECT to have non-unique keys.
+    """
+    sql = _get_production_sql()
+    return sql.replace("WHERE rn = 1", "WHERE 1=1")
 
 
 def _mutate_asof_oldest_first() -> str:
@@ -1241,3 +1261,303 @@ class TestNullableKeyIdempotency:
             assert len(rows) == 1, (
                 f"NULL {null_column}: fact should appear exactly once, got {len(rows)}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 9. Round 8 — source-row dedup: exactly one row per natural key after normalization
+# ---------------------------------------------------------------------------
+
+class TestRound8DedupWithConflict:
+    """Prove that the MERGE source yields exactly one row per natural key
+    even when bronze contains duplicate or conflicting facts within a single
+    Company Facts payload.
+    """
+
+    def test_two_identical_facts_one_silver_row(self, duckdb_conn):
+        """Two identical bronze facts (same key, same value) → one silver row."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0030-01', TIMESTAMP '2025-04-01 10:00:00', 'AAPL', '0000320193', '10-K')
+        """)
+
+        for _ in range(2):
+            duckdb_conn.execute("""
+                INSERT INTO bronze_sec_xbrl_facts (
+                    ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                    unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                    form_type, accession_number, filed_date
+                ) VALUES (
+                    'run1', TIMESTAMP '2025-04-02 08:00:00', '0000320193', 'Apple Inc.', 'AAPL',
+                    'us-gaap', 'Revenue', 'USD', 100.0, '2024-01-01', '2024-03-31',
+                    2024, 'Q1', '10-K', '0030-01', '2025-04-01'
+                )
+            """)
+
+        _run_silver_transform(duckdb_conn)
+
+        count = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE accession_number = '0030-01'"
+        ).fetchone()[0]
+        assert count == 1, f"Two identical facts should yield 1 silver row, got {count}"
+
+        qs = duckdb_conn.execute(
+            "SELECT quality_status FROM silver_sec_xbrl_facts WHERE accession_number = '0030-01'"
+        ).fetchone()[0]
+        assert qs == 'ok', f"Identical facts should not be flagged as conflicting, got '{qs}'"
+
+    def test_same_key_different_values_conflict_flagged(self, duckdb_conn):
+        """Same natural key, different value_decimal → one silver row with quality_status='conflicting_values'."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0031-01', TIMESTAMP '2025-04-01 10:00:00', 'MSFT', '0000789019', '10-Q')
+        """)
+
+        # Two facts with same key but different values (simulating duplicate within payload)
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_xbrl_facts (
+                ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                form_type, accession_number, filed_date
+            ) VALUES (
+                'run1', TIMESTAMP '2025-04-02 08:00:00', '0000789019', 'Microsoft Corp', 'MSFT',
+                'us-gaap', 'Revenue', 'USD', 50000.0, '2024-01-01', '2024-03-31',
+                2024, 'Q1', '10-Q', '0031-01', '2025-04-01'
+            )
+        """)
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_xbrl_facts (
+                ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                form_type, accession_number, filed_date
+            ) VALUES (
+                'run1', TIMESTAMP '2025-04-02 08:00:01', '0000789019', 'Microsoft Corp', 'MSFT',
+                'us-gaap', 'Revenue', 'USD', 55000.0, '2024-01-01', '2024-03-31',
+                2024, 'Q1', '10-Q', '0031-01', '2025-04-01'
+            )
+        """)
+
+        _run_silver_transform(duckdb_conn)
+
+        count = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE accession_number = '0031-01'"
+        ).fetchone()[0]
+        assert count == 1, f"Same key different values should yield 1 silver row, got {count}"
+
+        row = duckdb_conn.execute("""
+            SELECT quality_status, value_decimal
+            FROM silver_sec_xbrl_facts
+            WHERE accession_number = '0031-01'
+        """).fetchone()
+        assert row[0] == 'conflicting_values', \
+            f"Conflicting values should be flagged, got quality_status='{row[0]}'"
+        # Value should be one of the conflicting values (not averaged)
+        assert row[1] in (50000.0, 55000.0), \
+            f"Value should be one of the originals (not averaged), got {row[1]}"
+
+    def test_conflict_flag_cleared_when_values_agree(self, duckdb_conn):
+        """Same key, same value (possibly with NULLs) → quality_status='ok', not 'conflicting_values'."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0032-01', TIMESTAMP '2025-04-01 10:00:00', 'NVDA', '0001045810', '10-K')
+        """)
+
+        # Two facts with same key and same value
+        for _ in range(2):
+            duckdb_conn.execute("""
+                INSERT INTO bronze_sec_xbrl_facts (
+                    ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                    unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                    form_type, accession_number, filed_date
+                ) VALUES (
+                    'run1', TIMESTAMP '2025-04-02 08:00:00', '0001045810', 'NVIDIA Corp', 'NVDA',
+                    'us-gaap', 'NetIncome', 'USD', 9999.0, '2024-01-01', '2024-03-31',
+                    2024, 'Q1', '10-K', '0032-01', '2025-04-01'
+                )
+            """)
+
+        _run_silver_transform(duckdb_conn)
+
+        row = duckdb_conn.execute("""
+            SELECT quality_status FROM silver_sec_xbrl_facts
+            WHERE accession_number = '0032-01'
+        """).fetchone()
+        assert row[0] == 'ok', f"Same values should not be flagged, got '{row[0]}'"
+
+
+class TestRound8SourceKeyUniqueness:
+    """Prove that the MERGE source SELECT yields exactly one row per natural key
+    by asserting count(*) == count(DISTINCT key) over the production SELECT.
+    """
+
+    def test_source_select_unique_keys(self, duckdb_conn):
+        """The source SELECT (USING clause) produces unique natural keys."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0033-01', TIMESTAMP '2025-04-01 10:00:00', 'AAPL', '0000320193', '10-K')
+        """)
+
+        # Insert 3 rows with same key (two identical, one different value)
+        for val in [100.0, 100.0, 200.0]:
+            duckdb_conn.execute(f"""
+                INSERT INTO bronze_sec_xbrl_facts (
+                    ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                    unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                    form_type, accession_number, filed_date
+                ) VALUES (
+                    'run1', TIMESTAMP '2025-04-02 08:00:00', '0000320193', 'Apple Inc.', 'AAPL',
+                    'us-gaap', 'Revenue', 'USD', {val}, '2024-01-01', '2024-03-31',
+                    2024, 'Q1', '10-K', '0033-01', '2025-04-01'
+                )
+            """)
+
+        sql = _get_production_sql()
+
+        # Build a key uniqueness assertion over the production source SELECT
+        key_cols = (
+            "cik, taxonomy, concept, unit, "
+            "COALESCE(period_start, ''), COALESCE(period_end, ''), "
+            "COALESCE(instant, ''), COALESCE(CAST(fiscal_year AS VARCHAR), ''), "
+            "COALESCE(fiscal_period, ''), COALESCE(form_type, ''), "
+            "accession_number, COALESCE(frame, '')"
+        )
+        check_sql = f"""
+            WITH src AS ({sql})
+            SELECT
+              COUNT(*) AS total_rows,
+              COUNT(DISTINCT ({key_cols})) AS distinct_keys
+            FROM src
+        """
+        result = duckdb_conn.execute(check_sql).fetchone()
+        assert result[0] == result[1], (
+            f"Source SELECT has non-unique keys: {result[0]} total rows, "
+            f"{result[1]} distinct keys"
+        )
+
+
+class TestRound8MergeIdempotentDedup:
+    """Prove that running the MERGE twice with duplicate-source bronze data
+    does not create duplicate silver rows.
+    """
+
+    def test_merge_twice_no_duplicates(self, duckdb_conn):
+        """MERGE twice with duplicate bronze facts → same row count both times."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0034-01', TIMESTAMP '2025-04-01 10:00:00', 'AAPL', '0000320193', '10-K')
+        """)
+
+        # 3 duplicate facts (same key, same value)
+        for _ in range(3):
+            duckdb_conn.execute("""
+                INSERT INTO bronze_sec_xbrl_facts (
+                    ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                    unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                    form_type, accession_number, filed_date
+                ) VALUES (
+                    'run1', TIMESTAMP '2025-04-02 08:00:00', '0000320193', 'Apple Inc.', 'AAPL',
+                    'us-gaap', 'Revenue', 'USD', 100.0, '2024-01-01', '2024-03-31',
+                    2024, 'Q1', '10-K', '0034-01', '2025-04-01'
+                )
+            """)
+
+        merge_sql = _get_full_merge_sql()
+
+        duckdb_conn.execute(merge_sql)
+        count1 = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts"
+        ).fetchone()[0]
+
+        duckdb_conn.execute(merge_sql)
+        count2 = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts"
+        ).fetchone()[0]
+
+        assert count1 == count2, (
+            f"MERGE not idempotent with duplicate source: {count1} → {count2}"
+        )
+        assert count1 == 1, f"Expected 1 row after dedup, got {count1}"
+
+
+class TestRound8MutationRemoveDedup:
+    """Mutation: remove WHERE d.rn = 1 → source has duplicate keys and silver has
+    multiple rows per natural key. Proves the dedup filter is load-bearing.
+    """
+
+    def test_mutation_remove_dedup_creates_duplicates(self, duckdb_conn):
+        """Without WHERE d.rn=1, duplicate bronze facts produce duplicate silver rows."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0035-01', TIMESTAMP '2025-04-01 10:00:00', 'AAPL', '0000320193', '10-K')
+        """)
+
+        for _ in range(2):
+            duckdb_conn.execute("""
+                INSERT INTO bronze_sec_xbrl_facts (
+                    ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                    unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                    form_type, accession_number, filed_date
+                ) VALUES (
+                    'run1', TIMESTAMP '2025-04-02 08:00:00', '0000320193', 'Apple Inc.', 'AAPL',
+                    'us-gaap', 'Revenue', 'USD', 100.0, '2024-01-01', '2024-03-31',
+                    2024, 'Q1', '10-K', '0035-01', '2025-04-01'
+                )
+            """)
+
+        # Production: 1 row
+        _run_silver_transform(duckdb_conn)
+        prod_count = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE accession_number = '0035-01'"
+        ).fetchone()[0]
+        assert prod_count == 1, f"Production should yield 1 row, got {prod_count}"
+
+        # Mutated (no dedup filter): 2 rows
+        mutated_sql = _mutate_remove_dedup_filter()
+        _run_silver_transform(duckdb_conn, sql=mutated_sql)
+        mutated_count = duckdb_conn.execute(
+            "SELECT COUNT(*) FROM silver_sec_xbrl_facts WHERE accession_number = '0035-01'"
+        ).fetchone()[0]
+        assert mutated_count > 1, (
+            f"Mutation proof: removing dedup filter should cause duplicates, got {mutated_count}"
+        )
+
+    def test_mutation_remove_dedup_breaks_key_uniqueness(self, duckdb_conn):
+        """Without WHERE d.rn=1, the source SELECT has non-unique keys."""
+        duckdb_conn.execute("""
+            INSERT INTO bronze_sec_filings_v2 (accession_number, accepted_ts, ticker, cik, form_type)
+            VALUES ('0036-01', TIMESTAMP '2025-04-01 10:00:00', 'MSFT', '0000789019', '10-Q')
+        """)
+
+        for _ in range(2):
+            duckdb_conn.execute("""
+                INSERT INTO bronze_sec_xbrl_facts (
+                    ingest_run_id, ingested_at, cik, entity_name, ticker, taxonomy, concept,
+                    unit, value_decimal, period_start, period_end, fiscal_year, fiscal_period,
+                    form_type, accession_number, filed_date
+                ) VALUES (
+                    'run1', TIMESTAMP '2025-04-02 08:00:00', '0000789019', 'Microsoft Corp', 'MSFT',
+                    'us-gaap', 'Revenue', 'USD', 50000.0, '2024-01-01', '2024-03-31',
+                    2024, 'Q1', '10-Q', '0036-01', '2025-04-01'
+                )
+            """)
+
+        mutated_sql = _mutate_remove_dedup_filter()
+
+        key_cols = (
+            "cik, taxonomy, concept, unit, "
+            "COALESCE(period_start, ''), COALESCE(period_end, ''), "
+            "COALESCE(instant, ''), COALESCE(CAST(fiscal_year AS VARCHAR), ''), "
+            "COALESCE(fiscal_period, ''), COALESCE(form_type, ''), "
+            "accession_number, COALESCE(frame, '')"
+        )
+        check_sql = f"""
+            WITH src AS ({mutated_sql})
+            SELECT
+              COUNT(*) AS total_rows,
+              COUNT(DISTINCT ({key_cols})) AS distinct_keys
+            FROM src
+        """
+        result = duckdb_conn.execute(check_sql).fetchone()
+        assert result[0] > result[1], (
+            f"Mutation proof: without dedup filter, source has {result[0]} rows "
+            f"but only {result[1]} distinct keys"
+        )

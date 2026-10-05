@@ -132,20 +132,23 @@ def _parse_ddl_columns(ddl_sql: str) -> dict[str, str]:
 
 
 def _parse_normalized_cte_columns(merge_sql: str) -> list[str]:
-    """Extract column aliases from the 'normalized' CTE's SELECT clause.
+    """Extract column aliases from the 'deduped_normalized' CTE's SELECT clause.
 
-    The production MERGE uses INSERT * which writes all columns from the
-    source (the 'normalized' CTE). We find that CTE and extract every
-    'AS alias' from its SELECT clause.
+    Returns the26 output column aliases (excluding the internal 'rn' column).
+    Falls back to 'normalized' CTE for pre-dedup SQL variants.
     """
-    # Find the normalized CTE definition
+    # Try deduped_normalized first, then normalized as fallback
     cte_match = re.search(
-        r'normalized\s+AS\s*\(', merge_sql, re.IGNORECASE
+        r'\bdeduped_normalized\s+AS\s*\(', merge_sql, re.IGNORECASE
     )
     if not cte_match:
-        raise ValueError("Could not find 'normalized' CTE in MERGE SQL")
+        cte_match = re.search(
+            r'(?<!\w)normalized\s+AS\s*\(', merge_sql, re.IGNORECASE
+        )
+    if not cte_match:
+        raise ValueError("Could not find 'deduped_normalized' or 'normalized' CTE in MERGE SQL")
 
-    # Find the opening paren of the CTE body
+    # Find the balanced closing paren of the CTE body
     paren_start = merge_sql.index('(', cte_match.end() - 1)
     depth = 1
     paren_end = -1
@@ -158,27 +161,43 @@ def _parse_normalized_cte_columns(merge_sql: str) -> list[str]:
                 paren_end = i
                 break
     if paren_end == -1:
-        raise ValueError("Could not find balanced parens for normalized CTE")
+        raise ValueError("Could not find balanced parens for CTE body")
 
     cte_body = merge_sql[paren_start + 1:paren_end]
 
-    # Extract the SELECT clause (between SELECT and FROM)
-    select_match = re.search(r'\bSELECT\b', cte_body, re.IGNORECASE)
-    if not select_match:
-        raise ValueError("Could not find SELECT in normalized CTE")
-
-    # Walk lines from SELECT until we hit FROM (not inside a subquery)
-    lines = cte_body[select_match.end():].splitlines()
+    # Extract every 'AS alias' at paren-depth 0 from the CTE body.
+    # Walk character by character tracking depth to skip nested parens.
     cols = []
-    for line in lines:
-        stripped = line.strip()
-        if re.match(r'\bFROM\b', stripped, re.IGNORECASE):
-            break
-        # Allow optional trailing comma after alias
-        as_match = re.search(r'\bAS\s+(\w+)\s*,?\s*$', stripped, re.IGNORECASE)
-        if as_match:
-            cols.append(as_match.group(1))
+    i = 0
+    n = len(cte_body)
+    while i < n:
+        ch = cte_body[i]
+        if ch == '(':
+            depth += 1
+            i += 1
+        elif ch == ')':
+            depth -= 1
+            i += 1
+        elif depth == 0 and ch.upper() == 'A' and cte_body[i:i+2].upper() == 'AS':
+            # Word boundary before
+            if i > 0 and (cte_body[i-1].isalnum() or cte_body[i-1] == '_'):
+                i += 2
+                continue
+            # Must be followed by whitespace then identifier
+            rest = cte_body[i+2:]
+            m = re.match(r'\s+(\w+)', rest)
+            if m:
+                cols.append(m.group(1))
+                i += 2 + m.end()
+            else:
+                i += 2
+        else:
+            i += 1
 
+    # Filter out internal columns not in the DDL (e.g. 'rn', 'ingested_at',
+    # 'max_value', 'min_value')
+    _INTERNAL = {'rn', 'ingested_at', 'max_value', 'min_value'}
+    cols = [c for c in cols if c not in _INTERNAL]
     return cols
 
 
