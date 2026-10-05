@@ -14,8 +14,9 @@ Train/test split (purged):
   No training row has a label observed after cut.
 
 Refit for scoring:
-  The final model is fitted on all rows whose label_ts <= the scoring snapshot
-  time.  The latest snapshot itself is never labelled (it has no forward data).
+  The final model is fitted on labelled rows whose label_ts <= the earliest
+  scoring snapshot time (refit_rows).  The latest snapshot itself is never
+  labelled (it has no forward data).
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,7 +25,7 @@ from databricks.sdk import WorkspaceClient
 from sklearn.metrics import roc_auc_score
 from ml.train import make_baseline, prepare_features
 from ml.score import score_rows
-from ml.baseline_labels import forward_labels, purged_split
+from ml.baseline_labels import forward_labels, purged_split, refit_rows
 w = WorkspaceClient(profile="evangohsg")
 T = "bootcamp_students.evangoh_capstone.gold_model_features"
 def fetch(sql):
@@ -49,13 +50,13 @@ m = make_baseline(); m.fit(Xtr, tr.label.astype(int))
 auc = roc_auc_score(te.label.astype(int), m.predict_proba(Xte)[:,1]) if te.label.nunique() > 1 else float("nan")
 cut = lab.prediction_ts.quantile(0.8)
 print(f"holdout AUC {auc:.3f} | train {len(tr)} test {len(te)} | cutoff {cut}")
-# refit on all labelled rows (label_ts <= latest scoring snapshot time),
-# score each symbol's LATEST snapshot (the latest snapshot itself is never labelled)
-# NOTE: only rows with label_ts <= the scoring snapshot time should be used for
-# the final refit; the latest snapshot has no forward data so it cannot be labelled.
-m = make_baseline(); m.fit(prepare_features(lab, FEATS).fillna(0.0), lab.label.astype(int))
+# refit on labelled rows whose label_ts <= the earliest scoring snapshot,
+# so no scored row sees a label observed after its own time.
 latest = df.sort_values("prediction_ts").groupby("symbol").tail(1).copy()
 latest = latest[latest.prediction_ts >= pd.Timestamp("2026-09-01", tz="UTC")].copy()  # only current snapshots
+refit = refit_rows(lab, latest.prediction_ts)
+print(f"refit cutoff {latest.prediction_ts.min()} | refit rows {len(refit)}")
+m = make_baseline(); m.fit(prepare_features(refit, FEATS).fillna(0.0), refit.label.astype(int))
 Xl = prepare_features(latest, FEATS).fillna(0.0)
 latest_scoring = latest[["symbol","prediction_ts","feature_snapshot_id"]].join(Xl)
 version = "baseline-logreg-v0-2026-10-05"

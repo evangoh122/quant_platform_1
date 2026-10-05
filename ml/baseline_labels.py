@@ -108,3 +108,31 @@ def purged_split(
     train = lab[lab["label_ts"] <= cut].copy()
     test = lab[lab["prediction_ts"] > cut].copy()
     return train, test
+
+
+def refit_rows(
+    lab: pd.DataFrame,
+    scoring_ts: pd.Series,
+) -> pd.DataFrame:
+    """Return labelled rows safe to use for the final refit.
+
+    The refit must not see any label observed after the *earliest* scoring
+    snapshot.  This prevents a symbol scored at an earlier time from using
+    another symbol's labels that were only observed later.
+
+    Parameters
+    ----------
+    lab : DataFrame
+        Labelled rows (output of ``forward_labels`` with NaN labels dropped).
+        Must contain ``label_ts``.
+    scoring_ts : Series
+        ``prediction_ts`` of every row that will be scored (the latest
+        snapshot per symbol).  The earliest value becomes the cutoff.
+
+    Returns
+    -------
+    DataFrame
+        Subset of *lab* with ``label_ts <= cutoff``.
+    """
+    cutoff = scoring_ts.min()
+    return lab[lab["label_ts"] <= cutoff].copy()

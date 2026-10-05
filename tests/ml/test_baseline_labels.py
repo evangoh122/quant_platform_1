@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ml.baseline_labels import forward_labels, purged_split
+from ml.baseline_labels import forward_labels, purged_split, refit_rows
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -233,3 +233,53 @@ def test_tz_naive_input_treated_as_utc():
     out = forward_labels(df)
     # Same UTC day → same ET day → labelled
     assert out.loc[0, "label"] == 1.0
+
+
+# ── refit_rows tests ────────────────────────────────────────────────────────
+
+def test_refit_rows_staggered_symbols():
+    """Staggered-symbol regression test for refit_rows.
+
+    Symbol A's latest snapshot at 10:00, symbol B's at 15:00.  A label on a
+    B row is observed at 12:00 (label_ts).  Since scoring_ts.min() = 10:00,
+    that 12:00-label row must be EXCLUDED from the refit set.
+
+    This test MUST fail if refit_rows returns all of lab (i.e. uses
+    max(scoring_ts) or ignores the cutoff).
+    """
+    base = pd.Timestamp("2026-06-01 09:00:00", tz="US/Eastern")
+    # A: snapshots at 09:00, 09:30, 10:00 (latest)
+    # B: snapshots at 09:00, 09:30, 10:00, 10:30, 11:00, 11:30, 12:00, 12:30, 13:00, 13:30, 14:00, 14:30, 15:00 (latest)
+    a_times = [base + pd.Timedelta(minutes=30 * i) for i in range(3)]
+    b_times = [base + pd.Timedelta(minutes=30 * i) for i in range(16)]
+    rows = (
+        [{"symbol": "A", "prediction_ts": t, "return_30m": 0.01} for t in a_times]
+        + [{"symbol": "B", "prediction_ts": t, "return_30m": 0.02} for t in b_times]
+    )
+    df = pd.DataFrame(rows)
+    lab = forward_labels(df)
+    lab = lab[lab.label.notna()].copy()
+    assert len(lab) > 0, "fixture must produce labelled rows"
+
+    # scoring rows: each symbol's latest snapshot
+    latest = df.sort_values("prediction_ts").groupby("symbol").tail(1)
+    scoring_ts = latest["prediction_ts"]
+
+    # earliest scoring snapshot = A's latest = 10:00
+    assert scoring_ts.min() == a_times[-1]
+
+    refit = refit_rows(lab, scoring_ts)
+
+    # B has a label at 12:00 (label_ts from the 09:30→10:00 pair is 10:00,
+    # but later pairs have label_ts > 10:00).  Verify no refit row has
+    # label_ts > scoring_ts.min().
+    cutoff = scoring_ts.min()
+    assert (refit["label_ts"] <= cutoff).all(), (
+        f"refit contains row with label_ts > cutoff={cutoff}"
+    )
+
+    # The refit set must be a strict subset of all labelled rows
+    assert len(refit) < len(lab), (
+        f"refit_rows returned all {len(lab)} labelled rows; "
+        "expected fewer (some B rows with label_ts > 10:00 must be excluded)"
+    )
