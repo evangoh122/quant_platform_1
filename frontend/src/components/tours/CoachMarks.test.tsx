@@ -235,63 +235,89 @@ describe('CoachMarks', () => {
     document.body.removeChild(opener);
   });
 
-  it('repositions the spotlight after resize', async () => {
-    let callCount = 0;
+  it('repositions the spotlight after resize', () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, 'innerWidth', { value: 1024, writable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 768, writable: true });
+    const initialRect = { top: 100, left: 100, width: 200, height: 50, bottom: 150, right: 300, x: 100, y: 100, toJSON: () => {} } as DOMRect;
+    const updatedRect = { top: 300, left: 400, width: 200, height: 50, bottom: 350, right: 600, x: 400, y: 300, toJSON: () => {} } as DOMRect;
+    let currentRect = initialRect;
+
     const targetEl = document.createElement('div');
     targetEl.setAttribute('data-tour', 'spotlight-target');
-    targetEl.getBoundingClientRect = () => {
-      callCount++;
-      if (callCount <= 2) {
-        return { top: 100, left: 100, width: 200, height: 50, bottom: 150, right: 300, x: 100, y: 100, toJSON: () => {} } as DOMRect;
-      }
-      return { top: 300, left: 400, width: 200, height: 50, bottom: 350, right: 600, x: 400, y: 300, toJSON: () => {} } as DOMRect;
-    };
+    targetEl.getBoundingClientRect = () => currentRect;
     document.body.appendChild(targetEl);
 
     const steps: CoachStep[] = [
       { selector: '[data-tour="spotlight-target"]', title: 'Spotlight', body: 'Test' },
     ];
 
-    render(
+    const { container } = render(
       <div>
         <CoachMarks steps={steps} run={true} onClose={() => {}} />
       </div>,
     );
 
-    await act(async () => {
-      fireEvent.resize(window);
-    });
+    const PAD = 8;
+    const dialog = container.querySelector('[role="dialog"]')!;
 
+    act(() => { vi.advanceTimersByTime(280); });
+
+    const spotlight = dialog.children[0] as HTMLElement;
+    expect(spotlight).toBeTruthy();
+    expect(spotlight.style.left).toBe(`${initialRect.left - PAD}px`);
+
+    currentRect = updatedRect;
+    act(() => { fireEvent.resize(window); vi.advanceTimersByTime(0); });
+
+    const spotlightAfter = dialog.children[0] as HTMLElement;
+    expect(spotlightAfter.style.left).toBe(`${updatedRect.left - PAD}px`);
+    expect(spotlightAfter.style.top).toBe(`${updatedRect.top - PAD}px`);
+
+    vi.useRealTimers();
     document.body.removeChild(targetEl);
   });
 
-  it('repositions the spotlight after scroll', async () => {
-    let callCount = 0;
+  it('repositions the spotlight after scroll', () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, 'innerWidth', { value: 1024, writable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 768, writable: true });
+    const initialRect = { top: 100, left: 100, width: 200, height: 50, bottom: 150, right: 300, x: 100, y: 100, toJSON: () => {} } as DOMRect;
+    const updatedRect = { top: 50, left: 50, width: 200, height: 50, bottom: 100, right: 250, x: 50, y: 50, toJSON: () => {} } as DOMRect;
+    let currentRect = initialRect;
+
     const targetEl = document.createElement('div');
     targetEl.setAttribute('data-tour', 'scroll-target');
-    targetEl.getBoundingClientRect = () => {
-      callCount++;
-      if (callCount <= 2) {
-        return { top: 100, left: 100, width: 200, height: 50, bottom: 150, right: 300, x: 100, y: 100, toJSON: () => {} } as DOMRect;
-      }
-      return { top: 50, left: 50, width: 200, height: 50, bottom: 100, right: 250, x: 50, y: 50, toJSON: () => {} } as DOMRect;
-    };
+    targetEl.getBoundingClientRect = () => currentRect;
     document.body.appendChild(targetEl);
 
     const steps: CoachStep[] = [
       { selector: '[data-tour="scroll-target"]', title: 'Scroll', body: 'Test' },
     ];
 
-    render(
+    const { container } = render(
       <div>
         <CoachMarks steps={steps} run={true} onClose={() => {}} />
       </div>,
     );
 
-    await act(async () => {
-      fireEvent.scroll(window);
-    });
+    const PAD = 8;
+    const dialog = container.querySelector('[role="dialog"]')!;
 
+    act(() => { vi.advanceTimersByTime(280); });
+
+    const spotlight = dialog.children[0] as HTMLElement;
+    expect(spotlight).toBeTruthy();
+    expect(spotlight.style.left).toBe(`${initialRect.left - PAD}px`);
+
+    currentRect = updatedRect;
+    act(() => { fireEvent.scroll(window); vi.advanceTimersByTime(0); });
+
+    const spotlightAfter = dialog.children[0] as HTMLElement;
+    expect(spotlightAfter.style.left).toBe(`${updatedRect.left - PAD}px`);
+    expect(spotlightAfter.style.top).toBe(`${updatedRect.top - PAD}px`);
+
+    vi.useRealTimers();
     document.body.removeChild(targetEl);
   });
 
