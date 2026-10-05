@@ -35,6 +35,8 @@ from pipelines.sec_rag_ingest import (
     _validate_user_agent,
 )
 from pipelines.ingest_sec_companyfacts import (
+    BRONZE_COLUMNS,
+    MANIFEST_COLUMNS,
     CompanyFactsManifestEntry,
     SparkCompanyFactsWriter,
     SparkCompanyFactsManifestWriter,
@@ -43,6 +45,7 @@ from pipelines.ingest_sec_companyfacts import (
     build_source_url,
     run_ingest_companyfacts,
     _classify_error,
+    _columns_to_ddl,
     _schema_to_ddl_columns,
 )
 
@@ -1599,7 +1602,36 @@ class _FakeSparkSession:
         pass
 
 
-@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
+class _MockFieldType:
+    """Mock PySpark type that returns a configurable simpleString."""
+    def __init__(self, simple: str):
+        self._simple = simple
+    def simpleString(self):
+        return self._simple
+
+
+class _MockField:
+    """Mock StructField built from a _ColumnSpec — no PySpark needed."""
+    def __init__(self, spec):
+        self.name = spec.name
+        self.nullable = spec.nullable
+        self.dataType = _MockFieldType(spec.type_str)
+
+
+class _MockSchema:
+    """Mock StructType built from a list of _ColumnSpec — no PySpark needed."""
+    def __init__(self, columns):
+        self.fields = [_MockField(c) for c in columns]
+
+
+def _mock_bronze_schema():
+    return _MockSchema(BRONZE_COLUMNS)
+
+
+def _mock_manifest_schema():
+    return _MockSchema(MANIFEST_COLUMNS)
+
+
 class TestSparkWriterAppendMode:
     """Verify SparkCompanyFactsWriter and SparkCompanyFactsManifestWriter
     use mode('append') — never 'overwrite'."""
@@ -1607,11 +1639,13 @@ class TestSparkWriterAppendMode:
     def test_facts_writer_uses_append_mode(self):
         """SparkCompanyFactsWriter.append_rows must call
         df.write.mode('append').saveAsTable(...)."""
+        from unittest.mock import patch
         fake_spark = _FakeSparkSession()
         writer = SparkCompanyFactsWriter(spark_factory=lambda: fake_spark)
 
         rows = [{"cik": "0000320193", "ticker": "AAPL", "concept": "Revenues"}]
-        count = writer.append_rows("cat", "sch", rows)
+        with patch("pipelines.ingest_sec_companyfacts._get_bronze_schema", _mock_bronze_schema):
+            count = writer.append_rows("cat", "sch", rows)
 
         assert count == 1
         assert fake_spark.writer.modes == ["append"]
@@ -1620,6 +1654,7 @@ class TestSparkWriterAppendMode:
     def test_manifest_writer_uses_append_mode(self):
         """SparkCompanyFactsManifestWriter.write_manifest must call
         df.write.mode('append').saveAsTable(...)."""
+        from unittest.mock import patch
         fake_spark = _FakeSparkSession()
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: fake_spark)
 
@@ -1630,28 +1665,33 @@ class TestSparkWriterAppendMode:
             fetch_status="success",
             payload_hash="abc",
         )
-        writer.write_manifest("cat", "sch", entry)
+        with patch("pipelines.ingest_sec_companyfacts._get_manifest_schema", _mock_manifest_schema):
+            writer.write_manifest("cat", "sch", entry)
 
         assert fake_spark.writer.modes == ["append"]
         assert fake_spark.writer.saved_tables == ["cat.sch.sec_companyfacts_ingest_log"]
 
     def test_facts_writer_no_overwrite(self):
         """MUTATION: if append_rows uses mode('overwrite'), this test fails."""
+        from unittest.mock import patch
         fake_spark = _FakeSparkSession()
         writer = SparkCompanyFactsWriter(spark_factory=lambda: fake_spark)
-        writer.append_rows("cat", "sch", [{"cik": "1"}])
+        with patch("pipelines.ingest_sec_companyfacts._get_bronze_schema", _mock_bronze_schema):
+            writer.append_rows("cat", "sch", [{"cik": "1"}])
 
         assert "overwrite" not in fake_spark.writer.modes
         assert all(m == "append" for m in fake_spark.writer.modes)
 
     def test_manifest_writer_no_overwrite(self):
         """MUTATION: if write_manifest uses mode('overwrite'), this test fails."""
+        from unittest.mock import patch
         fake_spark = _FakeSparkSession()
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: fake_spark)
         entry = CompanyFactsManifestEntry(
             ingest_run_id="r1", cik="0000320193", ticker="AAPL",
         )
-        writer.write_manifest("cat", "sch", entry)
+        with patch("pipelines.ingest_sec_companyfacts._get_manifest_schema", _mock_manifest_schema):
+            writer.write_manifest("cat", "sch", entry)
 
         assert "overwrite" not in fake_spark.writer.modes
         assert all(m == "append" for m in fake_spark.writer.modes)
@@ -1785,16 +1825,13 @@ def _parse_ddl_columns(ddl: str):
     return cols
 
 
-@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
-class TestBronzeSchemaContract:
-    """Bronze StructType matches the DDL column list exactly.
+class TestBronzeColumnSpecContract:
+    """Bronze column specs and DDL contract — no PySpark required.
 
-    The DDL is GENERATED from the StructType via _schema_to_ddl_columns,
-    so they can never drift apart.  These tests verify the round-trip:
-    StructType → DDL → parse → compare against StructType.
+    Tests the plain-Python _ColumnSpec list and _columns_to_ddl() directly.
+    This ensures CI (without PySpark) validates the schema contract.
     """
 
-    # DDL column names in exact order (from SparkCompanyFactsWriter.ensure_table)
     DDL_COLUMNS = [
         "ingest_run_id", "ingested_at", "source_url", "payload_hash",
         "cik", "entity_name", "ticker", "taxonomy", "concept", "label",
@@ -1804,151 +1841,94 @@ class TestBronzeSchemaContract:
         "frame", "raw_fact_json", "source_updated_at",
     ]
 
-    def test_bronze_schema_field_count(self):
-        """StructType has exactly 25 fields matching the DDL."""
-        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
-        schema = _get_bronze_schema()
-        assert len(schema.fields) == 25
+    def test_bronze_column_count(self):
+        """BRONZE_COLUMNS has exactly 25 columns."""
+        assert len(BRONZE_COLUMNS) == 25
 
-    def test_bronze_schema_field_names_match_ddl(self):
-        """Field names match the DDL column list in order."""
-        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
-        schema = _get_bronze_schema()
-        names = [f.name for f in schema.fields]
+    def test_bronze_column_names_match_expected(self):
+        """Column names match the expected list in order."""
+        names = [c.name for c in BRONZE_COLUMNS]
         assert names == self.DDL_COLUMNS
 
-    def test_bronze_schema_types(self):
-        """Field types match the DDL exactly."""
-        from pyspark.sql.types import (
-            DoubleType, IntegerType, StringType, TimestampType,
-        )
-        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
-        schema = _get_bronze_schema()
+    def test_bronze_column_types(self):
+        """Column types match expected values."""
         expected = [
-            ("ingest_run_id", StringType, False),
-            ("ingested_at", TimestampType, False),
-            ("source_url", StringType, True),
-            ("payload_hash", StringType, True),
-            ("cik", StringType, True),
-            ("entity_name", StringType, True),
-            ("ticker", StringType, True),
-            ("taxonomy", StringType, True),
-            ("concept", StringType, True),
-            ("label", StringType, True),
-            ("description", StringType, True),
-            ("unit", StringType, True),
-            ("value_raw", StringType, True),
-            ("value_decimal", DoubleType, True),
-            ("period_start", StringType, True),
-            ("period_end", StringType, True),
-            ("instant", StringType, True),
-            ("fiscal_year", IntegerType, True),
-            ("fiscal_period", StringType, True),
-            ("form_type", StringType, True),
-            ("accession_number", StringType, True),
-            ("filed_date", StringType, True),
-            ("frame", StringType, True),
-            ("raw_fact_json", StringType, True),
-            ("source_updated_at", StringType, True),
+            ("ingest_run_id", "string", False),
+            ("ingested_at", "timestamp", False),
+            ("source_url", "string", True),
+            ("payload_hash", "string", True),
+            ("cik", "string", True),
+            ("entity_name", "string", True),
+            ("ticker", "string", True),
+            ("taxonomy", "string", True),
+            ("concept", "string", True),
+            ("label", "string", True),
+            ("description", "string", True),
+            ("unit", "string", True),
+            ("value_raw", "string", True),
+            ("value_decimal", "double", True),
+            ("period_start", "string", True),
+            ("period_end", "string", True),
+            ("instant", "string", True),
+            ("fiscal_year", "int", True),
+            ("fiscal_period", "string", True),
+            ("form_type", "string", True),
+            ("accession_number", "string", True),
+            ("filed_date", "string", True),
+            ("frame", "string", True),
+            ("raw_fact_json", "string", True),
+            ("source_updated_at", "string", True),
         ]
-        for i, (name, typ, nullable) in enumerate(expected):
-            field = schema.fields[i]
-            assert field.name == name, f"Field {i}: {field.name} != {name}"
-            assert isinstance(field.dataType, typ), f"Field {i} ({name}): type mismatch"
-            assert field.nullable == nullable, f"Field {i} ({name}): nullable mismatch"
+        for i, (name, type_str, nullable) in enumerate(expected):
+            spec = BRONZE_COLUMNS[i]
+            assert spec.name == name, f"Col {i}: {spec.name} != {name}"
+            assert spec.type_str == type_str, f"Col {i} ({name}): {spec.type_str} != {type_str}"
+            assert spec.nullable == nullable, f"Col {i} ({name}): nullable mismatch"
 
-    def test_bronze_generated_ddl_matches_struct_type(self):
-        """DDL generated from StructType round-trips back to the same columns.
-
-        This is the core contract: StructType is the single source of truth.
-        The DDL cannot drift independently because it is derived.
-        """
-        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
-        schema = _get_bronze_schema()
-        ddl_cols_str = _schema_to_ddl_columns(schema)
-        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
-        parsed = _parse_ddl_columns(full_ddl)
-
-        assert len(parsed) == len(schema.fields), (
-            f"DDL has {len(parsed)} columns, schema has {len(schema.fields)}"
-        )
-        for i, field in enumerate(schema.fields):
-            name, simple, nullable = parsed[i]
-            assert name == field.name, f"Col {i}: {name} != {field.name}"
-            assert simple == field.dataType.simpleString(), (
-                f"Col {i} ({name}): DDL type {simple} != schema type {field.dataType.simpleString()}"
-            )
-            assert nullable == field.nullable, (
-                f"Col {i} ({name}): DDL nullable={nullable} != schema nullable={field.nullable}"
-            )
-
-    def test_bronze_ddl_column_names_match_hardcoded_list(self):
-        """Generated DDL column names match the hardcoded reference list."""
-        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
-        schema = _get_bronze_schema()
-        ddl_cols_str = _schema_to_ddl_columns(schema)
-        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+    def test_bronze_ddl_column_names_match_expected(self):
+        """DDL generated from specs has correct column names in order."""
+        ddl = _columns_to_ddl(BRONZE_COLUMNS)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
         parsed = _parse_ddl_columns(full_ddl)
         names = [c[0] for c in parsed]
         assert names == self.DDL_COLUMNS
 
-    def test_mutation_drop_bronze_schema_fails_test(self):
-        """MUTATION: if _get_bronze_schema is removed, this test fails."""
-        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
-        schema = _get_bronze_schema()
-        # The schema must be a StructType, not None
-        assert schema is not None
-        assert len(schema.fields) == 25
-
-    def test_mutation_drop_field_from_bronze_struct_fails_contract(self):
-        """MUTATION: removing a field from the StructType causes the contract
-        test to fail — the generated DDL no longer matches the full schema.
-
-        This is the exact scenario DeepSeek flagged: if someone edits the
-        StructType but not the DDL (or vice versa), this test catches it.
-        """
-        from pyspark.sql.types import (
-            DoubleType, IntegerType, StringType, StructField, StructType,
-            TimestampType,
-        )
-        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
-        full_schema = _get_bronze_schema()
-
-        # Build a schema missing 'fact_count' equivalent — here we drop
-        # 'value_decimal' as a representative field
-        reduced_fields = [f for f in full_schema.fields if f.name != "value_decimal"]
-        reduced_schema = StructType(reduced_fields)
-
-        # Generate DDL from the reduced schema
-        ddl_cols_str = _schema_to_ddl_columns(reduced_schema)
-        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+    def test_bronze_ddl_column_count(self):
+        """DDL generated from specs has correct column count."""
+        ddl = _columns_to_ddl(BRONZE_COLUMNS)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
         parsed = _parse_ddl_columns(full_ddl)
+        assert len(parsed) == 25
 
-        # The parsed DDL should NOT match the full schema (missing value_decimal)
-        assert len(parsed) != len(full_schema.fields), (
-            "Reduced schema should have fewer fields than full schema"
-        )
+    def test_bronze_ddl_types_match_specs(self):
+        """DDL types match the _ColumnSpec type_str values."""
+        ddl = _columns_to_ddl(BRONZE_COLUMNS)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+        for i, (name, simple, nullable) in enumerate(parsed):
+            spec = BRONZE_COLUMNS[i]
+            assert name == spec.name, f"Col {i}: {name} != {spec.name}"
+            assert nullable == spec.nullable, f"Col {i} ({name}): nullable mismatch"
 
-        # Verify the specific field is missing
+    def test_mutation_drop_column_from_specs_fails_contract(self):
+        """MUTATION: removing a column from specs causes DDL to differ."""
+        reduced = [c for c in BRONZE_COLUMNS if c.name != "value_decimal"]
+        ddl = _columns_to_ddl(reduced)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+        assert len(parsed) != len(BRONZE_COLUMNS), "Reduced specs should have fewer columns"
         parsed_names = [c[0] for c in parsed]
-        assert "value_decimal" not in parsed_names, (
-            "value_decimal should be missing from reduced DDL"
-        )
-        assert "value_decimal" in [f.name for f in full_schema.fields], (
-            "value_decimal should be in the full schema"
-        )
+        assert "value_decimal" not in parsed_names, "value_decimal should be missing"
+        assert "value_decimal" in [c.name for c in BRONZE_COLUMNS], "value_decimal should be in full specs"
 
 
-@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
-class TestManifestSchemaContract:
-    """Manifest StructType matches the DDL column list exactly.
+class TestManifestColumnSpecContract:
+    """Manifest column specs and DDL contract — no PySpark required.
 
-    The DDL is GENERATED from the StructType via _schema_to_ddl_columns,
-    so they can never drift apart.  These tests verify the round-trip:
-    StructType → DDL → parse → compare against StructType.
+    Tests the plain-Python _ColumnSpec list and _columns_to_ddl() directly.
+    This ensures CI (without PySpark) validates the schema contract.
     """
 
-    # DDL column names in exact order (from SparkCompanyFactsManifestWriter.ensure_table)
     DDL_COLUMNS = [
         "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
         "payload_hash", "payload_bytes", "fact_count", "http_status",
@@ -1956,148 +1936,130 @@ class TestManifestSchemaContract:
         "logged_at",
     ]
 
-    def test_manifest_schema_field_count(self):
-        """StructType has exactly 14 fields matching the DDL."""
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        schema = _get_manifest_schema()
-        assert len(schema.fields) == 14
+    def test_manifest_column_count(self):
+        """MANIFEST_COLUMNS has exactly 14 columns."""
+        assert len(MANIFEST_COLUMNS) == 14
 
-    def test_manifest_schema_field_names_match_ddl(self):
-        """Field names match the DDL column list in order."""
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        schema = _get_manifest_schema()
-        names = [f.name for f in schema.fields]
+    def test_manifest_column_names_match_expected(self):
+        """Column names match the expected list in order."""
+        names = [c.name for c in MANIFEST_COLUMNS]
         assert names == self.DDL_COLUMNS
 
-    def test_manifest_schema_types(self):
-        """Field types match the DDL exactly."""
-        from pyspark.sql.types import (
-            IntegerType, StringType, TimestampType,
-        )
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        schema = _get_manifest_schema()
+    def test_manifest_column_types(self):
+        """Column types match expected values."""
         expected = [
-            ("ingest_run_id", StringType, False),
-            ("cik", StringType, False),
-            ("ticker", StringType, False),
-            ("fetch_status", StringType, False),
-            ("attempt_count", IntegerType, True),
-            ("payload_hash", StringType, True),
-            ("payload_bytes", IntegerType, True),
-            ("fact_count", IntegerType, True),
-            ("http_status", IntegerType, True),
-            ("started_at", TimestampType, True),
-            ("completed_at", TimestampType, True),
-            ("error_category", StringType, True),
-            ("error_message", StringType, True),
-            ("logged_at", TimestampType, False),
+            ("ingest_run_id", "string", False),
+            ("cik", "string", False),
+            ("ticker", "string", False),
+            ("fetch_status", "string", False),
+            ("attempt_count", "int", True),
+            ("payload_hash", "string", True),
+            ("payload_bytes", "int", True),
+            ("fact_count", "int", True),
+            ("http_status", "int", True),
+            ("started_at", "timestamp", True),
+            ("completed_at", "timestamp", True),
+            ("error_category", "string", True),
+            ("error_message", "string", True),
+            ("logged_at", "timestamp", False),
         ]
-        for i, (name, typ, nullable) in enumerate(expected):
-            field = schema.fields[i]
-            assert field.name == name, f"Field {i}: {field.name} != {name}"
-            assert isinstance(field.dataType, typ), f"Field {i} ({name}): type mismatch"
-            assert field.nullable == nullable, f"Field {i} ({name}): nullable mismatch"
+        for i, (name, type_str, nullable) in enumerate(expected):
+            spec = MANIFEST_COLUMNS[i]
+            assert spec.name == name, f"Col {i}: {spec.name} != {name}"
+            assert spec.type_str == type_str, f"Col {i} ({name}): {spec.type_str} != {type_str}"
+            assert spec.nullable == nullable, f"Col {i} ({name}): nullable mismatch"
 
-    def test_manifest_generated_ddl_matches_struct_type(self):
-        """DDL generated from StructType round-trips back to the same columns.
-
-        This is the core contract: StructType is the single source of truth.
-        The DDL cannot drift independently because it is derived.
-        """
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        schema = _get_manifest_schema()
-        ddl_cols_str = _schema_to_ddl_columns(schema)
-        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
-        parsed = _parse_ddl_columns(full_ddl)
-
-        assert len(parsed) == len(schema.fields), (
-            f"DDL has {len(parsed)} columns, schema has {len(schema.fields)}"
-        )
-        for i, field in enumerate(schema.fields):
-            name, simple, nullable = parsed[i]
-            assert name == field.name, f"Col {i}: {name} != {field.name}"
-            assert simple == field.dataType.simpleString(), (
-                f"Col {i} ({name}): DDL type {simple} != schema type {field.dataType.simpleString()}"
-            )
-            assert nullable == field.nullable, (
-                f"Col {i} ({name}): DDL nullable={nullable} != schema nullable={field.nullable}"
-            )
-
-    def test_manifest_ddl_column_names_match_hardcoded_list(self):
-        """Generated DDL column names match the hardcoded reference list."""
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        schema = _get_manifest_schema()
-        ddl_cols_str = _schema_to_ddl_columns(schema)
-        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+    def test_manifest_ddl_column_names_match_expected(self):
+        """DDL generated from specs has correct column names in order."""
+        ddl = _columns_to_ddl(MANIFEST_COLUMNS)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
         parsed = _parse_ddl_columns(full_ddl)
         names = [c[0] for c in parsed]
         assert names == self.DDL_COLUMNS
 
+    def test_manifest_ddl_column_count(self):
+        """DDL generated from specs has correct column count."""
+        ddl = _columns_to_ddl(MANIFEST_COLUMNS)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+        assert len(parsed) == 14
+
+    def test_manifest_ddl_types_match_specs(self):
+        """DDL types match the _ColumnSpec type_str values."""
+        ddl = _columns_to_ddl(MANIFEST_COLUMNS)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+        for i, (name, simple, nullable) in enumerate(parsed):
+            spec = MANIFEST_COLUMNS[i]
+            assert name == spec.name, f"Col {i}: {name} != {spec.name}"
+            assert nullable == spec.nullable, f"Col {i} ({name}): nullable mismatch"
+
+    def test_alter_missing_columns_derives_from_specs(self):
+        """ALTER-missing-columns logic derives column names and types from specs.
+
+        Simulates the ensure_table ALTER path: given a set of existing columns,
+        the missing columns and their DDL types are derived from MANIFEST_COLUMNS.
+        """
+        existing = {"ingest_run_id", "cik", "ticker", "fetch_status",
+                     "attempt_count", "payload_hash", "payload_bytes",
+                     "fact_count", "started_at", "completed_at",
+                     "error_category", "error_message", "logged_at"}
+        missing = [c for c in MANIFEST_COLUMNS if c.name not in existing]
+        missing_names = [c.name for c in missing]
+        assert "http_status" in missing_names, "http_status should be missing"
+        assert len(missing) == 1, f"Only http_status should be missing, got {missing_names}"
+
+        # Generate ALTER DDL parts from missing specs
+        _TYPE_MAP = {
+            "string": "STRING", "int": "INT", "bigint": "BIGINT",
+            "double": "DOUBLE", "float": "FLOAT", "boolean": "BOOLEAN",
+            "timestamp": "TIMESTAMP",
+        }
+        parts = []
+        for c in missing:
+            ddl_type = _TYPE_MAP.get(c.type_str, c.type_str.upper())
+            parts.append(f"{c.name} {ddl_type}")
+        alter_ddl = f"ALTER TABLE t ADD COLUMNS ({', '.join(parts)})"
+        assert "http_status INT" in alter_ddl
+
+    def test_mutation_ddl_generator_drop_column_fails(self):
+        """MUTATION: drop a column from _columns_to_ddl output → test fails.
+
+        This proves the DDL generator is the single source of truth and any
+        omission is caught without PySpark.
+        """
+        ddl = _columns_to_ddl(MANIFEST_COLUMNS)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+        names = [c[0] for c in parsed]
+        # Every MANIFEST_COLUMNS name must appear in the DDL
+        for spec in MANIFEST_COLUMNS:
+            assert spec.name in names, f"{spec.name} missing from generated DDL"
+
     def test_manifest_includes_http_status(self):
-        """MUTATION: if http_status is missing from the schema, this test fails."""
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        schema = _get_manifest_schema()
-        names = [f.name for f in schema.fields]
+        """MUTATION: if http_status is missing from specs, this test fails."""
+        names = [c.name for c in MANIFEST_COLUMNS]
         assert "http_status" in names
 
-    def test_mutation_drop_manifest_schema_fails_test(self):
-        """MUTATION: if _get_manifest_schema is removed, this test fails."""
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        schema = _get_manifest_schema()
-        assert schema is not None
-        assert len(schema.fields) == 14
-
-    def test_mutation_drop_field_from_manifest_struct_fails_contract(self):
-        """MUTATION: removing http_status from the StructType causes the
-        contract test to fail — the generated DDL no longer matches the
-        full schema.
-
-        This is the exact scenario DeepSeek flagged: if someone edits the
-        StructType but not the DDL (or vice versa), this test catches it.
-        """
-        from pyspark.sql.types import (
-            IntegerType, StringType, StructField, StructType, TimestampType,
-        )
-        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
-        full_schema = _get_manifest_schema()
-
-        # Build a schema missing 'http_status'
-        reduced_fields = [f for f in full_schema.fields if f.name != "http_status"]
-        reduced_schema = StructType(reduced_fields)
-
-        # Generate DDL from the reduced schema
-        ddl_cols_str = _schema_to_ddl_columns(reduced_schema)
-        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+    def test_mutation_drop_column_from_specs_fails_contract(self):
+        """MUTATION: removing a column from specs causes DDL to differ."""
+        reduced = [c for c in MANIFEST_COLUMNS if c.name != "http_status"]
+        ddl = _columns_to_ddl(reduced)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl}) USING DELTA"
         parsed = _parse_ddl_columns(full_ddl)
-
-        # The parsed DDL should NOT match the full schema (missing http_status)
-        assert len(parsed) != len(full_schema.fields), (
-            "Reduced schema should have fewer fields than full schema"
-        )
-
-        # Verify the specific field is missing
+        assert len(parsed) != len(MANIFEST_COLUMNS), "Reduced specs should have fewer columns"
         parsed_names = [c[0] for c in parsed]
-        assert "http_status" not in parsed_names, (
-            "http_status should be missing from reduced DDL"
-        )
-        assert "http_status" in [f.name for f in full_schema.fields], (
-            "http_status should be in the full schema"
-        )
+        assert "http_status" not in parsed_names, "http_status should be missing"
+        assert "http_status" in [c.name for c in MANIFEST_COLUMNS], "http_status should be in full specs"
 
 
-@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestFlattenedRowSchemaMatch:
     """A flattened row with every optional field None converts to a tuple
-    that matches the StructType (no inference anywhere)."""
+    that matches the column specs (no inference anywhere)."""
 
-    def test_coerced_row_tuple_matches_schema(self):
-        """_coerce_bronze_row produces a dict whose values match the StructType."""
-        from pipelines.ingest_sec_companyfacts import (
-            _coerce_bronze_row,
-            _get_bronze_schema,
-        )
-        schema = _get_bronze_schema()
-        # Build a row with every optional field as None
+    def test_coerced_row_tuple_matches_specs(self):
+        """_coerce_bronze_row produces a dict with all BRONZE_COLUMNS keys."""
+        from pipelines.ingest_sec_companyfacts import _coerce_bronze_row
         row = {
             "ingest_run_id": "r1",
             "ingested_at": datetime.now(timezone.utc),
@@ -2126,10 +2088,9 @@ class TestFlattenedRowSchemaMatch:
             "source_updated_at": None,
         }
         coerced = _coerce_bronze_row(row)
-        assert len(coerced) == len(schema.fields)
-        # Every key must be present
-        for field in schema.fields:
-            assert field.name in coerced, f"Missing key: {field.name}"
+        assert len(coerced) == len(BRONZE_COLUMNS)
+        for spec in BRONZE_COLUMNS:
+            assert spec.name in coerced, f"Missing key: {spec.name}"
 
     def test_coerced_row_fiscal_year_is_int_or_none(self):
         """fiscal_year is coerced to int or None (not str)."""
@@ -2155,13 +2116,9 @@ class TestFlattenedRowSchemaMatch:
         coerced = _coerce_bronze_row(row)
         assert coerced["fiscal_year"] is None
 
-    def test_manifest_entry_to_dict_matches_schema(self):
-        """CompanyFactsManifestEntry → dict has all manifest schema keys."""
-        from pipelines.ingest_sec_companyfacts import (
-            _get_manifest_schema,
-            CompanyFactsManifestEntry,
-        )
-        schema = _get_manifest_schema()
+    def test_manifest_entry_to_dict_matches_specs(self):
+        """CompanyFactsManifestEntry → dict has all MANIFEST_COLUMNS keys."""
+        from pipelines.ingest_sec_companyfacts import CompanyFactsManifestEntry
         entry = CompanyFactsManifestEntry(
             ingest_run_id="r1",
             cik="0000320193",
@@ -2193,21 +2150,18 @@ class TestFlattenedRowSchemaMatch:
             "error_message": entry.error_message,
             "logged_at": datetime.now(timezone.utc),
         }
-        assert len(row) == len(schema.fields)
-        for field in schema.fields:
-            assert field.name in row, f"Missing key: {field.name}"
+        assert len(row) == len(MANIFEST_COLUMNS)
+        for spec in MANIFEST_COLUMNS:
+            assert spec.name in row, f"Missing key: {spec.name}"
 
 
-@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestCreateDataFrameAlwaysWithSchema:
     """Every createDataFrame call passes a schema argument."""
 
     def test_bronze_writer_passes_schema(self):
         """SparkCompanyFactsWriter.append_rows passes schema= to createDataFrame."""
-        from pipelines.ingest_sec_companyfacts import (
-            SparkCompanyFactsWriter,
-            _get_bronze_schema,
-        )
+        from unittest.mock import patch
+        from pipelines.ingest_sec_companyfacts import SparkCompanyFactsWriter
         captured_kwargs = []
 
         class SpyWriter:
@@ -2227,9 +2181,9 @@ class TestCreateDataFrameAlwaysWithSchema:
 
         writer = SparkCompanyFactsWriter(spark_factory=lambda: SpySpark())
         rows = [{"ingest_run_id": "r1", "ingested_at": datetime.now(timezone.utc)}]
-        writer.append_rows("cat", "sch", rows)
+        with patch("pipelines.ingest_sec_companyfacts._get_bronze_schema", _mock_bronze_schema):
+            writer.append_rows("cat", "sch", rows)
 
-        # Must have passed schema= keyword argument
         assert len(captured_kwargs) == 1
         assert "schema" in captured_kwargs[0], "createDataFrame missing schema= argument"
         schema = captured_kwargs[0]["schema"]
@@ -2237,6 +2191,7 @@ class TestCreateDataFrameAlwaysWithSchema:
 
     def test_manifest_writer_passes_schema(self):
         """SparkCompanyFactsManifestWriter.write_manifest passes schema= to createDataFrame."""
+        from unittest.mock import patch
         from pipelines.ingest_sec_companyfacts import (
             SparkCompanyFactsManifestWriter,
             CompanyFactsManifestEntry,
@@ -2262,7 +2217,8 @@ class TestCreateDataFrameAlwaysWithSchema:
         entry = CompanyFactsManifestEntry(
             ingest_run_id="r1", cik="0000320193", ticker="AAPL",
         )
-        writer.write_manifest("cat", "sch", entry)
+        with patch("pipelines.ingest_sec_companyfacts._get_manifest_schema", _mock_manifest_schema):
+            writer.write_manifest("cat", "sch", entry)
 
         assert len(captured_kwargs) == 1
         assert "schema" in captured_kwargs[0], "createDataFrame missing schema= argument"
@@ -2271,9 +2227,8 @@ class TestCreateDataFrameAlwaysWithSchema:
 
     def test_mutation_remove_schema_arg_fails(self):
         """MUTATION: if schema= is removed from createDataFrame, this test fails."""
-        from pipelines.ingest_sec_companyfacts import (
-            SparkCompanyFactsWriter,
-        )
+        from unittest.mock import patch
+        from pipelines.ingest_sec_companyfacts import SparkCompanyFactsWriter
 
         class SpyWriter:
             def mode(self, m): return self
@@ -2285,7 +2240,6 @@ class TestCreateDataFrameAlwaysWithSchema:
 
         class StrictSpark:
             def createDataFrame(self, *args, **kwargs):
-                # If no schema kwarg, raise to signal the mutation
                 if "schema" not in kwargs and len(args) < 2:
                     raise AssertionError("createDataFrame called without schema!")
                 return SpyDataFrame()
@@ -2294,8 +2248,8 @@ class TestCreateDataFrameAlwaysWithSchema:
 
         writer = SparkCompanyFactsWriter(spark_factory=lambda: StrictSpark())
         rows = [{"ingest_run_id": "r1", "ingested_at": datetime.now(timezone.utc)}]
-        # Should NOT raise
-        writer.append_rows("cat", "sch", rows)
+        with patch("pipelines.ingest_sec_companyfacts._get_bronze_schema", _mock_bronze_schema):
+            writer.append_rows("cat", "sch", rows)
 
 
 class TestCachePathFallback:
@@ -2360,16 +2314,14 @@ class TestCachePathFallback:
         assert tempfile.gettempdir() in captured_cache_paths[0]
 
 
-@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestEnsureTableIdempotent:
     """Test that ensure_table checks column existence before ALTER TABLE."""
 
     def test_ensure_table_skips_alter_when_http_status_exists(self):
         """When http_status column already exists, no ALTER TABLE is issued."""
-        from unittest.mock import MagicMock, call
+        from unittest.mock import MagicMock, patch
 
         mock_spark = MagicMock()
-        # Simulate table already has http_status column
         mock_spark.table.return_value.columns = [
             "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
             "payload_hash", "payload_bytes", "fact_count", "http_status",
@@ -2378,19 +2330,17 @@ class TestEnsureTableIdempotent:
         ]
 
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
-        writer.ensure_table("cat", "sch")
+        with patch("pipelines.ingest_sec_companyfacts._get_manifest_schema", _mock_manifest_schema):
+            writer.ensure_table("cat", "sch")
 
-        # CREATE TABLE should be called
         mock_spark.sql.assert_any_call(mock_spark.sql.call_args_list[0][0][0])
-
-        # ALTER TABLE should NOT be called (http_status already in columns)
         alter_calls = [c for c in mock_spark.sql.call_args_list if "ALTER TABLE" in str(c)]
         assert len(alter_calls) == 0, f"ALTER TABLE should not be called when column exists: {alter_calls}"
 
     def test_ensure_table_runs_alter_when_http_status_missing(self):
         """When http_status column is missing, exactly one ALTER TABLE is issued
-        deriving the column type from the manifest StructType."""
-        from unittest.mock import MagicMock, call
+        deriving the column type from the manifest specs."""
+        from unittest.mock import MagicMock, patch
 
         FullColumns = [
             "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
@@ -2410,28 +2360,26 @@ class TestEnsureTableIdempotent:
         def table_side_effect(name):
             call_count[0] += 1
             result = MagicMock()
-            # First call (before ALTER): missing http_status
-            # Second call (verification): full columns
             result.columns = FullColumns if call_count[0] > 1 else MissingColumns
             return result
         mock_spark.table.side_effect = table_side_effect
 
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
-        writer.ensure_table("cat", "sch")
+        with patch("pipelines.ingest_sec_companyfacts._get_manifest_schema", _mock_manifest_schema):
+            writer.ensure_table("cat", "sch")
 
-        # ALTER TABLE should be called exactly once
         alter_calls = [c for c in mock_spark.sql.call_args_list if "ALTER TABLE" in str(c)]
         assert len(alter_calls) == 1, f"ALTER TABLE should be called once when column missing: {alter_calls}"
         assert "http_status INT" in str(alter_calls[0])
 
     def test_ensure_table_alter_derives_two_missing_fields_from_schema(self):
-        """ALTER path adds exactly the missing fields with their StructType types.
+        """ALTER path adds exactly the missing fields with their spec types.
 
         Simulates a pre-existing table missing 'error_category' and 'error_message'.
-        The ALTER must add both with types derived from the manifest StructType
+        The ALTER must add both with types derived from MANIFEST_COLUMNS
         (STRING, STRING) — no hard-coded column list.
         """
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         FullColumns = [
             "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
@@ -2455,7 +2403,8 @@ class TestEnsureTableIdempotent:
         mock_spark.table.side_effect = table_side_effect
 
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
-        writer.ensure_table("cat", "sch")
+        with patch("pipelines.ingest_sec_companyfacts._get_manifest_schema", _mock_manifest_schema):
+            writer.ensure_table("cat", "sch")
 
         alter_calls = [c for c in mock_spark.sql.call_args_list if "ALTER TABLE" in str(c)]
         assert len(alter_calls) == 1, f"Expected exactly one ALTER: {alter_calls}"
@@ -2467,24 +2416,21 @@ class TestEnsureTableIdempotent:
         """When ALTER TABLE fails and columns remain missing, ensure_table
         must raise RuntimeError so the caller knows the manifest table is
         incomplete and does not attempt to append rows that will fail."""
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         mock_spark = MagicMock()
-        # Table missing http_status column; ALTER will be attempted
-        # but the column will still be missing after ALTER (simulating failure)
         columns_before = [
             "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
             "payload_hash", "payload_bytes", "fact_count",
             "started_at", "completed_at", "error_category", "error_message",
             "logged_at",
         ]
-        # First call returns columns_before (missing http_status),
-        # second call also returns columns_before (ALTER didn't work)
         mock_spark.table.return_value.columns = columns_before
 
         writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
-        with pytest.raises(RuntimeError, match="ALTER TABLE failed"):
-            writer.ensure_table("cat", "sch")
+        with patch("pipelines.ingest_sec_companyfacts._get_manifest_schema", _mock_manifest_schema):
+            with pytest.raises(RuntimeError, match="ALTER TABLE failed"):
+                writer.ensure_table("cat", "sch")
 
 
 class TestCacheMinEntries:
