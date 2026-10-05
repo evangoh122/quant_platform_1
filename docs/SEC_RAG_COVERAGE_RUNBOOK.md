@@ -87,7 +87,7 @@ databricks bundle run -t dev sec_rag_ingest -- --tickers "$PILOT_TICKERS" --star
 databricks bundle run -t dev silver_gold_refresh
 
 # Build embeddings for pilot tickers
-databricks bundle run -t dev sec_embeddings -- --ticker "$PILOT_TICKERS" --batch-size 256 --partitions 4
+databricks bundle run -t dev sec_embeddings -- --ticker "$PILOT_TICKERS" --batch-size 256 --partitions 4 --catalog ${catalog} --schema ${schema}
 ```
 
 ## Verification SQL
@@ -164,7 +164,7 @@ databricks bundle run -t dev sec_rag_ingest -- --start-date 2024-09-01 --forms 1
 databricks bundle run -t dev silver_gold_refresh
 
 # Build all embeddings
-databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4
+databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4 --catalog ${catalog} --schema ${schema}
 ```
 
 Re-run all verification SQL and retrieval smoke test.
@@ -179,7 +179,7 @@ databricks bundle run -t dev sec_rag_ingest -- --include-historical --start-date
 
 # Refresh and rebuild
 databricks bundle run -t dev silver_gold_refresh
-databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4
+databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4 --catalog ${catalog} --schema ${schema}
 ```
 
 ## Idempotency Verification
@@ -200,9 +200,48 @@ the inserted row count (DESCRIBE HISTORY returned no metrics). Re-run the ingest
 A final embedding rerun must report zero rows written:
 
 ```bash
-databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4
+databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4 --catalog ${catalog} --schema ${schema}
 # Expected: rows_written = 0
 ```
+
+## CIK Overrides
+
+Some companies have multiple CIKs (e.g. holding company + operating entity).
+The default `company_tickers.json` may map to only one CIK, missing filings under the other(s).
+
+Edit `config/sec_cik_overrides.yaml` to add overrides:
+
+```yaml
+XOM:
+  - "0002115436"  # ExxonMobil Holdings Corp (new holding company)
+  - "0000034088"  # Exxon Mobil Corp (historical 10-K/10-Q)
+```
+
+Discovery unions filings from every listed CIK and deduplicates by accession number.
+
+To use a custom override file:
+
+```bash
+databricks bundle run -t dev sec_rag_ingest -- --cik-overrides-path /path/to/overrides.yaml ...
+```
+
+## Foreign Filers (20-F/6-K)
+
+Foreign private issuers (TSM, ASML, ARM, SAP, NVO, SHEL, BABA, AZN, PDD, NU, SE, STM, NOK, SPOT, NBIS, etc.)
+file 20-F / 6-K instead of 10-K / 10-Q. Run a separate pass for these:
+
+```bash
+export RUN_ID="foreign-$(date +%Y%m%d_%H%M%S)"
+
+databricks bundle run -t dev sec_rag_ingest -- --forms 20-F,6-K --tickers "TSM,ASML,ARM,SAP,NVO,SHEL,BABA,AZN,PDD,NU,SE,STM,NOK,SPOT,NBIS" --start-date 2024-09-01 --run-id "$RUN_ID" --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent
+
+# Refresh and build embeddings
+databricks bundle run -t dev silver_gold_refresh
+databricks bundle run -t dev sec_embeddings -- --batch-size 256 --partitions 4 --catalog ${catalog} --schema ${schema}
+```
+
+20-F section mapping: Item 3.D → risk factors, Item 4 → business, Item 5 → operating/financial review, Item 8 → financial statements.
+When items are not detected, the filing falls back to generic full-document chunking.
 
 ## Troubleshooting
 
