@@ -430,6 +430,20 @@ describe('ResearchAgent', () => {
     });
   });
 
+  it('ignores an unexpected follow_ups field — the backend contract has none, so no API-derived follow-up controls appear', async () => {
+    // api/schemas.py ChatResponse has no follow_ups; if a response ever carries one, the UI must not render it.
+    vi.stubGlobal('fetch', mockFetch({ ...mockChatResponse, follow_ups: ['Injected follow-up question?'] }));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+    await user.type(screen.getByPlaceholderText('Ask the research agent…'), 'What risks does NVDA disclose?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(screen.getByText(mockChatResponse.reply.slice(0, 30), { exact: false })).toBeInTheDocument();
+    });
+    expect(document.body.textContent ?? '').not.toMatch(/Injected follow-up question/);
+    expect(screen.queryByRole('button', { name: /Injected follow-up/ })).not.toBeInTheDocument();
+  });
+
   it('keeps all conversation turns after two consecutive questions', async () => {
     const secondResponse = {
       reply: 'AMD describes risks related to competition and supply chain...',
