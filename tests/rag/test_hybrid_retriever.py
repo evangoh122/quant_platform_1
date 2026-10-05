@@ -1243,8 +1243,8 @@ class TestSearchSecFilingsError:
 
         assert result == []
 
-    def test_fallback_results_tagged_with_retrieval_mode(self, fake_pyspark, monkeypatch):
-        """Non-corpus exception must return retrieval_unavailable, not substring fallback."""
+    def test_generic_error_with_unavailable_fallback_returns_retrieval_unavailable(self, fake_pyspark, monkeypatch):
+        """Generic error plus unavailable fallback returns retrieval_unavailable."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
@@ -1256,8 +1256,12 @@ class TestSearchSecFilingsError:
         mock_retriever = MagicMock()
         mock_retriever.retrieve_and_rerank.side_effect = fake_retrieve
 
+        def boom_spark():
+            raise RuntimeError("databricks connect unavailable")
+
         with patch("agent.tools_retrieval.normalize_symbol", side_effect=lambda s: s), \
-             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever):
+             patch("api.services.hybrid_retriever.HybridRetriever", return_value=mock_retriever), \
+             patch("agent.tools_retrieval._spark", side_effect=boom_spark):
             result = search_sec_filings("NVDA", query="revenue")
 
         assert len(result) == 1
@@ -1373,7 +1377,7 @@ class TestSearchSecFilingsError:
         assert r["_warning"] == "hybrid_retrieval_failed"
 
     def test_generic_exception_returns_retrieval_unavailable(self, monkeypatch):
-        """Generic exceptions must return retrieval_unavailable, not substring fallback."""
+        """Generic error plus unavailable fallback returns retrieval_unavailable."""
         mock_lakebase = MagicMock()
         monkeypatch.setitem(sys.modules, "db.lakebase", mock_lakebase)
 
