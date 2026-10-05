@@ -246,6 +246,37 @@ def fake_pyspark(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _stub_xbrl_client(monkeypatch):
+    """Prevent xbrl_client from making real HTTP calls or reading Databricks secrets.
+
+    - Sets SEC_EDGAR_USER_AGENT so _resolve_user_agent returns immediately
+      without touching the Databricks SDK (WorkspaceClient / dbutils).
+    - Stubs fetch_company_facts to return {} (no real SEC API calls).
+    - Stubs _rate_limited_get as a safety net.
+    - Clears the lru_cache and _USER_AGENT global between tests.
+    """
+    import api.services.xbrl_client as xbrl_mod
+
+    # Force the env var so _resolve_user_agent never reaches the Databricks SDK
+    monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent/1.0 (test@example.com)")
+
+    # Clear cached state (keep a handle on the real cached function: the stub
+    # below replaces it, and the lambda has no cache_clear)
+    _real_fetch = xbrl_mod.fetch_company_facts
+    xbrl_mod._USER_AGENT = None
+    _real_fetch.cache_clear()
+
+    # Stub the HTTP layer
+    monkeypatch.setattr(xbrl_mod, "fetch_company_facts", lambda cik: {})
+    monkeypatch.setattr(xbrl_mod, "_rate_limited_get", lambda url: {})
+
+    yield
+
+    xbrl_mod._USER_AGENT = None
+    _real_fetch.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _clear_ticker_lru_cache():
     """Clear the per-ticker LRU cache between tests to prevent state leakage."""
     try:
