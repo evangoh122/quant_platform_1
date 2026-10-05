@@ -72,7 +72,7 @@ export function SystemHealth() {
   const degraded = health.data?.dependencies.filter((d) => !d.ok).length ?? 0;
 
   return (
-    <div className="space-y-4">
+    <div data-tour="analytics-evidence" className="space-y-4">
       <h1 className="text-xl font-semibold">Analytics / System Health</h1>
 
       {health.loading && <LoadingState />}
@@ -80,7 +80,7 @@ export function SystemHealth() {
       {!health.loading && !health.error && health.data && (
         <>
           <Card title="Dependencies" subtitle={`v${health.data.version} · ${health.data.status}`}>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 mb-3">
+            <div data-tour="provenance" className="grid grid-cols-2 gap-3 md:grid-cols-4 mb-3">
               <StatTile label="Status" value={health.data.status} />
               <StatTile label="Degraded" value={degraded.toString()} />
               <StatTile label="Role Cache" value={health.data.role_cache_size.toString()} />
@@ -94,14 +94,16 @@ export function SystemHealth() {
 
           {health.data.startup.length > 0 && (
             <Card title="Startup Stages">
-              <ul className="space-y-1 text-sm">
-                {health.data.startup.map((s, i) => (
-                  <li key={i} className="flex justify-between">
-                    <span className="text-slate-600 dark:text-slate-300">{s.name}</span>
-                    <span className="font-medium">{s.elapsed_ms.toFixed(0)}ms</span>
-                  </li>
-                ))}
-              </ul>
+              <div data-tour="pipeline-nodes">
+                <ul className="space-y-1 text-sm">
+                  {health.data.startup.map((s, i) => (
+                    <li key={i} className="flex justify-between">
+                      <span className="text-slate-600 dark:text-slate-300">{s.name}</span>
+                      <span className="font-medium">{s.elapsed_ms.toFixed(0)}ms</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </Card>
           )}
         </>

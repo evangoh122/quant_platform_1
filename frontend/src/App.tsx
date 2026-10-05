@@ -10,6 +10,7 @@ import { ResearchAgent } from './screens/ResearchAgent';
 import { PaperPortfolio } from './screens/PaperPortfolio';
 import { OrderApprovalDrawer } from './screens/OrderApprovalDrawer';
 import { SystemHealth } from './screens/SystemHealth';
+import { useTourHost, CoachMarks } from './components/tours/TourHost';
 
 type ScreenId =
   | 'platform-overview'
@@ -59,9 +60,9 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-function PlaceholderScreen({ title }: { title: string }) {
+function PlaceholderScreen({ title, tourId }: { title: string; tourId?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--surface)] px-6 py-16 text-center">
+    <div data-tour={tourId} className="flex flex-col items-center justify-center rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--surface)] px-6 py-16 text-center">
       <p className="text-lg font-semibold text-[var(--text-primary)]">{title}</p>
       <p className="mt-1 text-sm text-[var(--text-muted)]">Coming in a future delivery round.</p>
     </div>
@@ -71,6 +72,7 @@ function PlaceholderScreen({ title }: { title: string }) {
 export default function App() {
   const [screen, setScreen] = useState<ScreenId>('platform-overview');
   const [healthData, setHealthData] = useState<HealthResponse | null>(null);
+  const { activeTour, steps, closeTour } = useTourHost();
 
   useEffect(() => {
     let cancelled = false;
@@ -109,20 +111,23 @@ export default function App() {
       case 'health':
         return <SystemHealth />;
       case 'architecture':
-        return <PlaceholderScreen title="Architecture & Tests" />;
+        return <PlaceholderScreen title="Architecture & Tests" tourId="pipeline-nodes" />;
       default:
         return <PlaceholderScreen title="Platform Overview" />;
     }
   };
 
   return (
-    <AppShell
-      groups={NAV_GROUPS}
-      currentId={screen}
-      onNavigate={(id) => setScreen(id as ScreenId)}
-      health={healthData}
-    >
-      {renderScreen()}
-    </AppShell>
+    <>
+      <AppShell
+        groups={NAV_GROUPS}
+        currentId={screen}
+        onNavigate={(id) => setScreen(id as ScreenId)}
+        health={healthData}
+      >
+        {renderScreen()}
+      </AppShell>
+      <CoachMarks steps={steps} run={!!activeTour} onClose={closeTour} />
+    </>
   );
 }

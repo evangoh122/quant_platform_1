@@ -34,7 +34,7 @@ export function PaperPortfolio() {
   const unrealized = (data?.positions.data ?? []).reduce((sum, p) => sum + p.unrealized_pnl, 0);
 
   return (
-    <div className="space-y-4">
+    <div data-tour="lakebase-write" className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">IBKR Paper Portfolio</h1>
         {data && <FreshnessBadge freshness={data.positions.freshness} />}

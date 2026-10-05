@@ -34,7 +34,7 @@ export function ResearchAgent() {
   }
 
   return (
-    <div className="space-y-4">
+    <div data-tour="agent" className="space-y-4">
       <h1 className="text-xl font-semibold">AI Research Agent</h1>
 
       <Card title="Conversation" subtitle="Every tool call is surfaced as auditable evidence">
