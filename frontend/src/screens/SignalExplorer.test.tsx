@@ -61,6 +61,10 @@ describe('SignalExplorer', () => {
     expect(screen.getByText(/Baseline demonstration/)).toBeInTheDocument();
     expect(screen.getAllByText(/baseline-logreg-v1-1d/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/1d/).length).toBeGreaterThanOrEqual(1);
+
+    const disclaimer = screen.getByText(/Baseline demonstration/).closest('div')!;
+    expect(disclaimer.textContent).not.toMatch(/\bAUC\b/i);
+    expect(disclaimer.textContent).not.toMatch(/baseline-logreg-v0/);
   });
 
   it('shows baseline disclaimer with no edge claimed in empty state', async () => {
@@ -76,6 +80,10 @@ describe('SignalExplorer', () => {
     });
 
     expect(screen.getByText(/Baseline demonstration/)).toBeInTheDocument();
+
+    const disclaimer = screen.getByText(/Baseline demonstration/).closest('div')!;
+    expect(disclaimer.textContent).not.toMatch(/\bAUC\b/i);
+    expect(disclaimer.textContent).not.toMatch(/baseline-logreg-v\d/);
   });
 
   it('shows baseline disclaimer with no edge claimed in error state', async () => {
@@ -92,6 +100,10 @@ describe('SignalExplorer', () => {
     });
 
     expect(screen.getByText(/Baseline demonstration/)).toBeInTheDocument();
+
+    const disclaimer = screen.getByText(/Baseline demonstration/).closest('div')!;
+    expect(disclaimer.textContent).not.toMatch(/\bAUC\b/i);
+    expect(disclaimer.textContent).not.toMatch(/baseline-logreg-v\d/);
   });
 
   it('renders model_version from signal rows when present', async () => {
