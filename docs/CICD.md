@@ -6,7 +6,7 @@ This repository separates validation from deployment. Nothing deploys or runs au
 
 The `CI` workflow runs for every pull request and for pushes to `main`. Superseded runs for the same ref are cancelled.
 
-- **Python tests** use Python 3.12 and run the offline suite with `pytest -q -m "not spark and not lakebase and not databricks"`. Because `ibapi` is unavailable from PyPI and is stubbed by `conftest.py`, CI filters that one entry from `requirements.txt`. If `requirements-app.txt` exists, CI installs it too. If `bundles/streaming/tests` exists, CI runs those tests as a separate step.
+- **Python tests** use Python 3.12 and run the offline suite with `pytest -q -m "not spark and not lakebase and not databricks"`. CI installs Python packages with [uv](https://docs.astral.sh/uv/) (`uv pip install --system`) for faster installs; `setup-uv` caches the uv download cache keyed on `requirements*.txt`. Because `ibapi` is unavailable from PyPI and is stubbed by `conftest.py`, CI filters that one entry from `requirements.txt`. If `requirements-app.txt` exists, CI installs it too. If `bundles/streaming/tests` exists, CI runs those tests as a separate step. Render and Databricks Apps continue to use pip with the same requirement files.
 - **Frontend** uses Node 20 to run `npm ci`, TypeScript checking, and the production build. The job is skipped when `frontend/package.json` is absent.
 - **Bundle validation** validates the root development target and, if present, the separate streaming bundle. Workspace-backed validation steps are skipped cleanly when `DATABRICKS_HOST` is not configured or when OIDC credentials (client ID) or a PAT token are missing.
 - **Secret scanning** runs Gitleaks against the checked-out history.
