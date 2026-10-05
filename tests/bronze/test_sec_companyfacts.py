@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock
@@ -82,6 +84,59 @@ class FakeHttpClient:
             return resp
         # Default: 200 with empty JSON
         return HttpResponse(status_code=200, text="{}", headers={})
+
+
+class BarrierFakeHttpClient:
+    """Thread-safe HTTP client that routes by URL and supports barriers.
+
+    Each URL maps to a deque of responses.  A shared ``threading.Barrier``
+    forces two threads to reach the HTTP layer simultaneously so that
+    concurrent attempt-count tracking is genuinely tested.
+
+    ``barrier_urls`` restricts which URLs participate in the barrier;
+    ``None`` means all URLs.  The barrier fires at most once in total
+    (across all URLs) so that retries do not deadlock against an
+    already-consumed party.
+    """
+
+    def __init__(
+        self,
+        url_responses: Dict[str, List[HttpResponse]],
+        barrier: Optional[threading.Barrier] = None,
+        barrier_urls: Optional[set] = None,
+    ):
+        self._queues: Dict[str, deque] = {
+            url: deque(resps) for url, resps in url_responses.items()
+        }
+        self._barrier = barrier
+        self._barrier_urls = barrier_urls
+        self._barrier_used = False
+        self._barrier_lock = threading.Lock()
+        self._default = HttpResponse(status_code=200, text="{}", headers={})
+        self._lock = threading.Lock()
+        self.calls: List[Dict[str, Any]] = []
+
+    def get(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        timeout: float = 30.0,
+    ) -> HttpResponse:
+        self.calls.append({"url": url, "headers": dict(headers), "timeout": timeout})
+        if self._barrier is not None:
+            should_wait = False
+            with self._barrier_lock:
+                if not self._barrier_used and (self._barrier_urls is None or url in self._barrier_urls):
+                    should_wait = True
+            if should_wait:
+                self._barrier.wait()
+                with self._barrier_lock:
+                    self._barrier_used = True
+        with self._lock:
+            q = self._queues.get(url)
+            if q:
+                return q.popleft()
+        return self._default
 
 
 # ── Sample payloads ────────────────────────────────────────────────────────
@@ -743,6 +798,76 @@ class TestRunIngestCompanyFacts:
         assert len(skipped) == 1
         assert skipped[0].payload_hash == payload_hash
 
+    def test_duplicate_manifest_attempt_count_with_retries(self):
+        """MUTATION: if manifest.attempt_count = attempt_count is removed
+        from the skipped_duplicate branch, the skipped entry carries the
+        default attempt_count (1) instead of the actual retry count (2).
+
+        Two tickers map to the same CIK.  The first fetch succeeds directly
+        (1 attempt).  The second fetch gets a 429 then succeeds (2 attempts)
+        — but it is skipped_duplicate.  Its manifest must record
+        attempt_count=2.
+
+        Uses BarrierFakeHttpClient (URL-routed, thread-safe deque) so the
+        responses are consumed in the correct order even with concurrent
+        workers.
+        """
+        payload = _make_company_facts_payload()
+        payload_bytes = json.dumps(payload).encode()
+        payload_hash = compute_payload_hash(payload_bytes)
+        cik_url = build_source_url("0000320193")
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+
+        http = BarrierFakeHttpClient(
+            {
+                tickers_url: [
+                    _payload_200({
+                        "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+                    }),
+                ],
+                cik_url: [
+                    _payload_200(payload),  # first fetch: direct success, 1 attempt
+                    HttpResponse(status_code=429, text="rate limited", headers={"Retry-After": "1"}),
+                    _payload_200(payload),  # second fetch retry: success, 2 attempts
+                ],
+            },
+        )
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL", "AAPL2"],
+                run_id="run_skip_retry",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["mapped_count"] == 2
+        assert result["fetched_count"] == 1
+        assert result["skipped_duplicate_payloads"] == 1
+
+        skipped = [e for e in manifest_entries if e.fetch_status == "skipped_duplicate"]
+        assert len(skipped) == 1
+        assert skipped[0].payload_hash == payload_hash
+        assert skipped[0].attempt_count == 2
+
     def test_first_write_failure_allows_second_write(self):
         """MUTATION: if seen_payloads.add happens before Delta write,
         a failed first write prevents the identical second payload from being written.
@@ -1074,18 +1199,34 @@ class TestRunIngestCompanyFacts:
         assert success_entries[0].attempt_count == 2
 
     def test_concurrent_attempt_count_per_cik(self):
-        """Two concurrent fetches each get their own attempt count."""
+        """Two concurrent fetches each get their own attempt count.
+
+        Uses a threading.Barrier to force CIK A (429→200) and CIK B (200)
+        to reach the HTTP layer simultaneously so that a shared-counter
+        regression is genuinely detectable.
+        """
         payload = _make_company_facts_payload()
-        # TK0: 429 then success (2 attempts). TK1: direct success (1 attempt).
-        http = FakeHttpClient([
-            _payload_200({
-                "0": {"ticker": "TK0", "cik_str": 0, "title": "Corp 0"},
-                "1": {"ticker": "TK1", "cik_str": 1, "title": "Corp 1"},
-            }),
-            HttpResponse(status_code=429, text="rate limited", headers={"Retry-After": "1"}),
-            _payload_200(payload),  # TK0 retry succeeds
-            _payload_200(payload),  # TK1 direct success
-        ])
+        barrier = threading.Barrier(2, timeout=10)
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+        url_a = build_source_url("0000000000")
+        url_b = build_source_url("0000000001")
+        http = BarrierFakeHttpClient(
+            {
+                tickers_url: [
+                    _payload_200({
+                        "0": {"ticker": "TK0", "cik_str": 0, "title": "Corp 0"},
+                        "1": {"ticker": "TK1", "cik_str": 1, "title": "Corp 1"},
+                    }),
+                ],
+                url_a: [
+                    HttpResponse(status_code=429, text="rate limited", headers={"Retry-After": "1"}),
+                    _payload_200(payload),
+                ],
+                url_b: [_payload_200(payload)],
+            },
+            barrier=barrier,
+            barrier_urls={url_a, url_b},
+        )
         clock = FakeClock()
         delta_writer, delta_rows = _make_delta_writer()
         manifest_writer, manifest_entries = _make_manifest_writer()
