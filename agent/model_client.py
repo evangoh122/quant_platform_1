@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional, Protocol
 from loguru import logger
 
 _DEFAULT_ENDPOINT = "databricks-claude-sonnet-5"
-_MAX_INPUT_TOKENS = 4000
+_MAX_INPUT_TOKENS = 16000  # must exceed the runtime evidence cap (~24 KB) + prompt
 _MAX_OUTPUT_TOKENS = 1024
 _WALL_CLOCK_TIMEOUT_SECONDS = 30
 _TEMPERATURE = 0
@@ -97,13 +97,21 @@ class DatabricksModelTransport:
         request_id: str,
     ) -> dict[str, Any]:
         from databricks.sdk import WorkspaceClient
+        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
         client = WorkspaceClient()
+        # The SDK requires typed ChatMessage objects (plain dicts fail with
+        # AttributeError: 'dict' object has no attribute 'as_dict').
+        sdk_messages = [
+            ChatMessage(role=ChatMessageRole(m["role"]), content=m["content"])
+            for m in messages
+        ]
         try:
             response = client.serving_endpoints.query(
                 name=endpoint,
-                messages=messages,
-                temperature=temperature,
+                messages=sdk_messages,
+                # Newer Claude endpoints reject `temperature`; only send it when non-zero.
+                **({"temperature": temperature} if temperature else {}),
                 max_tokens=max_tokens,
             )
         except Exception as e:
@@ -121,7 +129,17 @@ class DatabricksModelTransport:
         if message is None:
             raise ModelError("empty_message", "Model choice has no message")
 
-        text = getattr(message, "content", None) or ""
+        content = getattr(message, "content", None) or ""
+        # Some endpoints (e.g. Claude) return a list of content blocks.
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    parts.append(block.get("text") or "")
+                else:
+                    parts.append(getattr(block, "text", "") or "")
+            content = "".join(parts)
+        text = str(content)
         if not text:
             raise ModelError("empty_text", "Model returned empty text")
 
