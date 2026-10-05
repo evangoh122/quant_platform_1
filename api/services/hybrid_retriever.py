@@ -234,22 +234,17 @@ def _get_spark():
         return DatabricksSession.builder.serverless(True).getOrCreate()
 
 
-def _spark_available() -> bool:
-    """True inside a Databricks runtime or when databricks-connect is installed."""
-    import importlib.util
-    return bool(os.environ.get("DATABRICKS_RUNTIME_VERSION")) or (
-        importlib.util.find_spec("databricks.connect") is not None
-    )
-
-
 def _fetch_corpus_rows():
     """Return (chunk rows, embedding rows) as mappings with the same keys.
 
     Uses Spark when available (notebooks, jobs, local dev with databricks-connect);
     otherwise the SQL warehouse via db.delta_adapter (Databricks Apps has no Spark).
     """
-    if _spark_available():
+    try:
         spark = _get_spark()
+    except ImportError:
+        spark = None  # no pyspark / databricks-connect (Databricks Apps) -> SQL warehouse
+    if spark is not None:
         # unix_timestamp avoids client-timezone drift on naive datetimes.
         from pyspark.sql import functions as F
 
