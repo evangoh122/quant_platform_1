@@ -477,3 +477,62 @@ def market_features_intraday(symbol: str, start_ts: str, end_ts: str, *, limit: 
     # Warehouse fallback
     query, params = _build_market_features_intraday_query(symbol, start_ts, end_ts)
     return _warehouse_query(query, params=params, limit=limit)
+
+
+# ── analytics table readers ──────────────────────────────────────────────────
+
+_ANALYTICS_TABLES = {
+    "agent_activity": "analytics_agent_activity",
+    "watchlist_changes": "analytics_watchlist_changes",
+    "order_funnel": "analytics_order_funnel",
+    "usage_daily": "analytics_usage_daily",
+    "model_performance": "analytics_model_performance",
+    "latency": "analytics_latency",
+    "stream_freshness": "analytics_stream_freshness",
+}
+
+
+def read_analytics_table(section: str, limit: int = 500) -> List[Dict[str, Any]]:
+    """Read bounded recent rows from an analytics Delta table.
+
+    Returns list of dicts. Raises ValueError for unknown sections.
+    """
+    table = _ANALYTICS_TABLES.get(section)
+    if table is None:
+        raise ValueError(f"unknown analytics section: {section!r}")
+
+    if _has_pyspark:
+        spark = _spark()
+        try:
+            df = spark.table(_fqn(table))
+            rows = [r.asDict() for r in df.limit(limit).collect()]
+        except Exception:
+            return []
+        return rows
+
+    # Warehouse fallback
+    query = f"SELECT * FROM {_fqn(table)} ORDER BY event_date DESC"
+    try:
+        return _warehouse_query(query, limit=limit)
+    except Exception:
+        return []
+
+
+def read_analytics_cdc_state() -> Optional[Dict[str, Any]]:
+    """Read the latest CDC pipeline state row."""
+    if _has_pyspark:
+        spark = _spark()
+        try:
+            df = spark.table(_fqn("analytics_cdc_state"))
+            rows = [r.asDict() for r in df.limit(1).collect()]
+            return rows[0] if rows else None
+        except Exception:
+            return None
+
+    try:
+        rows = _warehouse_query(
+            f"SELECT * FROM {_fqn('analytics_cdc_state')} LIMIT 1", limit=1
+        )
+        return rows[0] if rows else None
+    except Exception:
+        return None

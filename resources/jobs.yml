@@ -61,3 +61,28 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+
+    lakebase_analytics_refresh:
+      name: quant-platform-lakebase-analytics-${bundle.target}
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 15 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: refresh_analytics
+          spark_python_task:
+            python_file: ../pipelines/lakebase_analytics.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+              - "--batch-size"
+              - "5000"
+          environment_key: serverless
+          libraries: []
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
