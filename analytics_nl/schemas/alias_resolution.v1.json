@@ -1,0 +1,208 @@
+{
+  "$defs": {
+    "AliasResolutionStatus": {
+      "description": "Status of alias resolution.",
+      "enum": [
+        "success",
+        "unknown",
+        "ambiguous",
+        "rejected"
+      ],
+      "title": "AliasResolutionStatus",
+      "type": "string"
+    },
+    "AliasResolutionTrace": {
+      "additionalProperties": false,
+      "description": "Trace record for a single alias resolution attempt.",
+      "properties": {
+        "canonical_entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TickerEntity"
+            },
+            {
+              "$ref": "#/$defs/SectorEntity"
+            },
+            {
+              "$ref": "#/$defs/IndexEntity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonical Entity"
+        },
+        "matched_alias": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matched Alias"
+        },
+        "normalized_input": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Normalized Input",
+          "type": "string"
+        },
+        "original_input": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Original Input",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "registry_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Registry Version",
+          "type": "string"
+        },
+        "resolver_kind": {
+          "maxLength": 50,
+          "minLength": 1,
+          "title": "Resolver Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "status": {
+          "$ref": "#/$defs/AliasResolutionStatus"
+        }
+      },
+      "required": [
+        "original_input",
+        "normalized_input",
+        "registry_version",
+        "resolver_kind",
+        "status"
+      ],
+      "title": "AliasResolutionTrace",
+      "type": "object"
+    },
+    "IndexEntity": {
+      "additionalProperties": false,
+      "description": "Canonical index reference.",
+      "properties": {
+        "canonical_id": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Canonical Id",
+          "type": "string"
+        },
+        "entity_type": {
+          "const": "index",
+          "default": "index",
+          "title": "Entity Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_id"
+      ],
+      "title": "IndexEntity",
+      "type": "object"
+    },
+    "SectorEntity": {
+      "additionalProperties": false,
+      "description": "Canonical sector reference.",
+      "properties": {
+        "canonical_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Canonical Id",
+          "type": "string"
+        },
+        "entity_type": {
+          "const": "sector",
+          "default": "sector",
+          "title": "Entity Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_id"
+      ],
+      "title": "SectorEntity",
+      "type": "object"
+    },
+    "TickerEntity": {
+      "additionalProperties": false,
+      "description": "Canonical ticker reference.",
+      "properties": {
+        "canonical_id": {
+          "maxLength": 10,
+          "minLength": 1,
+          "title": "Canonical Id",
+          "type": "string"
+        },
+        "entity_type": {
+          "const": "ticker",
+          "default": "ticker",
+          "title": "Entity Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_id"
+      ],
+      "title": "TickerEntity",
+      "type": "object"
+    }
+  },
+  "$id": "https://analytics-nl/schemas/nl1-alias-resolution-schema",
+  "additionalProperties": false,
+  "description": "Envelope for alias resolution results with trace records.",
+  "properties": {
+    "semantic_model_version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Semantic Model Version",
+      "type": "string"
+    },
+    "traces": {
+      "items": {
+        "$ref": "#/$defs/AliasResolutionTrace"
+      },
+      "minItems": 1,
+      "title": "Traces",
+      "type": "array"
+    }
+  },
+  "required": [
+    "semantic_model_version",
+    "traces"
+  ],
+  "title": "NL1 Alias Resolution Schema",
+  "type": "object"
+}

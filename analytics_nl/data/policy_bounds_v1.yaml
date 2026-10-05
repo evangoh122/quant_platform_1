@@ -1,0 +1,37 @@
+# NL1 Policy Bounds v1
+# Versioned typed policy data for intent classification.
+
+policy_version: "1.0.0"
+semantic_model_version: "1.0.0"
+
+# Hard bounds by layer
+hard_bounds:
+  gold:
+    date_bound_years: 10
+    row_bound: 5000
+  silver:
+    date_bound_years: 2
+    ticker_bound: 10
+    row_bound: 10000
+
+# Soft thresholds for cost classification
+soft_thresholds:
+  cheap:
+    max_days: 31
+    max_entities: 2
+    max_rows: 500
+  normal:
+    max_days: 366
+    max_entities: 5
+    max_rows: 2500
+
+# Known stock splits for corporate-action safety.
+# Empty by default — to be populated by owner/admin.
+# Format: {symbol: "NVDA", ex_date: "2024-06-10", ratio: 10.0}
+known_splits: []
+
+# Adjusted source availability flag.
+# When true, serving views use silver_ohlcv_day_adjusted for adjusted returns.
+# When false (default), views fall back to bronze_ohlcv_day with split-safety rejection.
+# Set to true after the corporate-actions lane (slice/corporate-actions) merges.
+adjusted_source_available: false

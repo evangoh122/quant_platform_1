@@ -1,0 +1,283 @@
+{
+  "$defs": {
+    "BarChartConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for bar charts (comparisons/ranks).",
+      "properties": {
+        "chart_type": {
+          "const": "bar",
+          "default": "bar",
+          "title": "Chart Type",
+          "type": "string"
+        },
+        "series": {
+          "items": {
+            "$ref": "#/$defs/ChartSeries"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Series",
+          "type": "array"
+        },
+        "x_axis": {
+          "$ref": "#/$defs/ChartAxis"
+        },
+        "y_axes": {
+          "items": {
+            "$ref": "#/$defs/ChartAxis"
+          },
+          "maxItems": 5,
+          "minItems": 1,
+          "title": "Y Axes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "x_axis",
+        "y_axes",
+        "series"
+      ],
+      "title": "BarChartConfig",
+      "type": "object"
+    },
+    "ChartAxis": {
+      "additionalProperties": false,
+      "description": "Chart axis reference.",
+      "properties": {
+        "data_type": {
+          "$ref": "#/$defs/DataType"
+        },
+        "display_label": {
+          "maxLength": 50,
+          "minLength": 1,
+          "title": "Display Label",
+          "type": "string"
+        },
+        "field_name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Field Name",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 20,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "field_name",
+        "display_label",
+        "data_type"
+      ],
+      "title": "ChartAxis",
+      "type": "object"
+    },
+    "ChartSeries": {
+      "additionalProperties": false,
+      "description": "Chart series reference.",
+      "properties": {
+        "data_type": {
+          "$ref": "#/$defs/DataType"
+        },
+        "display_label": {
+          "maxLength": 50,
+          "minLength": 1,
+          "title": "Display Label",
+          "type": "string"
+        },
+        "field_name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Field Name",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 20,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "field_name",
+        "display_label",
+        "data_type"
+      ],
+      "title": "ChartSeries",
+      "type": "object"
+    },
+    "DataType": {
+      "description": "Scalar data types for chart axis/series.",
+      "enum": [
+        "string",
+        "number",
+        "integer",
+        "date"
+      ],
+      "title": "DataType",
+      "type": "string"
+    },
+    "LineChartConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for line charts (time series).",
+      "properties": {
+        "chart_type": {
+          "const": "line",
+          "default": "line",
+          "title": "Chart Type",
+          "type": "string"
+        },
+        "series": {
+          "items": {
+            "$ref": "#/$defs/ChartSeries"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Series",
+          "type": "array"
+        },
+        "x_axis": {
+          "$ref": "#/$defs/ChartAxis"
+        },
+        "y_axes": {
+          "items": {
+            "$ref": "#/$defs/ChartAxis"
+          },
+          "maxItems": 5,
+          "minItems": 1,
+          "title": "Y Axes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "x_axis",
+        "y_axes",
+        "series"
+      ],
+      "title": "LineChartConfig",
+      "type": "object"
+    },
+    "TableColumn": {
+      "additionalProperties": false,
+      "description": "Table column reference.",
+      "properties": {
+        "data_type": {
+          "$ref": "#/$defs/DataType"
+        },
+        "display_label": {
+          "maxLength": 50,
+          "minLength": 1,
+          "title": "Display Label",
+          "type": "string"
+        },
+        "field_name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Field Name",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 20,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "field_name",
+        "display_label",
+        "data_type"
+      ],
+      "title": "TableColumn",
+      "type": "object"
+    },
+    "TableConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for table (universal fallback).",
+      "properties": {
+        "chart_type": {
+          "const": "table",
+          "default": "table",
+          "title": "Chart Type",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/TableColumn"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns"
+      ],
+      "title": "TableConfig",
+      "type": "object"
+    }
+  },
+  "$id": "https://analytics-nl/schemas/nl1-chart-envelope-schema",
+  "additionalProperties": false,
+  "description": "Approved chart configuration with line/bar/table discriminator.",
+  "properties": {
+    "chart_config": {
+      "discriminator": {
+        "mapping": {
+          "bar": "#/$defs/BarChartConfig",
+          "line": "#/$defs/LineChartConfig",
+          "table": "#/$defs/TableConfig"
+        },
+        "propertyName": "chart_type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LineChartConfig"
+        },
+        {
+          "$ref": "#/$defs/BarChartConfig"
+        },
+        {
+          "$ref": "#/$defs/TableConfig"
+        }
+      ],
+      "title": "Chart Config"
+    },
+    "semantic_model_version": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Semantic Model Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "semantic_model_version",
+    "chart_config"
+  ],
+  "title": "NL1 Chart Envelope Schema",
+  "type": "object"
+}

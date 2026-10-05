@@ -1,0 +1,847 @@
+# NL1 Semantic Registry v1
+# Single source of all approved SQL identifiers and metric×operation semantics.
+# Runtime Python must not duplicate any identifier allowlist.
+
+semantic_registry_version: "1.0.0"
+semantic_model_version: "1.0.0"
+policy_version: "1.0.0"
+
+approved_views:
+  - serve_daily_prices_v1
+  - serve_daily_equity_metrics_v1
+  - serve_relative_performance_v1
+  - serve_options_metrics_v1
+  - serve_bounded_daily_bars_v1
+
+entries:
+  # ── price × operations ──────────────────────────────────────────────
+  price.trend:
+    layer: silver
+    serving_view: serve_bounded_daily_bars_v1
+    description: "Daily unadjusted close price over time for up to 10 named tickers (Silver bounded drill-down)"
+    price_adjustment: unadjusted
+    input_columns: [symbol, event_date, close_price]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [event_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 10, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: close_price, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 10
+    row_limit: 10000
+    entry_version: "1.0.0"
+
+  price.compare:
+    layer: gold
+    serving_view: serve_daily_prices_v1
+    description: "Aligned daily unadjusted prices for named entities over a shared date range"
+    price_adjustment: unadjusted
+    input_columns: [symbol, event_date, close_price]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [event_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: close_price, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  price.rank:
+    layer: gold
+    serving_view: serve_daily_prices_v1
+    description: "Latest/as-of unadjusted price for entities ordered by price"
+    price_adjustment: unadjusted
+    input_columns: [symbol, event_date, close_price]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [close_price, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: close_price, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  price.aggregate:
+    layer: gold
+    serving_view: serve_daily_prices_v1
+    description: "Period aggregation of unadjusted prices (mean, min, max over date range)"
+    price_adjustment: unadjusted
+    input_columns: [symbol, event_date, close_price]
+    aggregation: mean_min_max
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [mean, min, max], default: mean}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  # ── return × operations ─────────────────────────────────────────────
+  return.trend:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Daily return_1d over time"
+    input_columns: [symbol, event_date, return_1d]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [event_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: return_1d, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  return.compare:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Aligned daily returns for named entities"
+    input_columns: [symbol, event_date, return_1d]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [event_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: return_1d, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  return.rank:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Latest return_1d ranked by value"
+    input_columns: [symbol, event_date, return_1d]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [return_1d, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: return_1d, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  return.aggregate:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Period aggregation of returns (cumulative, mean)"
+    input_columns: [symbol, event_date, return_1d]
+    aggregation: cumulative_mean
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [cumulative, mean], default: cumulative}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  # ── volume × operations ─────────────────────────────────────────────
+  volume.trend:
+    layer: silver
+    serving_view: serve_bounded_daily_bars_v1
+    description: "Daily volume over time for up to 10 named tickers (Silver bounded drill-down)"
+    input_columns: [symbol, event_date, volume]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [event_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 10, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: volume, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 10
+    row_limit: 10000
+    entry_version: "1.0.0"
+
+  volume.compare:
+    layer: gold
+    serving_view: serve_daily_prices_v1
+    description: "Aligned daily volumes for named entities"
+    input_columns: [symbol, event_date, volume]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [event_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: volume, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  volume.rank:
+    layer: gold
+    serving_view: serve_daily_prices_v1
+    description: "Latest volume ranked by value"
+    input_columns: [symbol, event_date, volume]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [volume, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: volume, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  volume.aggregate:
+    layer: gold
+    serving_view: serve_daily_prices_v1
+    description: "Period aggregation of volume (sum, mean)"
+    input_columns: [symbol, event_date, volume]
+    aggregation: sum_mean
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [sum, mean], default: sum}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  # ── realized_volatility × operations ────────────────────────────────
+  realized_volatility.trend:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Rolling realized volatility over time"
+    input_columns: [symbol, event_date, realized_vol_20d]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [event_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: realized_vol_20d, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  realized_volatility.compare:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Aligned realized volatility for named entities"
+    input_columns: [symbol, event_date, realized_vol_20d]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [event_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: realized_vol_20d, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  realized_volatility.rank:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Latest realized volatility ranked by value"
+    input_columns: [symbol, event_date, realized_vol_20d]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [realized_vol_20d, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: realized_vol_20d, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  realized_volatility.aggregate:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Period aggregation of realized volatility (mean, max)"
+    input_columns: [symbol, event_date, realized_vol_20d]
+    aggregation: mean_max
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [mean, max], default: mean}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  # ── drawdown × operations ───────────────────────────────────────────
+  drawdown.trend:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Running drawdown over time"
+    input_columns: [symbol, event_date, drawdown]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [event_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: drawdown, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  drawdown.compare:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Aligned drawdown for named entities"
+    input_columns: [symbol, event_date, drawdown]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [event_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: drawdown, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  drawdown.rank:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Latest drawdown ranked by severity (most negative first)"
+    input_columns: [symbol, event_date, drawdown]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [drawdown, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: drawdown, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  drawdown.aggregate:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Period aggregation of drawdown (worst, mean)"
+    input_columns: [symbol, event_date, drawdown]
+    aggregation: worst_mean
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [worst, mean], default: worst}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  # ── momentum × operations ───────────────────────────────────────────
+  momentum.trend:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Rolling momentum (e.g. 20-day) over time"
+    input_columns: [symbol, event_date, momentum_20d]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [event_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: momentum_20d, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  momentum.compare:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Aligned momentum for named entities"
+    input_columns: [symbol, event_date, momentum_20d]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [event_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: momentum_20d, type: number, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+
+  momentum.rank:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Latest momentum ranked by value"
+    input_columns: [symbol, event_date, momentum_20d]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [momentum_20d, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: momentum_20d, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  momentum.aggregate:
+    layer: gold
+    serving_view: serve_daily_equity_metrics_v1
+    description: "Period aggregation of momentum (mean, latest)"
+    input_columns: [symbol, event_date, momentum_20d]
+    aggregation: mean_latest
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [mean, latest], default: mean}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+
+  # ── relative_performance × operations ───────────────────────────────
+  relative_performance.trend:
+    layer: gold
+    serving_view: serve_relative_performance_v1
+    description: "Daily relative performance vs benchmark over time"
+    input_columns: [symbol, event_date, rel_perf, benchmark]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [event_date, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+      benchmark: {type: string, enum: [SPY, QQQ, RSP], default: SPY}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: rel_perf, type: number, nullable: false}
+      - {name: benchmark, type: string, nullable: false}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+
+  relative_performance.compare:
+    layer: gold
+    serving_view: serve_relative_performance_v1
+    description: "Aligned relative performance for named entities"
+    input_columns: [symbol, event_date, rel_perf, benchmark]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [event_date, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+      benchmark: {type: string, enum: [SPY, QQQ, RSP], default: SPY}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: rel_perf, type: number, nullable: false}
+      - {name: benchmark, type: string, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+
+  relative_performance.rank:
+    layer: gold
+    serving_view: serve_relative_performance_v1
+    description: "Latest relative performance ranked by value"
+    input_columns: [symbol, event_date, rel_perf, benchmark]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [rel_perf, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+      benchmark: {type: string, enum: [SPY, QQQ, RSP], default: SPY}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: event_date, type: date, nullable: false}
+      - {name: rel_perf, type: number, nullable: false}
+      - {name: benchmark, type: string, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+
+  relative_performance.aggregate:
+    layer: gold
+    serving_view: serve_relative_performance_v1
+    description: "Period aggregation of relative performance (mean, cumulative)"
+    input_columns: [symbol, event_date, rel_perf, benchmark]
+    aggregation: mean_cumulative
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [mean, cumulative], default: mean}
+      benchmark: {type: string, enum: [SPY, QQQ, RSP], default: SPY}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+      - {name: benchmark, type: string, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+
+  # ── implied_volatility × operations ─────────────────────────────────
+  implied_volatility.trend:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Daily implied volatility (iv_atm) over time"
+    input_columns: [symbol, feature_ts, iv_atm]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [feature_ts, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: feature_ts, type: date, nullable: false}
+      - {name: iv_atm, type: number, nullable: true}
+      - {name: sample_count, type: integer, nullable: false}
+      - {name: coverage_ratio, type: number, nullable: false}
+      - {name: status, type: coverage_status, nullable: false}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
+
+  implied_volatility.compare:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Aligned implied volatility for named entities"
+    input_columns: [symbol, feature_ts, iv_atm]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [feature_ts, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: feature_ts, type: date, nullable: false}
+      - {name: iv_atm, type: number, nullable: true}
+      - {name: sample_count, type: integer, nullable: false}
+      - {name: coverage_ratio, type: number, nullable: false}
+      - {name: status, type: coverage_status, nullable: false}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
+
+  implied_volatility.rank:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Latest implied volatility ranked by value"
+    input_columns: [symbol, feature_ts, iv_atm]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [iv_atm, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: feature_ts, type: date, nullable: false}
+      - {name: iv_atm, type: number, nullable: true}
+      - {name: sample_count, type: integer, nullable: false}
+      - {name: coverage_ratio, type: number, nullable: false}
+      - {name: status, type: coverage_status, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
+
+  implied_volatility.aggregate:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Period aggregation of implied volatility (mean, max)"
+    input_columns: [symbol, feature_ts, iv_atm]
+    aggregation: mean_max
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [mean, max], default: mean}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: true}
+      - {name: sample_count, type: integer, nullable: false}
+      - {name: coverage_ratio, type: number, nullable: false}
+      - {name: status, type: coverage_status, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+    coverage: {availability: snapshot_only, min_coverage_ratio: 0.5}
+
+  # ── put_call_ratio × operations ─────────────────────────────────────
+  put_call_ratio.trend:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Daily put/call ratio over time"
+    input_columns: [symbol, feature_ts, put_call_ratio]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, week, month, quarter, year]
+    allowed_ordering:
+      - [feature_ts, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 50, default: 1}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: feature_ts, type: date, nullable: false}
+      - {name: put_call_ratio, type: number, nullable: true}
+    chart_families: [line, table]
+    max_entities: 50
+    row_limit: 5000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+
+  put_call_ratio.compare:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Aligned put/call ratio for named entities"
+    input_columns: [symbol, feature_ts, put_call_ratio]
+    aggregation: none
+    required_slots: [entities, date_range]
+    allowed_grouping: [day, ticker]
+    allowed_ordering:
+      - [feature_ts, asc]
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 2, max: 20, default: 2}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: feature_ts, type: date, nullable: false}
+      - {name: put_call_ratio, type: number, nullable: true}
+    chart_families: [line, table]
+    max_entities: 20
+    min_entities: 2
+    row_limit: 5000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+
+  put_call_ratio.rank:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Latest put/call ratio ranked by value"
+    input_columns: [symbol, feature_ts, put_call_ratio]
+    aggregation: latest
+    required_slots: [entities]
+    allowed_grouping: [ticker]
+    allowed_ordering:
+      - [put_call_ratio, desc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 10}
+      as_of: {type: date, required: false}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: feature_ts, type: date, nullable: false}
+      - {name: put_call_ratio, type: number, nullable: true}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
+
+  put_call_ratio.aggregate:
+    layer: gold
+    serving_view: serve_options_metrics_v1
+    description: "Period aggregation of put/call ratio (mean only — summing a ratio is invalid)"
+    input_columns: [symbol, feature_ts, put_call_ratio]
+    aggregation: mean_only
+    required_slots: [entities, date_range]
+    allowed_grouping: [ticker, sector]
+    allowed_ordering:
+      - [symbol, asc]
+    parameters:
+      entity_count: {type: integer, min: 1, max: 100, default: 1}
+      agg_function: {type: string, enum: [mean], default: mean}
+    output_fields:
+      - {name: symbol, type: string, nullable: false}
+      - {name: agg_value, type: number, nullable: false}
+    chart_families: [bar, table]
+    max_entities: 100
+    row_limit: 1000
+    entry_version: "1.0.0"
+    allowed_entity_types: [ticker]
