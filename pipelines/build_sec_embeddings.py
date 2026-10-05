@@ -333,9 +333,13 @@ def main():
     CHUNKS_TABLE = f"{FQN}.silver_sec_sections"
     EMBEDDINGS_TABLE = f"{FQN}.gold_sec_chunk_embeddings"
 
-    from databricks.connect import DatabricksSession
-
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        # Inside a Databricks job (incl. serverless): use the ambient session.
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
+    else:
+        from databricks.connect import DatabricksSession
+        spark = DatabricksSession.builder.serverless(True).getOrCreate()
 
     print("=== Build SEC Chunk Embeddings ===")
     print(f"Model: {EMBEDDING_MODEL} ({EMBEDDING_DIM}-d)")
