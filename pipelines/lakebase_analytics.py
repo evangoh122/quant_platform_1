@@ -441,6 +441,12 @@ def _fqn(catalog: str, schema: str, table: str) -> str:
     return f"{catalog}.{schema}.{table}"
 
 
+def _ensure_table(spark: Any, table_fqn: str, df: Any) -> None:
+    """Create the Delta target (empty, with df's schema) on first run so MERGE/DELETE work."""
+    if not spark.catalog.tableExists(table_fqn):
+        df.limit(0).write.format("delta").saveAsTable(table_fqn)
+
+
 def merge_events_to_delta(spark: Any, events: List[OutboxEvent],
                           catalog: str, schema: str) -> None:
     """MERGE raw events into lakebase_change_events by event_id."""
@@ -460,6 +466,7 @@ def merge_events_to_delta(spark: Any, events: List[OutboxEvent],
 
     df = spark.createDataFrame(rows, schema=CHANGE_EVENTS_SCHEMA)
     target = _fqn(catalog, schema, CHANGE_EVENTS_TABLE)
+    _ensure_table(spark, target, df)
 
     df.createOrReplaceTempView("_staging_events")
     spark.sql(f"""
@@ -516,6 +523,7 @@ def _delete_and_insert(spark: Any, df: Any, table_fqn: str,
     if not dates:
         return
     date_list = ",".join(f"'{d}'" for d in sorted(dates))
+    _ensure_table(spark, table_fqn, df)
     df.createOrReplaceTempView("_staging_upsert")
     spark.sql(f"DELETE FROM {table_fqn} WHERE event_date IN ({date_list})")
     spark.sql(f"INSERT INTO {table_fqn} SELECT * FROM _staging_upsert")
@@ -571,6 +579,7 @@ def record_state(spark: Any, run_id: str, max_event_id: int,
         "status": status,
     }], schema=STATE_SCHEMA)
     table_fqn = _fqn(catalog, schema, STATE_TABLE)
+    _ensure_table(spark, table_fqn, df)
     df.createOrReplaceTempView("_staging_state")
     spark.sql(f"""
         MERGE INTO {table_fqn} t
