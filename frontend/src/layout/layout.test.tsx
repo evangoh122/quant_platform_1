@@ -476,3 +476,49 @@ describe('360px contract', () => {
     });
   });
 });
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  return [
+    parseInt(h.substring(0, 2), 16),
+    parseInt(h.substring(2, 4), 16),
+    parseInt(h.substring(4, 6), 16),
+  ];
+}
+
+function relativeLuminance([r, g, b]: [number, number, number]): number {
+  const [rs, gs, bs] = [r, g, b].map((c) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+}
+
+function contrastRatio(fg: string, bg: string): number {
+  const l1 = Math.max(relativeLuminance(hexToRgb(fg)), relativeLuminance(hexToRgb(bg)));
+  const l2 = Math.min(relativeLuminance(hexToRgb(fg)), relativeLuminance(hexToRgb(bg)));
+  return (l1 + 0.05) / (l2 + 0.05);
+}
+
+const SURFACE = '#ffffff';
+
+const TEXT_MUTED = '#64748b';
+const WARNING = '#9a3412';
+
+describe('WCAG AA contrast tokens', () => {
+  it('--text-muted meets 4.5:1 on --surface', () => {
+    expect(contrastRatio(TEXT_MUTED, SURFACE)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('--warning text meets 4.5:1 on --surface', () => {
+    expect(contrastRatio(WARNING, SURFACE)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('mutation: changing --text-muted to #94a3b8 fails contrast', () => {
+    expect(contrastRatio('#94a3b8', SURFACE)).toBeLessThan(4.5);
+  });
+
+  it('mutation: changing --warning to #d97706 fails contrast', () => {
+    expect(contrastRatio('#d97706', SURFACE)).toBeLessThan(4.5);
+  });
+});
