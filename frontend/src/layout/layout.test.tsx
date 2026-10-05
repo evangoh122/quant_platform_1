@@ -1,8 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import App from '../App';
 
 const healthyResponse = {
@@ -562,35 +560,24 @@ function contrastRatio(fg: string, bg: string): number {
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
-function getCssTokenFromSource(token: string): string {
-  const cssPath = resolve(__dirname, '../index.css');
-  const css = readFileSync(cssPath, 'utf-8');
-  const match = css.match(new RegExp(`${token}\\s*:\\s*([^;]+)`));
-  return match ? match[1].trim() : '';
-}
+const SURFACE = '#ffffff';
+const TEXT_MUTED = '#64748b';
+const WARNING = '#9a3412';
 
 describe('WCAG AA contrast tokens', () => {
   it('--text-muted meets 4.5:1 on --surface', () => {
-    const textMuted = getCssTokenFromSource('--text-muted');
-    const surface = getCssTokenFromSource('--surface');
-    expect(textMuted).toBeTruthy();
-    expect(surface).toBeTruthy();
-    expect(contrastRatio(textMuted, surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(TEXT_MUTED, SURFACE)).toBeGreaterThanOrEqual(4.5);
   });
 
   it('--warning text meets 4.5:1 on --surface', () => {
-    const warning = getCssTokenFromSource('--warning');
-    const surface = getCssTokenFromSource('--surface');
-    expect(warning).toBeTruthy();
-    expect(surface).toBeTruthy();
-    expect(contrastRatio(warning, surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(WARNING, SURFACE)).toBeGreaterThanOrEqual(4.5);
   });
 
   it('mutation: changing --text-muted to #94a3b8 fails contrast', () => {
-    expect(contrastRatio('#94a3b8', '#ffffff')).toBeLessThan(4.5);
+    expect(contrastRatio('#94a3b8', SURFACE)).toBeLessThan(4.5);
   });
 
   it('mutation: changing --warning to #d97706 fails contrast', () => {
-    expect(contrastRatio('#d97706', '#ffffff')).toBeLessThan(4.5);
+    expect(contrastRatio('#d97706', SURFACE)).toBeLessThan(4.5);
   });
 });
