@@ -26,9 +26,15 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
   }
   if (tc.name === 'save_research_note') {
     const noteId = tc.result?.note_id;
+    if (noteId) {
+      return {
+        label: `Note ${noteId}`,
+        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+      };
+    }
     return {
-      label: noteId ? `Note ${noteId}` : 'Note saved',
-      cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+      label: 'Note saved',
+      cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
     };
   }
   if (tc.name === 'add_to_watchlist') {
@@ -56,8 +62,11 @@ function deriveTicker(tc: ToolCall): string | undefined {
 
 function deriveSourceCount(tc: ToolCall): number | undefined {
   const rows = tc.result?.rows;
-  if (Array.isArray(rows)) return rows.length;
-  return undefined;
+  if (!Array.isArray(rows)) return undefined;
+  const nonError = rows.filter(
+    (r) => typeof r === 'object' && r !== null && typeof (r as Record<string, unknown>).error !== 'string',
+  );
+  return nonError.length;
 }
 
 export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
@@ -104,7 +113,7 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
         )}
       </div>
 
-      {toolCall.name === 'save_research_note' && toolCall.ok && (
+      {toolCall.name === 'save_research_note' && toolCall.ok && noteId && (
         <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
           Research note saved to Lakebase.
         </p>
