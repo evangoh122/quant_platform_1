@@ -3909,25 +3909,151 @@ class TestOwnershipGroup:
         )
         assert result.failed_count >= 1
 
-    def test_mutation_drop_group_check_fails(self):
-        """Mutation: if same_group check is removed from anti-join, same-group CIKs falsely conflict.
-
-        We verify by checking that the group map is consulted: with the correct
-        overrides, same-group CIKs are skipped (test_same_group_no_conflict).
-        Without overrides (empty dict), the ticker can't map to CIKs at all
-        (XOM not in SEC fixture), so mapped_count=0 — the group check is the
-        only path that makes multi-CIK tickers work.
-        """
-        # Verify the group map is the key enabler
-        overrides = {"XOM": ["0002115436", "0000034088"]}
-        group_map = _build_cik_group_map(overrides)
-        assert group_map["0002115436"] is group_map["0000034088"], (
-            "Group map must link CIKs in the same override group"
+    def test_override_filings_use_filer_cik(self):
+        """Override-group planned filings use filer CIK from accession prefix."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        # Holdings CIK 0002115436 — 1 filing with accession prefix 0002115436
+        holdings_sub = {
+            "cik": "0002115436",
+            "entityName": "ExxonMobil Holdings Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-03-01"],
+                    "accessionNumber": ["0002115436-25-000001"],
+                    "primaryDocument": ["xom-holdings.htm"],
+                    "acceptanceDateTime": ["2025-03-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        # Legacy CIK 0000034088 — 1 filing with accession prefix 0000034088
+        legacy_sub = {
+            "cik": "0000034088",
+            "entityName": "Exxon Mobil Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2024-12-01"],
+                    "accessionNumber": ["0000034088-24-000099"],
+                    "primaryDocument": ["xom-legacy.htm"],
+                    "acceptanceDateTime": ["2024-12-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings_sub)
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", legacy_sub)
+        # Filing body for both
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/2115436/000211543625000001/xom-holdings.htm",
+            "<html><body>" + "H" * 200 + "</body></html>",
+        )
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/34088/000003408824000099/xom-legacy.htm",
+            "<html><body>" + "L" * 200 + "</body></html>",
         )
 
-        # Without overrides, group map is empty → no same-group detection
-        empty_map = _build_cik_group_map({})
-        assert empty_map == {}, "Empty overrides must produce empty group map"
+        universe = [TickerEntry(ticker="XOM", phase=1)]
+        writer = FakeDataWriter()
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["XOM"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader({}),
+            data_writer=writer,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides=self.XOM_OVERRIDES,
+        )
+        # Both filings should be planned
+        assert result.planned_count == 2
+        assert result.failed_count == 0
+        # Check that rows use filer CIK from accession prefix
+        all_rows = [r for batch in writer.appended for r in batch]
+        holdings_rows = [r for r in all_rows if r["accession_number"] == "0002115436-25-000001"]
+        legacy_rows = [r for r in all_rows if r["accession_number"] == "0000034088-24-000099"]
+        assert holdings_rows, "Holdings filing should be stored"
+        assert legacy_rows, "Legacy filing should be stored"
+        # Holdings filing: CIK from accession prefix = 0002115436
+        assert holdings_rows[0]["cik"] == "0002115436"
+        assert "2115436" in holdings_rows[0]["filing_url"]
+        # Legacy filing: CIK from accession prefix = 0000034088 (NOT 0002115436)
+        assert legacy_rows[0]["cik"] == "0000034088"
+        assert "34088" in legacy_rows[0]["filing_url"]
+
+    def test_counter_invariant_planned_plus_skipped_equals_discovered(self):
+        """planned + skipped_existing + failed == discovered for override tickers."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        # Holdings CIK: 1 filing
+        holdings_sub = {
+            "cik": "0002115436",
+            "entityName": "ExxonMobil Holdings Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2025-03-01"],
+                    "accessionNumber": ["0002115436-25-000001"],
+                    "primaryDocument": ["xom-holdings.htm"],
+                    "acceptanceDateTime": ["2025-03-01T18:00:00.000Z"],
+                },
+                "files": [],
+            },
+        }
+        # Legacy CIK: 2 filings, one shared accession with holdings
+        legacy_sub = {
+            "cik": "0000034088",
+            "entityName": "Exxon Mobil Corp",
+            "filings": {
+                "recent": {
+                    "form": ["10-K", "10-K"],
+                    "filingDate": ["2025-03-01", "2024-12-01"],
+                    "accessionNumber": ["0002115436-25-000001", "0000034088-24-000099"],
+                    "primaryDocument": ["xom-holdings.htm", "xom-legacy.htm"],
+                    "acceptanceDateTime": [
+                        "2025-03-01T18:00:00.000Z",
+                        "2024-12-01T18:00:00.000Z",
+                    ],
+                },
+                "files": [],
+            },
+        }
+        http.set_json("https://data.sec.gov/submissions/CIK0002115436.json", holdings_sub)
+        http.set_json("https://data.sec.gov/submissions/CIK0000034088.json", legacy_sub)
+
+        universe = [TickerEntry(ticker="XOM", phase=1)]
+        # One accession already present
+        existing = {
+            "0000034088-24-000099": ("0000034088", "XOM"),
+        }
+
+        # Dry-run: tests anti-join counters without fetching filing bodies
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["XOM"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(existing),
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides=self.XOM_OVERRIDES,
+            dry_run=True,
+        )
+        # Discovered = 2 deduped filings (holdings + legacy, one shared accession)
+        assert result.discovered_count == 2
+        # planned + skipped + failed == discovered
+        total = result.planned_count + result.skipped_existing_count + result.failed_count
+        assert total == result.discovered_count, (
+            f"planned({result.planned_count}) + skipped({result.skipped_existing_count}) "
+            f"+ failed({result.failed_count}) != discovered({result.discovered_count})"
+        )
 
     def test_mutation_re_raise_instead_of_record_fails(self):
         """Mutation: if genuine conflict raises instead of recording, test fails."""
@@ -4015,21 +4141,216 @@ class TestRepairCikOwnership:
 
     def test_repair_dry_run_does_not_write(self):
         """Dry-run repair returns stats but does not execute UPDATE."""
-        # repair_cik_ownership uses DatabricksSession — test the logic via
-        # _accession_filer_cik and _build_cik_group_map instead.
-        # The function itself is integration-tested by Claude's XOM dry-run re-run.
         overrides = {"XOM": ["0002115436", "0000034088"]}
-        group_map = _build_cik_group_map(overrides)
+        sql_calls = []
 
-        # Verify the logic: accession 0000034088-26-000093 stored under CIK 0002115436
-        # → correct CIK is 0000034088 (accession prefix)
-        accession = "0000034088-26-000093"
-        current_cik = "0002115436"
-        correct_cik = _accession_filer_cik(accession)
-        assert correct_cik == "0000034088"
-        assert current_cik != correct_cik
-        # Both in same group
-        assert group_map[current_cik] is group_map[correct_cik]
+        class FakeRow:
+            def __init__(self, **kw):
+                self._d = kw
+            def __getitem__(self, k):
+                return self._d[k]
+
+        class FakeDF:
+            def __init__(self, rows):
+                self._rows = rows
+            def collect(self):
+                return self._rows
+
+        class FakeSpark:
+            def sql(self, query, args=None):
+                sql_calls.append((query, args))
+                if query.strip().upper().startswith("SELECT"):
+                    return FakeDF([
+                        FakeRow(accession_number="0000034088-26-000093", cik="0002115436", ticker="XOM"),
+                    ])
+                return FakeDF([])
+
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = FakeSpark()
+        mock_session = MagicMock()
+        mock_session.builder = mock_builder
+
+        import sys as _sys
+        from unittest.mock import patch as _patch
+        fake_connect = MagicMock()
+        fake_connect.DatabricksSession = mock_session
+        with _patch.dict(_sys.modules, {"databricks.connect": fake_connect}):
+            stats = repair_cik_ownership(
+                catalog="cat", schema="sch",
+                tickers=["XOM"], cik_overrides=overrides, dry_run=True,
+            )
+        assert stats["scanned"] == 1
+        assert stats["updated"] == 1
+        assert stats["skipped"] == 0
+        # No UPDATE should have been executed
+        update_calls = [c for c in sql_calls if c[0].strip().upper().startswith("UPDATE")]
+        assert len(update_calls) == 0
+
+    def test_repair_parameterized_sql(self):
+        """repair_cik_ownership uses parameterized queries — no ticker/CIK literal in SQL."""
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        sql_calls = []
+
+        class FakeRow:
+            def __init__(self, **kw):
+                self._d = kw
+            def __getitem__(self, k):
+                return self._d[k]
+
+        class FakeDF:
+            def __init__(self, rows):
+                self._rows = rows
+            def collect(self):
+                return self._rows
+
+        class FakeSpark:
+            def sql(self, query, args=None):
+                sql_calls.append((query, args))
+                if query.strip().upper().startswith("SELECT"):
+                    return FakeDF([
+                        FakeRow(accession_number="0000034088-26-000093", cik="0002115436", ticker="XOM"),
+                    ])
+                return FakeDF([])
+
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = FakeSpark()
+        mock_session = MagicMock()
+        mock_session.builder = mock_builder
+
+        import sys as _sys
+        from unittest.mock import patch as _patch
+        fake_connect = MagicMock()
+        fake_connect.DatabricksSession = mock_session
+        with _patch.dict(_sys.modules, {"databricks.connect": fake_connect}):
+            repair_cik_ownership(
+                catalog="cat", schema="sch",
+                tickers=["XOM"], cik_overrides=overrides, dry_run=False,
+            )
+        # Verify no ticker or CIK literal appears in any SQL text
+        for query, args in sql_calls:
+            assert "'XOM'" not in query, f"Ticker literal in SQL: {query}"
+            assert "'0002115436'" not in query, f"CIK literal in SQL: {query}"
+            assert "'0000034088'" not in query, f"CIK literal in SQL: {query}"
+        # UPDATE call should carry args with the correct values
+        update_calls = [(q, a) for q, a in sql_calls if q.strip().upper().startswith("UPDATE")]
+        assert len(update_calls) == 1
+        _, update_args = update_calls[0]
+        assert "0000034088" in update_args  # correct_cik
+        assert "0000034088-26-000093" in update_args  # accession
+        assert "XOM" in update_args  # ticker
+
+    def test_repair_invalid_ticker_rejected(self):
+        """Ticker with invalid characters raises ValueError."""
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+
+        import sys as _sys
+        from unittest.mock import patch as _patch
+        fake_connect = MagicMock()
+        fake_connect.DatabricksSession = MagicMock()
+        with _patch.dict(_sys.modules, {"databricks.connect": fake_connect}):
+            with pytest.raises(ValueError, match="Invalid ticker"):
+                repair_cik_ownership(
+                    catalog="cat", schema="sch",
+                    tickers=["XOM'; DROP TABLE t; --"], cik_overrides=overrides,
+                )
+
+    def test_repair_idempotent_skip_when_correct(self):
+        """No UPDATE when current CIK already matches accession prefix."""
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        sql_calls = []
+
+        class FakeRow:
+            def __init__(self, **kw):
+                self._d = kw
+            def __getitem__(self, k):
+                return self._d[k]
+
+        class FakeDF:
+            def __init__(self, rows):
+                self._rows = rows
+            def collect(self):
+                return self._rows
+
+        class FakeSpark:
+            def sql(self, query, args=None):
+                sql_calls.append((query, args))
+                if query.strip().upper().startswith("SELECT"):
+                    return FakeDF([
+                        FakeRow(accession_number="0000034088-26-000093", cik="0000034088", ticker="XOM"),
+                    ])
+                return FakeDF([])
+
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = FakeSpark()
+        mock_session = MagicMock()
+        mock_session.builder = mock_builder
+
+        import sys as _sys
+        from unittest.mock import patch as _patch
+        fake_connect = MagicMock()
+        fake_connect.DatabricksSession = mock_session
+        with _patch.dict(_sys.modules, {"databricks.connect": fake_connect}):
+            stats = repair_cik_ownership(
+                catalog="cat", schema="sch",
+                tickers=["XOM"], cik_overrides=overrides,
+            )
+        assert stats["scanned"] == 1
+        assert stats["skipped"] == 1
+        assert stats["updated"] == 0
+        update_calls = [c for c in sql_calls if c[0].strip().upper().startswith("UPDATE")]
+        assert len(update_calls) == 0
+
+    def test_repair_non_group_target_cik_refused(self):
+        """UPDATE is skipped when correct CIK is not in the override group."""
+        # Override group: XOM → [0002115436, 0000034088]
+        # But accession prefix = 9999999999 (not in group)
+        overrides = {"XOM": ["0002115436", "0000034088"]}
+        sql_calls = []
+
+        class FakeRow:
+            def __init__(self, **kw):
+                self._d = kw
+            def __getitem__(self, k):
+                return self._d[k]
+
+        class FakeDF:
+            def __init__(self, rows):
+                self._rows = rows
+            def collect(self):
+                return self._rows
+
+        class FakeSpark:
+            def sql(self, query, args=None):
+                sql_calls.append((query, args))
+                if query.strip().upper().startswith("SELECT"):
+                    return FakeDF([
+                        FakeRow(accession_number="9999999999-26-000001", cik="0002115436", ticker="XOM"),
+                    ])
+                return FakeDF([])
+
+        mock_builder = MagicMock()
+        mock_builder.serverless.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = FakeSpark()
+        mock_session = MagicMock()
+        mock_session.builder = mock_builder
+
+        import sys as _sys
+        from unittest.mock import patch as _patch
+        fake_connect = MagicMock()
+        fake_connect.DatabricksSession = mock_session
+        with _patch.dict(_sys.modules, {"databricks.connect": fake_connect}):
+            stats = repair_cik_ownership(
+                catalog="cat", schema="sch",
+                tickers=["XOM"], cik_overrides=overrides,
+            )
+        assert stats["scanned"] == 1
+        assert stats["skipped"] == 1
+        assert stats["updated"] == 0
+        update_calls = [c for c in sql_calls if c[0].strip().upper().startswith("UPDATE")]
+        assert len(update_calls) == 0
 
 
 # ── Round 19: Foreign filers (20-F/40-F/6-K) ────────────────────────────────

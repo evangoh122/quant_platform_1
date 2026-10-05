@@ -1479,11 +1479,12 @@ def run_ingest(
             if ticker not in seen_accessions_by_ticker:
                 seen_accessions_by_ticker[ticker] = set()
                 all_filings[ticker] = []
+            prev_count = len(all_filings[ticker])
             for f in filings:
                 if f.accession_number not in seen_accessions_by_ticker[ticker]:
                     seen_accessions_by_ticker[ticker].add(f.accession_number)
                     all_filings[ticker].append(f)
-            result.discovered_count += len(filings)
+            result.discovered_count += len(all_filings[ticker]) - prev_count
             if failed_hist:
                 # History-file fetch failures → partial coverage
                 result.partial_count += 1
@@ -1529,60 +1530,68 @@ def run_ingest(
                 ))
 
     # Anti-join against existing — with conflict detection
-    # Use canonical ticker per CIK so share-class filings are stored once
+    # Iterate per ticker (not per ticker-CIK) so discovered/planned/skipped
+    # counters are consistent with the deduped filing lists.
     planned: List[Tuple[str, str, str, FilingMeta]] = []  # (canonical_ticker, cik, company_name, filing)
     planned_accessions: Set[str] = set()  # dedup within this batch
-    for ticker, cik in mapped_tickers:
+    unique_tickers = sorted({t for t, _c in mapped_tickers})
+    for ticker in unique_tickers:
         if ticker in failed_tickers:
             continue
         canonical = alias_map.get(ticker, ticker)
+        ticker_ciks = {c for t, c in mapped_tickers if t == ticker}
+        is_override = any(c in cik_group_map for c in ticker_ciks)
         for filing in all_filings.get(ticker, []):
             dashed = filing.accession_number
             if dashed in existing_accessions:
                 existing_cik, existing_ticker = existing_accessions[dashed]
-                if existing_cik != cik:
-                    # Same ownership group (override CIKs) → no conflict
-                    same_group = (
-                        cik in cik_group_map
-                        and existing_cik in cik_group_map
-                        and cik_group_map[cik] is cik_group_map[existing_cik]
-                    )
-                    if same_group:
-                        # Store the filer CIK from the accession prefix
-                        filer_cik = _accession_filer_cik(dashed)
-                        result.skipped_existing_count += 1
-                        continue
-                    # Genuine conflict: record per filing, run continues
-                    if log_writer is not None:
-                        log_writer.append_log(catalog, schema, IngestLogEntry(
-                            run_id=run_id,
-                            ticker=ticker,
-                            cik=cik,
-                            accession_number=dashed,
-                            form_type=filing.form_type,
-                            filing_date=filing.filing_date,
-                            accepted_ts=filing.accepted_ts,
-                            status="failed",
-                            error_code="ownership_conflict",
-                            error_message=(
-                                f"Accession ownership conflict: {dashed} already owned by "
-                                f"CIK {existing_cik} (ticker={existing_ticker}), "
-                                f"but current request is CIK {cik} (ticker={ticker})"
-                            ),
-                            started_ts=datetime.now(timezone.utc),
-                            completed_ts=datetime.now(timezone.utc),
-                        ))
-                    result.failed_count += 1
+                if existing_cik in ticker_ciks:
+                    # Same ownership group (override CIKs) or same CIK → no conflict
+                    result.skipped_existing_count += 1
                     continue
-                # Same CIK: filing already stored — skip for this ticker
-                result.skipped_existing_count += 1
+                    # Genuine conflict: record per filing, run continues
+                if log_writer is not None:
+                    mapped_cik = next(iter(ticker_ciks))
+                    log_writer.append_log(catalog, schema, IngestLogEntry(
+                        run_id=run_id,
+                        ticker=ticker,
+                        cik=mapped_cik,
+                        accession_number=dashed,
+                        form_type=filing.form_type,
+                        filing_date=filing.filing_date,
+                        accepted_ts=filing.accepted_ts,
+                        status="failed",
+                        error_code="ownership_conflict",
+                        error_message=(
+                            f"Accession ownership conflict: {dashed} already owned by "
+                            f"CIK {existing_cik} (ticker={existing_ticker}), "
+                            f"but current request is CIK {mapped_cik} (ticker={ticker})"
+                        ),
+                        started_ts=datetime.now(timezone.utc),
+                        completed_ts=datetime.now(timezone.utc),
+                    ))
+                result.failed_count += 1
                 continue
             # Deduplicate within this batch (share-class tickers discover same accessions)
             if dashed in planned_accessions:
                 result.skipped_existing_count += 1
                 continue
             planned_accessions.add(dashed)
-            planned.append((canonical, cik, canonical, filing))
+            # For override-group tickers, use filer CIK from accession prefix
+            # so fetch URL and stored CIK match the actual filer.
+            filer_cik = _accession_filer_cik(dashed)
+            if is_override and filer_cik in ticker_ciks:
+                plan_cik = filer_cik
+            elif is_override and filer_cik not in ticker_ciks:
+                logger.warning(
+                    "Override ticker %s: accession %s prefix CIK %s not in group %s — "
+                    "using mapped CIK %s",
+                    ticker, dashed, filer_cik, ticker_ciks, next(iter(ticker_ciks)),
+                )
+                plan_cik = next(iter(ticker_ciks))
+            else:
+                plan_cik = next(iter(ticker_ciks))
+            planned.append((canonical, plan_cik, canonical, filing))
             result.planned_count += 1
 
     if dry_run:
@@ -1842,6 +1851,7 @@ def repair_cik_ownership(
     Idempotent: rows already matching the correct CIK are not updated.
     Returns {"scanned": N, "updated": N, "skipped": N}.
     """
+    _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
     from databricks.connect import DatabricksSession
 
     if cik_overrides is None:
@@ -1855,18 +1865,21 @@ def repair_cik_ownership(
 
     for ticker in tickers:
         ticker = ticker.strip().upper()
+        if not _TICKER_RE.match(ticker):
+            raise ValueError(f"Invalid ticker symbol: {ticker!r}")
         if ticker not in cik_overrides:
             logger.warning("repair: no CIK overrides for %s — skipping", ticker)
             continue
 
         group_ciks = cik_overrides[ticker]
-        cik_list = ", ".join(f"'{c}'" for c in group_ciks)
+        placeholders = ", ".join(["?"] * len(group_ciks))
+        args_list = [ticker] + list(group_ciks)
 
-        rows = spark.sql(f"""
-            SELECT accession_number, cik, ticker
-            FROM {table}
-            WHERE ticker = '{ticker}' AND cik IN ({cik_list})
-        """).collect()
+        rows = spark.sql(
+            f"SELECT accession_number, cik, ticker FROM {table} "
+            f"WHERE ticker = ? AND cik IN ({placeholders})",
+            args=args_list,
+        ).collect()
 
         for row in rows:
             stats["scanned"] += 1
@@ -1878,6 +1891,14 @@ def repair_cik_ownership(
                 stats["skipped"] += 1
                 continue
 
+            if correct_cik not in group_map.get(current_cik, frozenset()):
+                logger.warning(
+                    "repair: %s correct CIK %s not in override group for %s — skipping",
+                    acc, correct_cik, ticker,
+                )
+                stats["skipped"] += 1
+                continue
+
             if dry_run:
                 logger.info(
                     "DRY RUN repair: %s cik %s → %s", acc, current_cik, correct_cik,
@@ -1885,12 +1906,11 @@ def repair_cik_ownership(
                 stats["updated"] += 1
                 continue
 
-            spark.sql(f"""
-                UPDATE {table}
-                SET cik = '{correct_cik}'
-                WHERE accession_number = '{acc}'
-                  AND cik = '{current_cik}'
-            """).collect()
+            spark.sql(
+                f"UPDATE {table} SET cik = ? "
+                "WHERE accession_number = ? AND cik = ? AND ticker = ?",
+                args=[correct_cik, acc, current_cik, ticker],
+            ).collect()
             stats["updated"] += 1
             logger.info("repair: %s cik %s → %s", acc, current_cik, correct_cik)
 
