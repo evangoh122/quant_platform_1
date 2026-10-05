@@ -186,7 +186,7 @@ def _validate_user_agent(user_agent: str) -> None:
     if not _ua_format_re.match(user_agent.strip()):
         raise ValueError(
             "SEC_EDGAR_USER_AGENT must match '<application name> <contact email>' format "
-            "(e.g. 'MyApp/2.0 contact@company.com'). Got: " + repr(user_agent)
+            "(e.g. 'MyApp/2.0 contact@company.com')"
         )
 
 
