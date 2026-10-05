@@ -819,6 +819,42 @@ class TestProseFallback:
         result = runtime.run("Hello", user_id="u1", role="viewer")
         assert result.error_code is None
 
+    def test_second_occurrence_of_tool_name_rejected(self):
+        """If a tool name appears in prose then again as a call, the second occurrence must be caught."""
+        text = "I will use search_sec_filings to look. search_sec_filings(symbol='AMD')"
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_brace_free_json_like_fragment_rejected(self):
+        """A brace-free JSON-like fragment with quoted keys must be treated as a tool call."""
+        text = '["action": "retrieve", "tool": "search_sec_filings"]'
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_quoted_tool_key_in_sentence_rejected(self):
+        """A quoted "tool": inside a sentence must fail closed."""
+        text = 'I think "tool": "search_sec_filings" is the right approach here.'
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.available is True
+        assert result.error_code == "malformed"
+
+    def test_risk_factors_colon_prose_accepted(self):
+        """'Risk factors: export controls' is plain prose and must be accepted."""
+        text = "Risk factors: export controls remain the primary concern for NVDA."
+        model_responses = [text]
+        runtime, sink = _make_runtime(model_responses)
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None
+        assert "export controls" in result.reply
+
 
 class TestRetryFeedback:
     def test_retry_feedback_has_no_validation_error(self):

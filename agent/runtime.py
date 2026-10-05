@@ -228,23 +228,31 @@ _TOOL_CALL_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Brace-free JSON-like fragments: a quoted key "action"|"tool"|"args" followed by : anywhere.
+# Matches patterns like ["action": "retrieve", "tool": "search_sec_filings"] or
+# "tool": "search_sec_filings" embedded in a sentence.
+_QUOTED_KEY_COLON_RE = re.compile(
+    r'"(?:action|tool|args)"\s*:',
+    re.IGNORECASE,
+)
+
 
 def _looks_like_tool_call(text: str) -> bool:
     """Return True if *text* looks like a failed tool call rather than prose.
 
     Checks for:
     - Lines starting ``action: <retrieve|write|final|refuse>``, ``tool:`` or ``args:`` (case-insensitive)
-    - Any registered tool name followed by ``(`` or ``:``
+    - Any registered tool name followed by ``(`` or ``:`` (every occurrence, not just the first)
+    - Brace-free JSON-like fragments with quoted keys ``"action"|"tool"|"args"`` followed by ``:``
     """
     for line in text.splitlines():
         if _TOOL_CALL_LINE_RE.match(line):
             return True
     for tool_name in ALL_TOOLS:
-        idx = text.find(tool_name)
-        if idx >= 0:
-            after = text[idx + len(tool_name) : idx + len(tool_name) + 1]
-            if after in ("(", ":"):
-                return True
+        for m in re.finditer(re.escape(tool_name) + r"\s*[(:]", text):
+            return True
+    if _QUOTED_KEY_COLON_RE.search(text):
+        return True
     return False
 
 
