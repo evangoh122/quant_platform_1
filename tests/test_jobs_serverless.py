@@ -467,3 +467,19 @@ def test_mutation_remove_bootstrap_fails(tmp_path):
     assert "ModuleNotFoundError" in proc.stderr or "No module named" in proc.stderr, (
         f"Expected ModuleNotFoundError in stderr, got:\n{proc.stderr[:500]}"
     )
+
+def test_no_databricks_connect_import_outside_runtime():
+    """Job entry points must not import databricks.connect directly (outside pipelines/_runtime.py).
+
+    databricks-connect may be absent from a serverless job environment, so even an unused import fails
+    before get_spark() runs (CodeRabbit PR #44).
+    """
+    pattern = re.compile(r"^\s*(from\s+databricks\.connect\s+import|import\s+databricks\.connect)")
+    offenders = []
+    for fpath, src in _read_entry_point_sources().items():
+        if "_runtime.py" in fpath:
+            continue
+        for lineno, line in enumerate(src.splitlines(), 1):
+            if pattern.search(line):
+                offenders.append(f"{fpath}:{lineno}")
+    assert not offenders, "databricks.connect imported outside _runtime: " + ", ".join(offenders)

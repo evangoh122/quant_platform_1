@@ -1867,7 +1867,6 @@ def repair_cik_ownership(
     Also rewrites filing_url to use the correct filer CIK.
     """
     _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
-    from databricks.connect import DatabricksSession
 
     if cik_overrides is None:
         cik_overrides = load_cik_overrides(cik_overrides_path)
