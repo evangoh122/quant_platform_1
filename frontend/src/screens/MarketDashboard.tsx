@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { SymbolSelect } from '../components/SymbolSelect';
 import { api } from '../api/client';
 import type { MarketSnapshot } from '../api/types';
 import { useApi } from '../hooks/useApi';
@@ -22,7 +23,6 @@ const ohlcvColumns: Column<OHLCVFeature>[] = [
 ];
 
 export function MarketDashboard() {
-  const [input, setInput] = useState('NVDA');
   const [symbol, setSymbol] = useState('NVDA');
   const { data, loading, error, reload } = useApi<MarketSnapshot>(
     () => api.market(symbol),
@@ -45,27 +45,10 @@ export function MarketDashboard() {
         </div>
       </div>
 
-      <form
-        className="flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const s = input.trim().toUpperCase();
-          if (s) setSymbol(s);
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-          placeholder="Symbol (e.g. NVDA)"
-        />
-        <button
-          type="submit"
-          className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900"
-        >
-          Search
-        </button>
-      </form>
+      <div className="flex items-center gap-2">
+        <label className="text-sm text-slate-600 dark:text-slate-400">Company</label>
+        <SymbolSelect value={symbol} onChange={setSymbol} list="market" />
+      </div>
 
       {loading && <LoadingState />}
       {error && <ErrorState message={error} onRetry={reload} />}
