@@ -79,7 +79,7 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
 
   const handleClose = useCallback(() => {
     onClose();
-    openerRef.current?.focus();
+    setTimeout(() => openerRef.current?.focus(), 0);
   }, [onClose]);
 
   const next = useCallback(() => {
@@ -244,29 +244,3 @@ export function markTourSeen(key: string): void {
   }
 }
 
-export function useTour(storageKey: string, enabled = true, delayMs = 600) {
-  const [run, setRun] = useState(false);
-
-  useEffect(() => {
-    if (!enabled) return;
-
-    const prefersReducedMotion = window.matchMedia(
-      '(prefers-reduced-motion: reduce)',
-    ).matches;
-
-    if (tourSeen(storageKey)) return;
-    if (prefersReducedMotion) return;
-
-    const timer = window.setTimeout(() => setRun(true), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [storageKey, enabled, delayMs]);
-
-  const close = useCallback(() => {
-    setRun(false);
-    markTourSeen(storageKey);
-  }, [storageKey]);
-
-  const start = useCallback(() => setRun(true), []);
-
-  return { run, start, close };
-}
