@@ -16,7 +16,8 @@ resources:
       resources:
         - name: lakebase
           database:
-            instance: evangoh-capstone-lakebase
+            instance_name: evangoh-capstone-lakebase
+            database_name: databricks_postgres
             permission: CAN_CONNECT_AND_CREATE
         - name: sql_warehouse
           sql_warehouse:
