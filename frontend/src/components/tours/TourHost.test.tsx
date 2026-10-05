@@ -58,6 +58,7 @@ describe('useTourHost — versioned keys', () => {
 
     expect(tourSeen(APPLICATION_TOUR_KEY)).toBe(true);
     expect(mockStore[APPLICATION_TOUR_KEY]).toBe('1');
+    expect('qp_tour_application_v1' in mockStore).toBe(true);
   });
 
   it('writes qp_tour_agent_v1 on close', () => {
@@ -73,6 +74,7 @@ describe('useTourHost — versioned keys', () => {
 
     expect(tourSeen(AGENT_TOUR_KEY)).toBe(true);
     expect(mockStore[AGENT_TOUR_KEY]).toBe('1');
+    expect('qp_tour_agent_v1' in mockStore).toBe(true);
   });
 
   it('writes qp_tour_architecture_v1 on close', () => {
@@ -88,6 +90,7 @@ describe('useTourHost — versioned keys', () => {
 
     expect(tourSeen(ARCHITECTURE_TOUR_KEY)).toBe(true);
     expect(mockStore[ARCHITECTURE_TOUR_KEY]).toBe('1');
+    expect('qp_tour_architecture_v1' in mockStore).toBe(true);
   });
 
   it('does not auto-start when all tours are already seen (_v1 keys)', () => {
@@ -95,6 +98,20 @@ describe('useTourHost — versioned keys', () => {
     markTourSeen(APPLICATION_TOUR_KEY);
     markTourSeen(AGENT_TOUR_KEY);
     markTourSeen(ARCHITECTURE_TOUR_KEY);
+    const { result } = renderHook(() => useTourHost());
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(result.current.activeTour).toBeNull();
+  });
+
+  it('stored _v1 key prevents auto-start (hardcoded key check)', () => {
+    vi.useFakeTimers();
+    mockStore['qp_tour_application_v1'] = '1';
+    mockStore['qp_tour_agent_v1'] = '1';
+    mockStore['qp_tour_architecture_v1'] = '1';
     const { result } = renderHook(() => useTourHost());
 
     act(() => {
