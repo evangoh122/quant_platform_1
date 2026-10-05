@@ -76,11 +76,11 @@ grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements.txt | pip-audit -r /dev/s
 | CVE | Package | Description | New floor |
 |-----|---------|-------------|-----------|
 | CVE-2024-8309 | langchain | SQL injection via GraphCypherQAChain | >=1.0.0 |
-| CVE-2025-68664 | langchain-core | Serialization injection in dumps()/dumpd() | >=1.0.0 |
-| CVE-2026-34070 | langchain-core | Prompt loading path traversal | >=1.0.0 |
-| GHSA-f4xh-w4cj-qxq8 | langsmith | Tracing header arbitrary file read | >=0.2.0 |
-| AIKIDO-2026-944829 | langsmith | Signing key leak in trace metadata | >=0.2.0 |
-| CVE-2025-6984 | langchain-community | XXE in EverNoteLoader | >=0.3.0 |
+| CVE-2025-68664 | langchain-core | Serialization injection in dumps()/dumpd() | >=1.2.22 |
+| CVE-2026-34070 | langchain-core | Prompt loading path traversal | >=1.2.22 |
+| GHSA-f4xh-w4cj-qxq8 | langsmith | Tracing header arbitrary file read | >=0.8.18 |
+| AIKIDO-2026-944829 | langsmith | Signing key leak in trace metadata | >=0.8.18 |
+| CVE-2025-6984 | langchain-community | XXE in EverNoteLoader | >=0.3.27 |
 | CVE-2022-2309 | lxml | NULL ptr dereference in iterwalk | >=4.9.2 |
-| AIKIDO-2026-106840 | requests | Proxy bypass via no_proxy matching | >=2.32.0 |
-| CVE-2026-25645 | requests | Predictable filename in extract_zipped_paths | >=2.32.0 |
+| AIKIDO-2026-106840 | requests | Proxy bypass via no_proxy matching | >=2.33.0 |
+| CVE-2026-25645 | requests | Predictable filename in extract_zipped_paths | >=2.33.0 |
