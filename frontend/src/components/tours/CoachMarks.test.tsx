@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { render, screen, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import React from 'react';
 import CoachMarks, { tourSeen, markTourSeen, type CoachStep } from './CoachMarks';
 
 const STEPS: CoachStep[] = [
@@ -404,6 +405,100 @@ describe('CoachMarks', () => {
 
     vi.useRealTimers();
     document.body.removeChild(targetEl);
+  });
+  describe('StrictMode once-only guard', () => {
+    const TOUR_KEY = 'test_strictmode_v1';
+    const mockStore: Record<string, string> = {};
+    const originalLocalStorage = window.localStorage;
+
+    beforeEach(() => {
+      Object.keys(mockStore).forEach((k) => delete mockStore[k]);
+      Object.defineProperty(window, 'localStorage', {
+        value: {
+          getItem: (k: string) => (k in mockStore ? mockStore[k] : null),
+          setItem: (k: string, v: string) => { mockStore[k] = v; },
+          removeItem: (k: string) => { delete mockStore[k]; },
+          clear: () => { Object.keys(mockStore).forEach((k) => delete mockStore[k]); },
+        },
+        writable: true,
+      });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(window, 'localStorage', { value: originalLocalStorage, writable: true });
+    });
+
+    function StrictModeHarness({ onDone }: { onDone: () => void }) {
+      const [run, setRun] = useState(true);
+      return (
+        <React.StrictMode>
+          <div>
+            <Target />
+            <CoachMarks
+              steps={STEPS}
+              run={run}
+              onClose={() => {
+                setRun(false);
+                markTourSeen(TOUR_KEY);
+                onDone();
+              }}
+            />
+          </div>
+        </React.StrictMode>
+      );
+    }
+
+    it('Done: onClose once, markTourSeen once, no "Cannot update a component" warning', async () => {
+      const onDone = vi.fn();
+      const setItemSpy = vi.spyOn(window.localStorage, 'setItem');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      render(<StrictModeHarness onDone={onDone} />);
+
+      const nextBtn = screen.getByRole('button', { name: 'Next' });
+      fireEvent.click(nextBtn);
+      fireEvent.click(nextBtn);
+      const doneBtn = screen.getByRole('button', { name: 'Done' });
+      fireEvent.click(doneBtn);
+
+      expect(onDone).toHaveBeenCalledTimes(1);
+      expect(setItemSpy).toHaveBeenCalledTimes(1);
+      expect(setItemSpy).toHaveBeenCalledWith(TOUR_KEY, '1');
+
+      const cannotUpdateCalls = errSpy.mock.calls.filter(
+        (args) =>
+          typeof args[0] === 'string' &&
+          args[0].includes('Cannot update a component'),
+      );
+      expect(cannotUpdateCalls).toHaveLength(0);
+
+      errSpy.mockRestore();
+      setItemSpy.mockRestore();
+    });
+
+    it('Escape: onClose once, markTourSeen once, no "Cannot update a component" warning', async () => {
+      const onDone = vi.fn();
+      const setItemSpy = vi.spyOn(window.localStorage, 'setItem');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      render(<StrictModeHarness onDone={onDone} />);
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(onDone).toHaveBeenCalledTimes(1);
+      expect(setItemSpy).toHaveBeenCalledTimes(1);
+      expect(setItemSpy).toHaveBeenCalledWith(TOUR_KEY, '1');
+
+      const cannotUpdateCalls = errSpy.mock.calls.filter(
+        (args) =>
+          typeof args[0] === 'string' &&
+          args[0].includes('Cannot update a component'),
+      );
+      expect(cannotUpdateCalls).toHaveLength(0);
+
+      errSpy.mockRestore();
+      setItemSpy.mockRestore();
+    });
   });
 });
 
