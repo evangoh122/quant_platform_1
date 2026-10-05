@@ -42,6 +42,7 @@ export function SecFilingExplorer() {
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,6 +74,7 @@ export function SecFilingExplorer() {
 
   const handleSelect = useCallback(
     (ticker: string) => {
+      const reqId = ++requestIdRef.current;
       setSelected(ticker);
       setQuery(ticker);
       setOpen(false);
@@ -81,9 +83,21 @@ export function SecFilingExplorer() {
       setLoading(true);
       api
         .chat(`search SEC filings for ${ticker}`)
-        .then(setResult)
-        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-        .finally(() => setLoading(false));
+        .then((res) => {
+          if (reqId === requestIdRef.current) {
+            setResult(res);
+          }
+        })
+        .catch((e) => {
+          if (reqId === requestIdRef.current) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        })
+        .finally(() => {
+          if (reqId === requestIdRef.current) {
+            setLoading(false);
+          }
+        });
     },
     [],
   );
@@ -133,7 +147,20 @@ export function SecFilingExplorer() {
       : [];
   const isNoCoverage = rawRows.length > 0 && rawRows[0]?.error === 'no_coverage';
   const noCoverageTicker = isNoCoverage ? String(rawRows[0].ticker ?? selected) : '';
-  const rows = isNoCoverage ? [] : rawRows;
+  const isRetrievalUnavailable = rawRows.length > 0 && rawRows[0]?.error === 'retrieval_unavailable';
+  const retrievalUnavailableMessage = isRetrievalUnavailable
+    ? String(rawRows[0].message ?? 'SEC search is temporarily unavailable.')
+    : '';
+  const hasUnknownError =
+    rawRows.length > 0 &&
+    typeof rawRows[0]?.error === 'string' &&
+    rawRows[0].error !== 'no_coverage' &&
+    rawRows[0].error !== 'retrieval_unavailable';
+  const unknownErrorMessage = hasUnknownError
+    ? String(rawRows[0].message ?? rawRows[0].error)
+    : '';
+  const isError = isNoCoverage || isRetrievalUnavailable || hasUnknownError;
+  const rows = isError ? [] : rawRows;
 
   const useFallback = coverageStatus === 'unavailable';
 
@@ -268,7 +295,18 @@ export function SecFilingExplorer() {
         <EmptyState title={`No SEC filings have been processed for ${noCoverageTicker} yet.`} />
       )}
 
-      {!loading && !error && result !== null && !isNoCoverage && (
+      {!loading && !error && result !== null && isRetrievalUnavailable && (
+        <ErrorState
+          message={retrievalUnavailableMessage}
+          onRetry={() => handleSelect(selected)}
+        />
+      )}
+
+      {!loading && !error && result !== null && hasUnknownError && (
+        <ErrorState message={unknownErrorMessage} />
+      )}
+
+      {!loading && !error && result !== null && !isNoCoverage && !isRetrievalUnavailable && !hasUnknownError && (
         <Card title="Extracted Sections & Sources">
           {rows.length === 0 ? (
             <EmptyState title="No SEC filing sections found for this search" />

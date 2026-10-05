@@ -317,4 +317,277 @@ describe('SecFilingExplorer', () => {
     });
     expect(screen.getByText(/MD&A/i)).toBeInTheDocument();
   });
+
+  it('shows retrieval_unavailable error state with retry button', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'NVDA', cik: '1', n_filings: 20, n_chunks: 200, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'NVDA' },
+            result: {
+              rows: [
+                {
+                  error: 'retrieval_unavailable',
+                  message: 'SEC filing corpus could not be loaded. Check Delta table connectivity.',
+                  ticker: 'NVDA',
+                },
+              ],
+            },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('NVDA');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByText(/SEC filing corpus could not be loaded/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Retry/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No SEC filing sections found/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No SEC filings have been processed/i)).not.toBeInTheDocument();
+  });
+
+  it('retrieval_unavailable retry triggers re-fetch', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'NVDA', cik: '1', n_filings: 20, n_chunks: 200, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat
+      .mockResolvedValueOnce(
+        mockChatResponse({
+          tool_calls: [
+            {
+              name: 'search_sec_filings',
+              arguments: { symbol: 'NVDA' },
+              result: {
+                rows: [
+                  {
+                    error: 'retrieval_unavailable',
+                    message: 'SEC filing corpus could not be loaded.',
+                    ticker: 'NVDA',
+                  },
+                ],
+              },
+              ok: true,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockChatResponse({
+          tool_calls: [
+            {
+              name: 'search_sec_filings',
+              arguments: { symbol: 'NVDA' },
+              result: { rows: [{ chunk_text: 'GPU revenue', section: 'MD&A' }] },
+              ok: true,
+            },
+          ],
+        }),
+      );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('NVDA');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Retry/i)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText(/Retry/i));
+
+    await waitFor(() => {
+      expect(screen.getByText(/GPU revenue/i)).toBeInTheDocument();
+    });
+  });
+
+  it('shows generic error state for unknown error shapes', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: {
+              rows: [{ error: 'rate_limited', message: 'Too many requests. Try again later.' }],
+            },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('AAPL');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Too many requests/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/No SEC filing sections found/i)).not.toBeInTheDocument();
+  });
+
+  it('unknown error without message falls back to error code', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: { rows: [{ error: 'something_broke' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('AAPL');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByText(/something_broke/i)).toBeInTheDocument();
+    });
+  });
+
+  it('stale response from A is discarded when B is selected after A', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+        { ticker: 'NVDA', cik: '2', n_filings: 20, n_chunks: 200, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 2,
+      status: 'ok',
+    });
+
+    let resolveA: (v: unknown) => void;
+    const promiseA = new Promise((r) => {
+      resolveA = r;
+    });
+    let resolveB: (v: unknown) => void;
+    const promiseB = new Promise((r) => {
+      resolveB = r;
+    });
+
+    mockChat.mockImplementation((msg: string) => {
+      if (msg.includes('AAPL')) return promiseA;
+      return promiseB;
+    });
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/2 equities/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+
+    // Select AAPL
+    fireEvent.focus(input);
+    const optionA = await screen.findByText('AAPL');
+    fireEvent.mouseDown(optionA);
+
+    // Wait for AAPL to be selected (loading state shown)
+    await waitFor(() => {
+      expect(input).toHaveValue('AAPL');
+    });
+
+    // Clear the input and re-open dropdown to find NVDA
+    const clearBtn = screen.getByLabelText('Clear selection');
+    fireEvent.click(clearBtn);
+    fireEvent.focus(input);
+
+    const optionB = await screen.findByText('NVDA');
+    fireEvent.mouseDown(optionB);
+
+    // Resolve B first (this is the current selection)
+    resolveB!(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'NVDA' },
+            result: { rows: [{ chunk_text: 'GPU revenue', section: 'MD&A' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/GPU revenue/i)).toBeInTheDocument();
+    });
+
+    // Now resolve A (stale — should be discarded)
+    resolveA!(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: { rows: [{ chunk_text: 'iPhone revenue', section: 'Products' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    // B's results should still be shown, not A's
+    await waitFor(() => {
+      expect(screen.getByText(/GPU revenue/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/iPhone revenue/i)).not.toBeInTheDocument();
+  });
 });
