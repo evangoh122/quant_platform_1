@@ -11,8 +11,9 @@ These tests MUST fail on the old ``shift(-1)`` logic (red phase). They verify:
 import numpy as np
 import pandas as pd
 import pytest
+from datetime import date
 
-from ml.baseline_labels import forward_labels, purged_split, refit_rows
+from ml.baseline_labels import daily_close_labels, forward_labels, purged_split, refit_rows
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -282,4 +283,344 @@ def test_refit_rows_staggered_symbols():
     assert len(refit) < len(lab), (
         f"refit_rows returned all {len(lab)} labelled rows; "
         "expected fewer (some B rows with label_ts > 10:00 must be excluded)"
+    )
+
+
+# ── daily_close_labels tests ────────────────────────────────────────────────
+
+def _make_closes(rows):
+    """Build a closes DataFrame with symbol, trade_date, close, close_ts."""
+    return pd.DataFrame(rows)
+
+
+# ── D1: snapshot after D's close → labelled from D→N ────────────────────────
+
+def test_daily_snapshot_after_close_labels_from_d_to_n():
+    """Feature row with prediction_ts after close_ts of trade_date D
+    → labelled from D → next trade_date N."""
+    # Fri 2026-06-05 close at 20:00 UTC, Mon 2026-06-08 close at 20:00 UTC
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 102.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    # prediction_ts after Friday's close → D = Fri, N = Mon
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    assert out.loc[0, "label"] == 1.0  # 102 > 100
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-08 20:00", tz="UTC")
+
+
+# ── D2: snapshot BEFORE D's close (same date) → uses previous trading day ──
+
+def test_daily_snapshot_before_close_uses_previous_day():
+    """Feature row with prediction_ts before close_ts of the same date
+    → D is the PREVIOUS trading day, not the current one."""
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 4),
+         "close": 99.0, "close_ts": pd.Timestamp("2026-06-04 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 102.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    # prediction_ts on Friday 10:00 ET (14:00 UTC) → before Friday's close
+    # → D = Thu, N = Fri → label from Thu→Fri
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 14:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    assert out.loc[0, "label"] == 1.0  # Fri 100 > Thu 99
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-05 20:00", tz="UTC")
+
+
+# ── D3: weekend gap, gap > max_gap_days, last trading date, symbol isolation ──
+
+def test_daily_friday_snapshot_labels_friday_to_monday():
+    """Friday snapshot → labelled from Fri → Mon (gap=3 calendar days, OK)."""
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 103.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    assert out.loc[0, "label"] == 1.0  # 103 > 100
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-08 20:00", tz="UTC")
+
+
+def test_daily_gap_exceeds_max_gap_days_is_nan():
+    """N - D > max_gap_days calendar days → NaN label."""
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        # 10 calendar days later → exceeds max_gap_days=5
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 15),
+         "close": 105.0, "close_ts": pd.Timestamp("2026-06-15 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes, max_gap_days=5)
+    assert pd.isna(out.loc[0, "label"])
+    assert pd.isna(out.loc[0, "label_ts"])
+
+
+def test_daily_last_trading_date_is_nan():
+    """Last trade_date for a symbol → no N → NaN label."""
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    assert pd.isna(out.loc[0, "label"])
+
+
+def test_daily_symbols_never_mix():
+    """AAPL's label never comes from MSFT's closes."""
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "MSFT", "trade_date": date(2026, 6, 5),
+         "close": 200.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 102.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+        {"symbol": "MSFT", "trade_date": date(2026, 6, 8),
+         "close": 205.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+        {"symbol": "MSFT", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    # AAPL: 102 > 100 → label 1.0
+    assert out.loc[0, "label"] == 1.0
+    # MSFT: 205 > 200 → label 1.0
+    assert out.loc[1, "label"] == 1.0
+    # label_ts should be each symbol's own next close
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-08 20:00", tz="UTC")
+    assert out.loc[1, "label_ts"] == pd.Timestamp("2026-06-08 20:00", tz="UTC")
+
+
+def test_daily_no_eligible_close_is_nan():
+    """prediction_ts before all closes → no D → NaN."""
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 10:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    assert pd.isna(out.loc[0, "label"])
+
+
+def test_daily_empty_closes_returns_nan():
+    """Empty closes DataFrame → all labels NaN."""
+    closes = _make_closes([])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    assert pd.isna(out.loc[0, "label"])
+
+
+# ── D4: look-ahead guard ────────────────────────────────────────────────────
+
+def test_daily_close_after_prediction_ts_never_used_as_d():
+    """A close with close_ts > prediction_ts must not be used as D.
+
+    If prediction_ts is on Fri 10:00 ET (14:00 UTC), D should be Thu
+    (the previous trading day), NOT Fri (whose close_ts is 20:00 UTC,
+    which is after prediction_ts).
+    """
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 4),
+         "close": 99.0, "close_ts": pd.Timestamp("2026-06-04 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 102.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 14:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    # D = Thu (close_ts 20:00 UTC <= 14:00? NO — 20:00 > 14:00!)
+    # Wait: Thu close_ts = 2026-06-04 20:00 UTC. prediction_ts = 2026-06-05 14:00 UTC.
+    # 2026-06-04 20:00 <= 2026-06-05 14:00 → YES, Thu is eligible.
+    # Fri close_ts = 2026-06-05 20:00 UTC > 2026-06-05 14:00 → NOT eligible.
+    # So D = Thu, N = Fri. label = 1.0 (100 > 99), label_ts = Fri close_ts.
+    assert out.loc[0, "label"] == 1.0
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-05 20:00", tz="UTC")
+
+
+# ── D5: integration — daily_close_labels → purged_split → refit_rows ────────
+
+def test_daily_purged_split_refit_no_lookahead():
+    """3-symbol staggered fixture: no train or refit row has label_ts > cutoff.
+
+    This is the integration test that ensures the full pipeline (labelling,
+    purged split, refit) produces no look-ahead leakage.
+    """
+    from datetime import date as dt_date
+
+    # Closes: 3 symbols, staggered last trading dates
+    # A: Jun 1-5 (1 week), B: Jun 1-12 (2 weeks), C: Jun 1-19 (3 weeks)
+    closes = _make_closes([
+        # A
+        {"symbol": "A", "trade_date": dt_date(2026, 6, 1), "close": 10.0, "close_ts": pd.Timestamp("2026-06-01 20:00", tz="UTC")},
+        {"symbol": "A", "trade_date": dt_date(2026, 6, 2), "close": 10.1, "close_ts": pd.Timestamp("2026-06-02 20:00", tz="UTC")},
+        {"symbol": "A", "trade_date": dt_date(2026, 6, 3), "close": 10.2, "close_ts": pd.Timestamp("2026-06-03 20:00", tz="UTC")},
+        {"symbol": "A", "trade_date": dt_date(2026, 6, 4), "close": 10.3, "close_ts": pd.Timestamp("2026-06-04 20:00", tz="UTC")},
+        {"symbol": "A", "trade_date": dt_date(2026, 6, 5), "close": 10.4, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        # B
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 1), "close": 20.0, "close_ts": pd.Timestamp("2026-06-01 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 2), "close": 20.1, "close_ts": pd.Timestamp("2026-06-02 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 3), "close": 20.2, "close_ts": pd.Timestamp("2026-06-03 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 4), "close": 20.3, "close_ts": pd.Timestamp("2026-06-04 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 5), "close": 20.4, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 8), "close": 20.5, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 9), "close": 20.6, "close_ts": pd.Timestamp("2026-06-09 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 10), "close": 20.7, "close_ts": pd.Timestamp("2026-06-10 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 11), "close": 20.8, "close_ts": pd.Timestamp("2026-06-11 20:00", tz="UTC")},
+        {"symbol": "B", "trade_date": dt_date(2026, 6, 12), "close": 20.9, "close_ts": pd.Timestamp("2026-06-12 20:00", tz="UTC")},
+        # C
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 1), "close": 30.0, "close_ts": pd.Timestamp("2026-06-01 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 2), "close": 30.1, "close_ts": pd.Timestamp("2026-06-02 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 3), "close": 30.2, "close_ts": pd.Timestamp("2026-06-03 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 4), "close": 30.3, "close_ts": pd.Timestamp("2026-06-04 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 5), "close": 30.4, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 8), "close": 30.5, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 9), "close": 30.6, "close_ts": pd.Timestamp("2026-06-09 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 10), "close": 30.7, "close_ts": pd.Timestamp("2026-06-10 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 11), "close": 30.8, "close_ts": pd.Timestamp("2026-06-11 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 12), "close": 30.9, "close_ts": pd.Timestamp("2026-06-12 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 15), "close": 31.0, "close_ts": pd.Timestamp("2026-06-15 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 16), "close": 31.1, "close_ts": pd.Timestamp("2026-06-16 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 17), "close": 31.2, "close_ts": pd.Timestamp("2026-06-17 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 18), "close": 31.3, "close_ts": pd.Timestamp("2026-06-18 20:00", tz="UTC")},
+        {"symbol": "C", "trade_date": dt_date(2026, 6, 19), "close": 31.4, "close_ts": pd.Timestamp("2026-06-19 20:00", tz="UTC")},
+    ])
+
+    # Features: one row per symbol per day (after market close)
+    features = pd.DataFrame([
+        {"symbol": sym, "prediction_ts": pd.Timestamp(f"2026-06-{d:02d} 21:00", tz="UTC")}
+        for sym in ["A", "B", "C"]
+        for d in [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19]
+    ])
+
+    lab = daily_close_labels(features, closes)
+    lab = lab[lab.label.notna()].copy()
+    assert len(lab) > 0, "fixture must produce labelled rows"
+
+    # Purged split
+    train, test = purged_split(lab, frac=0.8)
+    cut = lab["prediction_ts"].quantile(0.8)
+    assert (train["label_ts"] <= cut).all(), (
+        f"train contains row with label_ts > cut={cut}"
+    )
+
+    # Refit rows
+    latest = features.sort_values("prediction_ts").groupby("symbol").tail(1)
+    refit = refit_rows(lab, latest["prediction_ts"])
+    cutoff = latest["prediction_ts"].min()
+    assert (refit["label_ts"] <= cutoff).all(), (
+        f"refit contains row with label_ts > cutoff={cutoff}"
+    )
+
+
+# ── D6: named mutation tests ────────────────────────────────────────────────
+
+def test_mutation_lookahead_guard_trade_date_vs_close_ts():
+    """Mutation: replace close_ts <= prediction_ts with
+    trade_date <= prediction_ts.date() (same-day look-ahead).
+
+    With the buggy predicate, a feature row at 10:00 ET on 2026-06-05
+    would match D = 2026-06-05 (trade_date <= 2026-06-05), even though
+    close_ts = 20:00 UTC is AFTER prediction_ts = 14:00 UTC.  This is
+    a look-ahead violation.
+
+    This test MUST FAIL when the predicate is mutated.
+    """
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 4),
+         "close": 99.0, "close_ts": pd.Timestamp("2026-06-04 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 102.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 14:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    # Correct: D = Thu (Jun 4), N = Fri (Jun 5), label = 1.0
+    # Buggy (trade_date predicate): D = Fri (Jun 5), N = Mon (Jun 8), label = 1.0
+    # Both give 1.0 here, but label_ts differs:
+    # Correct: label_ts = Fri close_ts (2026-06-05 20:00 UTC)
+    # Buggy:   label_ts = Mon close_ts (2026-06-08 20:00 UTC)
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-05 20:00", tz="UTC"), (
+        "label_ts should be Fri close_ts, not Mon close_ts (look-ahead guard)"
+    )
+
+
+def test_mutation_drop_max_gap_check():
+    """Mutation: drop the max_gap_days check.
+
+    With gap > max_gap_days, the row should be NaN.  If the check is
+    dropped, it gets a label instead.
+
+    This test MUST FAIL when the gap check is removed.
+    """
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        # 10 calendar days later
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 15),
+         "close": 105.0, "close_ts": pd.Timestamp("2026-06-15 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes, max_gap_days=5)
+    assert pd.isna(out.loc[0, "label"]), (
+        "label must be NaN when gap=10 > max_gap_days=5"
+    )
+
+
+def test_mutation_label_from_n_plus_1():
+    """Mutation: label from N+1 instead of N.
+
+    With 3 trading days, using N+1 would give a different label_ts
+    (and possibly a different label direction).
+
+    This test MUST FAIL when the code labels from N+1 instead of N.
+    """
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 98.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 9),
+         "close": 105.0, "close_ts": pd.Timestamp("2026-06-09 20:00", tz="UTC")},
+    ])
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 21:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    # Correct: N = Mon (Jun 8), close=98 < 100 → label = 0.0
+    # Buggy (N+1): N+1 = Tue (Jun 9), close=105 > 100 → label = 1.0
+    assert out.loc[0, "label"] == 0.0, (
+        "label should be 0.0 (N=Mon close 98 < Fri close 100), "
+        "not 1.0 (N+1=Tue close 105)"
     )

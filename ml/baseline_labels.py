@@ -139,17 +139,18 @@ def daily_close_labels(
         .reset_index()
         .rename(columns={"index": "orig_idx"})
     )
-    feat = feat.sort_values(["symbol", "prediction_ts"]).reset_index(drop=True)
+    # merge_asof requires the join key sorted globally (not just per group).
+    feat = feat.sort_values("prediction_ts").reset_index(drop=True)
 
     # merge_asof: for each prediction_ts, find the latest close_ts <= it.
-    closes_for_merge = closes[["symbol", "close_ts", "trade_date"]].sort_values(
-        ["symbol", "close_ts"]
+    closes_for_merge = closes[["symbol", "close_ts", "trade_date", "close"]].sort_values(
+        "close_ts"
     )
 
     merged = pd.merge_asof(
         feat,
         closes_for_merge.rename(
-            columns={"close_ts": "_cts", "trade_date": "D_date"}
+            columns={"close_ts": "_cts", "trade_date": "D_date", "close": "D_close"}
         ),
         left_on="prediction_ts",
         right_on="_cts",
@@ -157,8 +158,12 @@ def daily_close_labels(
         direction="backward",
     )
 
-    # Join next-day info.
-    merged = merged.merge(next_lookup, on=["symbol", "D_date"], how="left")
+    # Join next-day info.  next_lookup key is "trade_date"; merged has "D_date".
+    merged = merged.merge(
+        next_lookup.rename(columns={"trade_date": "D_date"}),
+        on=["symbol", "D_date"],
+        how="left",
+    )
 
     # Gap in calendar days.
     d_dt = pd.to_datetime(merged["D_date"])
@@ -173,7 +178,9 @@ def daily_close_labels(
     out.loc[vr["orig_idx"].values, "label"] = (
         vr["N_close"].values > vr["D_close"].values
     ).astype(float)
-    out.loc[vr["orig_idx"].values, "label_ts"] = vr["N_close_ts"].values
+    # Preserve timezone from close_ts when assigning label_ts.
+    label_ts_vals = pd.array(vr["N_close_ts"].values, dtype="datetime64[ns, UTC]")
+    out.loc[vr["orig_idx"].values, "label_ts"] = label_ts_vals
 
     return out
 
