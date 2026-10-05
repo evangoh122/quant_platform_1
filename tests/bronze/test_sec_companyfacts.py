@@ -2322,6 +2322,11 @@ class TestCachePathFallback:
         mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
         mod._validate_user_agent = lambda ua: None
 
+        # Hermetic: fake HTTP client so no network access occurs
+        fake_http = FakeHttpClient([
+            _payload_200(_make_company_facts_payload()),
+        ])
+
         try:
             result = run_ingest_companyfacts(
                 catalog="cat",
@@ -2331,6 +2336,7 @@ class TestCachePathFallback:
                 cik_overrides={"AAPL": ["0000320193"]},
                 delta_writer=lambda c, s, r: None,
                 manifest_writer=lambda c, s, e: None,
+                http_client=fake_http,
             )
         finally:
             mod.load_company_tickers = original_load
@@ -2370,7 +2376,8 @@ class TestEnsureTableIdempotent:
         assert len(alter_calls) == 0, f"ALTER TABLE should not be called when column exists: {alter_calls}"
 
     def test_ensure_table_runs_alter_when_http_status_missing(self):
-        """When http_status column is missing, exactly one ALTER TABLE is issued."""
+        """When http_status column is missing, exactly one ALTER TABLE is issued
+        deriving the column type from the manifest StructType."""
         from unittest.mock import MagicMock, call
 
         mock_spark = MagicMock()
@@ -2389,6 +2396,32 @@ class TestEnsureTableIdempotent:
         alter_calls = [c for c in mock_spark.sql.call_args_list if "ALTER TABLE" in str(c)]
         assert len(alter_calls) == 1, f"ALTER TABLE should be called once when column missing: {alter_calls}"
         assert "http_status INT" in str(alter_calls[0])
+
+    def test_ensure_table_alter_derives_two_missing_fields_from_schema(self):
+        """ALTER path adds exactly the missing fields with their StructType types.
+
+        Simulates a pre-existing table missing 'error_category' and 'error_message'.
+        The ALTER must add both with types derived from the manifest StructType
+        (STRING, STRING) — no hard-coded column list.
+        """
+        from unittest.mock import MagicMock
+
+        mock_spark = MagicMock()
+        # Table missing error_category and error_message
+        mock_spark.table.return_value.columns = [
+            "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
+            "payload_hash", "payload_bytes", "fact_count", "http_status",
+            "started_at", "completed_at", "logged_at",
+        ]
+
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: mock_spark)
+        writer.ensure_table("cat", "sch")
+
+        alter_calls = [c for c in mock_spark.sql.call_args_list if "ALTER TABLE" in str(c)]
+        assert len(alter_calls) == 1, f"Expected exactly one ALTER: {alter_calls}"
+        ddl = str(alter_calls[0])
+        assert "error_category STRING" in ddl
+        assert "error_message STRING" in ddl
 
 
 class TestCacheMinEntries:

@@ -172,53 +172,6 @@ COMPANY_FACTS_URL = (
     f"{EDGAR_DATA_BASE}/api/xbrl/companyfacts/CIK{{cik}}.json"
 )
 
-# Plan B 2.2 — bronze_sec_xbrl_facts column order
-BRONZE_FACT_COLUMNS = [
-    "ingest_run_id",
-    "ingested_at",
-    "source_url",
-    "payload_hash",
-    "cik",
-    "entity_name",
-    "ticker",
-    "taxonomy",
-    "concept",
-    "label",
-    "description",
-    "unit",
-    "value_raw",
-    "value_decimal",
-    "period_start",
-    "period_end",
-    "instant",
-    "fiscal_year",
-    "fiscal_period",
-    "form_type",
-    "accession_number",
-    "filed_date",
-    "frame",
-    "raw_fact_json",
-    "source_updated_at",
-]
-
-# Plan B 2.1 — sec_companyfacts_ingest_log columns
-MANIFEST_COLUMNS = [
-    "ingest_run_id",
-    "cik",
-    "ticker",
-    "fetch_status",
-    "attempt_count",
-    "payload_hash",
-    "payload_bytes",
-    "fact_count",
-    "http_status",
-    "started_at",
-    "completed_at",
-    "error_category",
-    "error_message",
-]
-
-
 # ── Pure flattening functions (Spark-free, testable offline) ────────────────
 
 
@@ -799,12 +752,38 @@ class SparkCompanyFactsManifestWriter:
                 {cols}
             ) USING DELTA
         """)
-        # Idempotent: add http_status if the table pre-existed without it
-        # Check columns first to avoid [FIELD_ALREADY_EXISTS] error logging
+        # Idempotent: add any missing columns from the manifest StructType.
+        # Derives column names and types from the schema — no hard-coded list.
         try:
-            columns = spark.table(f"{catalog}.{schema}.sec_companyfacts_ingest_log").columns
-            if "http_status" not in columns:
-                spark.sql(f"ALTER TABLE {catalog}.{schema}.sec_companyfacts_ingest_log ADD COLUMNS (http_status INT)")
+            existing = set(spark.table(f"{catalog}.{schema}.sec_companyfacts_ingest_log").columns)
+            _TYPE_MAP = {
+                "string": "STRING",
+                "int": "INT",
+                "bigint": "BIGINT",
+                "double": "DOUBLE",
+                "float": "FLOAT",
+                "boolean": "BOOLEAN",
+                "timestamp": "TIMESTAMP",
+                "date": "DATE",
+                "binary": "BINARY",
+                "decimal": "DECIMAL",
+                "smallint": "SMALLINT",
+                "tinyint": "TINYINT",
+            }
+            missing = [
+                f for f in manifest_schema.fields if f.name not in existing
+            ]
+            if missing:
+                parts = []
+                for f in missing:
+                    ddl_type = _TYPE_MAP.get(
+                        f.dataType.simpleString(), f.dataType.simpleString().upper()
+                    )
+                    parts.append(f"{f.name} {ddl_type}")
+                spark.sql(
+                    f"ALTER TABLE {catalog}.{schema}.sec_companyfacts_ingest_log "
+                    f"ADD COLUMNS ({', '.join(parts)})"
+                )
         except Exception:
             pass  # table may not exist yet or other non-critical error
 
