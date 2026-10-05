@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import type { NavGroup } from './AppShell';
 
 interface MobileNavigationProps {
@@ -13,6 +13,7 @@ interface MobileNavigationProps {
 export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle, onClose }: MobileNavigationProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -35,10 +36,28 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
   }, [open]);
 
   useEffect(() => {
-    if (!open && triggerRef.current) {
+    if (wasOpen.current && !open && triggerRef.current) {
       triggerRef.current.focus();
     }
+    wasOpen.current = open;
   }, [open]);
+
+  const handleTrapFocus = useCallback((e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab' || !drawerRef.current) return;
+    const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }, []);
 
   return (
     <div className="lg:hidden">
@@ -62,7 +81,9 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
           <div
             ref={drawerRef}
             role="dialog"
+            aria-modal="true"
             aria-label="Navigation"
+            onKeyDown={handleTrapFocus}
             className="absolute inset-y-0 left-0 w-[min(80vw,320px)] overflow-y-auto bg-[var(--surface)] shadow-xl"
           >
             <div className="border-b border-[var(--border)] px-4 py-4 pl-14">

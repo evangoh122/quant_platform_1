@@ -129,6 +129,92 @@ describe('Active navigation', () => {
   });
 });
 
+describe('Mobile navigation accessibility', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('does not steal focus on initial render when drawer is closed', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const trigger = screen.getByLabelText('Open navigation');
+    expect(document.activeElement).not.toBe(trigger);
+  });
+
+  it('restores focus to trigger after closing the drawer', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+    Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const trigger = screen.getByLabelText('Open navigation');
+    await user.click(trigger);
+
+    const dialog = screen.getByRole('dialog', { name: 'Navigation' });
+    expect(dialog).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument();
+    });
+
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('drawer has aria-modal="true"', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+    Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText('Open navigation'));
+
+    const dialog = screen.getByRole('dialog', { name: 'Navigation' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+  });
+
+  it('traps Tab inside the drawer while open', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+    Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByLabelText('Open navigation'));
+
+    const dialog = screen.getByRole('dialog', { name: 'Navigation' });
+    const buttons = dialog.querySelectorAll('button');
+    const lastButton = buttons[buttons.length - 1];
+
+    lastButton.focus();
+    await user.keyboard('{Tab}');
+
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+});
+
 describe('Breaker rule', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
