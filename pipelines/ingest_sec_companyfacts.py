@@ -56,10 +56,99 @@ from pipelines.sec_rag_ingest import (
     _SystemClock,
 )
 
-# Lazy pyspark imports — only loaded when Spark is actually used (not in tests)
+# Plain-Python column specs — no PySpark import required.
+# The StructType is built on demand via _get_bronze_schema() / _get_manifest_schema().
+from collections import namedtuple
+
+_ColumnSpec = namedtuple("_ColumnSpec", ["name", "type_str", "nullable"])
+
+BRONZE_COLUMNS = [
+    _ColumnSpec("ingest_run_id", "string", False),
+    _ColumnSpec("ingested_at", "timestamp", False),
+    _ColumnSpec("source_url", "string", True),
+    _ColumnSpec("payload_hash", "string", True),
+    _ColumnSpec("cik", "string", True),
+    _ColumnSpec("entity_name", "string", True),
+    _ColumnSpec("ticker", "string", True),
+    _ColumnSpec("taxonomy", "string", True),
+    _ColumnSpec("concept", "string", True),
+    _ColumnSpec("label", "string", True),
+    _ColumnSpec("description", "string", True),
+    _ColumnSpec("unit", "string", True),
+    _ColumnSpec("value_raw", "string", True),
+    _ColumnSpec("value_decimal", "double", True),
+    _ColumnSpec("period_start", "string", True),
+    _ColumnSpec("period_end", "string", True),
+    _ColumnSpec("instant", "string", True),
+    _ColumnSpec("fiscal_year", "int", True),
+    _ColumnSpec("fiscal_period", "string", True),
+    _ColumnSpec("form_type", "string", True),
+    _ColumnSpec("accession_number", "string", True),
+    _ColumnSpec("filed_date", "string", True),
+    _ColumnSpec("frame", "string", True),
+    _ColumnSpec("raw_fact_json", "string", True),
+    _ColumnSpec("source_updated_at", "string", True),
+]
+
+MANIFEST_COLUMNS = [
+    _ColumnSpec("ingest_run_id", "string", False),
+    _ColumnSpec("cik", "string", False),
+    _ColumnSpec("ticker", "string", False),
+    _ColumnSpec("fetch_status", "string", False),
+    _ColumnSpec("attempt_count", "int", True),
+    _ColumnSpec("payload_hash", "string", True),
+    _ColumnSpec("payload_bytes", "int", True),
+    _ColumnSpec("fact_count", "int", True),
+    _ColumnSpec("http_status", "int", True),
+    _ColumnSpec("started_at", "timestamp", True),
+    _ColumnSpec("completed_at", "timestamp", True),
+    _ColumnSpec("error_category", "string", True),
+    _ColumnSpec("error_message", "string", True),
+    _ColumnSpec("logged_at", "timestamp", False),
+]
+
+# Spark type string to StructType builder (populated lazily)
+_SPARK_TYPE_MAP = None
+
+
+def _get_spark_type_map():
+    """Build the Spark type map on first call (requires PySpark)."""
+    global _SPARK_TYPE_MAP
+    if _SPARK_TYPE_MAP is not None:
+        return _SPARK_TYPE_MAP
+    from pyspark.sql.types import (
+        BooleanType,
+        DoubleType,
+        FloatType,
+        IntegerType,
+        LongType,
+        StringType,
+        TimestampType,
+    )
+    _SPARK_TYPE_MAP = {
+        "string": StringType(),
+        "int": IntegerType(),
+        "bigint": LongType(),
+        "double": DoubleType(),
+        "float": FloatType(),
+        "boolean": BooleanType(),
+        "timestamp": TimestampType(),
+    }
+    return _SPARK_TYPE_MAP
+
 
 _BRONZE_SCHEMA = None
 _MANIFEST_SCHEMA = None
+
+
+def _build_struct_type(columns):
+    """Build a PySpark StructType from a list of _ColumnSpec."""
+    from pyspark.sql.types import StructField, StructType
+    type_map = _get_spark_type_map()
+    return StructType([
+        StructField(c.name, type_map[c.type_str], c.nullable)
+        for c in columns
+    ])
 
 
 def _get_bronze_schema():
@@ -67,41 +156,7 @@ def _get_bronze_schema():
     global _BRONZE_SCHEMA
     if _BRONZE_SCHEMA is not None:
         return _BRONZE_SCHEMA
-    from pyspark.sql.types import (
-        DoubleType,
-        IntegerType,
-        StringType,
-        StructField,
-        StructType,
-        TimestampType,
-    )
-    _BRONZE_SCHEMA = StructType([
-        StructField("ingest_run_id", StringType(), False),
-        StructField("ingested_at", TimestampType(), False),
-        StructField("source_url", StringType(), True),
-        StructField("payload_hash", StringType(), True),
-        StructField("cik", StringType(), True),
-        StructField("entity_name", StringType(), True),
-        StructField("ticker", StringType(), True),
-        StructField("taxonomy", StringType(), True),
-        StructField("concept", StringType(), True),
-        StructField("label", StringType(), True),
-        StructField("description", StringType(), True),
-        StructField("unit", StringType(), True),
-        StructField("value_raw", StringType(), True),
-        StructField("value_decimal", DoubleType(), True),
-        StructField("period_start", StringType(), True),
-        StructField("period_end", StringType(), True),
-        StructField("instant", StringType(), True),
-        StructField("fiscal_year", IntegerType(), True),
-        StructField("fiscal_period", StringType(), True),
-        StructField("form_type", StringType(), True),
-        StructField("accession_number", StringType(), True),
-        StructField("filed_date", StringType(), True),
-        StructField("frame", StringType(), True),
-        StructField("raw_fact_json", StringType(), True),
-        StructField("source_updated_at", StringType(), True),
-    ])
+    _BRONZE_SCHEMA = _build_struct_type(BRONZE_COLUMNS)
     return _BRONZE_SCHEMA
 
 
@@ -110,30 +165,35 @@ def _get_manifest_schema():
     global _MANIFEST_SCHEMA
     if _MANIFEST_SCHEMA is not None:
         return _MANIFEST_SCHEMA
-    from pyspark.sql.types import (
-        IntegerType,
-        StringType,
-        StructField,
-        StructType,
-        TimestampType,
-    )
-    _MANIFEST_SCHEMA = StructType([
-        StructField("ingest_run_id", StringType(), False),
-        StructField("cik", StringType(), False),
-        StructField("ticker", StringType(), False),
-        StructField("fetch_status", StringType(), False),
-        StructField("attempt_count", IntegerType(), True),
-        StructField("payload_hash", StringType(), True),
-        StructField("payload_bytes", IntegerType(), True),
-        StructField("fact_count", IntegerType(), True),
-        StructField("http_status", IntegerType(), True),
-        StructField("started_at", TimestampType(), True),
-        StructField("completed_at", TimestampType(), True),
-        StructField("error_category", StringType(), True),
-        StructField("error_message", StringType(), True),
-        StructField("logged_at", TimestampType(), False),
-    ])
+    _MANIFEST_SCHEMA = _build_struct_type(MANIFEST_COLUMNS)
     return _MANIFEST_SCHEMA
+
+
+_DDL_TYPE_MAP = {
+    "string": "STRING",
+    "int": "INT",
+    "bigint": "BIGINT",
+    "double": "DOUBLE",
+    "float": "FLOAT",
+    "boolean": "BOOLEAN",
+    "timestamp": "TIMESTAMP",
+    "date": "DATE",
+    "binary": "BINARY",
+    "decimal": "DECIMAL",
+    "smallint": "SMALLINT",
+    "tinyint": "TINYINT",
+}
+
+
+def _columns_to_ddl(columns) -> str:
+    """Generate a DDL column list from _ColumnSpec tuples (no PySpark needed)."""
+    parts = []
+    for c in columns:
+        ddl_type = _DDL_TYPE_MAP.get(c.type_str, c.type_str.upper())
+        nullable = "" if c.nullable else " NOT NULL"
+        parts.append(f"    {c.name} {ddl_type}{nullable}")
+    return ",\n".join(parts)
+
 
 def _schema_to_ddl_columns(schema) -> str:
     """Generate a DDL column list from a StructType.
@@ -143,24 +203,10 @@ def _schema_to_ddl_columns(schema) -> str:
     StructType the single source of truth for both CREATE TABLE DDL and
     createDataFrame schemas — they can never drift apart.
     """
-    _TYPE_MAP = {
-        "string": "STRING",
-        "int": "INT",
-        "bigint": "BIGINT",
-        "double": "DOUBLE",
-        "float": "FLOAT",
-        "boolean": "BOOLEAN",
-        "timestamp": "TIMESTAMP",
-        "date": "DATE",
-        "binary": "BINARY",
-        "decimal": "DECIMAL",
-        "smallint": "SMALLINT",
-        "tinyint": "TINYINT",
-    }
     parts = []
     for field in schema.fields:
         spark_type = field.dataType.simpleString()
-        ddl_type = _TYPE_MAP.get(spark_type, spark_type.upper())
+        ddl_type = _DDL_TYPE_MAP.get(spark_type, spark_type.upper())
         nullable = "" if field.nullable else " NOT NULL"
         parts.append(f"    {field.name} {ddl_type}{nullable}")
     return ",\n".join(parts)

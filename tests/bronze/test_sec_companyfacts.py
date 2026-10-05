@@ -18,6 +18,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+try:
+    import pyspark.sql.types as _pyspark_types
+    _has_pyspark = True
+except ImportError:
+    _has_pyspark = False
+
 from pipelines.sec_rag_ingest import (
     Clock,
     HttpClient,
@@ -1593,6 +1599,7 @@ class _FakeSparkSession:
         pass
 
 
+@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestSparkWriterAppendMode:
     """Verify SparkCompanyFactsWriter and SparkCompanyFactsManifestWriter
     use mode('append') — never 'overwrite'."""
@@ -1778,6 +1785,7 @@ def _parse_ddl_columns(ddl: str):
     return cols
 
 
+@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestBronzeSchemaContract:
     """Bronze StructType matches the DDL column list exactly.
 
@@ -1931,6 +1939,7 @@ class TestBronzeSchemaContract:
         )
 
 
+@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestManifestSchemaContract:
     """Manifest StructType matches the DDL column list exactly.
 
@@ -2076,6 +2085,7 @@ class TestManifestSchemaContract:
         )
 
 
+@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestFlattenedRowSchemaMatch:
     """A flattened row with every optional field None converts to a tuple
     that matches the StructType (no inference anywhere)."""
@@ -2188,6 +2198,7 @@ class TestFlattenedRowSchemaMatch:
             assert field.name in row, f"Missing key: {field.name}"
 
 
+@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestCreateDataFrameAlwaysWithSchema:
     """Every createDataFrame call passes a schema argument."""
 
@@ -2349,6 +2360,7 @@ class TestCachePathFallback:
         assert tempfile.gettempdir() in captured_cache_paths[0]
 
 
+@pytest.mark.skipif(not _has_pyspark, reason="Requires PySpark")
 class TestEnsureTableIdempotent:
     """Test that ensure_table checks column existence before ALTER TABLE."""
 
