@@ -14,3 +14,7 @@ Claude live check: the warehouse path works for NVDA (894 chunks / 894 embedding
    map degrades to an empty map with a WARNING log, and `check_ticker_coverage` raises the existing structured unavailable/no-coverage error
    (not a raw driver exception) so the API returns a clean error. The startup warm-up must not crash the app. Tests for both.
 Acceptance: `python3 -m pytest -q -m "not spark and not lakebase and not databricks"` green. Verdict `.agents/mimo/VERDICT-rag-coverage-merge-main-r2.md`.
+
+## RESUME NOTE (Claude, after a PC restart killed round 2 mid-way)
+A partial, uncommitted `tests/api/test_hybrid_retriever.py` (473 lines) from your interrupted run is in the worktree. Review it, finish
+items 1 and 2, run the acceptance suite, and COMMIT.
