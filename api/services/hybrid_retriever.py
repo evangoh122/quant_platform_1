@@ -234,6 +234,56 @@ def _get_spark():
         return DatabricksSession.builder.serverless(True).getOrCreate()
 
 
+def _spark_available() -> bool:
+    """True inside a Databricks runtime or when databricks-connect is installed."""
+    import importlib.util
+    return bool(os.environ.get("DATABRICKS_RUNTIME_VERSION")) or (
+        importlib.util.find_spec("databricks.connect") is not None
+    )
+
+
+def _fetch_corpus_rows():
+    """Return (chunk rows, embedding rows) as mappings with the same keys.
+
+    Uses Spark when available (notebooks, jobs, local dev with databricks-connect);
+    otherwise the SQL warehouse via db.delta_adapter (Databricks Apps has no Spark).
+    """
+    if _spark_available():
+        spark = _get_spark()
+        # unix_timestamp avoids client-timezone drift on naive datetimes.
+        from pyspark.sql import functions as F
+
+        chunks_rows = spark.table(CHUNKS_TABLE).select(
+            "chunk_id", "ticker", "chunk_text", "accession_number",
+            F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
+            "form_type", "filing_section", "chunk_index",
+            "source_url",
+        ).collect()
+        embed_rows = spark.table(EMBEDDINGS_TABLE).select(
+            "chunk_id", "embedding", "embedding_model",
+        ).collect()
+        return chunks_rows, embed_rows
+
+    from db.delta_adapter import _get_warehouse_connection
+
+    conn = _get_warehouse_connection()
+    out = []
+    for sql in (
+        f"SELECT chunk_id, ticker, chunk_text, accession_number, "
+        f"unix_timestamp(accepted_ts) AS accepted_epoch, form_type, filing_section, "
+        f"chunk_index, source_url FROM {CHUNKS_TABLE}",
+        f"SELECT chunk_id, embedding, embedding_model FROM {EMBEDDINGS_TABLE}",
+    ):
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            cols = [d[0] for d in cur.description]
+            out.append([dict(zip(cols, r)) for r in cur.fetchall()])
+        finally:
+            cur.close()
+    return out[0], out[1]
+
+
 def _load_corpus() -> bool:
     """Load chunk text + embeddings from Delta tables into process memory.
 
@@ -257,26 +307,7 @@ def _load_corpus() -> bool:
 
         t0 = time.monotonic()
         try:
-            spark = _get_spark()
-
-            # Load chunk text — use unix_timestamp to avoid client-tz drift.
-            # Spark returns naive datetimes in the *client* machine's local
-            # timezone, not UTC, so we pull epoch seconds and convert in Python.
-            from pyspark.sql import functions as F
-
-            chunks_df = spark.table(CHUNKS_TABLE).select(
-                "chunk_id", "ticker", "chunk_text", "accession_number",
-                F.unix_timestamp(F.col("accepted_ts")).alias("accepted_epoch"),
-                "form_type", "filing_section", "chunk_index",
-                "source_url",
-            )
-            chunks_rows = chunks_df.collect()
-
-            # Load embeddings
-            embed_df = spark.table(EMBEDDINGS_TABLE).select(
-                "chunk_id", "embedding", "embedding_model",
-            )
-            embed_rows = embed_df.collect()
+            chunks_rows, embed_rows = _fetch_corpus_rows()
 
             # Build embedding map + record stored index metadata
             seen_dims: set[int] = set()

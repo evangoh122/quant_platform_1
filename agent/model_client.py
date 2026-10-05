@@ -260,15 +260,29 @@ class ModelClient:
     def parse_json_response(self, response: ModelResponse) -> dict:
         """Parse the model's text response as a JSON object.
 
-        Does NOT strip markdown fences, eval, or repair. The response must be
-        a valid JSON object. Raises ``ModelError`` if parsing fails.
+        Accepts a bare JSON object, or one wrapped in prose / a code fence (the
+        outermost {...} span is parsed). No eval or repair. Raises ``ModelError``
+        if no JSON object can be parsed.
         """
         text = response.text.strip()
 
-        # Try direct JSON parse
+        # Try direct JSON parse; if the model wrapped the object in prose or a
+        # code fence, parse the outermost {...} span instead. The result is
+        # still validated against the closed NextAction schema by the runtime.
         try:
             data = json.loads(text)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
+            start, end = text.find("{"), text.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    data = json.loads(text[start:end + 1])
+                except json.JSONDecodeError as e2:
+                    e = e2
+                    data = None
+            else:
+                e = json.JSONDecodeError("no JSON object found", text, 0)
+                data = None
+        if data is None:
             logger.warning(
                 "model response is not valid JSON | rid={} | error={}",
                 response.request_id, e,
