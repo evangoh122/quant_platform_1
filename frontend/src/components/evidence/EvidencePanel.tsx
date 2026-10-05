@@ -15,6 +15,14 @@ export function EvidencePanel({ toolCalls, available, sending }: EvidencePanelPr
         data-testid="evidence-panel-empty"
         className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center dark:border-slate-700 dark:bg-slate-800/50"
       >
+        {!available && (
+          <div
+            role="alert"
+            className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+          >
+            Agent tools are unavailable. Showing partial results.
+          </div>
+        )}
         <p className="text-sm text-slate-500 dark:text-slate-400">
           No evidence yet. Ask a question to see tool calls and sources.
         </p>
