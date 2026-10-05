@@ -8,7 +8,7 @@ describe('PlatformOverview', () => {
     render(<PlatformOverview onNavigate={vi.fn()} />);
 
     expect(screen.getByRole('heading', { name: 'Quant Research Platform' })).toBeInTheDocument();
-    expect(screen.getByText(/287M\+ market and regulatory records/)).toBeInTheDocument();
+    expect(screen.getByText(/Market and regulatory records transformed through Spark/)).toBeInTheDocument();
     expect(screen.getAllByText(/Verified snapshot: 2026-10-05/).length).toBeGreaterThanOrEqual(1);
   });
 
@@ -66,6 +66,34 @@ describe('PlatformOverview', () => {
 
     expect(screen.queryByText(/live/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/real-time count/i)).not.toBeInTheDocument();
+  });
+
+  it('every numeric claim with M+, records, or chunks is inside a snapshot-labelled container', () => {
+    const { container } = render(<PlatformOverview onNavigate={vi.fn()} />);
+
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const pattern = /\d[\d,.]*\s*(M\+|records|chunks)/;
+    const failures: string[] = [];
+
+    while (walker.nextNode()) {
+      const text = walker.currentNode.textContent ?? '';
+      if (!pattern.test(text)) continue;
+
+      let el = walker.currentNode.parentElement;
+      let labelled = false;
+      while (el && el !== container) {
+        if (el.textContent?.includes('Verified snapshot: 2026-10-05')) {
+          labelled = true;
+          break;
+        }
+        el = el.parentElement;
+      }
+      if (!labelled) {
+        failures.push(`Unlabelled numeric claim: "${text.trim()}"`);
+      }
+    }
+
+    expect(failures).toEqual([]);
   });
 
   it('renders evidence cards for all six data categories', () => {

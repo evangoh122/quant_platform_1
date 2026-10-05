@@ -79,7 +79,7 @@ const PIPELINE_STAGES = [
 const RUBRIC_CARDS: { title: string; description: string; target: string }[] = [
   { title: 'Market Explorer', description: 'OHLCV features, price data, and volume analytics for any symbol.', target: 'market' },
   { title: 'Options Analytics', description: 'Put/call ratios, IV surfaces, skew, and term structure.', target: 'options' },
-  { title: 'SEC Research', description: '10,720 embedding chunks from SEC filings with semantic search.', target: 'sec' },
+  { title: 'SEC Research', description: 'Embedding chunks from SEC filings with semantic search.', target: 'sec' },
   { title: 'AI Research Agent', description: 'Natural-language Q&A grounded in market data and SEC filings.', target: 'agent' },
   { title: 'Signal Explorer', description: 'Baseline logistic-regression signals with no edge claimed.', target: 'signals' },
   { title: 'Paper Portfolio', description: 'Simulated positions and order tracking on Lakebase.', target: 'portfolio' },
@@ -95,7 +95,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
           Quant Research Platform
         </h1>
         <p className="mt-3 max-w-3xl text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-          287M+ market and regulatory records transformed through Spark, searched through
+          Market and regulatory records transformed through Spark, searched through
           a governed AI agent, and audited through Lakebase and Delta analytics.
         </p>
         <div className="mt-5 flex flex-wrap gap-3">
