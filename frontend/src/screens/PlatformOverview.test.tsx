@@ -79,15 +79,9 @@ describe('PlatformOverview', () => {
       const text = walker.currentNode.textContent ?? '';
       if (!pattern.test(text)) continue;
 
-      let el = walker.currentNode.parentElement;
-      let labelled = false;
-      while (el && el !== container) {
-        if (el.textContent?.includes('Verified snapshot: 2026-10-05')) {
-          labelled = true;
-          break;
-        }
-        el = el.parentElement;
-      }
+      const el = walker.currentNode.parentElement;
+      const card = el?.closest('[data-evidence-card]');
+      const labelled = !!card && (card.textContent?.includes('Verified snapshot: 2026-10-05') ?? false);
       if (!labelled) {
         failures.push(`Unlabelled numeric claim: "${text.trim()}"`);
       }
