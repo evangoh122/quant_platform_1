@@ -283,6 +283,7 @@ class CompanyFactsManifestEntry:
 def fetch_company_facts(
     client: SecClient,
     cik: str,
+    _attempts: Optional[List[int]] = None,
 ) -> Tuple[Dict[str, Any], bytes, str, int, int]:
     """Fetch Company Facts JSON for a CIK.
 
@@ -290,21 +291,21 @@ def fetch_company_facts(
     Raises SecClientError on failure.
     """
     url = build_source_url(cik)
-    req_before = client._request_count
-    raw_bytes, http_status = _fetch_raw_bytes(client, url)
-    attempt_count = client._request_count - req_before
+    local = _attempts if _attempts is not None else [0]
+    raw_bytes, http_status, _ = _fetch_raw_bytes(client, url, _attempts=local)
     payload_hash = compute_payload_hash(raw_bytes)
     payload = json.loads(raw_bytes)
-    return payload, raw_bytes, payload_hash, http_status, attempt_count
+    return payload, raw_bytes, payload_hash, http_status, local[0]
 
 
-def _fetch_raw_bytes(client: SecClient, url: str) -> Tuple[bytes, int]:
+def _fetch_raw_bytes(client: SecClient, url: str, _attempts: Optional[List[int]] = None) -> Tuple[bytes, int, int]:
     """Fetch raw bytes from SEC.  Uses the client's get_json internally but
     we need raw bytes for hash — fetch via the internal _request method."""
     # We'll use the underlying HTTP client directly with the same headers
     # to get raw bytes, respecting rate limiting via the existing limiter.
-    resp = client._request(url, expect_json=False)
-    return resp.text.encode("utf-8"), resp.status_code
+    local = _attempts if _attempts is not None else [0]
+    resp = client._request(url, expect_json=False, _attempts=local)
+    return resp.text.encode("utf-8"), resp.status_code, local[0]
 
 
 # ── Spark entry point ──────────────────────────────────────────────────────
@@ -442,11 +443,10 @@ def run_ingest_companyfacts(
             started_at=started_at,
         )
 
-        req_before = client._request_count
+        call_attempts = [0]
 
         try:
-            payload, raw_bytes, payload_hash, http_status, fetch_attempts = fetch_company_facts(client, cik)
-            attempt_count = fetch_attempts
+            payload, raw_bytes, payload_hash, http_status, attempt_count = fetch_company_facts(client, cik, _attempts=call_attempts)
             manifest.payload_hash = payload_hash
             manifest.payload_bytes = len(raw_bytes)
             manifest.http_status = http_status
@@ -497,11 +497,10 @@ def run_ingest_companyfacts(
             )
 
         except SecClientError as e:
-            attempt_count = client._request_count - req_before
             with lock:
                 result["failed_count"] += 1
             manifest.fetch_status = "failed"
-            manifest.attempt_count = attempt_count
+            manifest.attempt_count = call_attempts[0]
             manifest.http_status = e.status_code
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = _classify_error(e)
@@ -517,11 +516,10 @@ def run_ingest_companyfacts(
                 manifest_writer(catalog, schema, manifest)
 
         except Exception as e:
-            attempt_count = client._request_count - req_before
             with lock:
                 result["failed_count"] += 1
             manifest.fetch_status = "failed"
-            manifest.attempt_count = attempt_count
+            manifest.attempt_count = call_attempts[0]
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = "unexpected"
             manifest.error_message = str(e)[:500]

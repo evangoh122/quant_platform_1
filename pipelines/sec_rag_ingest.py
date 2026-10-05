@@ -827,6 +827,7 @@ class SecClient:
         self,
         url: str,
         expect_json: bool = True,
+        _attempts: Optional[List[int]] = None,
     ) -> HttpResponse:
         """Execute request with rate limiting, retries, and backoff."""
         last_error: Optional[Exception] = None
@@ -834,6 +835,8 @@ class SecClient:
         for attempt in range(self._config.max_retries):
             self._limiter.acquire()
             self._request_count += 1
+            if _attempts is not None:
+                _attempts[0] += 1
 
             try:
                 resp = self._http.get(url, self._headers, timeout=30.0)
