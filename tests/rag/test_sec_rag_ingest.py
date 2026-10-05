@@ -4774,64 +4774,56 @@ class TestDiscoveryCikPerFiling:
     """For override tickers, plan_cik uses the CIK that discovered the filing,
     not an arbitrary member of the CIK set."""
 
-    def test_override_ticker_uses_discovery_cik(self):
-        """When accession prefix CIK is not in the override group, the
-        discovery CIK is used instead of next(iter(set))."""
+    @pytest.mark.parametrize("discovering", ["a", "b"])
+    def test_override_ticker_uses_discovery_cik(self, discovering):
+        """The accession prefix is a filing agent (0001193125), NOT in the override group, so the
+        discovery CIK must be used. Parametrized over both group members so a revert to
+        ``next(iter(ticker_ciks))`` fails for at least one of them, whatever the set order."""
         clock = FakeClock()
         http = FakeHttpClient()
+        cik_a = "0001045810"
+        cik_b = "0001234567"
+        disc, other = (cik_a, cik_b) if discovering == "a" else (cik_b, cik_a)
+        agent_acc = "0001193125-25-000010"
 
-        # Two CIKs in the override group for ticker "TEST"
-        cik_a = "0001045810"  # matches fixture submissions
-        cik_b = "0001234567"  # different CIK
-
-        # Submissions for CIK A — has filing with accession prefix matching CIK A
-        submissions_a = json.loads((FIXTURES / "submissions_recent.json").read_text())
-        http.set_json(f"https://data.sec.gov/submissions/CIK{cik_a}.json", submissions_a)
-
-        # Empty submissions for CIK B
-        http.set_json(f"https://data.sec.gov/submissions/CIK{cik_b}.json", {
-            "cik": int(cik_b), "name": "Test Corp B",
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        recent = submissions["filings"]["recent"]
+        recent["accessionNumber"] = [
+            agent_acc if a == "0001045810-25-000010" else a for a in recent["accessionNumber"]
+        ]
+        submissions["cik"] = int(disc)
+        http.set_json(f"https://data.sec.gov/submissions/CIK{disc}.json", submissions)
+        http.set_json(f"https://data.sec.gov/submissions/CIK{other}.json", {
+            "cik": int(other), "name": "Test Corp Other",
             "filings": {"recent": {"accessionNumber": [], "form": [], "filingDate": [],
                                    "primaryDocument": [], "primaryDocDescription": []}}
         })
-
         filing_html = (FIXTURES / "sample_filing.htm").read_text()
         http.set_text(
-            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            f"https://www.sec.gov/Archives/edgar/data/{int(disc)}/000119312525000010/nvda-20250126.htm",
             filing_html,
         )
 
-        # Override: TEST ticker has two CIKs
-        universe = [TickerEntry(ticker="TEST", phase=1)]
-        cik_overrides = {"TEST": [cik_a, cik_b]}
-
-        # Track which CIK is used for planning
-        planned_ciks: list = []
-        original_process = process_filing
+        stored: list = []
 
         class SpyDataWriter(FakeDataWriter):
             def append_bronze_rows(self, catalog, schema, rows):
                 for r in rows:
-                    planned_ciks.append(r.get("cik"))
+                    if r.get("accession_number") == agent_acc:
+                        stored.append(r.get("cik"))
                 return super().append_bronze_rows(catalog, schema, rows)
 
-        writer = SpyDataWriter()
         result = run_ingest(
             catalog="test", schema="test",
             start_date="2024-09-01",
             tickers=["TEST"],
-            universe_reader=FakeUniverseReader(universe),
+            universe_reader=FakeUniverseReader([TickerEntry(ticker="TEST", phase=1)]),
             accession_reader=FakeAccessionReader(),
-            data_writer=writer,
+            data_writer=SpyDataWriter(),
             http_client=http,
             clock=clock,
             cache_path=str(FIXTURES / "company_tickers.json"),
-            cik_overrides=cik_overrides,
+            cik_overrides={"TEST": [cik_a, cik_b]},
         )
-        if result.planned_count > 0:
-            # The filing discovered under CIK A should be planned with CIK A
-            # (the discovery CIK), not an arbitrary set member
-            assert all(cik == cik_a for cik in planned_ciks if cik), (
-                f"Expected all planned CIKs to be {cik_a} (discovery CIK), "
-                f"got: {planned_ciks}"
-            )
+        assert stored, f"agent-prefixed filing was not stored (failed={result.failed_count})"
+        assert set(stored) == {disc}, f"expected discovery CIK {disc}, got {set(stored)}"
