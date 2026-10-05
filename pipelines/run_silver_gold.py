@@ -49,6 +49,7 @@ STEPS = [
     ("silver_cot_positions", "silver/07_silver_cot_positions.sql", "sql"),
     ("silver_ohlcv_day_adjusted", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),
     ("data_quality_breaks", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),
+    ("silver_sec_xbrl_facts", "silver/09a_silver_sec_xbrl_facts_ddl.sql", "sql"),
     ("silver_sec_xbrl_facts", "silver/09_silver_sec_xbrl_facts.sql", "sql"),
     ("gold_ohlcv_features", "gold/01_gold_ohlcv_features.sql", "sql"),
     ("gold_options_features", "gold/02_gold_options_features.sql", "sql"),
