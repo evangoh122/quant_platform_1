@@ -305,4 +305,141 @@ describe('ResearchAgent', () => {
       expect(screen.getByText('No results found.')).toBeInTheDocument();
     });
   });
+
+  it('renders error rows honestly and not as source cards', async () => {
+    const mixedResponse = {
+      reply: 'Partial results.',
+      tool_calls: [
+        {
+          name: 'search_sec_filings',
+          arguments: { ticker: 'NVDA' },
+          result: {
+            rows: [
+              { error: 'no_coverage', ticker: 'XYZ', message: 'Ticker not covered' },
+              {
+                chunk_id: 'chunk-1',
+                accession_number: '0001234567-24-000001',
+                form_type: '10-K',
+                accepted_ts: '2024-02-21',
+                source_url: 'https://sec.gov/filing/1',
+                ticker: 'NVDA',
+                section: 'risk_factors',
+                retrieval_mode: 'hybrid',
+              },
+            ],
+          },
+          ok: true,
+        },
+      ],
+      sources: [],
+      available: true,
+      empty: false,
+    };
+    vi.stubGlobal('fetch', mockFetch(mixedResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.type(screen.getByPlaceholderText('Ask the research agent…'), 'test');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/No SEC filings processed for XYZ yet/)).toBeInTheDocument();
+    });
+
+    // Error rows should NOT be rendered as source cards
+    const sourceCards = screen.getAllByTestId('source-card');
+    expect(sourceCards).toHaveLength(1);
+    expect(sourceCards[0]).toHaveTextContent('NVDA');
+  });
+
+  it('shows Failed badge on tool card when ok is false', async () => {
+    vi.stubGlobal('fetch', mockFetch(mockFailedToolResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Summarize Nvidia/));
+
+    await waitFor(() => {
+      const toolCard = screen.getByTestId('tool-call-0');
+      expect(toolCard).toHaveTextContent('Failed');
+    });
+
+    // The badge should be on the tool card, not just in execution trace
+    const toolCard = screen.getByTestId('tool-call-0');
+    const badge = toolCard.querySelector('.bg-red-100, .dark\\:bg-red-900\\/30');
+    expect(badge).not.toBeNull();
+  });
+
+  it('does not show note saved confirmation when note_id is absent', async () => {
+    const noNoteIdResponse = {
+      reply: 'Note processed.',
+      tool_calls: [
+        {
+          name: 'save_research_note',
+          arguments: { symbol: 'NVDA', content: 'test' },
+          result: { symbol: 'NVDA', status: 'saved' },
+          ok: true,
+        },
+      ],
+      sources: [],
+      available: true,
+      empty: false,
+    };
+    vi.stubGlobal('fetch', mockFetch(noNoteIdResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Save a research note/));
+
+    await waitFor(() => {
+      expect(screen.getByText('Note processed.')).toBeInTheDocument();
+    });
+
+    // Should NOT show "Research note saved to Lakebase" without note_id
+    expect(screen.queryByText(/Research note saved to Lakebase/)).not.toBeInTheDocument();
+  });
+
+  it('shows agent-unavailable state when available is false and no tool calls', async () => {
+    const unavailableResponse = {
+      reply: 'Agent is unavailable.',
+      tool_calls: [],
+      sources: [],
+      available: false,
+      empty: true,
+    };
+    vi.stubGlobal('fetch', mockFetch(unavailableResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.type(screen.getByPlaceholderText('Ask the research agent…'), 'test');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/Agent tools are unavailable/);
+    });
+  });
+
+  it('renders follow-up questions when API returns them', async () => {
+    const followUpResponse = {
+      ...mockChatResponse,
+      follow_ups: ['How did NVDA grow?', 'What are the risks?'],
+    };
+    vi.stubGlobal('fetch', mockFetch(followUpResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Summarize Nvidia/));
+
+    await waitFor(() => {
+      expect(screen.getByText('How did NVDA grow?')).toBeInTheDocument();
+      expect(screen.getByText('What are the risks?')).toBeInTheDocument();
+    });
+
+    // Clicking a follow-up should submit it
+    await user.click(screen.getByText('How did NVDA grow?'));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+  });
 });
