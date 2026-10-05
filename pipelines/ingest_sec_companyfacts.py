@@ -20,8 +20,10 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -421,10 +423,12 @@ def run_ingest_companyfacts(
         )
         return result
 
-    # Ingest each ticker-CIK
+    # Ingest each ticker-CIK with bounded concurrency
     ingested_at = datetime.now(timezone.utc)
+    lock = threading.Lock()
+    max_workers = min(4, len(ticker_cik_pairs)) if ticker_cik_pairs else 1
 
-    for ticker, cik in ticker_cik_pairs:
+    def _fetch_one(ticker: str, cik: str) -> None:
         started_at = datetime.now(timezone.utc)
         source_url = build_source_url(cik)
         manifest = CompanyFactsManifestEntry(
@@ -434,21 +438,26 @@ def run_ingest_companyfacts(
             started_at=started_at,
         )
 
+        # Snapshot request count before fetch for attempt tracking
+        req_before = client.request_count
+
         try:
             payload, raw_bytes, payload_hash = fetch_company_facts(client, cik)
+            attempt_count = client.request_count - req_before
             manifest.payload_hash = payload_hash
             manifest.payload_bytes = len(raw_bytes)
 
             # Skip if same (cik, payload_hash) already written this run
-            if (cik, payload_hash) in seen_payloads:
-                manifest.fetch_status = "skipped_duplicate"
-                manifest.completed_at = datetime.now(timezone.utc)
-                result["skipped_duplicate_payloads"] += 1
-                if manifest_writer is not None:
-                    manifest_writer(catalog, schema, manifest)
-                continue
+            with lock:
+                if (cik, payload_hash) in seen_payloads:
+                    manifest.fetch_status = "skipped_duplicate"
+                    manifest.completed_at = datetime.now(timezone.utc)
+                    result["skipped_duplicate_payloads"] += 1
+                    if manifest_writer is not None:
+                        manifest_writer(catalog, schema, manifest)
+                    return
 
-            seen_payloads.add((cik, payload_hash))
+                seen_payloads.add((cik, payload_hash))
 
             # Flatten
             rows = flatten_company_facts(
@@ -463,53 +472,71 @@ def run_ingest_companyfacts(
 
             manifest.fact_count = len(rows)
             manifest.fetch_status = "success"
-            manifest.attempt_count = 1
+            manifest.attempt_count = attempt_count
             manifest.completed_at = datetime.now(timezone.utc)
 
             # Write rows to Delta
             if delta_writer is not None and rows:
                 delta_writer(catalog, schema, rows)
 
-            result["fetched_count"] += 1
-            result["total_facts"] += len(rows)
+            with lock:
+                result["fetched_count"] += 1
+                result["total_facts"] += len(rows)
 
             if manifest_writer is not None:
                 manifest_writer(catalog, schema, manifest)
 
             logger.info(
-                "Fetched %s (CIK %s): %d facts, hash=%s",
-                ticker, cik, len(rows), payload_hash[:12],
+                "Fetched %s (CIK %s): %d facts, hash=%s, attempts=%d",
+                ticker, cik, len(rows), payload_hash[:12], attempt_count,
             )
 
         except SecClientError as e:
-            result["failed_count"] += 1
+            attempt_count = client.request_count - req_before
+            with lock:
+                result["failed_count"] += 1
             manifest.fetch_status = "failed"
+            manifest.attempt_count = attempt_count
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = _classify_error(e)
             manifest.error_message = str(e)[:500]
-            result["errors"].append({
-                "ticker": ticker,
-                "cik": cik,
-                "error": str(e)[:200],
-            })
+            with lock:
+                result["errors"].append({
+                    "ticker": ticker,
+                    "cik": cik,
+                    "error": str(e)[:200],
+                })
             logger.error("Failed to fetch %s (CIK %s): %s", ticker, cik, e)
             if manifest_writer is not None:
                 manifest_writer(catalog, schema, manifest)
 
         except Exception as e:
-            result["failed_count"] += 1
+            attempt_count = client.request_count - req_before
+            with lock:
+                result["failed_count"] += 1
             manifest.fetch_status = "failed"
+            manifest.attempt_count = attempt_count
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = "unexpected"
             manifest.error_message = str(e)[:500]
-            result["errors"].append({
-                "ticker": ticker,
-                "cik": cik,
-                "error": str(e)[:200],
-            })
+            with lock:
+                result["errors"].append({
+                    "ticker": ticker,
+                    "cik": cik,
+                    "error": str(e)[:200],
+                })
             logger.error("Unexpected error for %s (CIK %s): %s", ticker, cik, e)
             if manifest_writer is not None:
                 manifest_writer(catalog, schema, manifest)
+
+    if ticker_cik_pairs:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_fetch_one, t, c): (t, c)
+                for t, c in ticker_cik_pairs
+            }
+            for future in as_completed(futures):
+                future.result()  # propagate unhandled exceptions
 
     logger.info(
         "Company Facts ingestion complete: mapped=%d, fetched=%d, failed=%d, "

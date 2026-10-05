@@ -28,6 +28,8 @@ from pipelines.sec_rag_ingest import (
 )
 from pipelines.ingest_sec_companyfacts import (
     CompanyFactsManifestEntry,
+    SparkCompanyFactsWriter,
+    SparkCompanyFactsManifestWriter,
     flatten_company_facts,
     compute_payload_hash,
     build_source_url,
@@ -633,19 +635,31 @@ class TestRunIngestCompanyFacts:
         assert rows_b[0]["value_decimal"] == 200
 
     def test_same_payload_skipped_within_run(self):
-        """Duplicate (cik, payload_hash) within the same run is skipped."""
+        """Duplicate (cik, payload_hash) within the same run is skipped.
+
+        Two tickers that map to the same CIK fetch the same payload; the
+        second must NOT be written to delta, and the manifest must record
+        fetch_status='skipped_duplicate'.
+        """
         payload = _make_company_facts_payload()
         payload_bytes = json.dumps(payload).encode()
         payload_hash = compute_payload_hash(payload_bytes)
 
-        # First run fetches
-        http1 = FakeHttpClient([_payload_200(payload)])
+        # HTTP responses:
+        #   1. company_tickers.json (needed by load_company_tickers)
+        #   2. Company Facts for CIK 0000320193 (AAPL)
+        #   3. Company Facts for CIK 0000320193 (AAPL2 — same CIK, same payload)
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+            _payload_200(payload),
+            _payload_200(payload),
+        ])
         clock = FakeClock()
-        limiter = RateLimiter(max_requests_per_second=8, clock=clock)
         delta_writer, delta_rows = _make_delta_writer()
         manifest_writer, manifest_entries = _make_manifest_writer()
 
-        # Monkeypatch _resolve_user_agent and _validate_user_agent
         import pipelines.ingest_sec_companyfacts as mod
         original_resolve = mod._resolve_user_agent
         original_validate = mod._validate_user_agent
@@ -653,26 +667,44 @@ class TestRunIngestCompanyFacts:
         mod._validate_user_agent = lambda ua: None
 
         try:
-            seen: set = set()
-            result1 = run_ingest_companyfacts(
+            result = run_ingest_companyfacts(
                 catalog="test_cat",
                 schema="test_sch",
-                tickers=["AAPL"],
-                run_id="run1",
-                http_client=http1,
+                tickers=["AAPL", "AAPL2"],
+                run_id="run_skip",
+                http_client=http,
                 clock=clock,
-                cik_overrides={"AAPL": ["0000320193"]},
+                cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
                 delta_writer=delta_writer,
                 manifest_writer=manifest_writer,
-                _seen_payloads=seen,
                 cache_path="/dev/null",
             )
-            # Monkeypatch company_tickers loading
-            # We need to inject the ticker payload differently
-            # Let's just test with the direct approach
         finally:
             mod._resolve_user_agent = original_resolve
             mod._validate_user_agent = original_validate
+
+        # Both tickers mapped
+        assert result["mapped_count"] == 2
+        # Only one fetch succeeded (second was skipped)
+        assert result["fetched_count"] == 1
+        assert result["skipped_duplicate_payloads"] == 1
+
+        # Delta rows come from only one fetch
+        expected_row_count = len(flatten_company_facts(
+            payload, "0000320193", "AAPL", "run_skip",
+            datetime.now(timezone.utc), "url", payload_hash,
+        ))
+        assert len(delta_rows) == expected_row_count
+
+        # Manifest has two entries: one success, one skipped_duplicate
+        statuses = {e.fetch_status for e in manifest_entries}
+        assert "success" in statuses
+        assert "skipped_duplicate" in statuses
+
+        # The skipped entry records the same payload_hash
+        skipped = [e for e in manifest_entries if e.fetch_status == "skipped_duplicate"]
+        assert len(skipped) == 1
+        assert skipped[0].payload_hash == payload_hash
 
     def test_manifest_fields_complete(self):
         """Manifest entry has all required fields populated."""
@@ -819,6 +851,174 @@ class TestRunIngestCompanyFacts:
         assert _classify_error(SecClientError("n", status_code=404)) == "http_404"
         assert _classify_error(SecClientError("c")) == "client_error"
 
+    def test_attempt_count_from_retries(self):
+        """Manifest attempt_count reflects real SecClient request count."""
+        payload = _make_company_facts_payload()
+        # First request returns 429, second succeeds
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+            HttpResponse(status_code=429, text="rate limited", headers={"Retry-After": "1"}),
+            _payload_200(payload),
+        ])
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL"],
+                run_id="run_retry",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["fetched_count"] == 1
+        success_entries = [e for e in manifest_entries if e.fetch_status == "success"]
+        assert len(success_entries) == 1
+        # 2 HTTP requests: 429 + retry success
+        assert success_entries[0].attempt_count == 2
+
+    def test_bounded_concurrency_max_workers(self):
+        """ThreadPoolExecutor uses at most 4 workers."""
+        import pipelines.ingest_sec_companyfacts as mod
+        import concurrent.futures
+
+        payloads = []
+        http_responses = []
+        tickers = []
+        overrides = {}
+
+        # Build 6 tickers all mapping to different CIKs
+        for i in range(6):
+            ticker = f"TK{i}"
+            cik = f"000000000{i}"
+            tickers.append(ticker)
+            overrides[ticker] = [cik]
+            payload = _make_company_facts_payload(
+                cik=cik,
+                entity_name=f"Corp {i}",
+                facts={
+                    "us-gaap": {
+                        "Rev": {
+                            "label": "Rev",
+                            "description": "Revenue",
+                            "units": {"USD": [
+                                {"start": "2024-01-01", "end": "2024-03-31",
+                                 "val": 100 + i, "fy": 2024, "fp": "Q1",
+                                 "form": "10-Q", "accn": f"000-24-00000{i}",
+                                 "filed": "2024-05-01"},
+                            ]},
+                        },
+                    },
+                },
+            )
+            payloads.append(payload)
+
+        # company_tickers.json + 6 company facts
+        http_responses.append(_payload_200({
+            str(i): {"ticker": f"TK{i}", "cik_str": i, "title": f"Corp {i}"}
+            for i in range(6)
+        }))
+        for p in payloads:
+            http_responses.append(_payload_200(p))
+
+        http = FakeHttpClient(http_responses)
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=tickers,
+                run_id="run_concurrent",
+                http_client=http,
+                clock=clock,
+                cik_overrides=overrides,
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["mapped_count"] == 6
+        assert result["fetched_count"] == 6
+        assert result["total_facts"] == 6
+
+    def test_rate_limiter_holds_with_concurrency(self):
+        """Rate limiter ≤10 req/s still holds under concurrent fetches."""
+        payload = _make_company_facts_payload()
+
+        # 3 tickers, 3 CIKs → 4 HTTP requests (1 company_tickers + 3 facts)
+        http_responses = [
+            _payload_200({
+                "0": {"ticker": "A", "cik_str": 1, "title": "A Corp"},
+                "1": {"ticker": "B", "cik_str": 2, "title": "B Corp"},
+                "2": {"ticker": "C", "cik_str": 3, "title": "C Corp"},
+            }),
+        ]
+        for _ in range(3):
+            http_responses.append(_payload_200(payload))
+
+        http = FakeHttpClient(http_responses)
+        clock = FakeClock()
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["A", "B", "C"],
+                run_id="run_limiter",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"A": ["0000000001"], "B": ["0000000002"], "C": ["0000000003"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["fetched_count"] == 3
+        # limiter.max_rps should still be ≤10
+        assert limiter.max_rps <= 10
+
     def test_compute_payload_hash_deterministic(self):
         """Same bytes always produce the same hash."""
         b = b'{"test": 1}'
@@ -837,6 +1037,117 @@ class TestRunIngestCompanyFacts:
         """CIK is zero-padded to 10 digits."""
         url = build_source_url("320193")
         assert "CIK0000320193" in url
+
+
+# ── Spark write-mode tests (append-only enforcement) ───────────────────────
+
+
+class _FakeWriter:
+    """Records .mode() and .saveAsTable() calls for assertion."""
+
+    def __init__(self):
+        self.modes: List[str] = []
+        self.saved_tables: List[str] = []
+
+    def mode(self, mode_str: str) -> "_FakeWriter":
+        self.modes.append(mode_str)
+        return self
+
+    def saveAsTable(self, table: str) -> None:
+        self.saved_tables.append(table)
+
+
+class _FakeDataFrame:
+    """Minimal DataFrame stand-in that returns a _FakeWriter."""
+
+    def __init__(self, writer: _FakeWriter):
+        self._writer = writer
+
+    @property
+    def write(self) -> _FakeWriter:
+        return self._writer
+
+
+class _FakeSparkSession:
+    """Records rows passed to createDataFrame; returns a _FakeDataFrame."""
+
+    def __init__(self):
+        self.created_rows: List[Any] = []
+        self.writer = _FakeWriter()
+
+    def createDataFrame(self, rows: Any) -> _FakeDataFrame:
+        self.created_rows.append(rows)
+        return _FakeDataFrame(self.writer)
+
+    def sql(self, ddl: str) -> None:
+        pass
+
+
+class TestSparkWriterAppendMode:
+    """Verify SparkCompanyFactsWriter and SparkCompanyFactsManifestWriter
+    use mode('append') — never 'overwrite'."""
+
+    def test_facts_writer_uses_append_mode(self):
+        """SparkCompanyFactsWriter.append_rows must call
+        df.write.mode('append').saveAsTable(...)."""
+        fake_spark = _FakeSparkSession()
+        writer = SparkCompanyFactsWriter(spark_factory=lambda: fake_spark)
+
+        rows = [{"cik": "0000320193", "ticker": "AAPL", "concept": "Revenues"}]
+        count = writer.append_rows("cat", "sch", rows)
+
+        assert count == 1
+        assert fake_spark.writer.modes == ["append"]
+        assert fake_spark.writer.saved_tables == ["cat.sch.bronze_sec_xbrl_facts"]
+
+    def test_manifest_writer_uses_append_mode(self):
+        """SparkCompanyFactsManifestWriter.write_manifest must call
+        df.write.mode('append').saveAsTable(...)."""
+        fake_spark = _FakeSparkSession()
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: fake_spark)
+
+        entry = CompanyFactsManifestEntry(
+            ingest_run_id="r1",
+            cik="0000320193",
+            ticker="AAPL",
+            fetch_status="success",
+            payload_hash="abc",
+        )
+        writer.write_manifest("cat", "sch", entry)
+
+        assert fake_spark.writer.modes == ["append"]
+        assert fake_spark.writer.saved_tables == ["cat.sch.sec_companyfacts_ingest_log"]
+
+    def test_facts_writer_no_overwrite(self):
+        """MUTATION: if append_rows uses mode('overwrite'), this test fails."""
+        fake_spark = _FakeSparkSession()
+        writer = SparkCompanyFactsWriter(spark_factory=lambda: fake_spark)
+        writer.append_rows("cat", "sch", [{"cik": "1"}])
+
+        assert "overwrite" not in fake_spark.writer.modes
+        assert all(m == "append" for m in fake_spark.writer.modes)
+
+    def test_manifest_writer_no_overwrite(self):
+        """MUTATION: if write_manifest uses mode('overwrite'), this test fails."""
+        fake_spark = _FakeSparkSession()
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: fake_spark)
+        entry = CompanyFactsManifestEntry(
+            ingest_run_id="r1", cik="0000320193", ticker="AAPL",
+        )
+        writer.write_manifest("cat", "sch", entry)
+
+        assert "overwrite" not in fake_spark.writer.modes
+        assert all(m == "append" for m in fake_spark.writer.modes)
+
+    def test_facts_writer_empty_rows_no_write(self):
+        """append_rows with empty list returns 0 and does not call Spark."""
+        fake_spark = _FakeSparkSession()
+        writer = SparkCompanyFactsWriter(spark_factory=lambda: fake_spark)
+        count = writer.append_rows("cat", "sch", [])
+
+        assert count == 0
+        assert fake_spark.writer.modes == []
+        assert fake_spark.writer.saved_tables == []
 
 
 # ── Mutation tests (must fail on old code) ─────────────────────────────────
