@@ -273,7 +273,7 @@ class TestLoadAliasMapWarehouse:
     """Verify _load_alias_map uses the SQL warehouse when Spark is unavailable."""
 
     def test_alias_map_built_from_warehouse_rows(self, monkeypatch):
-        """Warehouse rows are grouped by CIK; alphabetically-first ticker is canonical."""
+        """Warehouse rows are grouped by CIK; ticker with most chunks is canonical."""
         from api.services import hybrid_retriever as hr
 
         _make_warehouse_guard(monkeypatch, hr)
@@ -284,11 +284,11 @@ class TestLoadAliasMapWarehouse:
 
         cursor = FakeCursor(
             rows=[
-                {"ticker": "GOOGL", "cik": "0001652044"},
-                {"ticker": "GOOG", "cik": "0001652044"},
-                {"ticker": "NVDA", "cik": "0001045810"},
+                {"ticker": "GOOGL", "cik": "0001652044", "n_chunks": 831},
+                {"ticker": "GOOG", "cik": "0001652044", "n_chunks": 0},
+                {"ticker": "NVDA", "cik": "0001045810", "n_chunks": 894},
             ],
-            columns=["ticker", "cik"],
+            columns=["ticker", "cik", "n_chunks"],
         )
         fake_conn = MagicMock()
         fake_conn.cursor.return_value = cursor
@@ -300,11 +300,72 @@ class TestLoadAliasMapWarehouse:
 
         amap = hr._load_alias_map()
 
-        # GOOG < GOOGL alphabetically → GOOG is canonical
-        assert amap["GOOG"] == "GOOG"
-        assert amap["GOOGL"] == "GOOG"
+        # GOOGL has 831 chunks, GOOG has 0 → GOOGL is canonical
+        assert amap["GOOG"] == "GOOGL"
+        assert amap["GOOGL"] == "GOOGL"
         # NVDA is its own canonical
         assert amap["NVDA"] == "NVDA"
+
+    def test_alias_map_canonical_by_chunks_not_alphabetical(self, monkeypatch):
+        """Canonical is the ticker with the most chunks, not alphabetically first.
+        Mutation: reverting to sorted()[0] must pick GOOG (wrong)."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+
+        cursor = FakeCursor(
+            rows=[
+                {"ticker": "GOOG", "cik": "0001652044", "n_chunks": 0},
+                {"ticker": "GOOGL", "cik": "0001652044", "n_chunks": 831},
+            ],
+            columns=["ticker", "cik", "n_chunks"],
+        )
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = cursor
+
+        monkeypatch.setattr(
+            "db.delta_adapter._get_warehouse_connection",
+            lambda: fake_conn,
+        )
+
+        amap = hr._load_alias_map()
+
+        # Both should map to GOOGL (the one with data)
+        assert amap["GOOGL"] == "GOOGL"
+        assert amap["GOOG"] == "GOOGL"
+
+    def test_alias_map_tie_breaks_alphabetically(self, monkeypatch):
+        """When n_chunks are equal, canonical is alphabetical first."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+
+        cursor = FakeCursor(
+            rows=[
+                {"ticker": "BRK.B", "cik": "0001067983", "n_chunks": 100},
+                {"ticker": "BRK.A", "cik": "0001067983", "n_chunks": 100},
+            ],
+            columns=["ticker", "cik", "n_chunks"],
+        )
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = cursor
+
+        monkeypatch.setattr(
+            "db.delta_adapter._get_warehouse_connection",
+            lambda: fake_conn,
+        )
+
+        amap = hr._load_alias_map()
+
+        # Equal chunks → alphabetical tie-break → BRK.A
+        assert amap["BRK.A"] == "BRK.A"
+        assert amap["BRK.B"] == "BRK.A"
 
 
 # ── 4. Missing coverage table: alias map degrades gracefully ─────────────────
