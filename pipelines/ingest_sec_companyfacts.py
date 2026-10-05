@@ -283,17 +283,19 @@ class CompanyFactsManifestEntry:
 def fetch_company_facts(
     client: SecClient,
     cik: str,
-) -> Tuple[Dict[str, Any], bytes, str, int]:
+) -> Tuple[Dict[str, Any], bytes, str, int, int]:
     """Fetch Company Facts JSON for a CIK.
 
-    Returns (parsed_payload, raw_bytes, payload_hash, http_status).
+    Returns (parsed_payload, raw_bytes, payload_hash, http_status, attempt_count).
     Raises SecClientError on failure.
     """
     url = build_source_url(cik)
+    req_before = client._request_count
     raw_bytes, http_status = _fetch_raw_bytes(client, url)
+    attempt_count = client._request_count - req_before
     payload_hash = compute_payload_hash(raw_bytes)
     payload = json.loads(raw_bytes)
-    return payload, raw_bytes, payload_hash, http_status
+    return payload, raw_bytes, payload_hash, http_status, attempt_count
 
 
 def _fetch_raw_bytes(client: SecClient, url: str) -> Tuple[bytes, int]:
@@ -440,12 +442,11 @@ def run_ingest_companyfacts(
             started_at=started_at,
         )
 
-        # Snapshot request count before fetch for attempt tracking
-        req_before = client.request_count
+        req_before = client._request_count
 
         try:
-            payload, raw_bytes, payload_hash, http_status = fetch_company_facts(client, cik)
-            attempt_count = client.request_count - req_before
+            payload, raw_bytes, payload_hash, http_status, fetch_attempts = fetch_company_facts(client, cik)
+            attempt_count = fetch_attempts
             manifest.payload_hash = payload_hash
             manifest.payload_bytes = len(raw_bytes)
             manifest.http_status = http_status
@@ -454,6 +455,7 @@ def run_ingest_companyfacts(
             with lock:
                 if (cik, payload_hash) in seen_payloads:
                     manifest.fetch_status = "skipped_duplicate"
+                    manifest.attempt_count = attempt_count
                     manifest.completed_at = datetime.now(timezone.utc)
                     result["skipped_duplicate_payloads"] += 1
                     if manifest_writer is not None:
@@ -495,7 +497,7 @@ def run_ingest_companyfacts(
             )
 
         except SecClientError as e:
-            attempt_count = client.request_count - req_before
+            attempt_count = client._request_count - req_before
             with lock:
                 result["failed_count"] += 1
             manifest.fetch_status = "failed"
@@ -515,7 +517,7 @@ def run_ingest_companyfacts(
                 manifest_writer(catalog, schema, manifest)
 
         except Exception as e:
-            attempt_count = client.request_count - req_before
+            attempt_count = client._request_count - req_before
             with lock:
                 result["failed_count"] += 1
             manifest.fetch_status = "failed"
