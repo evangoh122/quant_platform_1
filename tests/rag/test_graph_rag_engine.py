@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 pytest.importorskip("langchain_openai", reason="langchain_openai is an optional dependency")
+pytest.importorskip("api.db", reason="legacy Rag_workbench module not present in this repo; engine scheduled for removal in cleanup PR 4")
 
 from unittest.mock import MagicMock, patch
 from api.services.graph_rag_engine import (

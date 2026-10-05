@@ -31,6 +31,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-app.txt
+            requirements-dev.txt
 
       - name: Install Python dependencies
         shell: bash
@@ -40,6 +41,10 @@ jobs:
           python -m pip install -r "${RUNNER_TEMP}/requirements-no-ibapi.txt"
           if [[ -f requirements-app.txt ]]; then
             python -m pip install -r requirements-app.txt
+          fi
+          if [[ -f requirements-dev.txt ]]; then
+            grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements-dev.txt > "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
+            python -m pip install -r "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
           fi
           python -m pip install pytest pytest-asyncio pytest-timeout httpx numpy pandas polars duckdb scikit-learn pyyaml
 

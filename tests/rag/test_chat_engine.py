@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 pytest.importorskip("openai", reason="openai is an optional dependency")
+pytest.importorskip("api.db", reason="legacy Rag_workbench module not present in this repo; engine scheduled for removal in cleanup PR 4")
 
 from unittest.mock import MagicMock, patch
 import pandas as pd
