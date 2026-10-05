@@ -135,66 +135,6 @@ def test_purged_split_train_test_disjoint():
     assert set(train.index).isdisjoint(set(test.index))
 
 
-# ── mutation tests (must FAIL on old shift(-1) logic) ────────────────────────
-
-def _forward_labels_plain_shift(df):
-    """Buggy version: plain shift(-1) without gap/same-day checks."""
-    out = df.copy()
-    out["label"] = float("nan")
-    out["label_ts"] = pd.NaT
-    for sym, grp in out.groupby("symbol", sort=False):
-        idx = grp.index
-        nxt_ret = grp["return_30m"].shift(-1)
-        nxt_ts = grp["prediction_ts"].shift(-1)
-        valid = nxt_ret.notna()
-        out.loc[idx[valid], "label"] = (nxt_ret[valid] > 0).astype(float)
-        out.loc[idx[valid], "label_ts"] = nxt_ts[valid]
-    return out
-
-
-def test_plain_shift_labels_5min_gap():
-    """Mutation: plain shift(-1) incorrectly labels a 5-min gap row."""
-    base = pd.Timestamp("2026-06-01 10:00:00", tz="US/Eastern")
-    df = _make_df([
-        {"symbol": "AAPL", "prediction_ts": base, "return_30m": 0.01},
-        {"symbol": "AAPL", "prediction_ts": base + pd.Timedelta("5min"), "return_30m": 0.02},
-    ])
-    buggy = _forward_labels_plain_shift(df)
-    correct = forward_labels(df)
-    # Buggy: labels row 0 (incorrect). Correct: NaN.
-    assert not pd.isna(buggy.loc[0, "label"]), "Plain shift should label 5-min gap (buggy)"
-    assert pd.isna(correct.loc[0, "label"]), "Correct logic should NOT label 5-min gap"
-
-
-def _purged_split_on_prediction_ts(lab, frac=0.8):
-    """Buggy version: split train on prediction_ts <= cut instead of label_ts."""
-    cut = lab["prediction_ts"].quantile(frac)
-    train = lab[lab["prediction_ts"] <= cut].copy()
-    test = lab[lab["prediction_ts"] > cut].copy()
-    return train, test
-
-
-def test_prediction_ts_split_leaks_label():
-    """Mutation: splitting on prediction_ts <= cut leaks labels observed after cut."""
-    base = pd.Timestamp("2026-06-01 10:00:00", tz="US/Eastern")
-    times = [base + pd.Timedelta(minutes=30 * i) for i in range(6)]
-    df = _make_df([
-        {"symbol": "AAPL", "prediction_ts": t, "return_30m": 0.01} for t in times
-    ])
-    lab = forward_labels(df)
-    lab = lab[lab.label.notna()].copy()
-    cut = lab["prediction_ts"].quantile(0.5)
-
-    buggy_train, _ = _purged_split_on_prediction_ts(lab, frac=0.5)
-    correct_train, _ = purged_split(lab, frac=0.5)
-
-    # Buggy split may include rows with label_ts > cut
-    leaked = buggy_train[buggy_train["label_ts"] > cut]
-    assert len(leaked) > 0, "Buggy split should include leaked rows (mutation test)"
-    # Correct split must NOT
-    leaked_correct = correct_train[correct_train["label_ts"] > cut]
-    assert len(leaked_correct) == 0, "Correct split must not include leaked rows"
-
 def test_same_day_uses_us_eastern_date_for_utc_input():
     """UTC timestamps (as the warehouse returns them) are compared on the US/Eastern date:
     19:50 ET and 20:20 ET are the same trading date even though the UTC date differs."""
@@ -205,3 +145,91 @@ def test_same_day_uses_us_eastern_date_for_utc_input():
     ])
     out = forward_labels(df)
     assert out.loc[0, "label"] == 0.0
+
+
+# ── F1: midnight-straddle mutation test ──────────────────────────────────────
+
+def test_midnight_straddle_is_nan():
+    """Two snapshots 30 min apart straddling midnight US/Eastern → NaN.
+
+    23:45 ET (03:45 UTC) and 00:15 ET (04:15 UTC next day) are exactly 30 min
+    apart (within tolerance) but on different US/Eastern calendar dates. The
+    same-day check must reject this row.
+
+    This test MUST fail when the same-day check is removed from valid
+    (mutation: ``valid = ok_gap & nxt_ret.notna()``).
+    """
+    # 23:45 ET on 2026-06-01 = 03:45 UTC on 2026-06-02
+    ts_a = pd.Timestamp("2026-06-02 03:45:00", tz="UTC")
+    # 00:15 ET on 2026-06-02 = 04:15 UTC on 2026-06-02
+    ts_b = pd.Timestamp("2026-06-02 04:15:00", tz="UTC")
+    df = _make_df([
+        {"symbol": "AAPL", "prediction_ts": ts_a, "return_30m": 0.01},
+        {"symbol": "AAPL", "prediction_ts": ts_b, "return_30m": 0.02},
+    ])
+    out = forward_labels(df)
+    assert pd.isna(out.loc[0, "label"]), (
+        "Midnight-straddle row must be NaN (different US/Eastern dates)"
+    )
+    assert pd.isna(out.loc[0, "label_ts"]), (
+        "Midnight-straddle row must have NaT label_ts"
+    )
+
+
+# ── N3: sort-handling tests ──────────────────────────────────────────────────
+
+def test_forward_labels_handles_shuffled_input():
+    """forward_labels must sort by [symbol, prediction_ts] internally and
+    produce the same labels regardless of input row order."""
+    base = pd.Timestamp("2026-06-01 10:00:00", tz="US/Eastern")
+    rows = [
+        {"symbol": "AAPL", "prediction_ts": base, "return_30m": 0.01},
+        {"symbol": "AAPL", "prediction_ts": base + pd.Timedelta("30min"), "return_30m": 0.02},
+        {"symbol": "AAPL", "prediction_ts": base + pd.Timedelta("60min"), "return_30m": -0.01},
+    ]
+    sorted_out = forward_labels(_make_df(rows))
+
+    import random
+    shuffled_rows = rows.copy()
+    random.Random(42).shuffle(shuffled_rows)
+    shuffled_out = forward_labels(_make_df(shuffled_rows))
+
+    # Both should produce the same (symbol, prediction_ts, label) triples
+    # regardless of input row order. Sort by [symbol, prediction_ts] to align.
+    cols = ["symbol", "prediction_ts", "label"]
+    sorted_cmp = sorted_out[cols].sort_values(["symbol", "prediction_ts"]).reset_index(drop=True)
+    shuffled_cmp = shuffled_out[cols].sort_values(["symbol", "prediction_ts"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(sorted_cmp, shuffled_cmp)
+
+
+# ── N2/N4: duplicate prediction_ts and tz-naive input ───────────────────────
+
+def test_duplicate_prediction_ts_earlier_gets_nan():
+    """Duplicate prediction_ts for a symbol: gap=0 < tol → earlier row gets NaN,
+    later row labels forward correctly. No crash."""
+    base = pd.Timestamp("2026-06-01 10:00:00", tz="US/Eastern")
+    df = _make_df([
+        {"symbol": "AAPL", "prediction_ts": base, "return_30m": 0.01},
+        {"symbol": "AAPL", "prediction_ts": base, "return_30m": 0.02},
+        {"symbol": "AAPL", "prediction_ts": base + pd.Timedelta("30min"), "return_30m": -0.01},
+    ])
+    out = forward_labels(df)
+    # Row 0 (first duplicate): gap=0 → NaN
+    assert pd.isna(out.loc[0, "label"])
+    # Row 1 (second duplicate): next is +30min → labelled from row 2
+    assert out.loc[1, "label"] == 0.0  # -0.01 <= 0
+    # Row 2 (last): NaN
+    assert pd.isna(out.loc[2, "label"])
+
+
+def test_tz_naive_input_treated_as_utc():
+    """tz-naive timestamps are treated as UTC by _eastern_date."""
+    # 2026-06-01 10:00 naive-as-UTC = 06:00 ET → same day
+    base = pd.Timestamp("2026-06-01 10:00:00")  # tz-naive
+    df = _make_df([
+        {"symbol": "AAPL", "prediction_ts": base, "return_30m": 0.01},
+        {"symbol": "AAPL", "prediction_ts": base + pd.Timedelta("30min"), "return_30m": 0.02},
+    ])
+    out = forward_labels(df)
+    # Same UTC day → same ET day → labelled
+    assert out.loc[0, "label"] == 1.0

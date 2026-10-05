@@ -42,7 +42,7 @@ def forward_labels(
     ----------
     df : DataFrame
         Must contain ``symbol``, ``prediction_ts`` and ``return_30m``.
-        Must be sorted by ``[symbol, prediction_ts]``.
+        Sorted internally by ``[symbol, prediction_ts]`` (stable sort).
     horizon : Timedelta
         Target forward window (default 30 min).
     tol : Timedelta
@@ -59,6 +59,10 @@ def forward_labels(
     out = df.copy()
     out["label"] = float("nan")
     out["label_ts"] = pd.NaT
+
+    # Sort by [symbol, prediction_ts] so shift(-1) gives the true next snapshot.
+    sort_keys = ["symbol", "prediction_ts"]
+    out = out.sort_values(sort_keys, kind="stable")
 
     for sym, grp in out.groupby("symbol", sort=False):
         idx = grp.index
