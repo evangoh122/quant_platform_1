@@ -518,7 +518,8 @@ def _load_alias_map() -> Dict[str, str]:
     except Exception as exc:
         # If canonical_ticker column is missing (old table schema), fall back
         # to identity mapping with a WARNING — never guess alphabetically.
-        if "canonical_ticker" in str(exc) or "UNRESOLVED_COLUMN" in str(exc):
+        msg = str(exc)
+        if "UNRESOLVED_COLUMN" in msg or ("canonical_ticker" in msg and "not found" in msg.lower()):
             logger.warning(
                 "gold_sec_coverage missing canonical_ticker column; "
                 "falling back to identity alias map. Rebuild gold table. {}",
