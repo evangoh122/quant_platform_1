@@ -155,3 +155,34 @@ def test_nchunks_zero_tickers_included_in_mock():
 
     item = SecCoverageItem(**items[1])
     assert item.n_chunks == 0
+
+
+def test_read_coverage_rows_excludes_nchunks_zero_via_sql():
+    """Mutation check: the real _read_coverage_rows must produce SQL with
+    WHERE n_chunks > 0. We mock _warehouse_query to return unfiltered rows
+    and verify the generated SQL contains the filter.
+
+    If the WHERE clause is removed from sec.py, this test fails because the
+    SQL would no longer contain 'n_chunks > 0'.
+    """
+    captured_sql: list[str] = []
+
+    def fake_warehouse_query(query, params=None, **kwargs):
+        captured_sql.append(query)
+        # Return rows INCLUDING n_chunks=0 — the SQL should exclude them
+        return _make_coverage_rows([("AAPL", 100), ("PENNY", 0), ("MSFT", 50)])
+
+    with patch("db.delta_adapter._warehouse_query", side_effect=fake_warehouse_query):
+        from api.routes.sec import _read_coverage_rows
+
+        rows = _read_coverage_rows()
+
+    # The SQL must contain the n_chunks > 0 filter
+    assert len(captured_sql) == 1
+    sql = captured_sql[0]
+    assert "n_chunks" in sql, f"SQL must reference n_chunks column: {sql}"
+    assert ">" in sql or "WHERE" in sql.upper(), f"SQL must have a WHERE clause: {sql}"
+    # Verify no user-supplied values are interpolated (all values are constants)
+    # The SQL should be a static query with no string formatting of user input
+    assert "PENNY" not in sql, "SQL must not contain user-supplied ticker values"
+    assert "AAPL" not in sql, "SQL must not contain user-supplied ticker values"

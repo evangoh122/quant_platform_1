@@ -237,4 +237,84 @@ describe('SecFilingExplorer', () => {
       expect(screen.getByText(/Select a ticker to see its SEC filing sections/i)).toBeInTheDocument();
     });
   });
+
+  it('shows no-coverage message for ticker without processed filings', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'XYZ', cik: '1', n_filings: 0, n_chunks: 0, first_filed: null, last_filed: null },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'XYZ' },
+            result: { rows: [{ error: 'no_coverage', ticker: 'XYZ' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('XYZ');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No SEC filings have been processed for XYZ yet\./i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/No SEC filing sections found for this search/i)).not.toBeInTheDocument();
+  });
+
+  it('renders rows from search_sec_filings even when it is not the first tool call', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'some_other_tool',
+            arguments: { query: 'something' },
+            result: { data: 'irrelevant' },
+            ok: true,
+          },
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: { rows: [{ chunk_text: 'iPhone revenue growth', section: 'MD&A' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('AAPL');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByText(/iPhone revenue growth/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/MD&A/i)).toBeInTheDocument();
+  });
 });
