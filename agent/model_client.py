@@ -28,7 +28,7 @@ from loguru import logger
 
 _DEFAULT_ENDPOINT = "databricks-claude-sonnet-5"
 _MAX_INPUT_TOKENS = 16000  # must exceed the runtime evidence cap (~24 KB) + prompt
-_MAX_OUTPUT_TOKENS = 1024
+_MAX_OUTPUT_TOKENS = 2048
 _WALL_CLOCK_TIMEOUT_SECONDS = 30
 _TEMPERATURE = 0
 
