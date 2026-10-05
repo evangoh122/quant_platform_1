@@ -10,6 +10,8 @@ import { ResearchAgent } from './screens/ResearchAgent';
 import { PaperPortfolio } from './screens/PaperPortfolio';
 import { OrderApprovalDrawer } from './screens/OrderApprovalDrawer';
 import { SystemHealth } from './screens/SystemHealth';
+import { PlatformOverview } from './screens/PlatformOverview';
+import { ArchitectureEvidence } from './screens/ArchitectureEvidence';
 import { useTourHost, CoachMarks } from './components/tours/TourHost';
 
 type ScreenId =
@@ -95,7 +97,7 @@ export default function App() {
   const renderScreen = () => {
     switch (screen) {
       case 'platform-overview':
-        return <PlaceholderScreen title="Platform Overview" />;
+        return <PlatformOverview onNavigate={(id) => setScreen(id as ScreenId)} />;
       case 'market':
         return <MarketDashboard />;
       case 'options':
@@ -117,7 +119,7 @@ export default function App() {
       case 'health':
         return <SystemHealth />;
       case 'architecture':
-        return <PlaceholderScreen title="Architecture & Tests" tourId="pipeline-nodes" />;
+        return <ArchitectureEvidence />;
       default:
         return <PlaceholderScreen title="Platform Overview" />;
     }

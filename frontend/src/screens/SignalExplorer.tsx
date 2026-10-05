@@ -35,6 +35,10 @@ export function SignalExplorer() {
         <h1 className="text-xl font-semibold">Signal Explorer</h1>
         {data && <FreshnessBadge freshness={data.freshness} />}
       </div>
+      <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+        <strong>Baseline demonstration:</strong> model baseline-logreg-v0-2026-10-05, hold-out AUC 0.47.
+        Pipeline demonstration &mdash; no validated trading edge claimed.
+      </div>
 
       {loading && <LoadingState />}
       {error && <ErrorState message={error} onRetry={reload} />}
