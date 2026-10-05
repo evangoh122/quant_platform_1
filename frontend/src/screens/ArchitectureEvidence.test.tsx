@@ -39,6 +39,31 @@ describe('ArchitectureEvidence', () => {
     }
   });
 
+  it('renders pipeline nodes as an ordered list in correct sequence', () => {
+    render(<ArchitectureEvidence />);
+
+    const expectedOrder = [
+      'Massive', 'SEC', 'CFTC', 'FRED', 'Spark',
+      'Delta bronze/silver/gold', 'FastAPI', 'React',
+      'AI agent', 'Lakebase', 'analytics_outbox',
+      'Spark analytics', 'Delta analytics',
+    ];
+    const pipelineList = screen.getByLabelText('Technical architecture pipeline nodes');
+    const pipelineItems = pipelineList.querySelectorAll('li');
+    expect(pipelineItems).toHaveLength(13);
+    pipelineItems.forEach((item, i) => {
+      expect(item).toHaveTextContent(expectedOrder[i]);
+    });
+  });
+
+  it('does not use role="img" on the pipeline diagram container', () => {
+    const { container } = render(<ArchitectureEvidence />);
+
+    const diagramContainer = container.querySelector('[data-tour="pipeline-nodes"]');
+    expect(diagramContainer).toBeInTheDocument();
+    expect(diagramContainer).not.toHaveAttribute('role', 'img');
+  });
+
   it('renders verified test groups with commit/date placeholders', () => {
     render(<ArchitectureEvidence />);
 
@@ -64,8 +89,9 @@ describe('ArchitectureEvidence', () => {
     render(<ArchitectureEvidence />);
 
     expect(screen.getByText(/no validated trading edge claimed/)).toBeInTheDocument();
-    expect(screen.getByText(/baseline-logreg-v0-2026-10-05/)).toBeInTheDocument();
-    expect(screen.getByText(/hold-out AUC 0\.47/)).toBeInTheDocument();
+    expect(screen.getByText(/1-trading-day logistic-regression baseline/)).toBeInTheDocument();
+    expect(screen.queryByText(/AUC/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/baseline-logreg-v0/)).not.toBeInTheDocument();
   });
 
   it('renders safety model in correct order (LLM never executes directly)', () => {

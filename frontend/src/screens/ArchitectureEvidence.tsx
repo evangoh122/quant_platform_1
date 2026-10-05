@@ -53,7 +53,7 @@ const TEST_GROUPS = [
 ];
 
 const LIMITATIONS = [
-  'Baseline signals only — model baseline-logreg-v0-2026-10-05 with hold-out AUC 0.47; no validated trading edge claimed.',
+  'Baseline signals only: a 1-trading-day logistic-regression baseline used to demonstrate the pipeline — no validated trading edge claimed.',
   'DLT (Delta Live Tables) pipeline built but not deployed to production.',
   'Paper broker scaffold — no live brokerage integration.',
   'Analytics require the Lakebase analytics refresh run to populate materialized views.',
@@ -112,24 +112,22 @@ export function ArchitectureEvidence() {
         <div
           data-tour="pipeline-nodes"
           className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900"
-          role="img"
-          aria-label="Technical architecture diagram showing the data flow from external sources through processing to the application layer"
         >
-          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-            Responsive technical diagram &mdash; data flows left to right, top to bottom on small screens.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-200">
+            Pipeline data flow
+          </h3>
+          <ol className="flex flex-wrap items-center gap-2" aria-label="Technical architecture pipeline nodes">
             {PIPELINE_TECH_NODES.map((node, i) => (
-              <span key={node} className="flex items-center gap-1">
+              <li key={node} className="flex items-center gap-1">
                 <span className="inline-block rounded-md border border-slate-300 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
                   {node}
                 </span>
                 {i < PIPELINE_TECH_NODES.length - 1 && (
                   <span className="text-slate-400" aria-hidden="true">&rarr;</span>
                 )}
-              </span>
+              </li>
             ))}
-          </div>
+          </ol>
         </div>
       </section>
 
