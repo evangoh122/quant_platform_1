@@ -312,6 +312,7 @@ const ALL_DESTINATIONS = [
   { id: 'sec', label: 'SEC Research' },
   { id: 'agent', label: 'AI Research Agent' },
   { id: 'signals', label: 'Signal Explorer' },
+  { id: 'strategy-lab', label: 'Strategy Lab' },
   { id: 'portfolio', label: 'Paper Portfolio' },
   { id: 'orders', label: 'Order Approval' },
   { id: 'analytics', label: 'Activity Analytics' },
@@ -369,6 +370,65 @@ describe('Navigation destination enumeration', () => {
 
     const labels = ALL_DESTINATIONS.map((d) => d.label);
     expect(labels).toContain('Options Analytics');
+  });
+});
+
+describe('Strategy Lab destination', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders Strategy Lab as a navigation destination', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('button', { name: 'Strategy Lab' })).toBeInTheDocument();
+  });
+
+  it('navigates to Strategy Lab placeholder on click', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const button = screen.getByRole('button', { name: 'Strategy Lab' });
+    await user.click(button);
+
+    await waitFor(() => {
+      expect(button).toHaveAttribute('aria-current', 'page');
+    });
+
+    expect(screen.getByRole('heading', { name: 'Strategy Lab' })).toBeInTheDocument();
+    expect(screen.getByText(/Coming in a future delivery round/)).toBeInTheDocument();
+  });
+});
+
+describe('Environment badge', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders an environment badge in the header', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const badge = screen.getByTestId('env-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).toMatch(/dev|staging|prod/);
   });
 });
 

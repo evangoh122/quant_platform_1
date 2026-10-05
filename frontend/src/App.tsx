@@ -19,6 +19,7 @@ type ScreenId =
   | 'sec'
   | 'agent'
   | 'signals'
+  | 'strategy-lab'
   | 'portfolio'
   | 'orders'
   | 'analytics'
@@ -41,7 +42,10 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: 'Strategy',
-    items: [{ id: 'signals', label: 'Signal Explorer' }],
+    items: [
+      { id: 'signals', label: 'Signal Explorer' },
+      { id: 'strategy-lab', label: 'Strategy Lab' },
+    ],
   },
   {
     label: 'Operations',
@@ -102,6 +106,8 @@ export default function App() {
         return <ResearchAgent />;
       case 'signals':
         return <SignalExplorer />;
+      case 'strategy-lab':
+        return <PlaceholderScreen title="Strategy Lab" />;
       case 'portfolio':
         return <PaperPortfolio />;
       case 'orders':

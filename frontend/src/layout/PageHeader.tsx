@@ -18,11 +18,24 @@ function findLabel(id: string, groups: NavGroup[]): string {
 
 export function PageHeader({ currentId, groups, onMenuToggle, onTour }: PageHeaderProps) {
   const label = findLabel(currentId, groups);
+  const env = import.meta.env.MODE === 'production' ? 'prod' : import.meta.env.MODE === 'staging' ? 'staging' : 'dev';
 
   return (
     <header className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-[var(--space-6)] py-[var(--space-3)]">
       <div className="flex items-center gap-3 pl-10 lg:pl-0">
         <h1 className="text-lg font-semibold text-[var(--text-primary)]">{label}</h1>
+        <span
+          data-testid="env-badge"
+          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+            env === 'prod'
+              ? 'bg-emerald-100 text-emerald-700'
+              : env === 'staging'
+                ? 'bg-amber-100 text-amber-700'
+                : 'bg-slate-100 text-slate-600'
+          }`}
+        >
+          {env}
+        </span>
       </div>
 
       <div className="flex items-center gap-2">
