@@ -2535,8 +2535,9 @@ class TestSparkIngestLogReader:
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
+            def sql(self, q, args=None):
                 self.last_query = q
+                self.last_args = args
                 m = MagicMock()
                 m.collect.return_value = [
                     {"run_id": "r1", "ticker": "NVDA", "accession_number": "001"},
@@ -2551,14 +2552,16 @@ class TestSparkIngestLogReader:
         assert ("r1", "NVDA", "001") in result
         assert "run_id" in fake_spark.last_query.lower()
         assert "succeeded" in fake_spark.last_query.lower()
+        assert fake_spark.last_args == ["r1"]
 
     def test_read_max_attempt(self):
         """Returns max attempt number for a given accession."""
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
+            def sql(self, q, args=None):
                 self.last_query = q
+                self.last_args = args
                 m = MagicMock()
                 m.collect.return_value = [{"max_attempt": 3}]
                 return m
@@ -2568,16 +2571,69 @@ class TestSparkIngestLogReader:
         result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
         assert result == 3
         assert "max(attempt)" in fake_spark.last_query
+        assert fake_spark.last_args == ["r1", "NVDA", "001"]
 
     def test_read_max_attempt_returns_zero_when_no_rows(self):
         """Returns 0 when no log entries exist."""
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
+            def sql(self, q, args=None):
                 m = MagicMock()
                 m.collect.return_value = [{"max_attempt": None}]
                 return m
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
+        assert result == 0
+
+    def test_read_succeeded_reraises_non_table_errors(self):
+        """Non-table-not-found errors must propagate, not be silently swallowed."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError("Permission denied for table sec_ingest_log")
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        with pytest.raises(RuntimeError, match="Permission denied"):
+            reader.read_succeeded_accessions("cat", "sch", "r1")
+
+    def test_read_max_attempt_reraises_non_table_errors(self):
+        """Non-table-not-found errors must propagate, not be silently swallowed."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError("Permission denied for table sec_ingest_log")
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        with pytest.raises(RuntimeError, match="Permission denied"):
+            reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
+
+    def test_read_succeeded_returns_empty_on_table_not_found(self):
+        """TABLE_OR_VIEW_NOT_FOUND is treated as cold start — returns empty set."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        result = reader.read_succeeded_accessions("cat", "sch", "r1")
+        assert result == set()
+
+    def test_read_max_attempt_returns_zero_on_table_not_found(self):
+        """TABLE_OR_VIEW_NOT_FOUND is treated as cold start — returns 0."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
 
         reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
         result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")

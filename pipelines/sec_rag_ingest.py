@@ -2260,6 +2260,12 @@ def ensure_ingest_log_table(spark, catalog: str, schema: str) -> None:
     """)
 
 
+def _is_table_not_found(exc: Exception) -> bool:
+    """Return True if *exc* indicates a missing table (cold-start scenario)."""
+    msg = str(exc).upper()
+    return "TABLE_OR_VIEW_NOT_FOUND" in msg or "TABLE_OR_VIEW_NOT_FOUND" in getattr(exc, "errorCode", "").upper()
+
+
 class SparkIngestLogReader:
     """Reads ingest log entries from sec_ingest_log for resume support.
 
@@ -2283,15 +2289,17 @@ class SparkIngestLogReader:
     ) -> Set[Tuple[str, str, str]]:
         spark = self._get_spark()
         try:
-            rows = spark.sql(f"""
-                SELECT DISTINCT run_id, ticker, accession_number
-                FROM {catalog}.{schema}.sec_ingest_log
-                WHERE run_id = '{run_id}'
-                  AND status = 'succeeded'
-            """).collect()
-        except Exception:
-            # Table does not exist yet (cold start) — no prior attempts
-            return set()
+            rows = spark.sql(
+                f"SELECT DISTINCT run_id, ticker, accession_number "
+                f"FROM {catalog}.{schema}.sec_ingest_log "
+                f"WHERE run_id = ? AND status = 'succeeded'",
+                args=[run_id],
+            ).collect()
+        except Exception as exc:
+            if _is_table_not_found(exc):
+                return set()
+            logger.error("read_succeeded_accessions failed: %s", exc)
+            raise
         return {(r["run_id"], r["ticker"], r["accession_number"]) for r in rows}
 
     def read_max_attempt(
@@ -2304,16 +2312,17 @@ class SparkIngestLogReader:
     ) -> int:
         spark = self._get_spark()
         try:
-            rows = spark.sql(f"""
-                SELECT max(attempt) AS max_attempt
-                FROM {catalog}.{schema}.sec_ingest_log
-                WHERE run_id = '{run_id}'
-                  AND ticker = '{ticker}'
-                  AND accession_number = '{accession_number}'
-            """).collect()
-        except Exception:
-            # Table does not exist yet (cold start)
-            return 0
+            rows = spark.sql(
+                f"SELECT max(attempt) AS max_attempt "
+                f"FROM {catalog}.{schema}.sec_ingest_log "
+                f"WHERE run_id = ? AND ticker = ? AND accession_number = ?",
+                args=[run_id, ticker, accession_number],
+            ).collect()
+        except Exception as exc:
+            if _is_table_not_found(exc):
+                return 0
+            logger.error("read_max_attempt failed: %s", exc)
+            raise
         if rows and rows[0]["max_attempt"] is not None:
             return int(rows[0]["max_attempt"])
         return 0
