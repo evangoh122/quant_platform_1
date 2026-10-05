@@ -338,6 +338,73 @@ describe('CoachMarks', () => {
 
     document.body.removeChild(outside);
   });
+
+  it('clamps spotlight left to 0 when target is at x=-20', () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, 'innerWidth', { value: 1024, writable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 768, writable: true });
+    const negativeRect = { top: 100, left: -20, width: 200, height: 50, bottom: 150, right: 180, x: -20, y: 100, toJSON: () => {} } as DOMRect;
+
+    const targetEl = document.createElement('div');
+    targetEl.setAttribute('data-tour', 'negative-target');
+    targetEl.getBoundingClientRect = () => negativeRect;
+    document.body.appendChild(targetEl);
+
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="negative-target"]', title: 'Neg', body: 'Test' },
+    ];
+
+    const { container } = render(
+      <div>
+        <CoachMarks steps={steps} run={true} onClose={() => {}} />
+      </div>,
+    );
+
+    const PAD = 8;
+    const dialog = container.querySelector('[role="dialog"]')!;
+    act(() => { vi.advanceTimersByTime(280); });
+
+    const spotlight = dialog.children[0] as HTMLElement;
+    expect(spotlight).toBeTruthy();
+    expect(parseInt(spotlight.style.left, 10)).toBeGreaterThanOrEqual(0);
+    expect(parseInt(spotlight.style.left, 10) + parseInt(spotlight.style.width, 10)).toBeLessThanOrEqual(1024);
+
+    vi.useRealTimers();
+    document.body.removeChild(targetEl);
+  });
+
+  it('clamps spotlight to viewport when target is wider than a 360px viewport', () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, 'innerWidth', { value: 1024, writable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 768, writable: true });
+    const wideRect = { top: 100, left: 0, width: 1200, height: 50, bottom: 150, right: 1200, x: 0, y: 100, toJSON: () => {} } as DOMRect;
+
+    const targetEl = document.createElement('div');
+    targetEl.setAttribute('data-tour', 'wide-target');
+    targetEl.getBoundingClientRect = () => wideRect;
+    document.body.appendChild(targetEl);
+
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="wide-target"]', title: 'Wide', body: 'Test' },
+    ];
+
+    const { container } = render(
+      <div>
+        <CoachMarks steps={steps} run={true} onClose={() => {}} />
+      </div>,
+    );
+
+    const dialog = container.querySelector('[role="dialog"]')!;
+    act(() => { vi.advanceTimersByTime(280); });
+
+    const spotlight = dialog.children[0] as HTMLElement;
+    expect(spotlight).toBeTruthy();
+    expect(parseInt(spotlight.style.left, 10)).toBeGreaterThanOrEqual(0);
+    expect(parseInt(spotlight.style.left, 10) + parseInt(spotlight.style.width, 10)).toBeLessThanOrEqual(1024);
+
+    vi.useRealTimers();
+    document.body.removeChild(targetEl);
+  });
 });
 
 describe('tourSeen / markTourSeen', () => {

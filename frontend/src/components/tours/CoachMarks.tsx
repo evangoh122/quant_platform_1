@@ -41,6 +41,14 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
       setRect(null);
       return;
     }
+    const r = el.getBoundingClientRect();
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const fullyOffScreen = r.bottom < 0 || r.top > h || r.right < 0 || r.left > w;
+    if (fullyOffScreen) {
+      const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      el.scrollIntoView({ block: 'center', behavior: motion ? 'auto' : 'smooth' });
+    }
     setRect(el.getBoundingClientRect());
   }, [step]);
 
@@ -56,7 +64,8 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
     const el = step?.selector
       ? (document.querySelector(step.selector) as HTMLElement | null)
       : null;
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el?.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
     const t = window.setTimeout(measure, el ? 280 : 0);
     return () => window.clearTimeout(t);
   }, [run, step, measure]);
@@ -83,14 +92,12 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
   }, [onClose]);
 
   const next = useCallback(() => {
-    setIndex((i) => {
-      if (i >= steps.length - 1) {
-        handleClose();
-        return i;
-      }
-      return i + 1;
-    });
-  }, [steps.length, handleClose]);
+    if (index >= steps.length - 1) {
+      handleClose();
+      return;
+    }
+    setIndex((i) => i + 1);
+  }, [index, steps.length, handleClose]);
 
   const back = useCallback(() => setIndex((i) => Math.max(0, i - 1)), []);
 
@@ -144,19 +151,32 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
 
   return (
     <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true" aria-label="Guided tour">
-      {rect && !isMobile ? (
+      {rect && !isMobile ? (() => {
+        const raw = {
+          left: rect.left - PAD,
+          top: rect.top - PAD,
+          width: rect.width + PAD * 2,
+          height: rect.height + PAD * 2,
+        };
+        const clamped = {
+          left: Math.max(0, raw.left),
+          top: Math.max(0, raw.top),
+          width: Math.min(raw.width, vw - Math.max(0, raw.left)),
+          height: Math.min(raw.height, vh - Math.max(0, raw.top)),
+        };
+        return (
         <div
           className="absolute rounded-xl pointer-events-none transition-all duration-200"
           style={{
-            left: rect.left - PAD,
-            top: rect.top - PAD,
-            width: rect.width + PAD * 2,
-            height: rect.height + PAD * 2,
+            left: clamped.left,
+            top: clamped.top,
+            width: clamped.width,
+            height: clamped.height,
             boxShadow: '0 0 0 9999px rgba(0,0,0,0.58)',
             border: '2px solid var(--accent, #6366f1)',
           }}
         />
-      ) : (
+      ) })() : (
         <div className="absolute inset-0 bg-black/58" />
       )}
 
