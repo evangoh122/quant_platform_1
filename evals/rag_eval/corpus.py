@@ -353,6 +353,10 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
     This is an explicit test/eval seam around production scoring — not a forked
     retriever implementation.  Restores prior globals even after errors and
     serializes concurrent use.
+
+    Bypasses the LRU size limit so all offline tickers fit, and monkey-patches
+    ``check_ticker_coverage`` to answer from the offline ticker groups so
+    Spark is not required.
     """
     import api.services.hybrid_retriever as hr
 
@@ -366,6 +370,17 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
         orig_loaded = hr._corpus_loaded
         orig_dim = hr._stored_index_dim
         orig_model = hr._stored_embedding_model
+        orig_check_coverage = hr.check_ticker_coverage
+
+        # Save per-ticker LRU cache
+        with hr._ticker_cache_lock:
+            orig_ticker_cache = dict(hr._ticker_cache)
+
+        # Save alias-map originals before try — an early setup error
+        # (adapter.records(), BM25Okapi, etc.) must not leave these unbound.
+        with hr._alias_map_lock:
+            orig_alias_map = dict(hr._alias_map)
+            orig_alias_loaded = hr._alias_map_loaded
 
         try:
             # Clear and repopulate
@@ -379,12 +394,17 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
             hr._stored_embedding_model = None
 
             # Install corpus records
+            from collections import defaultdict
             from langchain_core.documents import Document
             from rank_bm25 import BM25Okapi
-            from api.services.hybrid_retriever import tokenize
+            from api.services.hybrid_retriever import tokenize, TickerCorpus
 
             docs: list[Document] = []
             tokenised: list[list[str]] = []
+
+            # Group by ticker for per-ticker cache
+            ticker_docs: dict[str, list[Document]] = defaultdict(list)
+            ticker_tokenised: dict[str, list[list[str]]] = defaultdict(list)
 
             for rec in adapter.records():
                 hr._corpus[rec.chunk_id] = (
@@ -405,7 +425,12 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
                     },
                 )
                 docs.append(doc)
-                tokenised.append(tokenize(rec.text))
+                tok = tokenize(rec.text)
+                tokenised.append(tok)
+
+                if rec.ticker:
+                    ticker_docs[rec.ticker].append(doc)
+                    ticker_tokenised[rec.ticker].append(tok)
 
             if tokenised:
                 hr._bm25_index = BM25Okapi(tokenised)
@@ -419,7 +444,65 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
                 hr._stored_index_dim = adapter.embedding_dimension
                 hr._stored_embedding_model = adapter.embedding_model_name
 
+            # Build and install per-ticker TickerCorpus objects
+            # Bypass LRU size limit: insert directly into cache dict
+            with hr._ticker_cache_lock:
+                hr._ticker_cache.clear()
+
+            for ticker, tdocs in ticker_docs.items():
+                ttok = ticker_tokenised[ticker]
+                bm25 = BM25Okapi(ttok) if ttok else None
+                # Build per-ticker embeddings map
+                ticker_emb: dict[str, np.ndarray] = {}
+                for d in tdocs:
+                    cid = d.metadata.get("chunk_id", "")
+                    if cid in hr._embeddings_map:
+                        ticker_emb[cid] = hr._embeddings_map[cid]
+
+                corpus = TickerCorpus(
+                    ticker=ticker,
+                    docs=tdocs,
+                    tokenised=ttok,
+                    bm25_index=bm25,
+                    embeddings_map=ticker_emb,
+                    stored_model=adapter.embedding_model_name or None,
+                    stored_dim=adapter.embedding_dimension or None,
+                    load_ts=0.0,
+                    approx_bytes=0,
+                )
+                # Direct insert — bypasses _RAG_TICKER_CACHE_MAX eviction
+                with hr._ticker_cache_lock:
+                    hr._ticker_cache[ticker] = corpus
+
             hr._corpus_loaded = True
+
+            # Install offline alias map to prevent _load_alias_map() from
+            # attempting a Databricks connection during ticker lookups.
+            # Identity map: each ticker resolves to itself.
+            with hr._alias_map_lock:
+                hr._alias_map.clear()
+                for t in ticker_docs:
+                    hr._alias_map[t.upper().strip()] = t.upper().strip()
+                hr._alias_map_loaded = True
+
+            # Monkey-patch check_ticker_coverage to answer from offline data
+            offline_tickers = set(ticker_docs.keys())
+
+            def _offline_check_ticker_coverage(
+                ticker: str, _orig=orig_check_coverage
+            ) -> tuple[int, str | None]:
+                ticker = ticker.upper().strip()
+                if ticker in offline_tickers:
+                    n_chunks = len(ticker_docs.get(ticker, []))
+                    if n_chunks == 0:
+                        from api.services.hybrid_retriever import NoCoverageError
+                        raise NoCoverageError(ticker)
+                    return n_chunks, ""
+                from api.services.hybrid_retriever import NoCoverageError
+                raise NoCoverageError(ticker)
+
+            hr.check_ticker_coverage = _offline_check_ticker_coverage  # type: ignore[assignment]
+
             yield
 
         finally:
@@ -434,6 +517,18 @@ def install_offline_corpus(adapter: JsonlCorpusAdapter) -> Iterator[None]:
             hr._corpus_loaded = orig_loaded
             hr._stored_index_dim = orig_dim
             hr._stored_embedding_model = orig_model
+            hr.check_ticker_coverage = orig_check_coverage  # type: ignore[assignment]
+
+            # Restore per-ticker LRU cache
+            with hr._ticker_cache_lock:
+                hr._ticker_cache.clear()
+                hr._ticker_cache.update(orig_ticker_cache)
+
+            # Restore alias map
+            with hr._alias_map_lock:
+                hr._alias_map.clear()
+                hr._alias_map.update(orig_alias_map)
+                hr._alias_map_loaded = orig_alias_loaded
 
 
 # ── Export utilities ──────────────────────────────────────────────────────────

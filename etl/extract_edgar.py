@@ -32,10 +32,10 @@ def _get_connection():
 # SEC requires a descriptive User-Agent: "Name email@domain.com"
 _EMAIL   = os.getenv("EDGAR_EMAIL", "")
 if not _EMAIL:
-    _EMAIL = "research@example.com"
-    logger.warning(
-        "EDGAR_EMAIL not set in .env — using placeholder. "
-        "SEC may throttle requests. Set EDGAR_EMAIL to your real email."
+    raise ValueError(
+        "EDGAR_EMAIL environment variable must be set. "
+        "SEC requires a descriptive User-Agent with contact info. "
+        "Set EDGAR_EMAIL to your real email address."
     )
 _HEADERS = {
     "User-Agent": f"IBKR-Workbench {_EMAIL}",

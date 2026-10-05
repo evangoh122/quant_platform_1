@@ -156,6 +156,76 @@ class TestOfflineInstallRestoresCache:
         assert hr._corpus_loaded == orig_loaded
 
 
+class TestOfflineCoverageCheck:
+    """install_offline_corpus monkey-patches check_ticker_coverage."""
+
+    def test_offline_coverage_resolves_from_corpus(self, tmp_path):
+        """check_ticker_coverage answers from offline data without Spark."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # Should answer from offline data without raising
+            n_chunks, cik = hr.check_ticker_coverage("NVDA")
+            assert n_chunks > 0
+            assert cik == ""  # offline mode returns empty CIK
+
+    def test_offline_coverage_restores_original(self, tmp_path):
+        """check_ticker_coverage is restored after context exit."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        orig_check = hr.check_ticker_coverage
+
+        with install_offline_corpus(adapter):
+            pass
+
+        assert hr.check_ticker_coverage is orig_check
+
+    def test_offline_tickers_bypass_lru_limit(self, tmp_path):
+        """All offline tickers fit in cache regardless of RAG_TICKER_CACHE_MAX."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # All tickers from the corpus should be in cache
+            assert len(hr._ticker_cache) > 0
+
+    def test_offline_ticker_outside_corpus_raises_no_coverage(self, tmp_path):
+        """Tickers not in the offline corpus raise NoCoverageError.
+
+        Before the fix, the offline checker delegated to the live
+        check_ticker_coverage, which calls Spark/warehouse. In an offline
+        eval that leaks a Databricks connection.
+        """
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        from api.services.hybrid_retriever import NoCoverageError
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # The offline checker is now installed. A ticker outside the
+            # corpus must raise NoCoverageError, not delegate to the live
+            # checker (which would attempt a Databricks connection).
+            with pytest.raises(NoCoverageError):
+                hr.check_ticker_coverage("ZZZZNONEXIST")
+
+
 class TestDeltaImportIsLazy:
     """test_delta_import_is_lazy"""
 
@@ -168,3 +238,112 @@ class TestDeltaImportIsLazy:
             adapter.records()
         with pytest.raises(RuntimeError, match="not loaded"):
             adapter.embedding_map()
+
+
+class TestOfflineAliasMap:
+    """install_offline_corpus installs an identity alias map so that
+    _resolve_canonical_ticker never calls Spark or the warehouse."""
+
+    def test_offline_installs_identity_alias_map(self, tmp_path):
+        """Each ticker in the corpus gets an identity alias (TICKER → TICKER)."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # Alias map should be loaded
+            assert hr._alias_map_loaded is True, (
+                "_alias_map_loaded is False inside install_offline_corpus"
+            )
+            # Every ticker in the corpus should have an identity mapping
+            for ticker in ("NVDA", "AMD", "INTC", "QCOM", "AAPL"):
+                assert hr._alias_map.get(ticker) == ticker, (
+                    f"Ticker {ticker} missing from offline alias map or "
+                    f"not identity-mapped (got {hr._alias_map.get(ticker)})"
+                )
+
+    def test_offline_alias_map_prevents_spark_call(self, tmp_path):
+        """With the offline alias map installed, _resolve_canonical_ticker
+        never triggers _load_alias_map's Spark/warehouse path."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # The alias map must be pre-populated with corpus tickers
+            # so _load_alias_map's early-return fires (no Spark call)
+            assert len(hr._alias_map) > 0, (
+                "Alias map is empty inside install_offline_corpus; "
+                "_load_alias_map will attempt a Databricks connection"
+            )
+            # Verify the map contains the expected identity entries
+            assert "NVDA" in hr._alias_map
+            assert hr._alias_map["NVDA"] == "NVDA"
+
+    def test_offline_alias_map_restored_on_exit(self, tmp_path):
+        """The original alias map and flag are restored after context exit."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        orig_map = dict(hr._alias_map)
+        orig_loaded = hr._alias_map_loaded
+
+        with install_offline_corpus(adapter):
+            # Map is modified inside
+            assert hr._alias_map != orig_map or hr._alias_map_loaded != orig_loaded
+
+        # Restored after exit
+        assert hr._alias_map == orig_map, (
+            "install_offline_corpus did not restore _alias_map on exit"
+        )
+        assert hr._alias_map_loaded == orig_loaded, (
+            "install_offline_corpus did not restore _alias_map_loaded on exit"
+        )
+
+    def test_alias_map_restored_on_early_setup_error(self, tmp_path):
+        """Alias-map originals are restored when adapter.records() raises.
+
+        Before the fix, orig_alias_map and orig_alias_loaded were assigned
+        inside try, after adapter.records(). An early error left them unbound
+        and finally raised UnboundLocalError, hiding the real error.
+        """
+        from evals.rag_eval.corpus import install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        # Pre-populate alias map with known values
+        with hr._alias_map_lock:
+            hr._alias_map["FAKE"] = "FAKE"
+            hr._alias_map_loaded = True
+
+        orig_map = dict(hr._alias_map)
+        orig_loaded = hr._alias_map_loaded
+
+        class BrokenAdapter:
+            def records(self):
+                raise RuntimeError("adapter setup failed")
+            def embedding_map(self):
+                return {}
+            def has_embeddings(self):
+                return False
+
+        with pytest.raises(RuntimeError, match="adapter setup failed"):
+            with install_offline_corpus(BrokenAdapter()):
+                pass
+
+        # Alias map must be restored — no UnboundLocalError
+        assert hr._alias_map == orig_map, (
+            "alias map not restored after early setup error"
+        )
+        assert hr._alias_map_loaded == orig_loaded, (
+            "_alias_map_loaded not restored after early setup error"
+        )

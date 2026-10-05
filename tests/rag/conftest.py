@@ -27,8 +27,9 @@ problematic_modules = [
     'sec_edgar_downloader',
     'langchain_text_splitters',
     'bs4',
-    'psycopg', # Not available in test environment
-    'psycopg_pool', # Not available in test environment
+    'psycopg',
+    'psycopg.rows',
+    'psycopg_pool',
 ]
 
 mock_if_missing(problematic_modules)
@@ -85,6 +86,9 @@ def _reset_retriever_singletons():
     hr._embeddings_map.clear()
     hr._stored_index_dim = None
     hr._stored_embedding_model = None
+    with hr._alias_map_lock:
+        hr._alias_map.clear()
+        hr._alias_map_loaded = False
 
     yield
 
@@ -99,6 +103,9 @@ def _reset_retriever_singletons():
     hr._embeddings_map.clear()
     hr._stored_index_dim = None
     hr._stored_embedding_model = None
+    with hr._alias_map_lock:
+        hr._alias_map.clear()
+        hr._alias_map_loaded = False
 
 
 @pytest.fixture(autouse=True)
@@ -211,6 +218,9 @@ def fake_pyspark(monkeypatch):
         def __gt__(self, other): return self
         def __eq__(self, other): return self  # noqa: E712
         def __ne__(self, other): return self  # noqa: E712
+        def __and__(self, other): return self
+        def __or__(self, other): return self
+        def __invert__(self): return self
         def __getattr__(self, name): return self
         def __call__(self, *a, **kw): return self
 
@@ -239,6 +249,97 @@ def fake_pyspark(monkeypatch):
 
     pyspark_sql.SparkSession = MagicMock(name="SparkSession")
     pyspark_sql.DataFrame = MagicMock(name="DataFrame")
+
+
+@pytest.fixture(autouse=True)
+def _stub_xbrl_client(monkeypatch):
+    """Prevent xbrl_client from making real HTTP calls or reading Databricks secrets.
+
+    - Sets SEC_EDGAR_USER_AGENT so _resolve_user_agent returns immediately
+      without touching the Databricks SDK (WorkspaceClient / dbutils).
+    - Stubs fetch_company_facts to return {} (no real SEC API calls).
+    - Stubs _rate_limited_get as a safety net.
+    - Clears the lru_cache and _USER_AGENT global between tests.
+    """
+    import api.services.xbrl_client as xbrl_mod
+
+    # Force the env var so _resolve_user_agent never reaches the Databricks SDK
+    monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent/1.0 (test@example.com)")
+
+    # Clear cached state (keep a handle on the real cached function: the stub
+    # below replaces it, and the lambda has no cache_clear)
+    _real_fetch = xbrl_mod.fetch_company_facts
+    xbrl_mod._USER_AGENT = None
+    _real_fetch.cache_clear()
+
+    # Stub the HTTP layer
+    monkeypatch.setattr(xbrl_mod, "fetch_company_facts", lambda cik: {})
+    monkeypatch.setattr(xbrl_mod, "_rate_limited_get", lambda url: {})
+
+    yield
+
+    xbrl_mod._USER_AGENT = None
+    _real_fetch.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_ticker_lru_cache():
+    """Clear the per-ticker LRU cache between tests to prevent state leakage."""
+    try:
+        from api.services import hybrid_retriever as hr
+        with hr._ticker_cache_lock:
+            hr._ticker_cache.clear()
+        with hr._inflight_lock:
+            hr._inflight.clear()
+    except (ImportError, AttributeError):
+        pass
+    yield
+    try:
+        from api.services import hybrid_retriever as hr
+        with hr._ticker_cache_lock:
+            hr._ticker_cache.clear()
+        with hr._inflight_lock:
+            hr._inflight.clear()
+    except (ImportError, AttributeError):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _mock_check_ticker_coverage(monkeypatch):
+    """Mock check_ticker_coverage and _resolve_canonical_ticker to avoid Spark calls in unit tests.
+
+    Tests that need to test the real coverage check can override this mock.
+    """
+    try:
+        from api.services import hybrid_retriever as hr
+        monkeypatch.setattr(hr, "check_ticker_coverage", lambda ticker: (1, None))
+        # Alias resolution uses cached map (no Spark). Identity by default.
+        monkeypatch.setattr(hr, "_resolve_canonical_ticker", lambda ticker: ticker.upper().strip())
+    except (ImportError, AttributeError):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _guard_spark(monkeypatch):
+    """Make _get_spark raise immediately in tests to prevent hangs.
+
+    Any test that accidentally reaches _get_spark() (e.g. via
+    _load_alias_map or _load_ticker_corpus) fails fast with a clear error
+    instead of hanging on a Databricks Connect network timeout.
+    Tests that intentionally need _get_spark should monkeypatch it themselves.
+    """
+    try:
+        from api.services import hybrid_retriever as hr
+
+        def _spark_guard():
+            raise RuntimeError(
+                "_get_spark called in test — must be mocked. "
+                "Use monkeypatch.setattr(hr, '_get_spark', lambda: mock_spark)."
+            )
+
+        monkeypatch.setattr(hr, "_get_spark", _spark_guard)
+    except (ImportError, AttributeError):
+        pass
 
 
 # ── Cross-Encoder guard ──────────────────────────────────────────────────────

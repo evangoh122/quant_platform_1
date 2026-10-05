@@ -687,7 +687,7 @@ This effort does not include:
 - running the existing Bronze-to-Silver streaming bundle
 - any streaming trigger
 - Lakebase reads or writes
-- SEC EDGAR ingestion
+- SEC EDGAR ingestion (handled by `pipelines/sec_rag_ingest.py`; see `docs/SEC_RAG_COVERAGE_RUNBOOK.md`)
 - `bronze_economic_metrics` refresh
 - options minute aggregates
 - reconstructing historical options snapshots from current REST data

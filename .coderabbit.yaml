@@ -1,0 +1,5 @@
+# CodeRabbit configuration. Agent workflow records (requests/verdicts under .agents/) are process artefacts,
+# not code — exclude them so reviews focus on source and stay under the plan's file limit.
+reviews:
+  path_filters:
+    - "!.agents/**"

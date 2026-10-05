@@ -35,8 +35,8 @@ The `00_project_setup` notebook already defines the unified directory tree, comp
   - `bronze_ohlcv`, `bronze_options_quotes`, `bronze_options_trades`
   - `bronze_polygon_snapshots`, `bronze_polygon_tickers`
   - `bronze_cot`, `staging_yf_bars`, `staging_yf_indices`
-- Run `02_ingest_sec_edgar` to create:
-  - `bronze_sec_filings`, `bronze_edgar_facts`
+- Run the `sec_rag_ingest` job (or `python pipelines/sec_rag_ingest.py`) to create:
+  - `bronze_sec_filings_v2`, `sec_ingest_log`, `sec_cik_mapping_log`
 
 ### 0.3 Validate schema
 - Confirm all tables exist in `bootcamp_students.evangoh_capstone`

@@ -1,0 +1,14 @@
+{
+  "cik": "0002115436",
+  "entityName": "ExxonMobil Holdings Corp",
+  "filings": {
+    "recent": {
+      "form": ["10-K", "10-Q"],
+      "filingDate": ["2025-03-01", "2024-11-15"],
+      "accessionNumber": ["0002115436-25-000010", "0002115436-24-000020"],
+      "primaryDocument": ["xom-holdings-20250301.htm", "xom-holdings-20241115.htm"],
+      "acceptanceDateTime": ["2025-03-01T18:00:00.000Z", "2024-11-15T16:00:00.000Z"]
+    },
+    "files": []
+  }
+}
