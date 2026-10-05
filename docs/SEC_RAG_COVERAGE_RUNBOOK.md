@@ -21,7 +21,7 @@ Create the secret (never commit the actual value):
 databricks secrets put-secret evangoh_capstone sec_edgar_user_agent
 ```
 
-When prompted, enter `<app-name> <your real contact email>` (SEC requires a real contact; values containing "example" are rejected).
+When prompted, enter `<app-name> <your real contact email>` (SEC requires a real contact; the validator rejects placeholder domains `@example.(com|org|net)` and addresses starting with `your-email@`/`your_email@`, `user@`, `test@` or `example@example` — a real address like `analyst@yourcompany.com` passes).
 
 To verify the secret exists:
 
@@ -34,20 +34,31 @@ The `resources/jobs.yml` passes `--user-agent-secret-scope evangoh_capstone` and
 
 ## Environment Setup
 
+For **local runs** only (not `databricks bundle run`, which executes on Databricks and reads from secrets):
+
 ```bash
-# Optionally set the SEC User-Agent via env (overrides secret if set)
-export SEC_EDGAR_USER_AGENT='<your-app-name> your-email@example.com'
+# Optionally set the SEC User-Agent via env for local test runs
+export SEC_EDGAR_USER_AGENT='<your-app-name> analyst@yourcompany.com'
 
 # Verify it is set and not a placeholder
 test -n "$SEC_EDGAR_USER_AGENT" && echo "OK: User-Agent set" || echo "ERROR: SEC_EDGAR_USER_AGENT not set"
 echo "$SEC_EDGAR_USER_AGENT" | grep -qE "@example\.(com|org|net)" && echo "WARNING: Using placeholder domain" || echo "OK: Looks real"
 ```
 
+> **Note:** `databricks bundle run` runs the task on Databricks — a shell `export` on
+> the operator's machine does not reach the job. For bundle runs the env step has no
+> effect and the job always reads the secret.
+
 ## Dry Run
 
 Validate the ingestion plan without fetching any filing bodies:
 
 ```bash
+# Set these variables before running the commands below
+catalog="evangoh_capstone"        # Unity Catalog catalog name
+schema="evangoh_capstone"         # Unity Catalog schema name
+PILOT_TICKERS="AAPL,MSFT,GOOG,AMZN,META,NVDA,TSLA,BRK-B,JPM,JNJ"  # Example pilot tickers
+
 databricks bundle validate -t dev
 databricks bundle deploy -t dev
 databricks bundle run -t dev sec_rag_ingest -- --dry-run --start-date 2024-09-01 --forms 10-K,10-Q --catalog ${catalog} --schema ${schema} --user-agent-secret-scope evangoh_capstone --user-agent-secret-key sec_edgar_user_agent

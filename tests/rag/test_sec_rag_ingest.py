@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from unittest.mock import MagicMock
 
 import pytest
@@ -199,6 +199,11 @@ class FakeAccessionReader:
 
     def read_existing_accessions(self, catalog: str, schema: str) -> Dict[str, Tuple[str, str]]:
         return self._accessions
+
+    def read_existing_accession(
+        self, catalog: str, schema: str, accession_number: str,
+    ) -> Optional[Tuple[str, str]]:
+        return self._accessions.get(accession_number)
 
 
 class FakeDataWriter:
@@ -1257,6 +1262,37 @@ class TestCikMappingLog:
             "Mutation: per-ticker writes would need N flushes."
         )
 
+    def test_cik_mapping_log_skipped_on_dry_run(self):
+        """CIK mapping log is not written during a dry run unless --log-dry-run."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+        cik_log = FakeCikMappingLogWriter()
+
+        run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            dry_run=True,
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(set()),
+            data_writer=FakeDataWriter(),
+            cik_mapping_log_writer=cik_log,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+
+        assert len(cik_log.entries) == 0, (
+            "CIK mapping log should not be written during dry run"
+        )
+        assert cik_log.flush_count == 0, (
+            "flush() should not be called during dry run"
+        )
+
 
 class TestSparkCikMappingLogWriterSchema:
     """Mutation-proof tests for SparkCikMappingLogWriter schema and batching.
@@ -1515,6 +1551,7 @@ class TestAccessionConflict:
             """Returns empty on first call, conflicting accession on second."""
             def __init__(self):
                 self._call_count = 0
+                self._existing: Dict[str, Tuple[str, str]] = {}
 
             def read_existing_accessions(self, catalog, schema):
                 self._call_count += 1
@@ -1522,6 +1559,15 @@ class TestAccessionConflict:
                     return {}  # Anti-join: nothing exists
                 # Race: conflicting accession appeared
                 return {"0001045810-25-000010": ("9999999999", "OTHER")}
+
+            def read_existing_accession(self, catalog, schema, accession_number):
+                self._call_count += 1
+                if self._call_count <= 1:
+                    return None  # Anti-join: nothing exists
+                # Race: conflicting accession appeared
+                if accession_number == "0001045810-25-000010":
+                    return ("9999999999", "OTHER")
+                return None
 
         result = run_ingest(
             catalog="test", schema="test",
@@ -2550,8 +2596,9 @@ class TestSparkIngestLogReader:
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
+            def sql(self, q, args=None):
                 self.last_query = q
+                self.last_args = args
                 m = MagicMock()
                 m.collect.return_value = [
                     {"run_id": "r1", "ticker": "NVDA", "accession_number": "001"},
@@ -2566,14 +2613,16 @@ class TestSparkIngestLogReader:
         assert ("r1", "NVDA", "001") in result
         assert "run_id" in fake_spark.last_query.lower()
         assert "succeeded" in fake_spark.last_query.lower()
+        assert fake_spark.last_args == ["r1"]
 
     def test_read_max_attempt(self):
         """Returns max attempt number for a given accession."""
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
+            def sql(self, q, args=None):
                 self.last_query = q
+                self.last_args = args
                 m = MagicMock()
                 m.collect.return_value = [{"max_attempt": 3}]
                 return m
@@ -2583,16 +2632,69 @@ class TestSparkIngestLogReader:
         result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
         assert result == 3
         assert "max(attempt)" in fake_spark.last_query
+        assert fake_spark.last_args == ["r1", "NVDA", "001"]
 
     def test_read_max_attempt_returns_zero_when_no_rows(self):
         """Returns 0 when no log entries exist."""
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
+            def sql(self, q, args=None):
                 m = MagicMock()
                 m.collect.return_value = [{"max_attempt": None}]
                 return m
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
+        assert result == 0
+
+    def test_read_succeeded_reraises_non_table_errors(self):
+        """Non-table-not-found errors must propagate, not be silently swallowed."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError("Permission denied for table sec_ingest_log")
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        with pytest.raises(RuntimeError, match="Permission denied"):
+            reader.read_succeeded_accessions("cat", "sch", "r1")
+
+    def test_read_max_attempt_reraises_non_table_errors(self):
+        """Non-table-not-found errors must propagate, not be silently swallowed."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError("Permission denied for table sec_ingest_log")
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        with pytest.raises(RuntimeError, match="Permission denied"):
+            reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
+
+    def test_read_succeeded_returns_empty_on_table_not_found(self):
+        """TABLE_OR_VIEW_NOT_FOUND is treated as cold start — returns empty set."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
+
+        reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
+        result = reader.read_succeeded_accessions("cat", "sch", "r1")
+        assert result == set()
+
+    def test_read_max_attempt_returns_zero_on_table_not_found(self):
+        """TABLE_OR_VIEW_NOT_FOUND is treated as cold start — returns 0."""
+        from pipelines.sec_rag_ingest import SparkIngestLogReader
+
+        class FakeSpark:
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
 
         reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
         result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
@@ -2903,8 +3005,10 @@ class TestSparkIngestLogReaderColdStart:
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
-                raise Exception("Table or view not found: sec_ingest_log")
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
 
         reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
         result = reader.read_succeeded_accessions("cat", "sch", "r1")
@@ -2918,8 +3022,10 @@ class TestSparkIngestLogReaderColdStart:
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
-                raise Exception("Table or view not found: sec_ingest_log")
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
 
         reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
         result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
@@ -4753,3 +4859,124 @@ class TestXbrlClientUserAgent:
         assert result == "RealAgent real@test.com", (
             "Correct code uses pipeline resolver, not os.getenv('EDGAR_USER_AGENT')"
         )
+
+
+# ── Round 2b: CodeRabbit regression tests ─────────────────────────────────
+
+
+class TestSingleAccessionLookup:
+    """_process_one uses read_existing_accession (singular, parameterized)
+    for the race-path check, never read_existing_accessions (full-table scan)."""
+
+    def test_process_one_calls_singular_lookup(self):
+        """The per-filing race-path check calls read_existing_accession (one row),
+        not read_existing_accessions (full table collect)."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+
+        class SpyAccessionReader:
+            """Tracks which methods are called and how many times."""
+            def __init__(self):
+                self.plural_calls = 0
+                self.singular_calls = []
+                self._accessions: Dict[str, Tuple[str, str]] = {}
+
+            def read_existing_accessions(self, catalog, schema):
+                self.plural_calls += 1
+                return self._accessions
+
+            def read_existing_accession(self, catalog, schema, accession_number):
+                self.singular_calls.append(accession_number)
+                return self._accessions.get(accession_number)
+
+        spy = SpyAccessionReader()
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=spy,
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+        assert result.planned_count >= 1, "No filings planned"
+        # The singular method must be called for each processed filing
+        assert len(spy.singular_calls) >= 1, (
+            "read_existing_accession (singular) was never called — "
+            "the race-path check is missing or uses read_existing_accessions"
+        )
+        # Verify it was called with the actual accession number
+        assert any("0001045810" in a for a in spy.singular_calls), (
+            f"read_existing_accession not called with expected accession, "
+            f"got: {spy.singular_calls}"
+        )
+
+
+class TestDiscoveryCikPerFiling:
+    """For override tickers, plan_cik uses the CIK that discovered the filing,
+    not an arbitrary member of the CIK set."""
+
+    @pytest.mark.parametrize("discovering", ["a", "b"])
+    def test_override_ticker_uses_discovery_cik(self, discovering):
+        """The accession prefix is a filing agent (0001193125), NOT in the override group, so the
+        discovery CIK must be used. Parametrized over both group members so a revert to
+        ``next(iter(ticker_ciks))`` fails for at least one of them, whatever the set order."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        cik_a = "0001045810"
+        cik_b = "0001234567"
+        disc, other = (cik_a, cik_b) if discovering == "a" else (cik_b, cik_a)
+        agent_acc = "0001193125-25-000010"
+
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        recent = submissions["filings"]["recent"]
+        recent["accessionNumber"] = [
+            agent_acc if a == "0001045810-25-000010" else a for a in recent["accessionNumber"]
+        ]
+        submissions["cik"] = int(disc)
+        http.set_json(f"https://data.sec.gov/submissions/CIK{disc}.json", submissions)
+        http.set_json(f"https://data.sec.gov/submissions/CIK{other}.json", {
+            "cik": int(other), "name": "Test Corp Other",
+            "filings": {"recent": {"accessionNumber": [], "form": [], "filingDate": [],
+                                   "primaryDocument": [], "primaryDocDescription": []}}
+        })
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            f"https://www.sec.gov/Archives/edgar/data/{int(disc)}/000119312525000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        stored: list = []
+
+        class SpyDataWriter(FakeDataWriter):
+            def append_bronze_rows(self, catalog, schema, rows):
+                for r in rows:
+                    if r.get("accession_number") == agent_acc:
+                        stored.append(r.get("cik"))
+                return super().append_bronze_rows(catalog, schema, rows)
+
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["TEST"],
+            universe_reader=FakeUniverseReader([TickerEntry(ticker="TEST", phase=1)]),
+            accession_reader=FakeAccessionReader(),
+            data_writer=SpyDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides={"TEST": [cik_a, cik_b]},
+        )
+        assert stored, f"agent-prefixed filing was not stored (failed={result.failed_count})"
+        assert set(stored) == {disc}, f"expected discovery CIK {disc}, got {set(stored)}"

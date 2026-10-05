@@ -310,6 +310,13 @@ class ExistingAccessionReader(Protocol):
         schema: str,
     ) -> Dict[str, Tuple[str, str]]: ...
 
+    def read_existing_accession(
+        self,
+        catalog: str,
+        schema: str,
+        accession_number: str,
+    ) -> Optional[Tuple[str, str]]: ...
+
 
 class DataWriter(Protocol):
     """Writes bronze filing rows to Delta."""
@@ -1479,8 +1486,8 @@ def run_ingest(
         if ticker != canonical:
             logger.info("Share-class alias: %s → %s (same CIK)", ticker, canonical)
 
-    # Write CIK mapping log
-    if cik_mapping_log_writer is not None:
+    # Write CIK mapping log (skip during dry run unless --log-dry-run)
+    if cik_mapping_log_writer is not None and (not dry_run or log_dry_run):
         for symbol, mapping in cik_map.items():
             cik_log_entry = CikMappingLogEntry(
                 ticker=mapping.ticker,
@@ -1504,6 +1511,7 @@ def run_ingest(
     # For override tickers with multiple CIKs, union filings and dedup by accession
     all_filings: Dict[str, List[FilingMeta]] = {}
     seen_accessions_by_ticker: Dict[str, Set[str]] = {}
+    accession_discovery_cik: Dict[str, str] = {}  # accession -> CIK that discovered it
     failed_tickers: Set[str] = set()
     for ticker, cik in mapped_tickers:
         try:
@@ -1517,6 +1525,7 @@ def run_ingest(
                 if f.accession_number not in seen_accessions_by_ticker[ticker]:
                     seen_accessions_by_ticker[ticker].add(f.accession_number)
                     all_filings[ticker].append(f)
+                    accession_discovery_cik[f.accession_number] = cik
             result.discovered_count += len(all_filings[ticker]) - prev_count
             if failed_hist:
                 # History-file fetch failures → partial coverage
@@ -1613,17 +1622,18 @@ def run_ingest(
             # For override-group tickers, use filer CIK from accession prefix
             # so fetch URL and stored CIK match the actual filer.
             filer_cik = _accession_filer_cik(dashed)
+            discovery_cik = accession_discovery_cik.get(dashed)
             if is_override and filer_cik in ticker_ciks:
                 plan_cik = filer_cik
             elif is_override and filer_cik not in ticker_ciks:
                 logger.warning(
                     "Override ticker %s: accession %s prefix CIK %s not in group %s — "
-                    "using mapped CIK %s",
-                    ticker, dashed, filer_cik, ticker_ciks, next(iter(ticker_ciks)),
+                    "using discovery CIK %s",
+                    ticker, dashed, filer_cik, ticker_ciks, discovery_cik or next(iter(ticker_ciks)),
                 )
-                plan_cik = next(iter(ticker_ciks))
+                plan_cik = discovery_cik or next(iter(ticker_ciks))
             else:
-                plan_cik = next(iter(ticker_ciks))
+                plan_cik = discovery_cik or next(iter(ticker_ciks))
             planned.append((canonical, plan_cik, canonical, filing))
             result.planned_count += 1
 
@@ -1712,9 +1722,11 @@ def run_ingest(
         try:
             # Second anti-join (race safety) with conflict detection
             if accession_reader is not None:
-                current_existing = accession_reader.read_existing_accessions(catalog, schema)
-                if filing.accession_number in current_existing:
-                    existing_cik, existing_ticker = current_existing[filing.accession_number]
+                existing_owner = accession_reader.read_existing_accession(
+                    catalog, schema, filing.accession_number,
+                )
+                if existing_owner is not None:
+                    existing_cik, existing_ticker = existing_owner
                     if existing_cik != cik:
                         # Same ownership group → skip, no conflict
                         same_group = (
@@ -1998,6 +2010,26 @@ class SparkAccessionReader:
         )
         return {row["accession_number"]: (row["cik"], row["ticker"]) for row in rows}
 
+    def read_existing_accession(
+        self,
+        catalog: str,
+        schema: str,
+        accession_number: str,
+    ) -> Optional[Tuple[str, str]]:
+        from databricks.connect import DatabricksSession
+        from pyspark.sql import functions as F
+        spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        row = (
+            spark.table(f"{catalog}.{schema}.bronze_sec_filings_v2")
+            .select("accession_number", "cik", "ticker")
+            .where(F.col("accession_number") == accession_number)
+            .limit(1)
+            .collect()
+        )
+        if row:
+            return (row[0]["cik"], row[0]["ticker"])
+        return None
+
 
 class SparkDataWriter:
     """Merges bronze filing rows into Delta via MERGE (insert-only when not matched).
@@ -2261,6 +2293,12 @@ def ensure_ingest_log_table(spark, catalog: str, schema: str) -> None:
     """)
 
 
+def _is_table_not_found(exc: Exception) -> bool:
+    """Return True if *exc* indicates a missing table (cold-start scenario)."""
+    msg = str(exc).upper()
+    return "TABLE_OR_VIEW_NOT_FOUND" in msg or "TABLE_OR_VIEW_NOT_FOUND" in getattr(exc, "errorCode", "").upper()
+
+
 class SparkIngestLogReader:
     """Reads ingest log entries from sec_ingest_log for resume support.
 
@@ -2284,15 +2322,17 @@ class SparkIngestLogReader:
     ) -> Set[Tuple[str, str, str]]:
         spark = self._get_spark()
         try:
-            rows = spark.sql(f"""
-                SELECT DISTINCT run_id, ticker, accession_number
-                FROM {catalog}.{schema}.sec_ingest_log
-                WHERE run_id = '{run_id}'
-                  AND status = 'succeeded'
-            """).collect()
-        except Exception:
-            # Table does not exist yet (cold start) — no prior attempts
-            return set()
+            rows = spark.sql(
+                f"SELECT DISTINCT run_id, ticker, accession_number "
+                f"FROM {catalog}.{schema}.sec_ingest_log "
+                f"WHERE run_id = ? AND status = 'succeeded'",
+                args=[run_id],
+            ).collect()
+        except Exception as exc:
+            if _is_table_not_found(exc):
+                return set()
+            logger.error("read_succeeded_accessions failed: %s", exc)
+            raise
         return {(r["run_id"], r["ticker"], r["accession_number"]) for r in rows}
 
     def read_max_attempt(
@@ -2305,16 +2345,17 @@ class SparkIngestLogReader:
     ) -> int:
         spark = self._get_spark()
         try:
-            rows = spark.sql(f"""
-                SELECT max(attempt) AS max_attempt
-                FROM {catalog}.{schema}.sec_ingest_log
-                WHERE run_id = '{run_id}'
-                  AND ticker = '{ticker}'
-                  AND accession_number = '{accession_number}'
-            """).collect()
-        except Exception:
-            # Table does not exist yet (cold start)
-            return 0
+            rows = spark.sql(
+                f"SELECT max(attempt) AS max_attempt "
+                f"FROM {catalog}.{schema}.sec_ingest_log "
+                f"WHERE run_id = ? AND ticker = ? AND accession_number = ?",
+                args=[run_id, ticker, accession_number],
+            ).collect()
+        except Exception as exc:
+            if _is_table_not_found(exc):
+                return 0
+            logger.error("read_max_attempt failed: %s", exc)
+            raise
         if rows and rows[0]["max_attempt"] is not None:
             return int(rows[0]["max_attempt"])
         return 0

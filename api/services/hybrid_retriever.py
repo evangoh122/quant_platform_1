@@ -187,8 +187,17 @@ def _get_spark():
 # -- Per-ticker corpus loading --
 
 def _get_embedding_model() -> str:
-    """Get the configured embedding model name."""
-    return os.getenv("ST_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+    """Get the configured embedding model name.
+
+    Uses the same provider-aware resolution as vector_search:
+    - sentence-transformers/local/st providers → ST_EMBEDDING_MODEL
+    - huggingface provider → HF_EMBEDDING_MODEL
+    """
+    from api.config import config as _cfg
+    provider = _cfg.EMBEDDING_PROVIDER
+    if provider in ("sentence-transformers", "sentence_transformers", "local", "st"):
+        return _cfg.ST_EMBEDDING_MODEL
+    return _cfg.HF_EMBEDDING_MODEL
 
 
 def _fetch_ticker_rows(ticker: str) -> Tuple[list, list]:
@@ -762,11 +771,13 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
     global _stored_index_dim, _stored_embedding_model
+    global _alias_map_loaded
 
     if ticker:
-        # Per-ticker invalidation
+        # Per-ticker invalidation — resolve alias first
+        canonical = _resolve_canonical_ticker(ticker)
         with _ticker_cache_lock:
-            _ticker_cache.pop(ticker.upper().strip(), None)
+            _ticker_cache.pop(canonical, None)
         return True
 
     # Full invalidation — clear state but do NOT eagerly reload
@@ -1069,12 +1080,9 @@ def vector_search(
                 )
 
         candidates: List[Tuple[float, Document]] = []
+        doc_by_id = {d.metadata.get("chunk_id"): d for d in corpus.docs}
         for cid, vec in corpus.embeddings_map.items():
-            doc = None
-            for d in corpus.docs:
-                if d.metadata.get("chunk_id") == cid:
-                    doc = d
-                    break
+            doc = doc_by_id.get(cid)
             if doc is None:
                 continue
 
@@ -1129,13 +1137,9 @@ def vector_search(
                 )
 
         candidates: List[Tuple[float, Document]] = []
+        bm25_by_id = {d.metadata.get("chunk_id"): d for d in _bm25_docs} if _bm25_docs else {}
         for cid, vec in _embeddings_map.items():
-            doc = None
-            if _bm25_docs:
-                for d in _bm25_docs:
-                    if d.metadata.get("chunk_id") == cid:
-                        doc = d
-                        break
+            doc = bm25_by_id.get(cid)
             if doc is None:
                 # Build doc from _corpus if _bm25_docs doesn't have it
                 entry = _corpus.get(cid)
