@@ -1580,10 +1580,12 @@ class _FakeSparkSession:
 
     def __init__(self):
         self.created_rows: List[Any] = []
+        self.created_schemas: List[Any] = []
         self.writer = _FakeWriter()
 
-    def createDataFrame(self, rows: Any) -> _FakeDataFrame:
+    def createDataFrame(self, rows: Any, schema: Any = None) -> _FakeDataFrame:
         self.created_rows.append(rows)
+        self.created_schemas.append(schema)
         return _FakeDataFrame(self.writer)
 
     def sql(self, ddl: str) -> None:
@@ -1732,3 +1734,416 @@ class TestMutationProofs:
         result = client.get_json("https://example.com")
         assert result == {"ok": True}
         assert call_count[0] == 2  # retried once
+
+
+# ── Schema contract tests (no Spark needed) ────────────────────────────────
+
+
+class TestBronzeSchemaContract:
+    """Bronze StructType matches the DDL column list exactly."""
+
+    # DDL column names in exact order (from SparkCompanyFactsWriter.ensure_table)
+    DDL_COLUMNS = [
+        "ingest_run_id", "ingested_at", "source_url", "payload_hash",
+        "cik", "entity_name", "ticker", "taxonomy", "concept", "label",
+        "description", "unit", "value_raw", "value_decimal",
+        "period_start", "period_end", "instant", "fiscal_year",
+        "fiscal_period", "form_type", "accession_number", "filed_date",
+        "frame", "raw_fact_json", "source_updated_at",
+    ]
+
+    def test_bronze_schema_field_count(self):
+        """StructType has exactly 25 fields matching the DDL."""
+        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
+        schema = _get_bronze_schema()
+        assert len(schema.fields) == 25
+
+    def test_bronze_schema_field_names_match_ddl(self):
+        """Field names match the DDL column list in order."""
+        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
+        schema = _get_bronze_schema()
+        names = [f.name for f in schema.fields]
+        assert names == self.DDL_COLUMNS
+
+    def test_bronze_schema_types(self):
+        """Field types match the DDL exactly."""
+        from pyspark.sql.types import (
+            DoubleType, IntegerType, StringType, TimestampType,
+        )
+        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
+        schema = _get_bronze_schema()
+        expected = [
+            ("ingest_run_id", StringType, False),
+            ("ingested_at", TimestampType, False),
+            ("source_url", StringType, True),
+            ("payload_hash", StringType, True),
+            ("cik", StringType, True),
+            ("entity_name", StringType, True),
+            ("ticker", StringType, True),
+            ("taxonomy", StringType, True),
+            ("concept", StringType, True),
+            ("label", StringType, True),
+            ("description", StringType, True),
+            ("unit", StringType, True),
+            ("value_raw", StringType, True),
+            ("value_decimal", DoubleType, True),
+            ("period_start", StringType, True),
+            ("period_end", StringType, True),
+            ("instant", StringType, True),
+            ("fiscal_year", IntegerType, True),
+            ("fiscal_period", StringType, True),
+            ("form_type", StringType, True),
+            ("accession_number", StringType, True),
+            ("filed_date", StringType, True),
+            ("frame", StringType, True),
+            ("raw_fact_json", StringType, True),
+            ("source_updated_at", StringType, True),
+        ]
+        for i, (name, typ, nullable) in enumerate(expected):
+            field = schema.fields[i]
+            assert field.name == name, f"Field {i}: {field.name} != {name}"
+            assert isinstance(field.dataType, typ), f"Field {i} ({name}): type mismatch"
+            assert field.nullable == nullable, f"Field {i} ({name}): nullable mismatch"
+
+    def test_mutation_drop_bronze_schema_fails_test(self):
+        """MUTATION: if _get_bronze_schema is removed, this test fails."""
+        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
+        schema = _get_bronze_schema()
+        # The schema must be a StructType, not None
+        assert schema is not None
+        assert len(schema.fields) == 25
+
+
+class TestManifestSchemaContract:
+    """Manifest StructType matches the DDL column list exactly."""
+
+    # DDL column names in exact order (from SparkCompanyFactsManifestWriter.ensure_table)
+    DDL_COLUMNS = [
+        "ingest_run_id", "cik", "ticker", "fetch_status", "attempt_count",
+        "payload_hash", "payload_bytes", "fact_count", "http_status",
+        "started_at", "completed_at", "error_category", "error_message",
+        "logged_at",
+    ]
+
+    def test_manifest_schema_field_count(self):
+        """StructType has exactly 14 fields matching the DDL."""
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        schema = _get_manifest_schema()
+        assert len(schema.fields) == 14
+
+    def test_manifest_schema_field_names_match_ddl(self):
+        """Field names match the DDL column list in order."""
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        schema = _get_manifest_schema()
+        names = [f.name for f in schema.fields]
+        assert names == self.DDL_COLUMNS
+
+    def test_manifest_schema_types(self):
+        """Field types match the DDL exactly."""
+        from pyspark.sql.types import (
+            IntegerType, StringType, TimestampType,
+        )
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        schema = _get_manifest_schema()
+        expected = [
+            ("ingest_run_id", StringType, False),
+            ("cik", StringType, False),
+            ("ticker", StringType, False),
+            ("fetch_status", StringType, False),
+            ("attempt_count", IntegerType, True),
+            ("payload_hash", StringType, True),
+            ("payload_bytes", IntegerType, True),
+            ("fact_count", IntegerType, True),
+            ("http_status", IntegerType, True),
+            ("started_at", TimestampType, True),
+            ("completed_at", TimestampType, True),
+            ("error_category", StringType, True),
+            ("error_message", StringType, True),
+            ("logged_at", TimestampType, False),
+        ]
+        for i, (name, typ, nullable) in enumerate(expected):
+            field = schema.fields[i]
+            assert field.name == name, f"Field {i}: {field.name} != {name}"
+            assert isinstance(field.dataType, typ), f"Field {i} ({name}): type mismatch"
+            assert field.nullable == nullable, f"Field {i} ({name}): nullable mismatch"
+
+    def test_manifest_includes_http_status(self):
+        """MUTATION: if http_status is missing from the schema, this test fails."""
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        schema = _get_manifest_schema()
+        names = [f.name for f in schema.fields]
+        assert "http_status" in names
+
+    def test_mutation_drop_manifest_schema_fails_test(self):
+        """MUTATION: if _get_manifest_schema is removed, this test fails."""
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        schema = _get_manifest_schema()
+        assert schema is not None
+        assert len(schema.fields) == 14
+
+
+class TestFlattenedRowSchemaMatch:
+    """A flattened row with every optional field None converts to a tuple
+    that matches the StructType (no inference anywhere)."""
+
+    def test_coerced_row_tuple_matches_schema(self):
+        """_coerce_bronze_row produces a dict whose values match the StructType."""
+        from pipelines.ingest_sec_companyfacts import (
+            _coerce_bronze_row,
+            _get_bronze_schema,
+        )
+        schema = _get_bronze_schema()
+        # Build a row with every optional field as None
+        row = {
+            "ingest_run_id": "r1",
+            "ingested_at": datetime.now(timezone.utc),
+            "source_url": None,
+            "payload_hash": None,
+            "cik": None,
+            "entity_name": None,
+            "ticker": None,
+            "taxonomy": None,
+            "concept": None,
+            "label": None,
+            "description": None,
+            "unit": None,
+            "value_raw": None,
+            "value_decimal": None,
+            "period_start": None,
+            "period_end": None,
+            "instant": None,
+            "fiscal_year": None,
+            "fiscal_period": None,
+            "form_type": None,
+            "accession_number": None,
+            "filed_date": None,
+            "frame": None,
+            "raw_fact_json": None,
+            "source_updated_at": None,
+        }
+        coerced = _coerce_bronze_row(row)
+        assert len(coerced) == len(schema.fields)
+        # Every key must be present
+        for field in schema.fields:
+            assert field.name in coerced, f"Missing key: {field.name}"
+
+    def test_coerced_row_fiscal_year_is_int_or_none(self):
+        """fiscal_year is coerced to int or None (not str)."""
+        from pipelines.ingest_sec_companyfacts import _coerce_bronze_row
+        row = {
+            "ingest_run_id": "r1",
+            "ingested_at": datetime.now(timezone.utc),
+            "fiscal_year": "2024",  # string from JSON
+            "accession_number": "000-24-000001",
+        }
+        coerced = _coerce_bronze_row(row)
+        assert coerced["fiscal_year"] == 2024
+        assert isinstance(coerced["fiscal_year"], int)
+
+    def test_coerced_row_fiscal_year_none(self):
+        """fiscal_year=None stays None."""
+        from pipelines.ingest_sec_companyfacts import _coerce_bronze_row
+        row = {
+            "ingest_run_id": "r1",
+            "ingested_at": datetime.now(timezone.utc),
+            "fiscal_year": None,
+        }
+        coerced = _coerce_bronze_row(row)
+        assert coerced["fiscal_year"] is None
+
+    def test_manifest_entry_to_dict_matches_schema(self):
+        """CompanyFactsManifestEntry → dict has all manifest schema keys."""
+        from pipelines.ingest_sec_companyfacts import (
+            _get_manifest_schema,
+            CompanyFactsManifestEntry,
+        )
+        schema = _get_manifest_schema()
+        entry = CompanyFactsManifestEntry(
+            ingest_run_id="r1",
+            cik="0000320193",
+            ticker="AAPL",
+            fetch_status="success",
+            attempt_count=1,
+            payload_hash="abc",
+            payload_bytes=100,
+            fact_count=10,
+            http_status=200,
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+            error_category="",
+            error_message="",
+        )
+        row = {
+            "ingest_run_id": entry.ingest_run_id,
+            "cik": entry.cik,
+            "ticker": entry.ticker,
+            "fetch_status": entry.fetch_status,
+            "attempt_count": entry.attempt_count,
+            "payload_hash": entry.payload_hash,
+            "payload_bytes": entry.payload_bytes,
+            "fact_count": entry.fact_count,
+            "http_status": entry.http_status,
+            "started_at": entry.started_at,
+            "completed_at": entry.completed_at,
+            "error_category": entry.error_category,
+            "error_message": entry.error_message,
+            "logged_at": datetime.now(timezone.utc),
+        }
+        assert len(row) == len(schema.fields)
+        for field in schema.fields:
+            assert field.name in row, f"Missing key: {field.name}"
+
+
+class TestCreateDataFrameAlwaysWithSchema:
+    """Every createDataFrame call passes a schema argument."""
+
+    def test_bronze_writer_passes_schema(self):
+        """SparkCompanyFactsWriter.append_rows passes schema= to createDataFrame."""
+        from pipelines.ingest_sec_companyfacts import (
+            SparkCompanyFactsWriter,
+            _get_bronze_schema,
+        )
+        captured_kwargs = []
+
+        class SpyWriter:
+            def mode(self, m): return self
+            def saveAsTable(self, t): pass
+
+        class SpyDataFrame:
+            def __init__(self):
+                self.write = SpyWriter()
+
+        class SpySpark:
+            def createDataFrame(self, *args, **kwargs):
+                captured_kwargs.append(kwargs)
+                return SpyDataFrame()
+
+            def sql(self, ddl): pass
+
+        writer = SparkCompanyFactsWriter(spark_factory=lambda: SpySpark())
+        rows = [{"ingest_run_id": "r1", "ingested_at": datetime.now(timezone.utc)}]
+        writer.append_rows("cat", "sch", rows)
+
+        # Must have passed schema= keyword argument
+        assert len(captured_kwargs) == 1
+        assert "schema" in captured_kwargs[0], "createDataFrame missing schema= argument"
+        schema = captured_kwargs[0]["schema"]
+        assert len(schema.fields) == 25
+
+    def test_manifest_writer_passes_schema(self):
+        """SparkCompanyFactsManifestWriter.write_manifest passes schema= to createDataFrame."""
+        from pipelines.ingest_sec_companyfacts import (
+            SparkCompanyFactsManifestWriter,
+            CompanyFactsManifestEntry,
+        )
+        captured_kwargs = []
+
+        class SpyWriter:
+            def mode(self, m): return self
+            def saveAsTable(self, t): pass
+
+        class SpyDataFrame:
+            def __init__(self):
+                self.write = SpyWriter()
+
+        class SpySpark:
+            def createDataFrame(self, *args, **kwargs):
+                captured_kwargs.append(kwargs)
+                return SpyDataFrame()
+
+            def sql(self, ddl): pass
+
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: SpySpark())
+        entry = CompanyFactsManifestEntry(
+            ingest_run_id="r1", cik="0000320193", ticker="AAPL",
+        )
+        writer.write_manifest("cat", "sch", entry)
+
+        assert len(captured_kwargs) == 1
+        assert "schema" in captured_kwargs[0], "createDataFrame missing schema= argument"
+        schema = captured_kwargs[0]["schema"]
+        assert len(schema.fields) == 14
+
+    def test_mutation_remove_schema_arg_fails(self):
+        """MUTATION: if schema= is removed from createDataFrame, this test fails."""
+        from pipelines.ingest_sec_companyfacts import (
+            SparkCompanyFactsWriter,
+        )
+
+        class SpyWriter:
+            def mode(self, m): return self
+            def saveAsTable(self, t): pass
+
+        class SpyDataFrame:
+            def __init__(self):
+                self.write = SpyWriter()
+
+        class StrictSpark:
+            def createDataFrame(self, *args, **kwargs):
+                # If no schema kwarg, raise to signal the mutation
+                if "schema" not in kwargs and len(args) < 2:
+                    raise AssertionError("createDataFrame called without schema!")
+                return SpyDataFrame()
+
+            def sql(self, ddl): pass
+
+        writer = SparkCompanyFactsWriter(spark_factory=lambda: StrictSpark())
+        rows = [{"ingest_run_id": "r1", "ingested_at": datetime.now(timezone.utc)}]
+        # Should NOT raise
+        writer.append_rows("cat", "sch", rows)
+
+
+class TestCachePathFallback:
+    """CIK cache path falls back to temp dir when default is not writable."""
+
+    def test_fallback_when_volumes_not_writable(self, monkeypatch, tmp_path):
+        """When /Volumes path is not writable, falls back to tempdir."""
+        import os
+        import tempfile
+        from pipelines.ingest_sec_companyfacts import run_ingest_companyfacts
+
+        # Monkeypatch os.access to simulate /Volumes not writable
+        original_access = os.access
+
+        def mock_access(path, mode, *args, **kwargs):
+            if "/Volumes" in str(path):
+                return False
+            return original_access(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "access", mock_access)
+
+        # Also need to monkeypatch os.makedirs for the fallback path
+        captured_cache_paths = []
+
+        def mock_load_company_tickers(client, cache_path, dry_run):
+            captured_cache_paths.append(cache_path)
+            return {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple"}}
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_load = mod.load_company_tickers
+        mod.load_company_tickers = mock_load_company_tickers
+
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="cat",
+                schema="sch",
+                tickers=["AAPL"],
+                run_id="run_fallback",
+                cik_overrides={"AAPL": ["0000320193"]},
+                delta_writer=lambda c, s, r: None,
+                manifest_writer=lambda c, s, e: None,
+            )
+        finally:
+            mod.load_company_tickers = original_load
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        # Should have fallen back to tempdir
+        assert len(captured_cache_paths) == 1
+        assert "/Volumes" not in captured_cache_paths[0]
+        assert tempfile.gettempdir() in captured_cache_paths[0]

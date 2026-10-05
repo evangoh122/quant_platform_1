@@ -56,6 +56,85 @@ from pipelines.sec_rag_ingest import (
     _SystemClock,
 )
 
+# Lazy pyspark imports — only loaded when Spark is actually used (not in tests)
+
+_BRONZE_SCHEMA = None
+_MANIFEST_SCHEMA = None
+
+
+def _get_bronze_schema():
+    """Return the bronze StructType, building it once (lazy)."""
+    global _BRONZE_SCHEMA
+    if _BRONZE_SCHEMA is not None:
+        return _BRONZE_SCHEMA
+    from pyspark.sql.types import (
+        DoubleType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+    _BRONZE_SCHEMA = StructType([
+        StructField("ingest_run_id", StringType(), False),
+        StructField("ingested_at", TimestampType(), False),
+        StructField("source_url", StringType(), True),
+        StructField("payload_hash", StringType(), True),
+        StructField("cik", StringType(), True),
+        StructField("entity_name", StringType(), True),
+        StructField("ticker", StringType(), True),
+        StructField("taxonomy", StringType(), True),
+        StructField("concept", StringType(), True),
+        StructField("label", StringType(), True),
+        StructField("description", StringType(), True),
+        StructField("unit", StringType(), True),
+        StructField("value_raw", StringType(), True),
+        StructField("value_decimal", DoubleType(), True),
+        StructField("period_start", StringType(), True),
+        StructField("period_end", StringType(), True),
+        StructField("instant", StringType(), True),
+        StructField("fiscal_year", IntegerType(), True),
+        StructField("fiscal_period", StringType(), True),
+        StructField("form_type", StringType(), True),
+        StructField("accession_number", StringType(), True),
+        StructField("filed_date", StringType(), True),
+        StructField("frame", StringType(), True),
+        StructField("raw_fact_json", StringType(), True),
+        StructField("source_updated_at", StringType(), True),
+    ])
+    return _BRONZE_SCHEMA
+
+
+def _get_manifest_schema():
+    """Return the manifest StructType, building it once (lazy)."""
+    global _MANIFEST_SCHEMA
+    if _MANIFEST_SCHEMA is not None:
+        return _MANIFEST_SCHEMA
+    from pyspark.sql.types import (
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+    _MANIFEST_SCHEMA = StructType([
+        StructField("ingest_run_id", StringType(), False),
+        StructField("cik", StringType(), False),
+        StructField("ticker", StringType(), False),
+        StructField("fetch_status", StringType(), False),
+        StructField("attempt_count", IntegerType(), True),
+        StructField("payload_hash", StringType(), True),
+        StructField("payload_bytes", IntegerType(), True),
+        StructField("fact_count", IntegerType(), True),
+        StructField("http_status", IntegerType(), True),
+        StructField("started_at", TimestampType(), True),
+        StructField("completed_at", TimestampType(), True),
+        StructField("error_category", StringType(), True),
+        StructField("error_message", StringType(), True),
+        StructField("logged_at", TimestampType(), False),
+    ])
+    return _MANIFEST_SCHEMA
+
 logger = logging.getLogger(__name__)
 
 COMPANY_FACTS_URL = (
@@ -247,6 +326,43 @@ def _try_decimal(value: Any) -> Optional[float]:
         return None
 
 
+def _coerce_bronze_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce a flattened row dict to match the bronze StructType.
+
+    Ensures:
+    - fiscal_year is int or None (not str)
+    - period_start/instant/frame are str or None (not missing keys)
+    - value_decimal is float or None
+    """
+    return {
+        "ingest_run_id": row.get("ingest_run_id"),
+        "ingested_at": row.get("ingested_at"),
+        "source_url": row.get("source_url"),
+        "payload_hash": row.get("payload_hash"),
+        "cik": row.get("cik"),
+        "entity_name": row.get("entity_name"),
+        "ticker": row.get("ticker"),
+        "taxonomy": row.get("taxonomy"),
+        "concept": row.get("concept"),
+        "label": row.get("label"),
+        "description": row.get("description"),
+        "unit": row.get("unit"),
+        "value_raw": row.get("value_raw"),
+        "value_decimal": row.get("value_decimal"),
+        "period_start": row.get("period_start"),
+        "period_end": row.get("period_end"),
+        "instant": row.get("instant"),
+        "fiscal_year": int(row["fiscal_year"]) if row.get("fiscal_year") is not None else None,
+        "fiscal_period": row.get("fiscal_period"),
+        "form_type": row.get("form_type"),
+        "accession_number": row.get("accession_number", ""),
+        "filed_date": row.get("filed_date"),
+        "frame": row.get("frame"),
+        "raw_fact_json": row.get("raw_fact_json"),
+        "source_updated_at": row.get("source_updated_at"),
+    }
+
+
 def compute_payload_hash(payload_bytes: bytes) -> str:
     """SHA-256 hash of the raw payload bytes."""
     return hashlib.sha256(payload_bytes).hexdigest()
@@ -396,6 +512,16 @@ def run_ingest_companyfacts(
             "SEC_COMPANY_TICKERS_CACHE",
             f"/Volumes/{catalog}/{schema}/sec_cache/company_tickers.json",
         )
+        # Fall back to a temp dir if the default path is not writable
+        # (e.g. running outside Databricks where /Volumes does not exist)
+        if not os.access(os.path.dirname(cache_path) or ".", os.W_OK):
+            import tempfile
+            fallback = os.path.join(tempfile.gettempdir(), "sec_cache", "company_tickers.json")
+            logger.warning(
+                "Cache path %s not writable, falling back to %s",
+                cache_path, fallback,
+            )
+            cache_path = fallback
 
     tickers_payload = load_company_tickers(
         client, cache_path=cache_path, dry_run=dry_run,
@@ -629,7 +755,12 @@ class SparkCompanyFactsWriter:
         if not rows:
             return 0
         spark = self._get_spark()
-        df = spark.createDataFrame(rows)
+        bronze_schema = _get_bronze_schema()
+        # Coerce values to match the StructType exactly
+        coerced = []
+        for row in rows:
+            coerced.append(_coerce_bronze_row(row))
+        df = spark.createDataFrame(coerced, schema=bronze_schema)
         table = f"{catalog}.{schema}.bronze_sec_xbrl_facts"
         df.write.mode("append").saveAsTable(table)
         return len(rows)
@@ -648,7 +779,7 @@ class SparkCompanyFactsManifestWriter:
         return DatabricksSession.builder.serverless(True).getOrCreate()
 
     def ensure_table(self, catalog: str, schema: str) -> None:
-        """Create sec_companyfacts_ingest_log if absent."""
+        """Create sec_companyfacts_ingest_log if absent; add http_status if missing."""
         spark = self._get_spark()
         spark.sql(f"""
             CREATE TABLE IF NOT EXISTS {catalog}.{schema}.sec_companyfacts_ingest_log (
@@ -668,6 +799,11 @@ class SparkCompanyFactsManifestWriter:
                 logged_at       TIMESTAMP NOT NULL
             ) USING DELTA
         """)
+        # Idempotent: add http_status if the table pre-existed without it
+        try:
+            spark.sql(f"ALTER TABLE {catalog}.{schema}.sec_companyfacts_ingest_log ADD COLUMNS (http_status INT)")
+        except Exception:
+            pass  # column already exists
 
     def write_manifest(
         self,
@@ -677,6 +813,7 @@ class SparkCompanyFactsManifestWriter:
     ) -> None:
         """Append a manifest row."""
         spark = self._get_spark()
+        manifest_schema = _get_manifest_schema()
         row = {
             "ingest_run_id": entry.ingest_run_id,
             "cik": entry.cik,
@@ -693,7 +830,7 @@ class SparkCompanyFactsManifestWriter:
             "error_message": entry.error_message,
             "logged_at": datetime.now(timezone.utc),
         }
-        df = spark.createDataFrame([row])
+        df = spark.createDataFrame([row], schema=manifest_schema)
         table = f"{catalog}.{schema}.sec_companyfacts_ingest_log"
         df.write.mode("append").saveAsTable(table)
 
