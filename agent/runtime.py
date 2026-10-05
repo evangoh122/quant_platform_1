@@ -236,6 +236,8 @@ _QUOTED_KEY_COLON_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TOOL_ARGS_OPEN = r"""(?:\s*:|\(|\s+\(\s*(?:[A-Za-z_]\w*\s*=|["']|\)))"""
+
 
 def _looks_like_tool_call(text: str) -> bool:
     """Return True if *text* looks like a failed tool call rather than prose.
@@ -249,7 +251,9 @@ def _looks_like_tool_call(text: str) -> bool:
         if _TOOL_CALL_LINE_RE.match(line):
             return True
     for tool_name in ALL_TOOLS:
-        for m in re.finditer(re.escape(tool_name) + r"\s*[(:]", text):
+        # name:, name( — or name (...) when the parenthesis opens an argument list (kwarg, quoted value
+        # or empty), so prose like "search_sec_filings (the tool) found..." is accepted.
+        if re.search(re.escape(tool_name) + _TOOL_ARGS_OPEN, text):
             return True
     if _QUOTED_KEY_COLON_RE.search(text):
         return True
