@@ -545,6 +545,14 @@ class AgentRuntime:
             tool_steps += 1
             seen_symbols.add(action_symbol)
 
+            # ── audit: tool executed successfully ─────────────────────────────
+            self._audit_sink.emit(AuditEntry(
+                trace_id=tid, step=step, action=action.action,
+                tool=tool_name, validation_outcome=REASON_VALID,
+                result_status="success", endpoint=response.endpoint,
+                latency_ms=response.latency_ms,
+            ))
+
             # ── record tool call ──────────────────────────────────────────────
             tool_calls.append({
                 "name": tool_name, "arguments": tool_args,

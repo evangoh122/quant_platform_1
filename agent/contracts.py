@@ -232,7 +232,10 @@ def validate_next_action(raw: dict) -> NextAction:
     this before any tool dispatch; a malformed response fails closed with no
     tool execution.
     """
-    return NextAction.model_validate(raw)
+    from pydantic import TypeAdapter
+
+    adapter = TypeAdapter(NextAction)
+    return adapter.validate_python(raw)
 
 
 def export_schema(check: bool = False) -> Optional[str]:
