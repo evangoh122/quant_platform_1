@@ -235,7 +235,7 @@ def save_research_note(
                         (note_id, user_id, symbol, signal_id, note_text,
                          idempotency_key, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, now(), now())
-                    ON CONFLICT (idempotency_key) DO NOTHING
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
                     RETURNING note_id, symbol
                     """,
                     (note_id, user_id, symbol, signal_id, note_text, idempotency_key),

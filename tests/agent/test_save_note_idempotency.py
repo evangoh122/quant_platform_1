@@ -44,7 +44,7 @@ class _FakeCursor:
         self._next = None
         if s.startswith("INSERT INTO research_notes"):
             note_id, user_id, symbol, signal_id, note_text, key = params[:6]
-            on_conflict = re.search(r"ON CONFLICT \(idempotency_key\) DO NOTHING", s)
+            on_conflict = re.search(r"ON CONFLICT \(idempotency_key\)( WHERE idempotency_key IS NOT NULL)? DO NOTHING", s)
             if on_conflict and any(n["key"] == key for n in self._db.notes):
                 self._next = None  # DO NOTHING -> RETURNING yields no row
                 return
