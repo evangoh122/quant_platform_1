@@ -583,6 +583,8 @@ def check_ticker_coverage(ticker: str) -> Tuple[int, Optional[str]]:
         raise
     except Exception as e:
         logger.warning("Coverage lookup failed for {}: {}", ticker, e)
+        if "TABLE_OR_VIEW_NOT_FOUND" in str(e):
+            raise NoCoverageError(ticker) from e
         raise
 
 
