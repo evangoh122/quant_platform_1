@@ -43,7 +43,9 @@ jobs:
             python -m pip install -r requirements-app.txt
           fi
           if [[ -f requirements-dev.txt ]]; then
-            grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements-dev.txt > "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
+            # drop ibapi (not on PyPI) and the '-r requirements.txt' include (already installed above;
+            # relative includes would not resolve from RUNNER_TEMP)
+            grep -viE '^[[:space:]]*(ibapi([<=>~!]|$)|-r[[:space:]])' requirements-dev.txt > "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
             python -m pip install -r "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
           fi
           python -m pip install pytest pytest-asyncio pytest-timeout httpx numpy pandas polars duckdb scikit-learn pyyaml
