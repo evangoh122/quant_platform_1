@@ -221,42 +221,56 @@ def _sanitize_for_audit(text: str, max_len: int = 200) -> str:
     return text
 
 
-# Tool-call-shaped key-value lines (case-insensitive). "action" only counts when its value is an action
-# type, so prose such as "Action: monitor China exposure" is still accepted as a final answer.
+# Rule 4: action/tool/args key-value lines at line start (case-insensitive).
+# "action" only counts when its value is an action type, so prose such as
+# "Action: monitor China exposure" is still accepted as a final answer.
 _TOOL_CALL_LINE_RE = re.compile(
     r'^\s*"?(?:action"?\s*[:=]\s*"?(?:retrieve|write|final|refuse)\b|(?:tool|args)"?\s*[:=])',
     re.IGNORECASE,
 )
 
-# Brace-free JSON-like fragments: a quoted key "action"|"tool"|"args" followed by : anywhere.
-# Matches patterns like ["action": "retrieve", "tool": "search_sec_filings"] or
-# "tool": "search_sec_filings" embedded in a sentence.
-_QUOTED_KEY_COLON_RE = re.compile(
-    r'"(?:action|tool|args)"\s*:',
+# Rule 2: quoted key "action"|"tool"|"tools"|"args"|"arguments"|"tool_call"|"function"
+# (single or double quotes) followed by : or = anywhere.
+_QUOTED_KEY_RE = re.compile(
+    r"""(?:"(?:action|tool|tools|args|arguments|tool_call|function)"|'(?:action|tool|tools|args|arguments|tool_call|function)')\s*[:=]""",
     re.IGNORECASE,
 )
 
-# Any "(" or ":" after a tool name, with or without spaces. Deliberately fail-closed: prose such as
-# "search_sec_filings (the tool) found..." is rejected too, because "search_sec_filings (AMD)" must be.
-_TOOL_ARGS_OPEN = r"\s*[(:]"
+# Rule 3: XML-ish tags like <tool>, <tool_call>, <function>, <action>, <args>
+_XML_TAG_RE = re.compile(
+    r'<(?:tool|tool_call|function|action|args)\b',
+    re.IGNORECASE,
+)
+
+# Rule 1: any registered tool name as a whole word anywhere in the text.
+_TOOL_NAME_RE = re.compile(
+    r'\b(?:' + '|'.join(re.escape(t) for t in ALL_TOOLS) + r')\b',
+)
 
 
 def _looks_like_tool_call(text: str) -> bool:
     """Return True if *text* looks like a failed tool call rather than prose.
 
-    Checks for:
-    - Lines starting ``action: <retrieve|write|final|refuse>``, ``tool:`` or ``args:`` (case-insensitive)
-    - Any registered tool name followed by ``(`` or ``:`` (every occurrence, not just the first)
-    - Brace-free JSON-like fragments with quoted keys ``"action"|"tool"|"args"`` followed by ``:``
+    Fail-closed: return True when ANY of:
+    1. ANY registered tool name appears anywhere as a whole word.
+    2. A key action|tool|tools|args|arguments|tool_call|function written as a
+       quoted key (single OR double) followed by : or =.
+    3. An XML-ish tag <(tool|tool_call|function|action|args).
+    4. A line starting with action: <type>, tool:, or args:.
     """
+    # Rule 1: tool name as whole word
+    if _TOOL_NAME_RE.search(text):
+        return True
+    # Rule 2: quoted key followed by : or =
+    if _QUOTED_KEY_RE.search(text):
+        return True
+    # Rule 3: XML-ish tag
+    if _XML_TAG_RE.search(text):
+        return True
+    # Rule 4: line-start action/tool/args key-value
     for line in text.splitlines():
         if _TOOL_CALL_LINE_RE.match(line):
             return True
-    for tool_name in ALL_TOOLS:
-        if re.search(re.escape(tool_name) + _TOOL_ARGS_OPEN, text):
-            return True
-    if _QUOTED_KEY_COLON_RE.search(text):
-        return True
     return False
 
 

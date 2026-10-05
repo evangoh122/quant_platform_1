@@ -824,22 +824,59 @@ class TestProseFallback:
         result = runtime.run("Hello", user_id="u1", role="viewer")
         assert result.error_code is None
 
-    def test_tool_name_in_prose_context_accepted(self):
-        """Prose mentioning a tool name in a sentence (not followed by ( or :) is accepted."""
+    def test_tool_name_in_prose_context_rejected(self):
+        """A registered tool name as a whole word is always rejected (fail-closed)."""
         text = "The search_sec_filings tool can help find relevant 10-K sections."
         model_responses = [text]
         runtime, sink = _make_runtime(model_responses)
         result = runtime.run("Hello", user_id="u1", role="viewer")
-        assert result.error_code is None
+        assert result.error_code == "malformed"
 
     def test_second_occurrence_of_tool_name_rejected(self):
-        """If a tool name appears in prose then again as a call, the second occurrence must be caught."""
+        """If a tool name appears in prose, it is rejected at first occurrence (fail-closed)."""
         text = "I will use search_sec_filings to look. search_sec_filings(symbol='AMD')"
         model_responses = [text]
         runtime, sink = _make_runtime(model_responses)
         result = runtime.run("Hello", user_id="u1", role="viewer")
         assert result.available is True
         assert result.error_code == "malformed"
+
+    @pytest.mark.parametrize("text", [
+        "`search_sec_filings`(symbol='AMD')",
+        '["action": "retrieve"]',
+        "'tool': 'search_sec_filings'",
+        '<tool>search_sec_filings</tool>',
+        '<tool_call>{...}',
+        'I used search_sec_filings to look.',
+        'search_sec_filings (AMD)',
+        '"search_sec_filings": {"symbol": "AMD"}',
+    ])
+    def test_broad_rejected_shapes(self, text):
+        """Brace-free shapes assert malformed; brace-containing assert fail-closed."""
+        runtime, sink = _make_runtime([text])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        if '{' in text:
+            # Brace-containing: goes through JSON path, fails closed generically
+            assert result.error_code is not None, f"Expected fail-closed: {text!r}"
+            assert text not in (result.reply or ""), f"Raw text leaked: {text!r}"
+            assert result.tool_calls == [], f"Tool executed: {text!r}"
+        else:
+            assert result.error_code == "malformed", f"Expected rejected: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        "Action: monitor China exposure and revisit next quarter.",
+        "Risk factors: export controls remain a concern.",
+        "NVIDIA's 10-K filing discusses export control risks.",
+        "You should search SEC filings for more information.",
+        "The company's tools: GPUs and CUDA.",
+        "The function of the board is oversight.",
+    ])
+    def test_broad_accepted_prose(self, text):
+        """Legitimate prose is accepted."""
+        runtime, sink = _make_runtime([text])
+        result = runtime.run("Hello", user_id="u1", role="viewer")
+        assert result.error_code is None, f"Expected accepted: {text!r}"
+
 
     def test_brace_free_json_like_fragment_rejected(self):
         """A brace-free JSON-like fragment with quoted keys must be treated as a tool call."""
@@ -931,3 +968,4 @@ class TestRetryFeedback:
         user_msgs = [m for m in retry_messages if m.get("role") == "user"]
         feedback = user_msgs[-1]["content"] if user_msgs else ""
         assert "extra_fields_forbidden" not in feedback.lower(), f"Feedback contains pydantic diagnostic: {feedback}"
+
