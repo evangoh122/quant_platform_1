@@ -93,6 +93,7 @@ chunk_agg AS (
 SELECT
   ur.ticker,
   ur.cik,
+  ur.canonical_ticker,
   coalesce(f.n_filings, 0) AS n_filings,
   coalesce(c.n_chunks, 0) AS n_chunks,
   f.first_filed,

@@ -227,6 +227,38 @@ class TestCanonicalTickerSelection:
             f"GOOGL should resolve to GOOGL with 831 chunks, got {by_ticker['GOOGL']}"
         )
 
+    def test_final_select_includes_canonical_ticker_column(self, duckdb_conn, sql_text):
+        """The final SELECT must emit canonical_ticker so the API can read it
+        without re-deriving from n_chunks."""
+        # Build ALL CTEs and the final query
+        for cte_name in ("universe", "latest_mapping", "ticker_chunk_counts",
+                         "canonical_per_cik", "universe_resolved",
+                         "filing_agg", "chunk_agg"):
+            cte_sql = _shim_for_duckdb(_build_cte_sql(sql_text, cte_name))
+            duckdb_conn.execute(cte_sql)
+
+        # Extract the final SELECT (after the last CTE)
+        final_match = re.search(
+            r"SELECT\s+ur\.ticker.*?FROM\s+universe_resolved\s+ur",
+            sql_text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        assert final_match, "Could not find final SELECT in SQL"
+        final_sql = _shim_for_duckdb(sql_text[final_match.start():])
+        duckdb_conn.execute(f"CREATE OR REPLACE VIEW gold_sec_coverage AS {final_sql}")
+
+        cols = [row[1] for row in duckdb_conn.execute("PRAGMA table_info('gold_sec_coverage')").fetchall()]
+        assert "canonical_ticker" in cols, (
+            f"canonical_ticker missing from final SELECT columns: {cols}"
+        )
+
+        results = duckdb_conn.execute(
+            "SELECT ticker, canonical_ticker FROM gold_sec_coverage ORDER BY ticker"
+        ).fetchall()
+        by_ticker = {r[0]: r[1] for r in results}
+        assert by_ticker["GOOG"] == "GOOGL", f"GOOG canonical should be GOOGL, got {by_ticker['GOOG']}"
+        assert by_ticker["GOOGL"] == "GOOGL", f"GOOGL canonical should be GOOGL, got {by_ticker['GOOGL']}"
+
 
 # ---------------------------------------------------------------------------
 # 2. Mutation proof: reverting to min(ticker) breaks the correct canonical

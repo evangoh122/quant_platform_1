@@ -273,7 +273,7 @@ class TestLoadAliasMapWarehouse:
     """Verify _load_alias_map uses the SQL warehouse when Spark is unavailable."""
 
     def test_alias_map_built_from_warehouse_rows(self, monkeypatch):
-        """Warehouse rows are grouped by CIK; ticker with most chunks is canonical."""
+        """Warehouse rows are read as ticker→canonical_ticker directly."""
         from api.services import hybrid_retriever as hr
 
         _make_warehouse_guard(monkeypatch, hr)
@@ -284,11 +284,11 @@ class TestLoadAliasMapWarehouse:
 
         cursor = FakeCursor(
             rows=[
-                {"ticker": "GOOGL", "cik": "0001652044", "n_chunks": 831},
-                {"ticker": "GOOG", "cik": "0001652044", "n_chunks": 0},
-                {"ticker": "NVDA", "cik": "0001045810", "n_chunks": 894},
+                {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+                {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+                {"ticker": "NVDA", "canonical_ticker": "NVDA"},
             ],
-            columns=["ticker", "cik", "n_chunks"],
+            columns=["ticker", "canonical_ticker"],
         )
         fake_conn = MagicMock()
         fake_conn.cursor.return_value = cursor
@@ -300,15 +300,15 @@ class TestLoadAliasMapWarehouse:
 
         amap = hr._load_alias_map()
 
-        # GOOGL has 831 chunks, GOOG has 0 → GOOGL is canonical
+        # canonical_ticker is read directly — no re-derivation
         assert amap["GOOG"] == "GOOGL"
         assert amap["GOOGL"] == "GOOGL"
         # NVDA is its own canonical
         assert amap["NVDA"] == "NVDA"
 
-    def test_alias_map_canonical_by_chunks_not_alphabetical(self, monkeypatch):
-        """Canonical is the ticker with the most chunks, not alphabetically first.
-        Mutation: reverting to sorted()[0] must pick GOOG (wrong)."""
+    def test_alias_map_canonical_by_column_not_alphabetical(self, monkeypatch):
+        """Canonical is read from canonical_ticker column, not re-derived.
+        Mutation: reverting to n_chunks-based sort must pick GOOG (wrong)."""
         from api.services import hybrid_retriever as hr
 
         _make_warehouse_guard(monkeypatch, hr)
@@ -316,9 +316,165 @@ class TestLoadAliasMapWarehouse:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
 
+        # Both have canonical_ticker=GOOGL (as gold emits with resolved counts)
         cursor = FakeCursor(
             rows=[
-                {"ticker": "GOOG", "cik": "0001652044", "n_chunks": 0},
+                {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+                {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+            ],
+            columns=["ticker", "canonical_ticker"],
+        )
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = cursor
+
+        monkeypatch.setattr(
+            "db.delta_adapter._get_warehouse_connection",
+            lambda: fake_conn,
+        )
+
+        amap = hr._load_alias_map()
+
+        # Both should map to GOOGL (the canonical_ticker from gold)
+        assert amap["GOOGL"] == "GOOGL"
+        assert amap["GOOG"] == "GOOGL"
+
+    def test_alias_map_tie_breaks_alphabetically(self, monkeypatch):
+        """When canonical_ticker is BRK.A (SQL tie-break), the alias map uses it."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+
+        # Gold table emits canonical_ticker as resolved by SQL (BRK.A wins tie)
+        cursor = FakeCursor(
+            rows=[
+                {"ticker": "BRK.B", "canonical_ticker": "BRK.A"},
+                {"ticker": "BRK.A", "canonical_ticker": "BRK.A"},
+            ],
+            columns=["ticker", "canonical_ticker"],
+        )
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = cursor
+
+        monkeypatch.setattr(
+            "db.delta_adapter._get_warehouse_connection",
+            lambda: fake_conn,
+        )
+
+        amap = hr._load_alias_map()
+
+        # canonical_ticker from gold → BRK.A is canonical
+        assert amap["BRK.A"] == "BRK.A"
+        assert amap["BRK.B"] == "BRK.A"
+
+
+# ── 3b. _load_alias_map reads canonical_ticker directly ─────────────────────
+
+
+class TestLoadAliasMapCanonicalTicker:
+    """Verify _load_alias_map reads canonical_ticker from gold_sec_coverage
+    and uses it directly — no re-derivation from n_chunks."""
+
+    def test_alias_map_uses_canonical_ticker_column(self, monkeypatch):
+        """GOOG and GOOGL both have n_chunks=831 (resolved), but canonical_ticker
+        is GOOGL.  The alias map must use canonical_ticker directly, not
+        re-derive from n_chunks (which would pick GOOG alphabetically on tie)."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+
+        # These rows match what 07_gold_sec_coverage.sql emits:
+        # both GOOG and GOOGL report n_chunks=831 (resolved to canonical GOOGL)
+        cursor = FakeCursor(
+            rows=[
+                {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+                {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+                {"ticker": "NVDA", "canonical_ticker": "NVDA"},
+            ],
+            columns=["ticker", "canonical_ticker"],
+        )
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = cursor
+
+        monkeypatch.setattr(
+            "db.delta_adapter._get_warehouse_connection",
+            lambda: fake_conn,
+        )
+
+        amap = hr._load_alias_map()
+
+        # Both must resolve to GOOGL (the canonical_ticker from gold)
+        assert amap["GOOG"] == "GOOGL", (
+            f"GOOG should resolve to GOOGL via canonical_ticker, got {amap.get('GOOG')}"
+        )
+        assert amap["GOOGL"] == "GOOGL", (
+            f"GOOGL should resolve to GOOGL, got {amap.get('GOOGL')}"
+        )
+        assert amap["NVDA"] == "NVDA"
+
+    def test_alias_map_sql_reads_canonical_ticker_not_n_chunks(self, monkeypatch):
+        """The SQL must SELECT ticker, canonical_ticker — not ticker, cik, n_chunks.
+        Mutation: reverting to the old SELECT breaks the GOOG→GOOGL resolution."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+
+        executed_sql = []
+        original_execute = FakeCursor.execute
+
+        def tracking_execute(self, sql, params=None):
+            executed_sql.append(sql)
+            original_execute(self, sql, params)
+
+        cursor = FakeCursor(
+            rows=[
+                {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+                {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+            ],
+            columns=["ticker", "canonical_ticker"],
+        )
+        cursor.execute = lambda sql, params=None: tracking_execute(cursor, sql, params)
+
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value = cursor
+
+        monkeypatch.setattr(
+            "db.delta_adapter._get_warehouse_connection",
+            lambda: fake_conn,
+        )
+
+        hr._load_alias_map()
+
+        assert len(executed_sql) == 1, f"Expected 1 SQL execution, got {len(executed_sql)}"
+        sql = executed_sql[0]
+        assert "canonical_ticker" in sql, (
+            f"SQL must select canonical_ticker column. Got: {sql}"
+        )
+
+    def test_mutation_rederive_canonical_from_n_chunks_fails(self, monkeypatch):
+        """Mutation proof: if _load_alias_map re-derives canonical from n_chunks
+        instead of reading canonical_ticker, GOOG and GOOGL tie (both 831) and
+        alphabetical pick gives GOOG — wrong.  This test documents the failure."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+
+        # Simulate old behavior: read ticker, cik, n_chunks and derive canonical
+        # Both GOOG and GOOGL have 831 chunks (the resolved count from gold)
+        cursor = FakeCursor(
+            rows=[
+                {"ticker": "GOOG", "cik": "0001652044", "n_chunks": 831},
                 {"ticker": "GOOGL", "cik": "0001652044", "n_chunks": 831},
             ],
             columns=["ticker", "cik", "n_chunks"],
@@ -331,14 +487,51 @@ class TestLoadAliasMapWarehouse:
             lambda: fake_conn,
         )
 
-        amap = hr._load_alias_map()
+        # Mutate _load_alias_map to use old logic (group by CIK, sort by n_chunks)
+        original_fn = hr._load_alias_map
 
-        # Both should map to GOOGL (the one with data)
-        assert amap["GOOGL"] == "GOOGL"
-        assert amap["GOOG"] == "GOOGL"
+        def _mutated_load_alias_map():
+            hr._alias_map_loaded = False
+            rows = [
+                {"ticker": "GOOG", "cik": "0001652044", "n_chunks": 831},
+                {"ticker": "GOOGL", "cik": "0001652044", "n_chunks": 831},
+            ]
+            cik_tickers = {}
+            for r in rows:
+                t = (r["ticker"] or "").upper().strip()
+                c = r["cik"] or ""
+                n = int(r["n_chunks"] or 0)
+                if t and c:
+                    cik_tickers.setdefault(c, []).append((t, n))
+            amap = {}
+            for _cik, ticker_counts in cik_tickers.items():
+                ticker_counts.sort(key=lambda x: (-x[1], x[0]))
+                canonical = ticker_counts[0][0]
+                for t, _ in ticker_counts:
+                    amap[t] = canonical
+            return amap
 
-    def test_alias_map_tie_breaks_alphabetically(self, monkeypatch):
-        """When n_chunks are equal, canonical is alphabetical first."""
+        amap = _mutated_load_alias_map()
+
+        # The old logic picks GOOG (alphabetical first on tie) — WRONG
+        assert amap["GOOG"] == "GOOG", (
+            "Mutation proof: old n_chunks logic picks GOOG (wrong canonical)"
+        )
+        # This is the bug: both resolve to GOOG instead of GOOGL
+        assert amap["GOOGL"] == "GOOG", (
+            "Mutation proof: old n_chunks logic maps GOOGL to GOOG (wrong)"
+        )
+
+
+# ── 3c. Missing canonical_ticker column: graceful fallback ──────────────────
+
+
+class TestMissingCanonicalTickerColumn:
+    """If gold_sec_coverage lacks canonical_ticker (old schema), fall back to
+    identity mapping with a WARNING — never guess alphabetically."""
+
+    def test_identity_fallback_on_missing_column(self, monkeypatch):
+        """UNRESOLVED_COLUMN error → identity map + WARNING log."""
         from api.services import hybrid_retriever as hr
 
         _make_warehouse_guard(monkeypatch, hr)
@@ -346,15 +539,46 @@ class TestLoadAliasMapWarehouse:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
 
-        cursor = FakeCursor(
-            rows=[
-                {"ticker": "BRK.B", "cik": "0001067983", "n_chunks": 100},
-                {"ticker": "BRK.A", "cik": "0001067983", "n_chunks": 100},
-            ],
-            columns=["ticker", "cik", "n_chunks"],
-        )
+        def raise_unresolved():
+            raise RuntimeError(
+                "[UNRESOLVED_COLUMN] Column `canonical_ticker` not found in "
+                "table `gold_sec_coverage`"
+            )
+
         fake_conn = MagicMock()
-        fake_conn.cursor.return_value = cursor
+        fake_conn.cursor.side_effect = raise_unresolved
+
+        monkeypatch.setattr(
+            "db.delta_adapter._get_warehouse_connection",
+            lambda: fake_conn,
+        )
+
+        with LoguruCapture() as log:
+            amap = hr._load_alias_map()
+
+        assert amap == {}, f"Expected empty identity map, got {amap}"
+        assert "canonical_ticker" in log.text, (
+            f"Expected WARNING about missing canonical_ticker column, got: {log.text[:500]}"
+        )
+
+    def test_identity_fallback_never_guesses_alphabetically(self, monkeypatch):
+        """On missing column, the fallback must NOT re-derive canonical from
+        n_chunks (which would pick GOOG on tie).  Identity map means each
+        ticker maps to itself."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+
+        def raise_unresolved():
+            raise RuntimeError(
+                "[UNRESOLVED_COLUMN] Column `canonical_ticker` not found"
+            )
+
+        fake_conn = MagicMock()
+        fake_conn.cursor.side_effect = raise_unresolved
 
         monkeypatch.setattr(
             "db.delta_adapter._get_warehouse_connection",
@@ -363,9 +587,13 @@ class TestLoadAliasMapWarehouse:
 
         amap = hr._load_alias_map()
 
-        # Equal chunks → alphabetical tie-break → BRK.A
-        assert amap["BRK.A"] == "BRK.A"
-        assert amap["BRK.B"] == "BRK.A"
+        # Identity map: empty means _resolve_canonical_ticker returns input
+        assert amap.get("GOOG", "GOOG") == "GOOG", (
+            "Fallback should be identity (empty map), not alphabetical guess"
+        )
+        assert amap.get("GOOGL", "GOOGL") == "GOOGL", (
+            "Fallback should be identity (empty map), not alphabetical guess"
+        )
 
 
 # ── 4. Missing coverage table: alias map degrades gracefully ─────────────────

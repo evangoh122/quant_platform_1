@@ -455,11 +455,13 @@ _alias_map_loaded = False
 def _load_alias_map() -> Dict[str, str]:
     """Load the ticker→canonical-ticker alias map from gold_sec_coverage.
 
-    Loads ONCE and caches.  The map groups tickers by CIK and picks the
-    ticker with the most chunks as canonical (tie → alphabetical).  This
-    ensures share-class aliases (GOOG/GOOGL) resolve to whichever ticker
-    actually holds the silver data.  Coverage lookup and alias lookup share
-    one cached read.
+    Loads ONCE and caches.  Reads the ``canonical_ticker`` column directly
+    from the gold table so the API never re-derives the canonical from chunk
+    counts (which would disagree with the SQL when both share-class tickers
+    report the same resolved n_chunks).
+
+    If the ``canonical_ticker`` column is missing (old table schema), falls
+    back to identity mapping with a WARNING — never guesses alphabetically.
 
     Returns the alias map dict.  On failure returns an empty dict and logs
     once so subsequent calls don't retry.
@@ -481,7 +483,7 @@ def _load_alias_map() -> Dict[str, str]:
 
             rows = (
                 spark.table(COVERAGE_TABLE)
-                .select("ticker", "cik", "n_chunks")
+                .select("ticker", "canonical_ticker")
                 .collect()
             )
         else:
@@ -490,7 +492,7 @@ def _load_alias_map() -> Dict[str, str]:
             conn = _get_warehouse_connection()
             cur = conn.cursor()
             try:
-                cur.execute(f"SELECT ticker, cik, n_chunks FROM {COVERAGE_TABLE}")
+                cur.execute(f"SELECT ticker, canonical_ticker FROM {COVERAGE_TABLE}")
                 cols = [d[0] for d in cur.description]
                 rows = [dict(zip(cols, r)) for r in cur.fetchall()]
             finally:
@@ -501,29 +503,31 @@ def _load_alias_map() -> Dict[str, str]:
                 _alias_map_loaded = True
             return {}
 
-        # Group tickers by CIK → pick canonical (most chunks, then alphabetical)
-        cik_tickers: Dict[str, List[Tuple[str, int]]] = {}
+        amap: Dict[str, str] = {}
         for r in rows:
             t = (r["ticker"] or "").upper().strip()
-            c = r["cik"] or ""
-            n = int(r["n_chunks"] or 0)
-            if t and c:
-                cik_tickers.setdefault(c, []).append((t, n))
-
-        amap: Dict[str, str] = {}
-        for _cik, ticker_counts in cik_tickers.items():
-            # Sort by n_chunks DESC, then ticker ASC (tie-break)
-            ticker_counts.sort(key=lambda x: (-x[1], x[0]))
-            canonical = ticker_counts[0][0]
-            for t, _ in ticker_counts:
-                amap[t] = canonical
+            ct = (r["canonical_ticker"] or "").upper().strip()
+            if t and ct:
+                amap[t] = ct
 
         with _alias_map_lock:
             _alias_map = amap
             _alias_map_loaded = True
-        logger.info("Loaded ticker alias map: {} entries, {} CIKs", len(amap), len(cik_tickers))
+        logger.info("Loaded ticker alias map: {} entries", len(amap))
         return amap
     except Exception as exc:
+        # If canonical_ticker column is missing (old table schema), fall back
+        # to identity mapping with a WARNING — never guess alphabetically.
+        if "canonical_ticker" in str(exc) or "UNRESOLVED_COLUMN" in str(exc):
+            logger.warning(
+                "gold_sec_coverage missing canonical_ticker column; "
+                "falling back to identity alias map. Rebuild gold table. {}",
+                exc,
+            )
+            with _alias_map_lock:
+                _alias_map = {}
+                _alias_map_loaded = True
+            return {}
         logger.warning("Failed to load ticker alias map (will use identity): {}", exc)
         with _alias_map_lock:
             _alias_map = {}
