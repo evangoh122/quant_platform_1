@@ -1055,6 +1055,129 @@ class TestRunIngestCompanyFacts:
         assert len(failed_entries) == 1
         assert failed_entries[0].http_status == 404
 
+    def test_retry_exhaustion_403_manifest(self):
+        """MUTATION: 403 x5 → manifest http_status=403, attempts=5, category=forbidden."""
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+        ] + [HttpResponse(status_code=403, text="Forbidden", headers={})] * 5)
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL"],
+                run_id="run_403_exhaust",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["failed_count"] == 1
+        failed = [e for e in manifest_entries if e.fetch_status == "failed"]
+        assert len(failed) == 1
+        assert failed[0].http_status == 403
+        assert failed[0].attempt_count == 5
+        assert failed[0].error_category == "forbidden"
+
+    def test_retry_exhaustion_429_manifest(self):
+        """MUTATION: 429 x5 → manifest http_status=429, attempts=5, category=rate_limited."""
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+        ] + [HttpResponse(status_code=429, text="Too Many Requests", headers={})] * 5)
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL"],
+                run_id="run_429_exhaust",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["failed_count"] == 1
+        failed = [e for e in manifest_entries if e.fetch_status == "failed"]
+        assert len(failed) == 1
+        assert failed[0].http_status == 429
+        assert failed[0].attempt_count == 5
+        assert failed[0].error_category == "rate_limited"
+
+    def test_retry_exhaustion_503_manifest(self):
+        """MUTATION: 503 x5 → manifest http_status=503, attempts=5, category=server_error."""
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+        ] + [HttpResponse(status_code=503, text="Service Unavailable", headers={})] * 5)
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL"],
+                run_id="run_503_exhaust",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["failed_count"] == 1
+        failed = [e for e in manifest_entries if e.fetch_status == "failed"]
+        assert len(failed) == 1
+        assert failed[0].http_status == 503
+        assert failed[0].attempt_count == 5
+        assert failed[0].error_category == "server_error"
+
     def test_xom_two_cik_fetch(self):
         """XOM override maps to 2 CIKs; both are fetched."""
         payload_1 = _make_company_facts_payload(cik="0002115436", entity_name="Holdings")

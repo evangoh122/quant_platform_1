@@ -831,6 +831,7 @@ class SecClient:
     ) -> HttpResponse:
         """Execute request with rate limiting, retries, and backoff."""
         last_error: Optional[Exception] = None
+        last_status: Optional[int] = None
 
         for attempt in range(self._config.max_retries):
             self._limiter.acquire()
@@ -845,6 +846,7 @@ class SecClient:
                     return resp
 
                 if resp.status_code in (403, 429, 503):
+                    last_status = resp.status_code
                     retry_after = self._parse_retry_after(resp.headers)
                     if retry_after is not None:
                         # Cap Retry-After; above cap → hard failure
@@ -866,6 +868,7 @@ class SecClient:
                     continue
 
                 if resp.status_code >= 500:
+                    last_status = resp.status_code
                     backoff = min(2 ** attempt, 60)
                     self._clock.sleep(backoff)
                     self._retry_count += 1
@@ -887,6 +890,7 @@ class SecClient:
 
         raise SecClientError(
             f"SEC request failed after {self._config.max_retries} attempts for {url}: {last_error}",
+            status_code=last_status,
             url=url,
         )
 
