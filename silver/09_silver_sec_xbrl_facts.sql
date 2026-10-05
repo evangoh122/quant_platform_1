@@ -136,17 +136,17 @@ USING (
   )
   SELECT * FROM normalized
 ) AS src
-ON tgt.cik = src.cik
-   AND tgt.taxonomy = src.taxonomy
-   AND tgt.concept = src.concept
-   AND COALESCE(tgt.unit, '') = COALESCE(src.unit, '')
-   AND COALESCE(tgt.period_start, '') = COALESCE(src.period_start, '')
-   AND COALESCE(tgt.period_end, '') = COALESCE(src.period_end, '')
-   AND COALESCE(tgt.instant, '') = COALESCE(src.instant, '')
-   AND COALESCE(tgt.fiscal_year, -1) = COALESCE(src.fiscal_year, -1)
-   AND COALESCE(tgt.fiscal_period, '') = COALESCE(src.fiscal_period, '')
-   AND COALESCE(tgt.form_type, '') = COALESCE(src.form_type, '')
-   AND tgt.accession_number = src.accession_number
-   AND COALESCE(tgt.frame, '') = COALESCE(src.frame, '')
+ON tgt.cik <=> src.cik
+   AND tgt.taxonomy <=> src.taxonomy
+   AND tgt.concept <=> src.concept
+   AND tgt.unit <=> src.unit
+   AND tgt.period_start <=> src.period_start
+   AND tgt.period_end <=> src.period_end
+   AND tgt.instant <=> src.instant
+   AND tgt.fiscal_year <=> src.fiscal_year
+   AND tgt.fiscal_period <=> src.fiscal_period
+   AND tgt.form_type <=> src.form_type
+   AND tgt.accession_number <=> src.accession_number
+   AND tgt.frame <=> src.frame
 WHEN MATCHED THEN UPDATE SET *
 WHEN NOT MATCHED THEN INSERT *
