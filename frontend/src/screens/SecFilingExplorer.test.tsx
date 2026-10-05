@@ -590,4 +590,156 @@ describe('SecFilingExplorer', () => {
     });
     expect(screen.queryByText(/iPhone revenue/i)).not.toBeInTheDocument();
   });
+
+  it('shows error state when secTool result has error without rows', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: { error: 'execution_failed' },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('AAPL');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(screen.getByText(/execution_failed/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/No SEC filing sections found/i)).not.toBeInTheDocument();
+  });
+
+  it('clear button invalidates in-flight request', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+
+    let resolveA: (v: unknown) => void;
+    const promiseA = new Promise((r) => {
+      resolveA = r;
+    });
+    mockChat.mockReturnValue(promiseA);
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = await screen.findByText('AAPL');
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(input).toHaveValue('AAPL');
+    });
+
+    const clearBtn = screen.getByLabelText('Clear selection');
+    fireEvent.click(clearBtn);
+
+    // After clear: input is empty, empty state shown
+    await waitFor(() => {
+      expect(input).toHaveValue('');
+    });
+    expect(screen.getByText(/Select a ticker/i)).toBeInTheDocument();
+
+    // Now resolve the old request — it should be discarded
+    resolveA!(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: { rows: [{ chunk_text: 'iPhone revenue', section: 'MD&A' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    // Stale result must not appear
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/iPhone revenue/i)).not.toBeInTheDocument();
+  });
+
+  it('editing ticker input invalidates in-flight request', async () => {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+        { ticker: 'NVDA', cik: '2', n_filings: 20, n_chunks: 200, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 2,
+      status: 'ok',
+    });
+
+    let resolveA: (v: unknown) => void;
+    const promiseA = new Promise((r) => {
+      resolveA = r;
+    });
+    mockChat.mockReturnValue(promiseA);
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/2 equities/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+
+    // Select AAPL
+    fireEvent.focus(input);
+    const optionA = await screen.findByText('AAPL');
+    fireEvent.mouseDown(optionA);
+
+    await waitFor(() => {
+      expect(input).toHaveValue('AAPL');
+    });
+
+    // Edit the input (simulate user typing) — should invalidate the request
+    fireEvent.change(input, { target: { value: 'N' } });
+
+    // After edit: selected is cleared, stale result should not render
+    await waitFor(() => {
+      expect(input).toHaveValue('N');
+    });
+
+    // Resolve the old request — it should be discarded
+    resolveA!(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: { rows: [{ chunk_text: 'iPhone revenue', section: 'MD&A' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/iPhone revenue/i)).not.toBeInTheDocument();
+  });
 });

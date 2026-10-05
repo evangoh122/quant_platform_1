@@ -140,24 +140,39 @@ export function SecFilingExplorer() {
     setHighlightIdx(0);
   }, [query]);
 
+  const resetRequest = useCallback(() => {
+    requestIdRef.current += 1;
+    setSelected('');
+    setQuery('');
+    setResult(null);
+    setError(null);
+    setLoading(false);
+  }, []);
+
   const secTool = result?.tool_calls.find((tc) => tc.name === 'search_sec_filings');
   const rawRows: Record<string, unknown>[] =
     secTool?.result && typeof secTool.result === 'object' && Array.isArray(secTool.result.rows)
       ? (secTool.result.rows as Record<string, unknown>[])
       : [];
-  const isNoCoverage = rawRows.length > 0 && rawRows[0]?.error === 'no_coverage';
-  const noCoverageTicker = isNoCoverage ? String(rawRows[0].ticker ?? selected) : '';
-  const isRetrievalUnavailable = rawRows.length > 0 && rawRows[0]?.error === 'retrieval_unavailable';
+  const secToolError =
+    secTool?.result && typeof secTool.result === 'object' && typeof secTool.result.error === 'string'
+      ? secTool.result.error
+      : null;
+  const firstRow = rawRows.length > 0 ? rawRows[0] : null;
+  const firstRowError = firstRow && typeof firstRow.error === 'string' ? firstRow.error : null;
+  const effectiveError = firstRowError ?? secToolError;
+  const isNoCoverage = effectiveError === 'no_coverage';
+  const noCoverageTicker = isNoCoverage
+    ? String((firstRow && firstRow.ticker) ?? selected)
+    : '';
+  const isRetrievalUnavailable = effectiveError === 'retrieval_unavailable';
   const retrievalUnavailableMessage = isRetrievalUnavailable
-    ? String(rawRows[0].message ?? 'SEC search is temporarily unavailable.')
+    ? String((firstRow && firstRow.message) ?? 'SEC search is temporarily unavailable.')
     : '';
   const hasUnknownError =
-    rawRows.length > 0 &&
-    typeof rawRows[0]?.error === 'string' &&
-    rawRows[0].error !== 'no_coverage' &&
-    rawRows[0].error !== 'retrieval_unavailable';
+    effectiveError !== null && effectiveError !== 'no_coverage' && effectiveError !== 'retrieval_unavailable';
   const unknownErrorMessage = hasUnknownError
-    ? String(rawRows[0].message ?? rawRows[0].error)
+    ? String((firstRow && firstRow.message) ?? effectiveError)
     : '';
   const isError = isNoCoverage || isRetrievalUnavailable || hasUnknownError;
   const rows = isError ? [] : rawRows;
@@ -218,10 +233,12 @@ export function SecFilingExplorer() {
               aria-label="Select equity"
               value={query}
               onChange={(e) => {
-                setQuery(e.target.value);
+                const val = e.target.value;
+                setQuery(val);
                 setOpen(true);
-                if (selected && e.target.value !== selected) {
-                  setSelected('');
+                if (selected && val !== selected) {
+                  resetRequest();
+                  setQuery(val);
                 }
               }}
               onFocus={() => setOpen(true)}
@@ -234,9 +251,7 @@ export function SecFilingExplorer() {
                 type="button"
                 aria-label="Clear selection"
                 onClick={() => {
-                  setSelected('');
-                  setQuery('');
-                  setResult(null);
+                  resetRequest();
                   inputRef.current?.focus();
                 }}
                 className="px-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
