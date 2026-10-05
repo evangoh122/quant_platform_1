@@ -609,7 +609,9 @@ def run_ingest_companyfacts(
             manifest.payload_bytes = len(raw_bytes)
             manifest.http_status = http_status
 
-            # Skip if same (cik, payload_hash) already written this run
+            # Skip if same (cik, payload_hash) already written this run.
+            # Reserve the key immediately to prevent a concurrent worker
+            # with the same (cik, payload_hash) from also appending.
             with lock:
                 if (cik, payload_hash) in seen_payloads:
                     manifest.fetch_status = "skipped_duplicate"
@@ -619,32 +621,38 @@ def run_ingest_companyfacts(
                     if manifest_writer is not None:
                         manifest_writer(catalog, schema, manifest)
                     return
-
-            # Flatten
-            rows = flatten_company_facts(
-                payload=payload,
-                cik=cik,
-                ticker=ticker,
-                run_id=run_id,
-                ingested_at=ingested_at,
-                source_url=source_url,
-                payload_hash=payload_hash,
-            )
-
-            manifest.fact_count = len(rows)
-            manifest.fetch_status = "success"
-            manifest.attempt_count = attempt_count
-            manifest.completed_at = datetime.now(timezone.utc)
-
-            # Write rows to Delta
-            if delta_writer is not None and rows:
-                delta_writer(catalog, schema, rows)
-
-            # Mark as seen only AFTER successful Delta write
-            with lock:
+                # Reserve: mark key as in-flight so no other worker duplicates
                 seen_payloads.add((cik, payload_hash))
-                result["fetched_count"] += 1
-                result["total_facts"] += len(rows)
+
+            try:
+                # Flatten
+                rows = flatten_company_facts(
+                    payload=payload,
+                    cik=cik,
+                    ticker=ticker,
+                    run_id=run_id,
+                    ingested_at=ingested_at,
+                    source_url=source_url,
+                    payload_hash=payload_hash,
+                )
+
+                manifest.fact_count = len(rows)
+                manifest.fetch_status = "success"
+                manifest.attempt_count = attempt_count
+                manifest.completed_at = datetime.now(timezone.utc)
+
+                # Write rows to Delta
+                if delta_writer is not None and rows:
+                    delta_writer(catalog, schema, rows)
+
+                with lock:
+                    result["fetched_count"] += 1
+                    result["total_facts"] += len(rows)
+            except Exception:
+                # Release reservation on failure so another worker can retry
+                with lock:
+                    seen_payloads.discard((cik, payload_hash))
+                raise
 
             if manifest_writer is not None:
                 manifest_writer(catalog, schema, manifest)
