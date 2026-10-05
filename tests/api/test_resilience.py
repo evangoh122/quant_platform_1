@@ -444,7 +444,33 @@ def test_token_mint_subprocess_timeout(monkeypatch):
         raise _sp.TimeoutExpired(cmd=args[0] if args else "databricks", timeout=kwargs["timeout"])
 
     monkeypatch.setattr(lb.subprocess, "run", _fake_run)
+    # Exercise the CLI path explicitly (CI runners have no `databricks` CLI on PATH).
+    monkeypatch.setattr(lb.shutil, "which", lambda name: "/usr/bin/databricks")
 
     with pytest.raises(RuntimeError, match="timed out"):
         lb.mint_token_via_cli("test-instance")
     assert seen["timeout"] is not None and 0 < seen["timeout"] <= lb.LAKEBASE_CONNECT_TIMEOUT + 2
+
+def test_token_mint_uses_sdk_when_cli_absent(monkeypatch):
+    """Databricks Apps has no CLI: the mint must use databricks-sdk and never call subprocess."""
+    import types
+    import db.lakebase as lb
+
+    monkeypatch.setattr(lb.shutil, "which", lambda name: None)
+    monkeypatch.setattr(lb.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("CLI used")))
+    calls = {}
+
+    class _FakeDB:
+        def generate_database_credential(self, instance_names, request_id):
+            calls["instances"] = instance_names
+            return types.SimpleNamespace(token="tok-123", expiration_time="2026-10-05T06:00:00Z")
+
+    class _FakeWC:
+        def __init__(self, *a, **k):
+            self.database = _FakeDB()
+
+    import databricks.sdk as sdk
+    monkeypatch.setattr(sdk, "WorkspaceClient", _FakeWC)
+    out = lb.mint_token_via_cli("inst-a")
+    assert out == {"token": "tok-123", "expiration_time": "2026-10-05T06:00:00Z"}
+    assert calls["instances"] == ["inst-a"]
