@@ -767,6 +767,7 @@ class TestJobEntrypointImportsN5:
         entrypoints = {
             "pipelines/build_sec_embeddings.py": "sec_embeddings",
             "pipelines/sec_rag_ingest.py": "sec_rag_ingest",
+            "pipelines/ingest_sec_companyfacts.py": "sec_companyfacts_ingest",
         }
 
         # Stdlib modules (no need to declare)
