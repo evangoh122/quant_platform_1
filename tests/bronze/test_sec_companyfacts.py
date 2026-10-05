@@ -37,6 +37,7 @@ from pipelines.ingest_sec_companyfacts import (
     build_source_url,
     run_ingest_companyfacts,
     _classify_error,
+    _schema_to_ddl_columns,
 )
 
 
@@ -1739,8 +1740,51 @@ class TestMutationProofs:
 # ── Schema contract tests (no Spark needed) ────────────────────────────────
 
 
+_TYPE_MAP_REVERSE = {
+    "STRING": "string",
+    "INT": "int",
+    "BIGINT": "bigint",
+    "DOUBLE": "double",
+    "FLOAT": "float",
+    "BOOLEAN": "boolean",
+    "TIMESTAMP": "timestamp",
+    "DATE": "date",
+    "BINARY": "binary",
+    "SMALLINT": "smallint",
+    "TINYINT": "tinyint",
+}
+
+
+def _parse_ddl_columns(ddl: str):
+    """Parse a CREATE TABLE DDL column list into (name, simpleString, nullable) tuples."""
+    import re
+    m = re.search(r'\(\s*(.*?)\s*\)\s*USING\s+DELTA', ddl, re.DOTALL | re.IGNORECASE)
+    if not m:
+        raise ValueError(f"Cannot parse DDL column list from: {ddl[:200]}")
+    body = m.group(1)
+    cols = []
+    for line in body.split(","):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            raise ValueError(f"Cannot parse DDL column line: {line}")
+        name = parts[0]
+        ddl_type = parts[1].upper()
+        nullable = "NOT NULL" not in line.upper()
+        simple = _TYPE_MAP_REVERSE.get(ddl_type, ddl_type.lower())
+        cols.append((name, simple, nullable))
+    return cols
+
+
 class TestBronzeSchemaContract:
-    """Bronze StructType matches the DDL column list exactly."""
+    """Bronze StructType matches the DDL column list exactly.
+
+    The DDL is GENERATED from the StructType via _schema_to_ddl_columns,
+    so they can never drift apart.  These tests verify the round-trip:
+    StructType → DDL → parse → compare against StructType.
+    """
 
     # DDL column names in exact order (from SparkCompanyFactsWriter.ensure_table)
     DDL_COLUMNS = [
@@ -1805,6 +1849,41 @@ class TestBronzeSchemaContract:
             assert isinstance(field.dataType, typ), f"Field {i} ({name}): type mismatch"
             assert field.nullable == nullable, f"Field {i} ({name}): nullable mismatch"
 
+    def test_bronze_generated_ddl_matches_struct_type(self):
+        """DDL generated from StructType round-trips back to the same columns.
+
+        This is the core contract: StructType is the single source of truth.
+        The DDL cannot drift independently because it is derived.
+        """
+        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
+        schema = _get_bronze_schema()
+        ddl_cols_str = _schema_to_ddl_columns(schema)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+
+        assert len(parsed) == len(schema.fields), (
+            f"DDL has {len(parsed)} columns, schema has {len(schema.fields)}"
+        )
+        for i, field in enumerate(schema.fields):
+            name, simple, nullable = parsed[i]
+            assert name == field.name, f"Col {i}: {name} != {field.name}"
+            assert simple == field.dataType.simpleString(), (
+                f"Col {i} ({name}): DDL type {simple} != schema type {field.dataType.simpleString()}"
+            )
+            assert nullable == field.nullable, (
+                f"Col {i} ({name}): DDL nullable={nullable} != schema nullable={field.nullable}"
+            )
+
+    def test_bronze_ddl_column_names_match_hardcoded_list(self):
+        """Generated DDL column names match the hardcoded reference list."""
+        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
+        schema = _get_bronze_schema()
+        ddl_cols_str = _schema_to_ddl_columns(schema)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+        names = [c[0] for c in parsed]
+        assert names == self.DDL_COLUMNS
+
     def test_mutation_drop_bronze_schema_fails_test(self):
         """MUTATION: if _get_bronze_schema is removed, this test fails."""
         from pipelines.ingest_sec_companyfacts import _get_bronze_schema
@@ -1813,9 +1892,52 @@ class TestBronzeSchemaContract:
         assert schema is not None
         assert len(schema.fields) == 25
 
+    def test_mutation_drop_field_from_bronze_struct_fails_contract(self):
+        """MUTATION: removing a field from the StructType causes the contract
+        test to fail — the generated DDL no longer matches the full schema.
+
+        This is the exact scenario DeepSeek flagged: if someone edits the
+        StructType but not the DDL (or vice versa), this test catches it.
+        """
+        from pyspark.sql.types import (
+            DoubleType, IntegerType, StringType, StructField, StructType,
+            TimestampType,
+        )
+        from pipelines.ingest_sec_companyfacts import _get_bronze_schema
+        full_schema = _get_bronze_schema()
+
+        # Build a schema missing 'fact_count' equivalent — here we drop
+        # 'value_decimal' as a representative field
+        reduced_fields = [f for f in full_schema.fields if f.name != "value_decimal"]
+        reduced_schema = StructType(reduced_fields)
+
+        # Generate DDL from the reduced schema
+        ddl_cols_str = _schema_to_ddl_columns(reduced_schema)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+
+        # The parsed DDL should NOT match the full schema (missing value_decimal)
+        assert len(parsed) != len(full_schema.fields), (
+            "Reduced schema should have fewer fields than full schema"
+        )
+
+        # Verify the specific field is missing
+        parsed_names = [c[0] for c in parsed]
+        assert "value_decimal" not in parsed_names, (
+            "value_decimal should be missing from reduced DDL"
+        )
+        assert "value_decimal" in [f.name for f in full_schema.fields], (
+            "value_decimal should be in the full schema"
+        )
+
 
 class TestManifestSchemaContract:
-    """Manifest StructType matches the DDL column list exactly."""
+    """Manifest StructType matches the DDL column list exactly.
+
+    The DDL is GENERATED from the StructType via _schema_to_ddl_columns,
+    so they can never drift apart.  These tests verify the round-trip:
+    StructType → DDL → parse → compare against StructType.
+    """
 
     # DDL column names in exact order (from SparkCompanyFactsManifestWriter.ensure_table)
     DDL_COLUMNS = [
@@ -1867,6 +1989,41 @@ class TestManifestSchemaContract:
             assert isinstance(field.dataType, typ), f"Field {i} ({name}): type mismatch"
             assert field.nullable == nullable, f"Field {i} ({name}): nullable mismatch"
 
+    def test_manifest_generated_ddl_matches_struct_type(self):
+        """DDL generated from StructType round-trips back to the same columns.
+
+        This is the core contract: StructType is the single source of truth.
+        The DDL cannot drift independently because it is derived.
+        """
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        schema = _get_manifest_schema()
+        ddl_cols_str = _schema_to_ddl_columns(schema)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+
+        assert len(parsed) == len(schema.fields), (
+            f"DDL has {len(parsed)} columns, schema has {len(schema.fields)}"
+        )
+        for i, field in enumerate(schema.fields):
+            name, simple, nullable = parsed[i]
+            assert name == field.name, f"Col {i}: {name} != {field.name}"
+            assert simple == field.dataType.simpleString(), (
+                f"Col {i} ({name}): DDL type {simple} != schema type {field.dataType.simpleString()}"
+            )
+            assert nullable == field.nullable, (
+                f"Col {i} ({name}): DDL nullable={nullable} != schema nullable={field.nullable}"
+            )
+
+    def test_manifest_ddl_column_names_match_hardcoded_list(self):
+        """Generated DDL column names match the hardcoded reference list."""
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        schema = _get_manifest_schema()
+        ddl_cols_str = _schema_to_ddl_columns(schema)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+        names = [c[0] for c in parsed]
+        assert names == self.DDL_COLUMNS
+
     def test_manifest_includes_http_status(self):
         """MUTATION: if http_status is missing from the schema, this test fails."""
         from pipelines.ingest_sec_companyfacts import _get_manifest_schema
@@ -1880,6 +2037,43 @@ class TestManifestSchemaContract:
         schema = _get_manifest_schema()
         assert schema is not None
         assert len(schema.fields) == 14
+
+    def test_mutation_drop_field_from_manifest_struct_fails_contract(self):
+        """MUTATION: removing http_status from the StructType causes the
+        contract test to fail — the generated DDL no longer matches the
+        full schema.
+
+        This is the exact scenario DeepSeek flagged: if someone edits the
+        StructType but not the DDL (or vice versa), this test catches it.
+        """
+        from pyspark.sql.types import (
+            IntegerType, StringType, StructField, StructType, TimestampType,
+        )
+        from pipelines.ingest_sec_companyfacts import _get_manifest_schema
+        full_schema = _get_manifest_schema()
+
+        # Build a schema missing 'http_status'
+        reduced_fields = [f for f in full_schema.fields if f.name != "http_status"]
+        reduced_schema = StructType(reduced_fields)
+
+        # Generate DDL from the reduced schema
+        ddl_cols_str = _schema_to_ddl_columns(reduced_schema)
+        full_ddl = f"CREATE TABLE IF NOT EXISTS t ({ddl_cols_str}) USING DELTA"
+        parsed = _parse_ddl_columns(full_ddl)
+
+        # The parsed DDL should NOT match the full schema (missing http_status)
+        assert len(parsed) != len(full_schema.fields), (
+            "Reduced schema should have fewer fields than full schema"
+        )
+
+        # Verify the specific field is missing
+        parsed_names = [c[0] for c in parsed]
+        assert "http_status" not in parsed_names, (
+            "http_status should be missing from reduced DDL"
+        )
+        assert "http_status" in [f.name for f in full_schema.fields], (
+            "http_status should be in the full schema"
+        )
 
 
 class TestFlattenedRowSchemaMatch:

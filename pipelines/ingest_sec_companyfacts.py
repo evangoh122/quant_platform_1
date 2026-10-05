@@ -135,6 +135,37 @@ def _get_manifest_schema():
     ])
     return _MANIFEST_SCHEMA
 
+def _schema_to_ddl_columns(schema) -> str:
+    """Generate a DDL column list from a StructType.
+
+    Uses field.dataType.simpleString() for the Spark SQL type name and
+    appends NOT NULL where field.nullable is False.  This makes the
+    StructType the single source of truth for both CREATE TABLE DDL and
+    createDataFrame schemas — they can never drift apart.
+    """
+    _TYPE_MAP = {
+        "string": "STRING",
+        "int": "INT",
+        "bigint": "BIGINT",
+        "double": "DOUBLE",
+        "float": "FLOAT",
+        "boolean": "BOOLEAN",
+        "timestamp": "TIMESTAMP",
+        "date": "DATE",
+        "binary": "BINARY",
+        "decimal": "DECIMAL",
+        "smallint": "SMALLINT",
+        "tinyint": "TINYINT",
+    }
+    parts = []
+    for field in schema.fields:
+        spark_type = field.dataType.simpleString()
+        ddl_type = _TYPE_MAP.get(spark_type, spark_type.upper())
+        nullable = "" if field.nullable else " NOT NULL"
+        parts.append(f"    {field.name} {ddl_type}{nullable}")
+    return ",\n".join(parts)
+
+
 logger = logging.getLogger(__name__)
 
 COMPANY_FACTS_URL = (
@@ -717,33 +748,11 @@ class SparkCompanyFactsWriter:
     def ensure_table(self, catalog: str, schema: str) -> None:
         """Create bronze_sec_xbrl_facts if absent."""
         spark = self._get_spark()
+        bronze_schema = _get_bronze_schema()
+        cols = _schema_to_ddl_columns(bronze_schema)
         spark.sql(f"""
             CREATE TABLE IF NOT EXISTS {catalog}.{schema}.bronze_sec_xbrl_facts (
-                ingest_run_id     STRING NOT NULL,
-                ingested_at       TIMESTAMP NOT NULL,
-                source_url        STRING,
-                payload_hash      STRING,
-                cik               STRING,
-                entity_name       STRING,
-                ticker            STRING,
-                taxonomy          STRING,
-                concept           STRING,
-                label             STRING,
-                description       STRING,
-                unit              STRING,
-                value_raw         STRING,
-                value_decimal     DOUBLE,
-                period_start      STRING,
-                period_end        STRING,
-                instant           STRING,
-                fiscal_year       INT,
-                fiscal_period     STRING,
-                form_type         STRING,
-                accession_number  STRING,
-                filed_date        STRING,
-                frame             STRING,
-                raw_fact_json     STRING,
-                source_updated_at STRING
+                {cols}
             ) USING DELTA
         """)
 
@@ -783,22 +792,11 @@ class SparkCompanyFactsManifestWriter:
     def ensure_table(self, catalog: str, schema: str) -> None:
         """Create sec_companyfacts_ingest_log if absent; add http_status if missing."""
         spark = self._get_spark()
+        manifest_schema = _get_manifest_schema()
+        cols = _schema_to_ddl_columns(manifest_schema)
         spark.sql(f"""
             CREATE TABLE IF NOT EXISTS {catalog}.{schema}.sec_companyfacts_ingest_log (
-                ingest_run_id   STRING NOT NULL,
-                cik             STRING NOT NULL,
-                ticker          STRING NOT NULL,
-                fetch_status    STRING NOT NULL,
-                attempt_count   INT,
-                payload_hash    STRING,
-                payload_bytes   INT,
-                fact_count      INT,
-                http_status     INT,
-                started_at      TIMESTAMP,
-                completed_at    TIMESTAMP,
-                error_category  STRING,
-                error_message   STRING,
-                logged_at       TIMESTAMP NOT NULL
+                {cols}
             ) USING DELTA
         """)
         # Idempotent: add http_status if the table pre-existed without it
