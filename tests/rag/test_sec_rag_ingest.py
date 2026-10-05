@@ -2944,8 +2944,10 @@ class TestSparkIngestLogReaderColdStart:
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
-                raise Exception("Table or view not found: sec_ingest_log")
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
 
         reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
         result = reader.read_succeeded_accessions("cat", "sch", "r1")
@@ -2959,8 +2961,10 @@ class TestSparkIngestLogReaderColdStart:
         from pipelines.sec_rag_ingest import SparkIngestLogReader
 
         class FakeSpark:
-            def sql(self, q):
-                raise Exception("Table or view not found: sec_ingest_log")
+            def sql(self, q, args=None):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view `cat.sch.sec_ingest_log` does not exist."
+                )
 
         reader = SparkIngestLogReader(spark_factory=lambda: FakeSpark())
         result = reader.read_max_attempt("cat", "sch", "r1", "NVDA", "001")
