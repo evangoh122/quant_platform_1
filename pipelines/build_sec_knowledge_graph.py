@@ -11,13 +11,14 @@ OOM if the dataset grows beyond driver capacity.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
+_p = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
 from pipelines._runtime import get_spark, repo_root
-
-sys.path.insert(0, str(repo_root()))
 
 from sec_kg.build import build_graph, validate_and_raise
 from sec_kg.model import BUILD_VERSION, normalize_unicode

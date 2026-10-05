@@ -19,9 +19,9 @@ import sys
 import time
 from pathlib import Path
 
+_p = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
 from pipelines._runtime import repo_root
-
-sys.path.insert(0, str(repo_root()))
 
 import numpy as np
 import pandas as pd

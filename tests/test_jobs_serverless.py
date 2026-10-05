@@ -386,3 +386,84 @@ def test_mutation_ablation_relative_output_path_fails():
     assert good_path.is_absolute(), (
         f"_resolve_output_dir(None) returned relative path: {good_path}"
     )
+
+
+# ── 11. Subprocess: entry points run from unrelated cwd ────────────────────
+
+import subprocess
+import sys as _sys
+import tempfile
+
+
+def _python_file_abs_paths() -> list[Path]:
+    """Return absolute paths for every python_file in jobs.yml."""
+    cfg = _load_jobs()
+    paths = []
+    for task in _python_file_tasks(cfg):
+        rel = task["spark_python_task"]["python_file"]
+        paths.append(_resolve_python_file(rel))
+    return paths
+
+
+def test_entry_points_run_from_unrelated_cwd(tmp_path):
+    """Every python_file must exit 0 with --help when cwd is outside the repo
+    and PYTHONPATH is removed from the environment.
+
+    This is the guard that catches bootstrap regressions: without the
+    ``sys.path`` bootstrap in each entry point, ``from pipelines._runtime``
+    fails with ModuleNotFoundError when the repo root is not on PYTHONPATH.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    for path in _python_file_abs_paths():
+        assert path.exists(), f"Entry point missing: {path}"
+        result = _sys.executable
+        proc = subprocess.run(
+            [result, str(path), "--help"],
+            cwd=str(tmp_path),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, (
+            f"{path.name} --help exited {proc.returncode} from cwd={tmp_path}.\n"
+            f"stdout: {proc.stdout[:500]}\n"
+            f"stderr: {proc.stderr[:500]}\n"
+            f"Likely missing bootstrap: _p = globals().get('__file__') or sys.argv[0]"
+        )
+
+
+def test_mutation_remove_bootstrap_fails(tmp_path):
+    """Mutation: remove the bootstrap from run_silver_gold.py → subprocess
+    --help must fail with ModuleNotFoundError when cwd is outside the repo."""
+    target = _REPO_ROOT / "pipelines" / "run_silver_gold.py"
+    original = target.read_text(encoding="utf-8")
+
+    # Remove the bootstrap lines
+    lines = original.splitlines(keepends=True)
+    filtered = [
+        ln for ln in lines
+        if "_p = globals()" not in ln
+        and "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))" not in ln
+    ]
+    mutated = "".join(filtered)
+
+    mutated_file = tmp_path / "run_silver_gold_mutated.py"
+    mutated_file.write_text(mutated, encoding="utf-8")
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run(
+        [_sys.executable, str(mutated_file), "--help"],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode != 0, (
+        "Mutation: removing bootstrap should cause --help to fail, "
+        f"but it exited {proc.returncode}"
+    )
+    assert "ModuleNotFoundError" in proc.stderr or "No module named" in proc.stderr, (
+        f"Expected ModuleNotFoundError in stderr, got:\n{proc.stderr[:500]}"
+    )
