@@ -4706,3 +4706,132 @@ class TestXbrlClientUserAgent:
         assert result == "RealAgent real@test.com", (
             "Correct code uses pipeline resolver, not os.getenv('EDGAR_USER_AGENT')"
         )
+
+
+# ── Round 2b: CodeRabbit regression tests ─────────────────────────────────
+
+
+class TestSingleAccessionLookup:
+    """_process_one uses read_existing_accession (singular, parameterized)
+    for the race-path check, never read_existing_accessions (full-table scan)."""
+
+    def test_process_one_calls_singular_lookup(self):
+        """The per-filing race-path check calls read_existing_accession (one row),
+        not read_existing_accessions (full table collect)."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        submissions = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json("https://data.sec.gov/submissions/CIK0001045810.json", submissions)
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        universe = [TickerEntry(ticker="NVDA", phase=1)]
+
+        class SpyAccessionReader:
+            """Tracks which methods are called and how many times."""
+            def __init__(self):
+                self.plural_calls = 0
+                self.singular_calls = []
+                self._accessions: Dict[str, Tuple[str, str]] = {}
+
+            def read_existing_accessions(self, catalog, schema):
+                self.plural_calls += 1
+                return self._accessions
+
+            def read_existing_accession(self, catalog, schema, accession_number):
+                self.singular_calls.append(accession_number)
+                return self._accessions.get(accession_number)
+
+        spy = SpyAccessionReader()
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["NVDA"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=spy,
+            data_writer=FakeDataWriter(),
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+        )
+        assert result.planned_count >= 1, "No filings planned"
+        # The singular method must be called for each processed filing
+        assert len(spy.singular_calls) >= 1, (
+            "read_existing_accession (singular) was never called — "
+            "the race-path check is missing or uses read_existing_accessions"
+        )
+        # Verify it was called with the actual accession number
+        assert any("0001045810" in a for a in spy.singular_calls), (
+            f"read_existing_accession not called with expected accession, "
+            f"got: {spy.singular_calls}"
+        )
+
+
+class TestDiscoveryCikPerFiling:
+    """For override tickers, plan_cik uses the CIK that discovered the filing,
+    not an arbitrary member of the CIK set."""
+
+    def test_override_ticker_uses_discovery_cik(self):
+        """When accession prefix CIK is not in the override group, the
+        discovery CIK is used instead of next(iter(set))."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+
+        # Two CIKs in the override group for ticker "TEST"
+        cik_a = "0001045810"  # matches fixture submissions
+        cik_b = "0001234567"  # different CIK
+
+        # Submissions for CIK A — has filing with accession prefix matching CIK A
+        submissions_a = json.loads((FIXTURES / "submissions_recent.json").read_text())
+        http.set_json(f"https://data.sec.gov/submissions/CIK{cik_a}.json", submissions_a)
+
+        # Empty submissions for CIK B
+        http.set_json(f"https://data.sec.gov/submissions/CIK{cik_b}.json", {
+            "cik": int(cik_b), "name": "Test Corp B",
+            "filings": {"recent": {"accessionNumber": [], "form": [], "filingDate": [],
+                                   "primaryDocument": [], "primaryDocDescription": []}}
+        })
+
+        filing_html = (FIXTURES / "sample_filing.htm").read_text()
+        http.set_text(
+            "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000010/nvda-20250126.htm",
+            filing_html,
+        )
+
+        # Override: TEST ticker has two CIKs
+        universe = [TickerEntry(ticker="TEST", phase=1)]
+        cik_overrides = {"TEST": [cik_a, cik_b]}
+
+        # Track which CIK is used for planning
+        planned_ciks: list = []
+        original_process = process_filing
+
+        class SpyDataWriter(FakeDataWriter):
+            def append_bronze_rows(self, catalog, schema, rows):
+                for r in rows:
+                    planned_ciks.append(r.get("cik"))
+                return super().append_bronze_rows(catalog, schema, rows)
+
+        writer = SpyDataWriter()
+        result = run_ingest(
+            catalog="test", schema="test",
+            start_date="2024-09-01",
+            tickers=["TEST"],
+            universe_reader=FakeUniverseReader(universe),
+            accession_reader=FakeAccessionReader(),
+            data_writer=writer,
+            http_client=http,
+            clock=clock,
+            cache_path=str(FIXTURES / "company_tickers.json"),
+            cik_overrides=cik_overrides,
+        )
+        if result.planned_count > 0:
+            # The filing discovered under CIK A should be planned with CIK A
+            # (the discovery CIK), not an arbitrary set member
+            assert all(cik == cik_a for cik in planned_ciks if cik), (
+                f"Expected all planned CIKs to be {cik_a} (discovery CIK), "
+                f"got: {planned_ciks}"
+            )

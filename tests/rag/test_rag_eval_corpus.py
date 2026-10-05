@@ -216,3 +216,74 @@ class TestDeltaImportIsLazy:
             adapter.records()
         with pytest.raises(RuntimeError, match="not loaded"):
             adapter.embedding_map()
+
+
+class TestOfflineAliasMap:
+    """install_offline_corpus installs an identity alias map so that
+    _resolve_canonical_ticker never calls Spark or the warehouse."""
+
+    def test_offline_installs_identity_alias_map(self, tmp_path):
+        """Each ticker in the corpus gets an identity alias (TICKER → TICKER)."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # Alias map should be loaded
+            assert hr._alias_map_loaded is True, (
+                "_alias_map_loaded is False inside install_offline_corpus"
+            )
+            # Every ticker in the corpus should have an identity mapping
+            for ticker in ("NVDA", "AMD", "INTC", "QCOM", "AAPL"):
+                assert hr._alias_map.get(ticker) == ticker, (
+                    f"Ticker {ticker} missing from offline alias map or "
+                    f"not identity-mapped (got {hr._alias_map.get(ticker)})"
+                )
+
+    def test_offline_alias_map_prevents_spark_call(self, tmp_path):
+        """With the offline alias map installed, _resolve_canonical_ticker
+        never triggers _load_alias_map's Spark/warehouse path."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        with install_offline_corpus(adapter):
+            # The alias map must be pre-populated with corpus tickers
+            # so _load_alias_map's early-return fires (no Spark call)
+            assert len(hr._alias_map) > 0, (
+                "Alias map is empty inside install_offline_corpus; "
+                "_load_alias_map will attempt a Databricks connection"
+            )
+            # Verify the map contains the expected identity entries
+            assert "NVDA" in hr._alias_map
+            assert hr._alias_map["NVDA"] == "NVDA"
+
+    def test_offline_alias_map_restored_on_exit(self, tmp_path):
+        """The original alias map and flag are restored after context exit."""
+        from evals.rag_eval.corpus import JsonlCorpusAdapter, install_offline_corpus
+        import api.services.hybrid_retriever as hr
+
+        corpus_path = FIXTURE_DIR / "corpus_smoke.jsonl"
+        emb_path = FIXTURE_DIR / "embeddings_smoke.npz"
+        adapter = JsonlCorpusAdapter.from_files(corpus_path, emb_path)
+
+        orig_map = dict(hr._alias_map)
+        orig_loaded = hr._alias_map_loaded
+
+        with install_offline_corpus(adapter):
+            # Map is modified inside
+            assert hr._alias_map != orig_map or hr._alias_map_loaded != orig_loaded
+
+        # Restored after exit
+        assert hr._alias_map == orig_map, (
+            "install_offline_corpus did not restore _alias_map on exit"
+        )
+        assert hr._alias_map_loaded == orig_loaded, (
+            "install_offline_corpus did not restore _alias_map_loaded on exit"
+        )

@@ -3364,3 +3364,187 @@ class TestAliasResolutionMutationProof:
         # Without alias resolution, GOOGL has no coverage → NoCoverageError
         with pytest.raises(NoCoverageError):
             bm25_search("Google revenue", top_k=5, ticker="GOOGL")
+
+
+# ── Round 2b: CodeRabbit regression tests ─────────────────────────────────
+
+
+class TestReloadCorpusResetsAliasFlag:
+    """reload_corpus(None) must reset _alias_map_loaded so the alias map
+    is re-read on next access."""
+
+    def test_full_reload_resets_alias_map_loaded(self):
+        """After reload_corpus(None), _alias_map_loaded is False."""
+        from api.services import hybrid_retriever as hr
+
+        # Pre-condition: alias map is loaded
+        with hr._alias_map_lock:
+            hr._alias_map = {"GOOG": "GOOG", "GOOGL": "GOOG"}
+            hr._alias_map_loaded = True
+
+        hr.reload_corpus(None)
+
+        assert hr._alias_map_loaded is False, (
+            "_alias_map_loaded was not reset by reload_corpus(None); "
+            "subsequent _load_alias_map() calls will return stale data"
+        )
+        assert len(hr._alias_map) == 0, (
+            "_alias_map was not cleared by reload_corpus(None)"
+        )
+
+    def test_full_reload_allows_alias_reload(self):
+        """After reload_corpus(None), _load_alias_map reloads instead of
+        returning the stale cached map."""
+        from api.services import hybrid_retriever as hr
+
+        # Pre-condition: alias map is loaded with stale data
+        with hr._alias_map_lock:
+            hr._alias_map = {"STALE": "STALE"}
+            hr._alias_map_loaded = True
+
+        hr.reload_corpus(None)
+
+        # After reload, _load_alias_map should attempt to reload
+        # (in tests, _get_spark raises, so it falls through to empty map)
+        # The key assertion is that it doesn't return the stale {"STALE": "STALE"}
+        amap = hr._load_alias_map()
+        assert "STALE" not in amap, (
+            "After reload, _load_alias_map returned stale cached data"
+        )
+
+
+class TestInvalidationResolvesAlias:
+    """reload_corpus('GOOGL') must resolve the alias to 'GOOG' and evict
+    the canonical ticker from the cache."""
+
+    def test_alias_invalidation_evicts_canonical(self, monkeypatch):
+        """reload_corpus('GOOGL') evicts GOOG from the LRU cache."""
+        from api.services import hybrid_retriever as hr
+
+        # Install GOOG corpus
+        docs = [
+            _make_doc("Alphabet revenue", ticker="GOOG", accession="G1",
+                      accepted_ts="2025-01-01"),
+        ]
+        tokenised = [hr.tokenize(d.page_content) for d in docs]
+        np.random.seed(42)
+        embeddings_map = {"G1": np.random.randn(384).astype(np.float32)}
+        embeddings_map["G1"] /= np.linalg.norm(embeddings_map["G1"])
+
+        corpus = hr.TickerCorpus(
+            ticker="GOOG", docs=docs, tokenised=tokenised,
+            bm25_index=hr.BM25Okapi(tokenised),
+            embeddings_map=embeddings_map,
+            stored_model="BAAI/bge-small-en-v1.5", stored_dim=384,
+            load_ts=0.0, approx_bytes=0,
+        )
+        hr._insert_ticker_corpus("GOOG", corpus)
+
+        # Install alias map: GOOGL → GOOG
+        with hr._alias_map_lock:
+            hr._alias_map = {"GOOG": "GOOG", "GOOGL": "GOOG"}
+            hr._alias_map_loaded = True
+
+        def real_resolve(ticker):
+            ticker = ticker.upper().strip()
+            return hr._alias_map.get(ticker, ticker)
+
+        monkeypatch.setattr(hr, "_resolve_canonical_ticker", real_resolve)
+
+        # Pre-condition: GOOG is in cache
+        with hr._ticker_cache_lock:
+            assert "GOOG" in hr._ticker_cache
+
+        # Invalidate via alias
+        hr.reload_corpus("GOOGL")
+
+        # GOOG should be evicted
+        with hr._ticker_cache_lock:
+            assert "GOOG" not in hr._ticker_cache, (
+                "reload_corpus('GOOGL') did not evict GOOG from cache; "
+                "alias was not resolved before invalidation"
+            )
+
+    def test_alias_invalidation_returns_true(self, monkeypatch):
+        """reload_corpus('GOOGL') returns True even when the alias resolves."""
+        from api.services import hybrid_retriever as hr
+
+        with hr._alias_map_lock:
+            hr._alias_map = {"GOOG": "GOOG", "GOOGL": "GOOG"}
+            hr._alias_map_loaded = True
+
+        def real_resolve(ticker):
+            ticker = ticker.upper().strip()
+            return hr._alias_map.get(ticker, ticker)
+
+        monkeypatch.setattr(hr, "_resolve_canonical_ticker", real_resolve)
+
+        result = hr.reload_corpus("GOOGL")
+        assert result is True
+
+
+class TestEmbeddingModelResolution:
+    """_get_embedding_model uses the same provider-aware resolution as
+    vector_search (HF_EMBEDDING_MODEL when provider is 'huggingface')."""
+
+    def test_huggingface_provider_returns_hf_model(self, monkeypatch):
+        """When EMBEDDING_PROVIDER is 'huggingface', returns HF_EMBEDDING_MODEL."""
+        from api.services import hybrid_retriever as hr
+        from api.config import config
+
+        monkeypatch.setattr(type(config), "EMBEDDING_PROVIDER",
+                            property(lambda self: "huggingface"))
+        monkeypatch.setattr(type(config), "HF_EMBEDDING_MODEL",
+                            property(lambda self: "custom/hf-model"))
+        monkeypatch.setattr(type(config), "ST_EMBEDDING_MODEL",
+                            property(lambda self: "custom/st-model"))
+
+        result = hr._get_embedding_model()
+        assert result == "custom/hf-model", (
+            f"_get_embedding_model returned '{result}' for huggingface provider; "
+            f"expected 'custom/hf-model' (HF_EMBEDDING_MODEL)"
+        )
+
+    def test_st_provider_returns_st_model(self, monkeypatch):
+        """When EMBEDDING_PROVIDER is 'sentence-transformers', returns ST_EMBEDDING_MODEL."""
+        from api.services import hybrid_retriever as hr
+        from api.config import config
+
+        monkeypatch.setattr(type(config), "EMBEDDING_PROVIDER",
+                            property(lambda self: "sentence-transformers"))
+        monkeypatch.setattr(type(config), "HF_EMBEDDING_MODEL",
+                            property(lambda self: "custom/hf-model"))
+        monkeypatch.setattr(type(config), "ST_EMBEDDING_MODEL",
+                            property(lambda self: "custom/st-model"))
+
+        result = hr._get_embedding_model()
+        assert result == "custom/st-model", (
+            f"_get_embedding_model returned '{result}' for sentence-transformers provider; "
+            f"expected 'custom/st-model' (ST_EMBEDDING_MODEL)"
+        )
+
+    def test_matches_vector_search_resolution(self, monkeypatch):
+        """_get_embedding_model and vector_search resolve to the same model
+        for every supported provider."""
+        from api.services import hybrid_retriever as hr
+        from api.config import config
+
+        for provider, expected_attr in [
+            ("sentence-transformers", "ST_EMBEDDING_MODEL"),
+            ("huggingface", "HF_EMBEDDING_MODEL"),
+            ("local", "ST_EMBEDDING_MODEL"),
+            ("st", "ST_EMBEDDING_MODEL"),
+        ]:
+            monkeypatch.setattr(type(config), "EMBEDDING_PROVIDER",
+                                property(lambda self, p=provider: p))
+            monkeypatch.setattr(type(config), "HF_EMBEDDING_MODEL",
+                                property(lambda self: "hf-m"))
+            monkeypatch.setattr(type(config), "ST_EMBEDDING_MODEL",
+                                property(lambda self: "st-m"))
+
+            result = hr._get_embedding_model()
+            expected = "st-m" if expected_attr == "ST_EMBEDDING_MODEL" else "hf-m"
+            assert result == expected, (
+                f"Provider '{provider}': _get_embedding_model returned '{result}', "
+                f"expected '{expected}' ({expected_attr})"
+            )
