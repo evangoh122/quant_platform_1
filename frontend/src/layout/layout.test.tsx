@@ -42,13 +42,49 @@ const marketResponse = {
   options: { data: [], count: 0, empty: true, source: 'gold_options_features', freshness: { state: 'empty', table: '', detail: '' } },
 };
 
+const portfolioResponse = {
+  positions: { data: [], count: 0, empty: true, source: '', freshness: { state: 'empty', table: '', detail: '' } },
+  orders: { data: [], count: 0, empty: true, source: '', freshness: { state: 'empty', table: '', detail: '' } },
+};
+
+const healthTraceResponse = { slow: [] };
+
+const analyticsResponse = {
+  model_performance: { data: [], count: 0, empty: true, source: '', freshness: { state: 'empty', table: '', detail: '' } },
+  agent_activity: { data: [], count: 0, empty: true, source: '', freshness: { state: 'empty', table: '', detail: '' } },
+  latency: { data: [], count: 0, empty: true, source: '', freshness: { state: 'empty', table: '', detail: '' } },
+  stream_freshness: { data: [], count: 0, empty: true, source: '', freshness: { state: 'empty', table: '', detail: '' } },
+};
+
+const signalsResponse = { data: [], count: 0, empty: true, source: '', freshness: { state: 'empty', table: '', detail: '' } };
+
+const chatResponse = { reply: 'No results.', tool_calls: [] };
+
 function mockFetch(body: unknown) {
-  return vi.fn().mockImplementation((url: string) => {
+  return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     if (url === '/api/health') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
     }
+    if (url === '/api/health/trace') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(healthTraceResponse) });
+    }
+    if (url === '/api/analytics') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(analyticsResponse) });
+    }
     if (url.startsWith('/api/market/')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(marketResponse) });
+    }
+    if (url === '/api/portfolio') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(portfolioResponse) });
+    }
+    if (url === '/api/signals') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(signalsResponse) });
+    }
+    if (url === '/api/agent/chat') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(chatResponse) });
+    }
+    if (url.startsWith('/api/orders/')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ order_id: '1', status: 'approved', ok: true }) });
     }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
   });
@@ -266,6 +302,73 @@ describe('Collapsed sidebar accessibility', () => {
     const marketButton = screen.getByRole('button', { name: 'Market Explorer' });
     expect(marketButton).toHaveAttribute('aria-label', 'Market Explorer');
     expect(marketButton.textContent).toBe('M');
+  });
+});
+
+const ALL_DESTINATIONS = [
+  { id: 'platform-overview', label: 'Platform Overview' },
+  { id: 'market', label: 'Market Explorer' },
+  { id: 'options', label: 'Options Analytics' },
+  { id: 'sec', label: 'SEC Research' },
+  { id: 'agent', label: 'AI Research Agent' },
+  { id: 'signals', label: 'Signal Explorer' },
+  { id: 'portfolio', label: 'Paper Portfolio' },
+  { id: 'orders', label: 'Order Approval' },
+  { id: 'analytics', label: 'Activity Analytics' },
+  { id: 'health', label: 'System Health' },
+  { id: 'architecture', label: 'Architecture & Tests' },
+];
+
+describe('Navigation destination enumeration', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders every destination label from NAV_GROUPS', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    for (const dest of ALL_DESTINATIONS) {
+      expect(screen.getByRole('button', { name: dest.label })).toBeInTheDocument();
+    }
+  });
+
+  it('navigates to each destination on click and preserves aria-current', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    for (const dest of ALL_DESTINATIONS) {
+      const button = screen.getByRole('button', { name: dest.label });
+      await user.click(button);
+
+      await waitFor(() => {
+        expect(button).toHaveAttribute('aria-current', 'page');
+      });
+    }
+  });
+
+  it('removes "Options Analytics" leaves a gap in coverage', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const labels = ALL_DESTINATIONS.map((d) => d.label);
+    expect(labels).toContain('Options Analytics');
   });
 });
 
