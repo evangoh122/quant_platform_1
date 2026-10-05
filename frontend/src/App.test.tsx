@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import App from './App';
 
@@ -42,6 +43,110 @@ function mockFetch(body: unknown) {
   });
 }
 
+describe('App shell and navigation', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders grouped navigation and a default Platform Overview destination', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('button', { name: 'Platform Overview' })).toBeInTheDocument();
+    expect(screen.getByText('Overview')).toBeInTheDocument();
+    expect(screen.getByText('Research')).toBeInTheDocument();
+    expect(screen.getByText('Strategy')).toBeInTheDocument();
+    expect(screen.getByText('Operations')).toBeInTheDocument();
+    expect(screen.getByText('Evidence')).toBeInTheDocument();
+  });
+
+  it('marks the selected destination with an accessible active state', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const overviewButton = screen.getByRole('button', { name: 'Platform Overview' });
+    expect(overviewButton).toHaveAttribute('aria-current', 'page');
+
+    const marketButton = screen.getByRole('button', { name: 'Market Explorer' });
+    expect(marketButton).not.toHaveAttribute('aria-current');
+  });
+
+  it('opens and closes the mobile drawer with keyboard controls', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    // Mock window.innerWidth for mobile
+    Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    // Open drawer
+    const menuButton = screen.getByLabelText('Open navigation');
+    await user.click(menuButton);
+
+    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument();
+
+    // Close with Escape
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps the Lakebase banner visible when the breaker is open', async () => {
+    vi.stubGlobal('fetch', mockFetch(degradedResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/Account services unavailable/)).toBeInTheDocument();
+  });
+
+  it('exposes a visible header Take a tour action and shell tour targets', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('button', { name: 'Take a tour' })).toBeInTheDocument();
+    expect(document.querySelector('[data-tour="navigation"]')).toBeInTheDocument();
+    expect(document.querySelector('[data-tour="tour-action"]')).toBeInTheDocument();
+  });
+
+  it('exposes the lakebase-banner tour target when the banner is visible', async () => {
+    vi.stubGlobal('fetch', mockFetch(degradedResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+
+    expect(document.querySelector('[data-tour="lakebase-banner"]')).toBeInTheDocument();
+  });
+});
+
 describe('App health banner', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -63,7 +168,7 @@ describe('App health banner', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Market Dashboard' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
     });
 
     expect(screen.queryByText(/Account services unavailable/)).not.toBeInTheDocument();
