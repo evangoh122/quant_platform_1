@@ -17,7 +17,7 @@ Quant Platform serves a technical researcher, analyst or small quantitative team
 
 The platform ingests structured market, options, CFTC and macro data plus unstructured SEC filing text into a Delta medallion lakehouse. Silver transformations clean, deduplicate, quarantine and attach availability semantics; gold tables provide research features, a tradable universe, embeddings and model inputs. A FastAPI and React Databricks App reads the governed tables and exposes market, options, filing, signal, agent, portfolio and health workflows (`pipelines/run_silver_gold.py`; `frontend/src/App.tsx`; `api/main.py`).
 
-The AI research agent uses hybrid BM25 and vector retrieval over SEC passages, filters by SEC acceptance time, treats retrieved text as data, and exposes tool activity as evidence. Its proposed actions must pass deterministic validation before execution; the only write tool is a scoped, idempotent research-note write (`agent/runtime.py`; `agent/tools_retrieval.py`; `agent/tools_write.py`; `docs/proposal/CAPSTONE.md`).
+The AI research agent uses hybrid BM25 and vector retrieval over SEC passages, filters by SEC acceptance time, treats retrieved text as data, and exposes tool activity as evidence. Its proposed actions must pass deterministic validation before execution; its write tools are research-note saving and watchlist addition. Research-note writes are idempotent only when an idempotency key is supplied; the agent chat API requires one (`agent/contracts.py`; `agent/runtime.py`; `agent/tools_retrieval.py`; `agent/tools_write.py`; `api/schemas.py`; `docs/proposal/CAPSTONE.md`).
 
 ### Why this architecture
 
