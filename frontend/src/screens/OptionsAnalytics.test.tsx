@@ -313,6 +313,60 @@ describe('OptionsAnalytics', () => {
     expect(callGroup.querySelector('rect')).toBeNull();
   });
 
+  it('call bar stacks on top of put bar, not from baseline', async () => {
+    const stackedResponse = {
+      ...mockOptionsResponse,
+      options: {
+        ...mockOptionsResponse.options,
+        data: [
+          {
+            symbol: 'NVDA',
+            feature_ts: '2026-08-01T00:00:00Z',
+            put_volume: 100,
+            call_volume: 300,
+            put_call_ratio: 0.333,
+            iv_atm: null,
+            iv_25d_put: null,
+            iv_25d_call: null,
+            iv_skew: null,
+            iv_term_slope: null,
+            avg_spread_pct: null,
+            volume_anomaly_zscore: null,
+            oi_concentration: null,
+            net_delta_exposure: null,
+          },
+        ],
+        count: 1,
+      },
+    };
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(stackedResponse),
+    }));
+
+    render(<OptionsAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: /put volume bars/i })).toBeInTheDocument();
+    });
+
+    const putGroup = screen.getByRole('img', { name: /put volume bars/i });
+    const callGroup = screen.getByRole('img', { name: /call volume bars/i });
+    const putRect = putGroup.querySelector('rect')!;
+    const callRect = callGroup.querySelector('rect')!;
+
+    const putY = parseFloat(putRect.getAttribute('y')!);
+    const putH = parseFloat(putRect.getAttribute('height')!);
+    const callY = parseFloat(callRect.getAttribute('y')!);
+    const callH = parseFloat(callRect.getAttribute('height')!);
+
+    // Call segment y must equal top of put segment (stacked, not side-by-side)
+    expect(callY + callH).toBeCloseTo(putY, 5);
+    // putH/maxVol should be 100/400 = 0.25 of chart height; callH should be 300/400 = 0.75
+    expect(callH).toBeCloseTo(putH * 3, 0);
+  });
+
   it('shows error state on API failure', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
