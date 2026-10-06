@@ -599,6 +599,163 @@ describe('ResearchAgent', () => {
     expect(screen.getByDisplayValue('What about AMD?')).toBeInTheDocument();
   });
 
+  it('trace shows Failed when follow-up request fails after a successful first request', async () => {
+    let callCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/agent/chat' && init?.method === 'POST') {
+          callCount++;
+          if (callCount === 1) {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve(mockChatResponse) });
+          }
+          return Promise.resolve({ ok: false, status: 500, statusText: 'Internal Server Error', json: () => Promise.resolve({ detail: 'Server error' }) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Summarize NVDA/));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
+    });
+
+    // First request: trace should show Complete
+    expect(screen.getByTestId('trace-response')).toHaveTextContent('Complete');
+
+    const input = screen.getByPlaceholderText('Ask the research agent…');
+    await user.type(input, 'What about AMD?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // Follow-up fails: trace must show Failed, not the prior reply's Complete
+    await waitFor(() => {
+      expect(screen.getByTestId('trace-response')).toHaveTextContent('Failed');
+    });
+    expect(screen.getByDisplayValue('What about AMD?')).toBeInTheDocument();
+  });
+
+  it('trace reflects second response when follow-up request succeeds', async () => {
+    const secondResponse = {
+      reply: 'AMD describes competition risks...',
+      tool_calls: [
+        {
+          name: 'search_sec_filings',
+          arguments: { ticker: 'AMD', form_type: '10-K' },
+          result: {
+            rows: [
+              {
+                chunk_id: 'chunk-2',
+                accession_number: '0009876543-24-000001',
+                form_type: '10-K',
+                accepted_ts: '2024-02-15',
+                source_url: 'https://sec.gov/filing/2',
+                ticker: 'AMD',
+                section: 'risk_factors',
+                retrieval_mode: 'hybrid',
+              },
+            ],
+          },
+          ok: true,
+        },
+      ],
+      sources: [{ tool: 'search_sec_filings', chunk_id: 'chunk-2' }],
+      available: true,
+      empty: false,
+    };
+
+    let callCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/agent/chat' && init?.method === 'POST') {
+          callCount++;
+          const body = callCount === 1 ? mockChatResponse : secondResponse;
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Summarize NVDA/));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('trace-retrieval')).toHaveTextContent('Complete');
+
+    const input = screen.getByPlaceholderText('Ask the research agent…');
+    await user.type(input, 'What about AMD?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/AMD describes competition risks/)).toBeInTheDocument();
+    });
+
+    // Trace should reflect the second response, not the first
+    expect(screen.getByTestId('trace-response')).toHaveTextContent('Complete');
+    expect(screen.getByTestId('trace-retrieval')).toHaveTextContent('Complete');
+  });
+
+  it('deferred follow-up: trace resets to pending then reflects rejection', async () => {
+    let resolveFirst!: (v: unknown) => void;
+    let rejectSecond!: (r: unknown) => void;
+    let callCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/agent/chat' && init?.method === 'POST') {
+          callCount++;
+          if (callCount === 1) {
+            return new Promise((resolve) => {
+              resolveFirst = resolve;
+            });
+          }
+          return new Promise((_resolve, reject) => {
+            rejectSecond = reject;
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    // Step 1: resolve first request successfully
+    await user.click(screen.getByText(/Summarize NVDA/));
+    await act(async () => {
+      resolveFirst({ ok: true, json: () => Promise.resolve(mockChatResponse) });
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('trace-response')).toHaveTextContent('Complete');
+
+    // Step 2: start follow-up and immediately reject it (no assistant reply)
+    const input = screen.getByPlaceholderText('Ask the research agent…');
+    await user.type(input, 'What about AMD?');
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    // Step 3: while pending, trace must represent the new attempt, not the prior reply
+    expect(screen.getByTestId('trace-response')).not.toHaveTextContent('Complete');
+
+    // Step 4: reject follow-up → must show Failed, not Complete
+    await act(async () => {
+      rejectSecond(new Error('Network error'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('trace-response')).toHaveTextContent('Failed');
+    });
+    expect(screen.getByDisplayValue('What about AMD?')).toBeInTheDocument();
+  });
+
   it('does not render model confidence or score values from API response', async () => {
     const confidenceResponse = {
       reply: 'Based on analysis, Nvidia shows strong growth potential.',

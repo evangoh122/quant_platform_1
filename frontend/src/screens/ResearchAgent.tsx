@@ -28,12 +28,19 @@ interface Message {
   available: boolean;
 }
 
+interface AttemptTrace {
+  toolCalls: ChatResponse['tool_calls'];
+  reply?: string;
+  available: boolean;
+}
+
 export function ResearchAgent() {
   const [symbol, setSymbol] = useState('NVDA');
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentAttempt, setCurrentAttempt] = useState<AttemptTrace | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const secList = (symbols as { sec: string[] }).sec;
@@ -51,6 +58,7 @@ export function ResearchAgent() {
     setInput('');
     setSending(true);
     setError(null);
+    setCurrentAttempt(null);
     setMessages((prev) => [...prev, { role: 'user', text: message, toolCalls: [], available: true }]);
     try {
       const resp = await api.chat(message);
@@ -58,9 +66,11 @@ export function ResearchAgent() {
         ...prev,
         { role: 'assistant', text: resp.reply, toolCalls: resp.tool_calls, available: resp.available },
       ]);
+      setCurrentAttempt({ toolCalls: resp.tool_calls, reply: resp.reply, available: resp.available });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setInput(questionToRestore);
+      setCurrentAttempt({ toolCalls: [], reply: undefined, available: false });
     } finally {
       setSending(false);
     }
@@ -73,6 +83,10 @@ export function ResearchAgent() {
   }
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+
+  const traceToolCalls = currentAttempt?.toolCalls ?? [];
+  const traceReply = currentAttempt?.reply;
+  const traceAvailable = currentAttempt?.available ?? true;
 
   return (
     <div data-tour="agent" className="space-y-4">
@@ -164,10 +178,10 @@ export function ResearchAgent() {
 
         <div className="space-y-4">
           <ExecutionTrace
-            toolCalls={lastAssistant?.toolCalls ?? []}
-            available={lastAssistant?.available ?? true}
+            toolCalls={traceToolCalls}
+            available={traceAvailable}
             sending={sending}
-            reply={lastAssistant?.text}
+            reply={traceReply}
             attempted={messages.length > 0}
           />
           <EvidencePanel
