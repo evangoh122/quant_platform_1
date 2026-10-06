@@ -2,13 +2,15 @@
 --
 -- Computes minute-bar technical features. All lookback windows are partitioned
 -- by (symbol, trading day) so returns/momentum/ATR/RSI do not leak across
--- sessions. session_high/session_low are trailing (ROWS BETWEEN UNBOUNDED
--- PRECEDING AND CURRENT ROW) so a bar never sees a later bar's high/low within
--- the same day. Minute bars are labelled at their START (Polygon convention:
--- event_ts marks the [t, t+1min) window); a bar's close is therefore known only
--- at event_ts + bar interval. information_available_ts = event_ts + the bar
--- interval derived from timespan (INTERVAL 1 MINUTE for minute bars) — this is
--- the PIT key for market features.
+-- sessions. session_high/session_low and session VWAP are trailing (ROWS
+-- BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) so a bar never sees a later
+-- bar's values within the same day. Session VWAP uses the bar's own vendor
+-- vwap when present, else the typical price (high+low+close)/3.  Minute bars
+-- are labelled at their START (Polygon convention: event_ts marks the
+-- [t, t+1min) window); a bar's close is therefore known only at event_ts +
+-- bar interval. information_available_ts = event_ts + the bar interval
+-- derived from timespan (INTERVAL 1 MINUTE for minute bars) — this is the
+-- PIT key for market features.
 --
 -- Chunked by date partition by the orchestrator via {date_start}/{date_end}.
 -- Idempotent: MERGE on (symbol, feature_ts).
@@ -33,7 +35,9 @@ USING (
       close / NULLIF(LAG(close, 15) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r15,
       close / NULLIF(LAG(close, 30) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r30,
       MAX(high) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_high,
-      MIN(low)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_low
+      MIN(low)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_low,
+      SUM(COALESCE(vwap, (high + low + close) / 3.0) * volume) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        / NULLIF(SUM(volume) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0) AS session_vwap
     FROM bootcamp_students.evangoh_capstone.silver_ohlcv
     WHERE timespan = 'minute'
       AND symbol IN (SELECT symbol FROM universe)
@@ -41,9 +45,9 @@ USING (
   ),
   returns AS (
     SELECT
-      symbol, event_ts, information_available_ts, close, high, low, volume, vwap,
+      symbol, event_ts, information_available_ts, close, high, low, volume,
       r1, r5, r15, r30,
-      session_high, session_low,
+      session_high, session_low, session_vwap,
       CASE WHEN r1 > 0 THEN r1 ELSE 0 END AS gain,
       CASE WHEN r1 < 0 THEN -r1 ELSE 0 END AS loss,
       high - low AS tr
@@ -68,7 +72,7 @@ USING (
         WHEN AVG(loss) OVER w14 = 0 THEN 100.0
         ELSE 100.0 - 100.0 / (1.0 + (AVG(gain) OVER w14 / NULLIF(AVG(loss) OVER w14, 0)))
       END                  AS rsi_14,
-      (close - vwap) / NULLIF(vwap, 0) AS vwap_deviation,
+      (close - session_vwap) / NULLIF(session_vwap, 0) AS vwap_deviation,
       volume / NULLIF(AVG(volume) OVER w20, 0) AS relative_volume,
       (close - session_high) / NULLIF(session_high, 0) AS dist_session_high,
       (close - session_low)  / NULLIF(session_low, 0)  AS dist_session_low,
