@@ -44,8 +44,8 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
     const opt = RANGE_OPTIONS.find((r) => r.label === range);
     if (!opt || opt.days === 0) return sorted;
     const anchorDate = sorted.length > 0 ? sorted[sorted.length - 1].event_date : new Date().toISOString().slice(0, 10);
-    const cutoff = new Date(anchorDate + 'T00:00:00');
-    cutoff.setDate(cutoff.getDate() - opt.days);
+    const cutoff = new Date(anchorDate + 'T00:00:00Z');
+    cutoff.setUTCDate(cutoff.getUTCDate() - opt.days);
     const cutoffStr = cutoff.toISOString().slice(0, 10);
     return sorted.filter((r) => r.event_date >= cutoffStr);
   }, [rows, range]);

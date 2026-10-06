@@ -114,7 +114,7 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
             Note ID: <span className="font-mono font-medium text-slate-700 dark:text-slate-300">{noteId}</span>
           </span>
         )}
-        {isWrite && toolCall.ok && (
+        {isWrite && toolCall.ok && noteId && (
           <span>
             Storage: <span className="font-medium text-emerald-600 dark:text-emerald-400">Lakebase</span>
           </span>

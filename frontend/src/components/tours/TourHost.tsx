@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import CoachMarks, { tourSeen, markTourSeen, type CoachStep } from './CoachMarks';
 import {
   APPLICATION_TOUR_KEY,
@@ -21,6 +21,7 @@ const TOUR_MAP: Record<string, { key: string; steps: CoachStep[] }> = {
 export function useTourHost() {
   const [activeTour, setActiveTour] = useState<string | null>(null);
   const [steps, setSteps] = useState<CoachStep[]>([]);
+  const autoStartCheckedRef = useRef(false);
 
   const startTour = useCallback((tourId: string) => {
     const tour = TOUR_MAP[tourId];
@@ -46,7 +47,10 @@ export function useTourHost() {
     return () => window.removeEventListener('qp-tour-request', handler);
   }, [startTour]);
 
+  // Auto-start unseen tours once per mount; closing/skipping one does NOT chain to the next.
   useEffect(() => {
+    if (autoStartCheckedRef.current) return;
+    autoStartCheckedRef.current = true;
     if (activeTour) return;
     const prefersReducedMotion = window.matchMedia(
       '(prefers-reduced-motion: reduce)',
@@ -66,7 +70,7 @@ export function useTourHost() {
       const timer = window.setTimeout(() => startTour(autoTour), 600);
       return () => window.clearTimeout(timer);
     }
-  }, [activeTour, startTour]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { activeTour, steps, closeTour, startTour };
 }

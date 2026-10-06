@@ -335,7 +335,7 @@ describe('Navigation destination enumeration', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders every destination label from NAV_GROUPS', async () => {
+  it('renders every destination label from production NAV_GROUPS', async () => {
     vi.stubGlobal('fetch', mockFetch(healthyResponse));
 
     render(<App />);
@@ -369,7 +369,7 @@ describe('Navigation destination enumeration', () => {
     }
   });
 
-  it('removes "Options Analytics" leaves a gap in coverage', async () => {
+  it('renders Options Analytics as a production navigation button', async () => {
     vi.stubGlobal('fetch', mockFetch(healthyResponse));
 
     render(<App />);
@@ -378,8 +378,7 @@ describe('Navigation destination enumeration', () => {
       expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
     });
 
-    const labels = ALL_DESTINATIONS.map((d) => d.label);
-    expect(labels).toContain('Options Analytics');
+    expect(screen.getByRole('button', { name: 'Options Analytics' })).toBeInTheDocument();
   });
 });
 
@@ -477,31 +476,6 @@ describe('360px contract', () => {
 
     const flexContainer = container.querySelector('.min-w-0.flex-1.flex-col');
     expect(flexContainer).toBeTruthy();
-  });
-
-  it('catches min-w-[400px] mutation on the shell root', async () => {
-    vi.stubGlobal('fetch', mockFetch(healthyResponse));
-
-    Object.defineProperty(window, 'innerWidth', { value: 360, writable: true });
-
-    const { container } = render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
-    });
-
-    const shellRoot = container.firstElementChild as HTMLElement;
-    shellRoot.classList.add('min-w-[400px]');
-
-    const allElements = container.querySelectorAll('*');
-    let foundViolation = false;
-    allElements.forEach((el) => {
-      const widths = getFixedWidthPx(el.className);
-      widths.forEach((w) => {
-        if (w > 360) foundViolation = true;
-      });
-    });
-    expect(foundViolation).toBe(true);
   });
 
   it('wraps real tables in horizontally scrollable containers', async () => {

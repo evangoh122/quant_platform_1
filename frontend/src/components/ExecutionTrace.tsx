@@ -8,7 +8,7 @@ export interface TraceStep {
   status: 'pending' | 'running' | 'complete' | 'failed' | 'skipped';
 }
 
-function deriveSteps(toolCalls: ToolCall[], available: boolean): TraceStep[] {
+function deriveSteps(toolCalls: ToolCall[], available: boolean, reply?: string): TraceStep[] {
   const retrievalTools = toolCalls.filter(
     (tc) => tc.name === 'search_sec_filings' || tc.name === 'get_latest_signal',
   );
@@ -20,7 +20,7 @@ function deriveSteps(toolCalls: ToolCall[], available: boolean): TraceStep[] {
   const retrievalFailed = retrievalTools.some((tc) => !tc.ok);
   const writeFailed = writeTools.some((tc) => !tc.ok);
   const anyFailed = toolCalls.some((tc) => !tc.ok);
-  const allDone = toolCalls.length > 0;
+  const hasReply = typeof reply === 'string' && reply.length > 0;
 
   const retrievalStatus: TraceStep['status'] = !hasRetrieval
     ? 'skipped'
@@ -38,13 +38,15 @@ function deriveSteps(toolCalls: ToolCall[], available: boolean): TraceStep[] {
         ? 'failed'
         : 'complete';
 
-  // The response stage reflects whether the agent delivered an answer, not whether every tool succeeded:
-  // a failed note write after a successful search still yields an answer (the tool stage shows the failure).
-  const responseStatus: TraceStep['status'] = !allDone
-    ? 'pending'
-    : available
-      ? 'complete'
-      : 'failed';
+  // Response stage uses reply-delivered signal, not `available`:
+  // - sending with no reply → pending
+  // - reply delivered (even empty tools) → complete
+  // - finished, no reply, not sending → failed
+  const responseStatus: TraceStep['status'] = hasReply
+    ? 'complete'
+    : toolCalls.length > 0 && !hasReply
+      ? 'failed'
+      : 'pending';
 
   return [
     { stage: 'retrieval', label: 'Retrieval', status: retrievalStatus },
@@ -73,10 +75,11 @@ interface ExecutionTraceProps {
   toolCalls: ToolCall[];
   available: boolean;
   sending: boolean;
+  reply?: string;
 }
 
-export function ExecutionTrace({ toolCalls, available, sending }: ExecutionTraceProps) {
-  const steps = deriveSteps(toolCalls, available);
+export function ExecutionTrace({ toolCalls, available, sending, reply }: ExecutionTraceProps) {
+  const steps = deriveSteps(toolCalls, available, reply);
 
   if (toolCalls.length === 0 && !sending) return null;
 

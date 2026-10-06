@@ -8,6 +8,19 @@ interface SourceCardProps {
   retrievalMode?: string;
 }
 
+function safeUrl(url: string | undefined): string | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return url;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function SourceCard({
   ticker,
   formType,
@@ -17,6 +30,7 @@ export function SourceCard({
   sourceUrl,
   retrievalMode,
 }: SourceCardProps) {
+  const validUrl = safeUrl(sourceUrl);
   return (
     <div
       data-testid="source-card"
@@ -48,9 +62,9 @@ export function SourceCard({
           <dd className="text-slate-700 dark:text-slate-300">{retrievalMode ?? '—'}</dd>
         </div>
       </dl>
-      {sourceUrl && (
+      {validUrl && (
         <a
-          href={sourceUrl}
+          href={validUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="mt-2 inline-block text-blue-600 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"

@@ -62,7 +62,7 @@ Evaluate only realised `gold_trading_signals` rows, grouped by `(model_version, 
 
 The close source is real regular-session minute data (`silver_ohlcv`, `is_regular_session=true`, `timespan='minute'`) collapsed to the last close per symbol/trading date. Do not join a signal to an arbitrary calendar `date + 1`, and do not reuse a backward-looking `return_1d` without proving it has the same D/N and availability semantics. Add a horizon strategy registry: implement `1d` now; unsupported legacy `30m` rows remain unscored with `reason="unsupported_horizon"` until an exact 30-minute event-time labeler is implemented.
 
-Eligibility is the non-negotiable PIT filter `label_ts IS NOT NULL AND label_ts <= evaluation_as_of`. Never score the latest/open signal merely because its prediction exists. Persist one row per `(evaluation_date, model_version, horizon)` with:
+Eligibility is the non-negotiable PIT filter `label_ts IS NOT NULL AND label_ts <= evaluation_as_of`. Never score the latest/open signal merely because its prediction exists. For 1-day labels, enforce `max_gap_days=5` calendar days between `prediction_ts` and `label_ts`; when the gap exceeds 5 calendar days, `label`, `label_ts`, and `realised_return` remain null and the signal is excluded from realised metrics. Persist one row per `(evaluation_date, model_version, horizon)` with:
 
 - `realised_count`: eligible signal count;
 - `hit_count` and `hit_rate`: a hit is `UP` with positive realised return or `DOWN` with non-positive realised return (reject/flag unsupported direction values rather than guessing);
@@ -90,10 +90,10 @@ Make `read_analytics_table` deterministic and bounded: explicit section-specific
 
 Use dedicated cards/tables in `frontend/src/screens/SystemHealth.tsx`:
 
-- Agent Activity: tool/action/status, calls, users, and date.
-- Latency: tool/date, p50, p95, calls, errors; milliseconds only when present.
-- Stream Freshness: source, event time, ingest time, both lags, expected cadence, and stale status.
-- Model Performance: model version, horizon, realised count, hit rate, AUC (show “AUC unavailable — single realised class” rather than `—`).
+- Agent Activity: tool/action/status, calls, users, and date. Controlling timestamp: `last_source_time` (max `occurred_at` from CDC events). Expected cadence: daily, matching the `lakebase_analytics_refresh` job schedule. Grace rule: stale when `now - max(event_date) > 26h` while the job is active; while PAUSED, stale is reported honestly. Deterministic stale behavior: stale rows remain visible with their timestamp and a warning banner.
+- Latency: tool/date, p50, p95, calls, errors; milliseconds only when present. Controlling timestamp: `completed_at` from tool execution. Expected cadence: daily, same job as Agent Activity. Grace rule: stale when `now - max(event_date) > 26h`. Deterministic stale behavior: stale rows remain visible; null historical latency is excluded, never coerced to zero.
+- Stream Freshness: source, event time, ingest time, both lags, expected cadence, and stale status. Controlling timestamp: `max_event_ts` and `max_ingest_ts` per source. Expected cadence: source-specific (daily for Lakebase CDC, per-session for trading signals). Grace rule: Lakebase stale after 26h; trading signals stale after next expected XNYS session deadline. Deterministic stale behavior: stale rows remain visible with reason; empty sources show `is_stale=true, reason="source_empty"`.
+- Model Performance: model version, horizon, realised count, hit rate, AUC (show “AUC unavailable — single realised class” rather than `—`). Controlling timestamp: `max_label_ts` (latest closed label). Expected cadence: per evaluation run, triggered after signal labels close. Grace rule: only signals with `label_ts <= evaluation_as_of` are scored; open signals are excluded. Deterministic stale behavior: stale data remains visible; recomputation is expected as new labels close.
 
 The UI distinguishes loading, empty, stale, and unavailable. Empty copy comes from the server reason, for example “No realised 1d signals yet; open signals are not scored.” Stale data remains visible with its timestamp and warning. Unavailable shows retry/error state. Remove `frontend/src/screens/SystemHealth.tsx:15`'s claim that metrics “appear once the analytics pipeline populates it”; that sentence is false unless a pipeline exists and provides no actionable reason.
 

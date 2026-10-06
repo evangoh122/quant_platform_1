@@ -441,4 +441,59 @@ describe('MarketDashboard', () => {
       expect(String(lastCall[0])).toContain('/api/market/NVDA');
     });
   });
+
+  it('uses UTC midnight for range cutoff to avoid timezone-dependent extra day', async () => {
+    // Test data spans a month boundary; UTC cutoff should exclude the extra day
+    // that local-midnight arithmetic might include in UTC+ timezones
+    const boundaryRows = [
+      { symbol: 'AAPL', event_date: '2026-08-31', close: 100, open: 99, high: 101, low: 98, volume: 50, vwap: 100, price_basis: 'adjusted' },
+      { symbol: 'AAPL', event_date: '2026-09-01', close: 101, open: 100, high: 102, low: 99, volume: 55, vwap: 101, price_basis: 'adjusted' },
+      { symbol: 'AAPL', event_date: '2026-09-15', close: 110, open: 108, high: 112, low: 107, volume: 60, vwap: 109, price_basis: 'adjusted' },
+      { symbol: 'AAPL', event_date: '2026-10-01', close: 120, open: 118, high: 122, low: 117, volume: 70, vwap: 119, price_basis: 'adjusted' },
+    ];
+
+    const response = {
+      symbol: 'AAPL',
+      ohlcv: {
+        data: boundaryRows,
+        count: 4,
+        empty: false,
+        source: 'silver_ohlcv_day_adjusted',
+        freshness: { state: 'fresh', table: 'silver_ohlcv_day_adjusted', detail: '4 rows' },
+      },
+      options: {
+        data: [],
+        count: 0,
+        empty: true,
+        source: 'gold_options_features',
+        freshness: { state: 'empty', table: 'gold_options_features', detail: '0 rows' },
+      },
+    };
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(response),
+    }));
+
+    const user = userEvent.setup();
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('120.00')).toBeInTheDocument();
+    });
+
+    // Click 1M — anchor is latest event_date 2026-10-01
+    // UTC cutoff = 2026-10-01T00:00:00Z - 30 days = 2026-09-01T00:00:00Z
+    // Should include Sep 1, Sep 15, Oct 1 (3 rows), NOT Aug 31
+    await user.click(screen.getByText('1M', { selector: 'button' }));
+
+    const srTable = document.querySelector('table.sr-only');
+    expect(srTable).toBeTruthy();
+    const srRows = srTable!.querySelectorAll('tbody tr');
+
+    expect(srRows.length).toBe(3);
+    expect(srRows[0].textContent).toContain('2026-09-01');
+    expect(srRows[1].textContent).toContain('2026-09-15');
+    expect(srRows[2].textContent).toContain('2026-10-01');
+  });
 });

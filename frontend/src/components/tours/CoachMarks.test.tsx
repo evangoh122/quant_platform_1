@@ -474,6 +474,55 @@ describe('CoachMarks', () => {
     vi.useRealTimers();
     document.body.removeChild(targetEl);
   });
+  describe('Tab wrap cycling', () => {
+    it('cycles Tab from last focusable to first inside the coach card', async () => {
+      const user = userEvent.setup();
+      render(<TestComponent />);
+
+      const dialog = screen.getByRole('dialog');
+      const buttons = dialog.querySelectorAll('button');
+      const lastButton = buttons[buttons.length - 1];
+
+      // Focus the last button
+      lastButton.focus();
+
+      // Tab should wrap to the first focusable element
+      await user.keyboard('{Tab}');
+      expect(document.activeElement).toBe(buttons[0]);
+    });
+
+    it('cycles Shift+Tab from first to last inside the coach card', async () => {
+      const user = userEvent.setup();
+      render(<TestComponent />);
+
+      const dialog = screen.getByRole('dialog');
+      const buttons = dialog.querySelectorAll('button');
+      const firstButton = buttons[0];
+
+      firstButton.focus();
+
+      await user.keyboard('{Shift>}{Tab}{/Shift}');
+      expect(document.activeElement).toBe(buttons[buttons.length - 1]);
+    });
+
+    it('retains focus on the card when there are no focusable children', () => {
+      const noButtonSteps: CoachStep[] = [
+        { title: 'No buttons', body: 'Just text' },
+      ];
+      // Use a step with no interactive elements; the card itself is focusable
+      render(
+        <div>
+          <CoachMarks steps={noButtonSteps} run={true} onClose={() => {}} />
+        </div>,
+      );
+
+      const dialog = screen.getByRole('dialog');
+      const card = dialog.querySelector('[tabindex="-1"]') as HTMLElement;
+      expect(card).toBeTruthy();
+      expect(document.activeElement).toBe(card);
+    });
+  });
+
   describe('StrictMode once-only guard', () => {
     const TOUR_KEY = 'test_strictmode_v1';
     const mockStore: Record<string, string> = {};

@@ -1,10 +1,7 @@
 const SNAPSHOT_DATE = '2026-10-05';
 
 const PIPELINE_TECH_NODES = [
-  'Massive',
-  'SEC',
-  'CFTC',
-  'FRED',
+  'Upstream providers (Massive, SEC, CFTC, FRED)',
   'Spark',
   'Delta bronze/silver/gold',
   'FastAPI',
@@ -91,7 +88,7 @@ export function ArchitectureEvidence() {
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] font-bold text-white">4</span>
-              <span>Saved research note to Lakebase</span>
+              <span>Optional: save research note to Lakebase (when agent returns a note_id)</span>
             </li>
             <li className="flex items-start gap-2">
               <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] font-bold text-white">5</span>

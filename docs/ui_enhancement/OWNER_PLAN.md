@@ -3,8 +3,8 @@
 ## Objective
 Upgrade the current frontend into a guided, auditable research application that clearly demonstrates: external market and
 SEC data; Spark/Delta processing; AI retrieval and Lakebase write actions; provenance and tool execution; Lakebase→Delta
-analytics; system health and failure handling. Use selected UX ideas from Rag_workbench (local copy: /home/jianj/code/Rag_workbench;
-workspace copy /Workspace/Users/evangohsg@gmail.com/Capstone/Rag_workbench). Do not replace FastAPI contracts or port the old
+analytics; system health and failure handling. Use selected UX ideas from Rag_workbench (local copy: <user-home>/code/Rag_workbench;
+workspace copy <workspace>/Capstone/Rag_workbench). Do not replace FastAPI contracts or port the old
 workbench wholesale.
 
 ## Constraints

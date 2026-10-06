@@ -60,6 +60,10 @@ SEC access rules are build requirements:
 - Cache within one run by CIK and skip a write when the same payload hash was
   already committed for that CIK/run; a later changed payload is a new bronze
   observation.
+- Enforce the SEC identity-wide rate cap by serializing SEC ingestion jobs:
+  `max_concurrent_runs: 1` in the job resource and no overlapping manual runs.
+  The 8 requests/second target and 10 requests/second hard maximum apply across
+  all concurrent activity for the configured EDGAR_USER_AGENT identity.
 
 Add a Spark entry point such as `pipelines/ingest_sec_companyfacts.py`; the
 HTTP fetch may execute on the driver with bounded concurrency, but parsing and
@@ -150,6 +154,15 @@ compatible period/context and currency. Compute
 cash-outflow sign once according to the selected capex concept; keep both
 inputs and a quality flag. Do not silently coerce units or multiply by guessed
 scales.
+
+Restrict cumulative differencing to additive duration flows (e.g., revenue,
+operating_cash_flow). Quarterly EPS must use a reported discrete-quarter fact
+from Company Facts; if only cumulative YTD facts exist without a compatible
+prior-period fact to derive a discrete quarter, quarterly EPS must be
+unavailable with a `quality_flag` such as `eps_quarterly_unavailable`. Never
+fabricate quarterly EPS by subtracting cumulative YTD values across
+incompatible filing versions. Require a YTD-only EPS fixture in the test suite
+that produces no fabricated quarterly EPS.
 
 Company Facts does not reliably expose every issuer's dimensional segment and
 geography contexts. Populate `segment_json`/`geography_json` only when source

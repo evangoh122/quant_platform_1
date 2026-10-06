@@ -245,3 +245,31 @@ describe('useTourHost — qp-tour-request event', () => {
     expect(result.current.activeTour).toBeNull();
   });
 });
+
+describe('useTourHost — no-tour-chain on close', () => {
+  it('closing one tour does not auto-start the next unseen tour', () => {
+    vi.useFakeTimers();
+    // Application tour is unseen → auto-starts
+    const { result } = renderHook(() => useTourHost());
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.activeTour).toBe('application');
+
+    // Close the application tour
+    act(() => {
+      result.current.closeTour();
+    });
+
+    expect(result.current.activeTour).toBeNull();
+
+    // Advance timers — agent tour should NOT auto-start
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(result.current.activeTour).toBeNull();
+  });
+});

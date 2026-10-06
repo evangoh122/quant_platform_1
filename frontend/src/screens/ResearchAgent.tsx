@@ -17,7 +17,7 @@ const BASE_SUGGESTED_QUESTIONS = [
 ];
 
 function makeSuggestedQuestions(symbol: string): string[] {
-  return BASE_SUGGESTED_QUESTIONS.map((q) => q.replace('{SYMBOL}', symbol));
+  return BASE_SUGGESTED_QUESTIONS.map((q) => q.replace(/\{SYMBOL\}/g, symbol));
 }
 
 interface Message {
@@ -109,7 +109,7 @@ export function ResearchAgent() {
                   {m.text}
                 </p>
                 {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && tc.result?.note_id) && (
-                  <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                  <div data-tour="lakebase-write" className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
                     Research note saved to Lakebase.
                   </div>
                 )}
@@ -166,6 +166,7 @@ export function ResearchAgent() {
             toolCalls={lastAssistant?.toolCalls ?? []}
             available={lastAssistant?.available ?? true}
             sending={sending}
+            reply={lastAssistant?.text}
           />
           <EvidencePanel
             toolCalls={lastAssistant?.toolCalls ?? []}

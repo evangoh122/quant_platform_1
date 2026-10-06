@@ -52,8 +52,9 @@ For each overlap file/request, parse with an explicit schema, reject null key/ev
 
 - An unseen natural key is appended (`MERGE ... WHEN NOT MATCHED THEN INSERT`, or an equivalent anti-join plus append).
 - An identical existing key/payload is skipped.
-- A changed payload for an existing natural key is appended as a correction observation with a new `ingest_ts`, payload checksum, and `correction_of_ingest_ts`/version lineage added by an approved additive schema migration. Bronze is never updated, deleted, overwritten, or `replaceWhere`d.
+- A changed payload for an existing natural key is appended as a correction observation with a new `ingest_ts`, payload checksum, and `correction_of_ingest_ts`/version lineage added by an approved additive schema migration. Every correction version gets its own `information_available_ts` (the `ingest_ts` of that correction observation). Bronze is never updated, deleted, overwritten, or `replaceWhere`d.
 - Silver selects the latest valid observation by `(natural key ORDER BY ingest_ts DESC)` and MERGEs that canonical result. Until correction-lineage columns exist, changed same-key payloads are `CONFLICT` and fail closed rather than creating ambiguous duplicates.
+- Historical features select the latest retained natural-key version with `information_available_ts <= prediction_ts`. This is the PIT selection rule; it must use the append-only Bronze replay as the history-preserving source, not latest-only Silver, because Silver overwrites the canonical row and loses prior versions.
 
 This resolves the apparent conflict between correction handling and append-only Bronze: physical history is append-only; canonical Silver is mutable by keyed MERGE. Re-running the same run ID, source checksum, and snapshot timestamp produces zero new Bronze rows. A manifest is marked `SUCCESS` only after row-delta and key verification; partial writes remain retryable.
 
@@ -146,7 +147,7 @@ python notebooks/refresh_bronze_corporate_actions.py --mode dry-run --source mas
 
 Files: `pipelines/run_silver_gold.py`, affected SQL under `silver/` and `gold/`, `gold/pit_guard.py`, `tests/silver/test_silver_sql_semantics.py`, `tests/silver/test_ohlcv_day_adjusted.py`, `tests/gold/test_pit_leakage.py`, and new incremental-window tests.
 
-Required failing tests: affected partitions only; late minute recomputes the rest of its session; 20/252-session lookbacks are present; a new split rebuilds prior adjusted history; cross-sectional universe partitions delete stale members; matrix rebuild removes stale prediction timestamps; every retained availability timestamp is at or before prediction time.
+Required failing tests: affected partitions only; late minute recomputes the rest of its session; 20/252-session lookbacks are present; a new split rebuilds prior adjusted history; cross-sectional universe partitions delete stale members; matrix rebuild removes stale prediction timestamps; every retained availability timestamp is at or before prediction time; the M3 original-before-prediction / correction-after-prediction regression fixture (an original observation before `prediction_ts` and a correction after `prediction_ts` must select the original for that prediction and the correction for later predictions).
 
 Named mutations: remove lookback rows; MERGE only the newly arrived minute; restrict split rebuild to ex-date forward; omit stale-row delete; allow `information_available_ts > prediction_ts`; forward-fill IV; overwrite a full target.
 

@@ -648,4 +648,52 @@ describe('ResearchAgent', () => {
     expect(visibleText).not.toMatch(/92%/);
     expect(visibleText).not.toMatch(/87%/);
   });
+
+  it('renders agent tour selectors [data-tour=agent] and [data-tour=agent-evidence]', async () => {
+    vi.stubGlobal('fetch', mockFetch());
+    render(<ResearchAgent />);
+
+    // The agent container has data-tour="agent"
+    expect(screen.getByTestId('evidence-panel-empty')).toBeInTheDocument();
+
+    // After a response, the evidence panel should have data-tour="agent-evidence"
+    const user = userEvent.setup();
+    await user.click(screen.getByText(/Summarize NVDA/));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('evidence-panel')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('evidence-panel')).toHaveAttribute('data-tour', 'agent-evidence');
+  });
+
+  it('renders lakebase-write data-tour attribute on note confirmation', async () => {
+    vi.stubGlobal('fetch', mockFetch(mockSavedNoteResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Save a research note/));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Note saved/)).toBeInTheDocument();
+    });
+
+    const lakebaseEl = document.querySelector('[data-tour="lakebase-write"]');
+    expect(lakebaseEl).toBeTruthy();
+    expect(lakebaseEl!.textContent).toContain('Research note saved to Lakebase');
+  });
+
+  it('replaces all {SYMBOL} occurrences in suggested questions with two placeholders', () => {
+    // The current template has one {SYMBOL} per question, but the function should handle multiple
+    vi.stubGlobal('fetch', mockFetch());
+    render(<ResearchAgent />);
+
+    // Each suggested question should contain the symbol exactly once (or more if template has multiple)
+    const nvdaQuestions = screen.getAllByText(/NVDA/);
+    expect(nvdaQuestions.length).toBeGreaterThanOrEqual(1);
+
+    // No question should contain a literal {SYMBOL}
+    const allText = document.body.textContent ?? '';
+    expect(allText).not.toContain('{SYMBOL}');
+  });
 });

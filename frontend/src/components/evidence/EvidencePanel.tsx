@@ -30,8 +30,8 @@ export function EvidencePanel({ toolCalls, available, sending }: EvidencePanelPr
     );
   }
 
-  return (
-    <div data-testid="evidence-panel" className="space-y-4">
+    return (
+      <div data-testid="evidence-panel" data-tour="agent-evidence" className="space-y-4">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
         Evidence
       </h3>

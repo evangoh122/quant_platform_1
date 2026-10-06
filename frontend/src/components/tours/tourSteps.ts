@@ -49,7 +49,7 @@ export const AGENT_TOUR: CoachStep[] = [
     body: 'The agent can save research notes and manage your watchlist. Actions are confirmed before execution.',
   },
   {
-    selector: '[data-tour="analytics-evidence"]',
+    selector: '[data-tour="agent-evidence"]',
     title: 'Evidence trail',
     body: 'Every agent response includes tool calls and sources. Inspect the evidence instead of trusting a black box.',
   },

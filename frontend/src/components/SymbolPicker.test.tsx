@@ -244,4 +244,55 @@ describe('SymbolPicker', () => {
     expect(screen.getByText(/ZZZZ is not in the market dataset/)).toBeInTheDocument();
     expect(screen.getByText(/No coverage/)).toBeInTheDocument();
   });
+
+  it('submits a valid custom ticker with Enter when dropdown is closed', () => {
+    const onChange = vi.fn();
+    render(<SymbolPicker value="" onChange={onChange} list="market" />);
+
+    const input = screen.getByRole('combobox');
+    fireEvent.change(input, { target: { value: 'ZZZZ' } });
+    // Close the dropdown first
+    fireEvent.keyDown(input, { key: 'Escape' });
+    // Now press Enter with dropdown closed
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onChange).toHaveBeenCalledWith('ZZZZ');
+  });
+
+  it('does not submit an invalid ticker with Enter when dropdown is closed', () => {
+    const onChange = vi.fn();
+    render(<SymbolPicker value="" onChange={onChange} list="market" />);
+
+    const input = screen.getByRole('combobox');
+    fireEvent.change(input, { target: { value: 'INVALID123' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // Should NOT submit, should reopen dropdown
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('blur timeout restores the synchronized ref value, not a stale prop', async () => {
+    vi.useFakeTimers();
+    const onChange = vi.fn();
+    const { rerender } = render(<SymbolPicker value="NVDA" onChange={onChange} list="market" />);
+
+    const input = screen.getByRole('combobox');
+
+    // Simulate selecting AMD (updates value prop via parent)
+    fireEvent.click(screen.getByText('AMD', { selector: 'button' }));
+    expect(onChange).toHaveBeenCalledWith('AMD');
+
+    // Rerender with new value (simulating parent updating)
+    rerender(<SymbolPicker value="AMD" onChange={onChange} list="market" />);
+
+    // Blur the input
+    fireEvent.blur(input);
+    vi.advanceTimersByTime(200);
+
+    // After blur, the input should show AMD (the ref-synced value), not NVDA (stale)
+    expect(input).toHaveValue('AMD');
+
+    vi.useRealTimers();
+  });
 });

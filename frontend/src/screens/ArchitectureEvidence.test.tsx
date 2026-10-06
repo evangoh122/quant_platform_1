@@ -13,7 +13,8 @@ describe('ArchitectureEvidence', () => {
     expect(screen.getByText(/User asks a research question/)).toBeInTheDocument();
     expect(screen.getByText(/Governed retrieval/)).toBeInTheDocument();
     expect(screen.getByText(/Grounded response/)).toBeInTheDocument();
-    expect(screen.getByText(/Saved research note/)).toBeInTheDocument();
+    expect(screen.getByText(/Optional: save research note to Lakebase/)).toBeInTheDocument();
+    expect(screen.getByText(/when agent returns a note_id/)).toBeInTheDocument();
     expect(screen.getByText(/Lakebase audit trail/)).toBeInTheDocument();
     expect(screen.getByText(/Delta analytics materialisation/)).toBeInTheDocument();
 
@@ -29,7 +30,7 @@ describe('ArchitectureEvidence', () => {
     render(<ArchitectureEvidence />);
 
     const nodes = [
-      'Massive', 'SEC', 'CFTC', 'FRED', 'Spark',
+      'Upstream providers (Massive, SEC, CFTC, FRED)', 'Spark',
       'Delta bronze/silver/gold', 'FastAPI', 'React',
       'AI agent', 'Lakebase', 'analytics_outbox',
       'Spark analytics', 'Delta analytics',
@@ -43,14 +44,14 @@ describe('ArchitectureEvidence', () => {
     render(<ArchitectureEvidence />);
 
     const expectedOrder = [
-      'Massive', 'SEC', 'CFTC', 'FRED', 'Spark',
+      'Upstream providers (Massive, SEC, CFTC, FRED)', 'Spark',
       'Delta bronze/silver/gold', 'FastAPI', 'React',
       'AI agent', 'Lakebase', 'analytics_outbox',
       'Spark analytics', 'Delta analytics',
     ];
     const pipelineList = screen.getByLabelText('Technical architecture pipeline nodes');
     const pipelineItems = pipelineList.querySelectorAll('li');
-    expect(pipelineItems).toHaveLength(13);
+    expect(pipelineItems).toHaveLength(10);
     pipelineItems.forEach((item, i) => {
       expect(item).toHaveTextContent(expectedOrder[i]);
     });

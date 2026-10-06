@@ -24,6 +24,14 @@ function isSecRow(row: Record<string, unknown>): row is SecRow & Record<string, 
   return typeof row === 'object' && row !== null;
 }
 
+function safeStr(val: unknown): string | undefined {
+  return typeof val === 'string' ? val : undefined;
+}
+
+function safeNum(val: unknown): number | undefined {
+  return typeof val === 'number' && Number.isFinite(val) ? val : undefined;
+}
+
 function hasError(row: SecRow): boolean {
   return typeof row.error === 'string';
 }
@@ -31,13 +39,13 @@ function hasError(row: SecRow): boolean {
 function errorLabel(row: SecRow): string {
   switch (row.error) {
     case 'no_coverage':
-      return `No SEC filings processed for ${row.ticker ?? 'this ticker'} yet`;
+      return `No SEC filings processed for ${safeStr(row.ticker) ?? 'this ticker'} yet`;
     case 'retrieval_unavailable':
       return 'SEC search temporarily unavailable';
     case 'ticker_required':
       return 'Ticker is required for SEC search';
     default:
-      return row.message ?? 'Unknown error retrieving SEC data';
+      return safeStr(row.message) ?? 'Unknown error retrieving SEC data';
   }
 }
 
@@ -74,7 +82,7 @@ export function ProvenanceGrid({ toolCalls }: ProvenanceGridProps) {
       </h3>
       {errorRows.map((row, i) => (
         <div
-          key={`err-${row.ticker ?? i}`}
+          key={`err-${safeStr(row.ticker) ?? i}`}
           data-testid="provenance-error"
           className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
         >
@@ -85,14 +93,14 @@ export function ProvenanceGrid({ toolCalls }: ProvenanceGridProps) {
         <div className="grid gap-2 sm:grid-cols-2">
           {goodRows.map((row, i) => (
             <SourceCard
-              key={row.chunk_id ?? i}
-              ticker={row.ticker}
-              formType={row.form_type}
-              accessionNumber={row.accession_number}
-              acceptedTs={row.accepted_ts}
-              section={row.section}
-              sourceUrl={row.source_url}
-              retrievalMode={row.retrieval_mode}
+              key={safeStr(row.chunk_id) ?? i}
+              ticker={safeStr(row.ticker)}
+              formType={safeStr(row.form_type)}
+              accessionNumber={safeStr(row.accession_number)}
+              acceptedTs={safeStr(row.accepted_ts)}
+              section={safeStr(row.section)}
+              sourceUrl={safeStr(row.source_url)}
+              retrievalMode={safeStr(row.retrieval_mode)}
             />
           ))}
         </div>

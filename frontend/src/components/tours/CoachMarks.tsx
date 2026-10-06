@@ -86,6 +86,47 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
     cardRef.current.focus();
   }, [run, index]);
 
+  // Tab wrap: cycle from last focusable to first and Shift+Tab from first to last
+  useEffect(() => {
+    if (!run) return;
+    const card = cardRef.current;
+    if (!card) return;
+
+    function getFocusable(): HTMLElement[] {
+      return Array.from(
+        card!.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Tab') return;
+      const focusable = getFocusable();
+      if (focusable.length === 0) {
+        e.preventDefault();
+        card!.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey) {
+        if (document.activeElement === first || document.activeElement === card) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+
+    card.addEventListener('keydown', onKeyDown);
+    return () => card.removeEventListener('keydown', onKeyDown);
+  }, [run, index]);
+
   const handleClose = useCallback(() => {
     onClose();
     setTimeout(() => openerRef.current?.focus(), 0);

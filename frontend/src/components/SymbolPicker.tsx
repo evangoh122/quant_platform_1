@@ -43,6 +43,7 @@ export function SymbolPicker({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const initializedRef = useRef(false);
+  const valueRef = useRef(value);
   const [committedValue, setCommittedValue] = useState(value);
 
   const options = secMode
@@ -67,6 +68,7 @@ export function SymbolPicker({
   // Keep query in sync with value
   useEffect(() => {
     setQuery(value);
+    valueRef.current = value;
     if (value) setCommittedValue(value);
   }, [value]);
 
@@ -92,9 +94,17 @@ export function SymbolPicker({
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (!open) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
+      if (e.key === 'ArrowDown') {
         setOpen(true);
         e.preventDefault();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const trimmed = query.trim().toUpperCase();
+        if (trimmed && TICKER_RE.test(trimmed)) {
+          handleSelect(trimmed);
+        } else {
+          setOpen(true);
+        }
       }
       return;
     }
@@ -154,9 +164,9 @@ export function SymbolPicker({
               onFocus={() => setOpen(true)}
               onKeyDown={handleKeyDown}
               onBlur={() => {
-                // Normalize to current value on blur
+                // Normalize to current value on blur (read ref to avoid stale prop)
                 setTimeout(() => {
-                  setQuery(value);
+                  setQuery(valueRef.current);
                   setOpen(false);
                 }, 150);
               }}
