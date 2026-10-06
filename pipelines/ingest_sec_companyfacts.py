@@ -704,6 +704,7 @@ def run_ingest_companyfacts(
             )
 
         except SecClientError as e:
+            error_text = str(e)[:500]
             with key_cond:
                 result["failed_count"] += 1
                 if payload_hash is not None:
@@ -721,7 +722,7 @@ def run_ingest_companyfacts(
             manifest.http_status = e.status_code
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = _classify_error(e)
-            manifest.error_message = str(e)[:500]
+            manifest.error_message = error_text
             with key_cond:
                 result["errors"].append({
                     "ticker": ticker,
@@ -733,6 +734,7 @@ def run_ingest_companyfacts(
                 manifest_writer(catalog, schema, manifest)
 
         except Exception as e:
+            error_text = str(e)[:500]
             with key_cond:
                 result["failed_count"] += 1
                 if payload_hash is not None:
@@ -749,7 +751,7 @@ def run_ingest_companyfacts(
             manifest.attempt_count = call_attempts[0]
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = "unexpected"
-            manifest.error_message = str(e)[:500]
+            manifest.error_message = error_text
             with key_cond:
                 result["errors"].append({
                     "ticker": ticker,

@@ -2880,13 +2880,44 @@ class TestThreeWorkerOwnershipGuard:
     """
 
     def test_three_worker_one_key_no_clobber(self):
+        """Deterministic proof of the ownership generation guard.
+
+        Forced sequence (events, no sleep):
+          1. Owner 1 enters append → signals first_append_started, blocks
+             on first_fail_allowed.
+          2. Test signals first_fail_allowed → Owner 1 raises
+             _BlockingException.
+          3. Owner 1's inner handler marks key "failed", releases lock.
+          4. Owner 2 acquires retry ownership, enters append → signals
+             second_append_entered, blocks on owner2_can_complete.
+          5. Owner 1's outer handler computes error_text =
+             str(exception)[:500] — the _BlockingException.__str__ blocks
+             until second_append_entered is set (already set by step 4).
+          6. Owner 1's outer handler checks the generation guard.  With
+             fixed code, generation mismatch prevents clobbering Owner 2.
+          7. Test signals owner2_can_complete → Owner 2 completes →
+             "completed", notify_all.
+          8. Worker 3 wakes, sees "completed" → skips.
+          9. third_append_attempt never fires → exactly 2 append attempts.
+
+        With the stale/unguarded outer transition restored:
+          Step 6 sets "failed" while Owner 2 is still blocked → Worker 3
+          wakes, acquires retry, enters append (third_append_attempt fires).
+        """
+
+        class _BlockingException(Exception):
+            """Seam: __str__ blocks until second_append_entered is set."""
+            def __init__(self, event):
+                self._event = event
+            def __str__(self):
+                self._event.wait(timeout=10)
+                return "injected failure"
+
         payload = _make_company_facts_payload()
         payload_bytes = json.dumps(payload).encode()
         payload_hash = compute_payload_hash(payload_bytes)
         cik_url = build_source_url("0000320193")
         tickers_url = "https://www.sec.gov/files/company_tickers.json"
-
-        barrier = threading.Barrier(2, timeout=10)
 
         http = BarrierFakeHttpClient(
             {
@@ -2901,33 +2932,37 @@ class TestThreeWorkerOwnershipGuard:
                     _payload_200(payload),
                 ],
             },
-            barrier=barrier,
-            barrier_urls={cik_url},
         )
         clock = FakeClock()
 
         first_append_started = threading.Event()
-        first_append_fail_allowed = threading.Event()
+        first_fail_allowed = threading.Event()
+        second_append_entered = threading.Event()
+        owner2_can_complete = threading.Event()
+        third_append_attempt = threading.Event()
         append_attempts = []
         append_lock = threading.Lock()
-        third_skipped = threading.Event()
 
         def tracking_delta_writer(cat, sch, rows):
             with append_lock:
                 attempt_num = len(append_attempts) + 1
                 append_attempts.append(attempt_num)
                 is_first = (attempt_num == 1)
+                is_second = (attempt_num == 2)
             if is_first:
                 first_append_started.set()
-                first_append_fail_allowed.wait(timeout=15)
-                raise RuntimeError("Delta write failed (injected)")
+                first_fail_allowed.wait(timeout=15)
+                raise _BlockingException(second_append_entered)
+            elif is_second:
+                second_append_entered.set()
+                owner2_can_complete.wait(timeout=15)
+            else:
+                third_append_attempt.set()
 
         manifest_entries = []
 
         def tracking_manifest_writer(cat, sch, entry):
             manifest_entries.append(entry)
-            if entry.fetch_status == "skipped_duplicate":
-                third_skipped.set()
 
         import pipelines.ingest_sec_companyfacts as mod
         original_resolve = mod._resolve_user_agent
@@ -2957,14 +2992,19 @@ class TestThreeWorkerOwnershipGuard:
             )
             pipeline_thread.start()
 
+            # Step 1: Owner 1 enters append.
             assert first_append_started.wait(timeout=10), "First append did not start in time"
-            time.sleep(0.2)
+            # Step 2: Tell Owner 1 to fail.
+            first_fail_allowed.set()
+            # Step 4: Wait for Owner 2 to enter append.
+            assert second_append_entered.wait(timeout=10), "Second append did not start in time"
 
-            # Tell Worker 1 to fail its append.
-            first_append_fail_allowed.set()
+            # Owner 2 is now blocked in append (key remains "in_flight").
+            # Owner 1's outer handler: str(e) unblocks (second_append_entered
+            # is set), then generation check runs.  With fixed code, the
+            # generation guard prevents clobbering Owner 2.
 
-            # Wait for Worker 3 to skip (pipeline complete).
-            assert third_skipped.wait(timeout=20), "Third worker did not skip in time"
+            owner2_can_complete.set()
 
             pipeline_thread.join(timeout=25)
             assert not pipeline_thread.is_alive(), "Pipeline thread did not complete in time"
@@ -2972,10 +3012,6 @@ class TestThreeWorkerOwnershipGuard:
             mod._resolve_user_agent = original_resolve
             mod._validate_user_agent = original_validate
 
-        # Worker 1's outer handler must not have clobbered Worker 2's state.
-        # If it did, we'd see Worker 2's state transitioned to "failed" and
-        # Worker 3 would re-acquire ownership and attempt a third append.
-        # Correct fixed behavior: exactly 2 append attempts (1 fail + 1 success).
         assert len(append_attempts) == 2, (
             f"Expected 2 append attempts (1 fail + 1 success), "
             f"got {len(append_attempts)} — extra attempts indicate "
@@ -2992,6 +3028,14 @@ class TestThreeWorkerOwnershipGuard:
         success_entries = [e for e in manifest_entries if e.fetch_status == "success"]
         assert len(success_entries) == 1
         assert success_entries[0].payload_hash == payload_hash
+
+        # Deterministic negative: Worker 3 must NOT have entered append.
+        # With the generation guard fixed, Worker 3 sees "completed" and skips
+        # without ever calling the delta writer.  If the guard is missing,
+        # Worker 3 acquires retry and enters append within seconds.
+        assert not third_append_attempt.wait(timeout=3), (
+            "Third worker entered append — generation guard is missing or broken"
+        )
 
 
 class TestBoundedWaitTimeout:
