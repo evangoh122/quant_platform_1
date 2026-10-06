@@ -50,12 +50,40 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
     return sorted.filter((r) => r.event_date >= cutoffStr);
   }, [rows, range]);
 
+  // Range controls stay rendered with the empty states so the user can switch back to a range that has data.
+  const renderRangeControls = (missing: number) => (
+    <div className="mb-2 flex items-center gap-1">
+      {RANGE_OPTIONS.map((opt) => (
+        <button
+          key={opt.label}
+          type="button"
+          onClick={() => setRange(opt.label)}
+          className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
+            range === opt.label
+              ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
+              : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+      {missing > 0 && (
+        <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
+          {missing} missing point{missing !== 1 ? 's' : ''}
+        </span>
+      )}
+    </div>
+  );
+
   if (filtered.length === 0) {
     return (
-      <EmptyState
-        title="No chart data"
-        detail={`No OHLCV rows available for ${symbol} in the selected range.`}
-      />
+      <div>
+        {renderRangeControls(0)}
+        <EmptyState
+          title="No chart data"
+          detail={`No OHLCV rows available for ${symbol} in the selected range.`}
+        />
+      </div>
     );
   }
 
@@ -64,10 +92,13 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
 
   if (closePoints.length === 0) {
     return (
-      <EmptyState
-        title="No chart data"
-        detail={`No finite close values available for ${symbol} in the selected range.`}
-      />
+      <div>
+        {renderRangeControls(filtered.length)}
+        <EmptyState
+          title="No chart data"
+          detail={`No finite close values available for ${symbol} in the selected range.`}
+        />
+      </div>
     );
   }
   const missingCount = filtered.length - closePoints.length;
@@ -106,27 +137,7 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
 
   return (
     <div>
-      <div className="mb-2 flex items-center gap-1">
-        {RANGE_OPTIONS.map((opt) => (
-          <button
-            key={opt.label}
-            type="button"
-            onClick={() => setRange(opt.label)}
-            className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
-              range === opt.label
-                ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
-                : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
-        {missingCount > 0 && (
-          <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
-            {missingCount} missing point{missingCount !== 1 ? 's' : ''}
-          </span>
-        )}
-      </div>
+      {renderRangeControls(missingCount)}
 
       <div className="overflow-x-auto">
         <svg

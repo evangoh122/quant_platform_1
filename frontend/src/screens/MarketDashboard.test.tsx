@@ -336,6 +336,43 @@ describe('MarketDashboard', () => {
     }
   });
 
+  it('keeps the range controls when the selected range has no finite closes, so the user can switch back', async () => {
+    const recentNullClose = {
+      symbol: 'AAPL',
+      ohlcv: {
+        data: [
+          { symbol: 'AAPL', event_date: '2025-01-10', close: 150, open: 148, high: 152, low: 147, volume: 100, vwap: 149, price_basis: 'adjusted' },
+          { symbol: 'AAPL', event_date: '2025-01-11', close: 151, open: 148, high: 152, low: 147, volume: 120, vwap: 149, price_basis: 'adjusted' },
+          { symbol: 'AAPL', event_date: '2025-06-01', close: null, open: 151, high: 155, low: 150, volume: 150, vwap: 152, price_basis: 'adjusted' },
+          { symbol: 'AAPL', event_date: '2025-06-02', close: null, open: 151, high: 155, low: 150, volume: 150, vwap: 152, price_basis: 'adjusted' },
+        ],
+        count: 4,
+        empty: false,
+        source: 'silver_ohlcv_day_adjusted',
+        freshness: { state: 'fresh', table: 'silver_ohlcv_day_adjusted', detail: '4 rows' },
+      },
+      options: {
+        data: [],
+        count: 0,
+        empty: true,
+        source: 'gold_options_features',
+        freshness: { state: 'empty', table: 'gold_options_features', detail: '0 rows' },
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(recentNullClose) }));
+    const user = userEvent.setup();
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: /adjusted close price chart/i })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: '1M' }));
+    expect(screen.getByText(/No finite close values/)).toBeInTheDocument();
+    // The range selector is still there and switching back restores the chart.
+    await user.click(screen.getByRole('button', { name: 'All' }));
+    expect(screen.getByRole('img', { name: /adjusted close price chart/i })).toBeInTheDocument();
+  });
+
   it('renders EmptyState when all close values are null and no svg axis labels', async () => {
     const allNullClose = {
       symbol: 'AAPL',
