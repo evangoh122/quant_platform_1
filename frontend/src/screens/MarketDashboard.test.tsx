@@ -243,4 +243,68 @@ describe('MarketDashboard', () => {
     expect(screen.getByText('NVDA', { selector: 'button' })).toBeInTheDocument();
     expect(screen.getByText('AAPL', { selector: 'button' })).toBeInTheDocument();
   });
+
+  it('anchors 1M range to latest event_date, not Date.now()', async () => {
+    const historicalRows = [
+      { symbol: 'AAPL', event_date: '2026-07-15', close: 100, open: 99, high: 101, low: 98, volume: 50, vwap: 100, price_basis: 'adjusted' },
+      { symbol: 'AAPL', event_date: '2026-08-01', close: 110, open: 108, high: 112, low: 107, volume: 60, vwap: 109, price_basis: 'adjusted' },
+      { symbol: 'AAPL', event_date: '2026-08-15', close: 120, open: 118, high: 122, low: 117, volume: 70, vwap: 119, price_basis: 'adjusted' },
+      { symbol: 'AAPL', event_date: '2026-09-02', close: 130, open: 128, high: 132, low: 127, volume: 80, vwap: 129, price_basis: 'adjusted' },
+    ];
+
+    const response = {
+      symbol: 'AAPL',
+      ohlcv: {
+        data: historicalRows,
+        count: 4,
+        empty: false,
+        source: 'silver_ohlcv_day_adjusted',
+        freshness: { state: 'fresh', table: 'silver_ohlcv_day_adjusted', detail: '4 rows' },
+      },
+      options: {
+        data: [],
+        count: 0,
+        empty: true,
+        source: 'gold_options_features',
+        freshness: { state: 'empty', table: 'gold_options_features', detail: '0 rows' },
+      },
+    };
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(response),
+    }));
+
+    // Mock Date.now() to return 2026-10-06 so the test is deterministic
+    const realDateNow = Date.now;
+    Date.now = () => new Date('2026-10-06T12:00:00Z').getTime();
+
+    const user = userEvent.setup();
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('130.00')).toBeInTheDocument();
+    });
+
+    // All data should be visible in "All" range
+    const chart = screen.getByRole('img', { name: /adjusted close price chart/i });
+    expect(chart).toBeInTheDocument();
+
+    // Click 1M — anchored to latest event_date 2026-09-02, so cutoff = 2026-08-03
+    // Should show Aug 15 and Sep 2 points (>= 2026-08-03), NOT Jul 15
+    await user.click(screen.getByText('1M', { selector: 'button' }));
+
+    // The accessible fallback table should show the filtered rows
+    const srTable = document.querySelector('table.sr-only');
+    expect(srTable).toBeTruthy();
+    const srRows = srTable!.querySelectorAll('tbody tr');
+
+    // 1M from 2026-09-02 → cutoff 2026-08-03 → Aug 15 and Sep 2 = 2 rows
+    expect(srRows.length).toBe(2);
+    expect(srRows[0].textContent).toContain('2026-08-15');
+    expect(srRows[1].textContent).toContain('2026-09-02');
+
+    // Restore Date.now
+    Date.now = realDateNow;
+  });
 });
