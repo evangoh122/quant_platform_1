@@ -1,18 +1,24 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { api } from '../api/client';
 import type { ChatResponse } from '../api/types';
 import { Card } from '../components/Card';
 import { LoadingState } from '../components/LoadingState';
 import { ExecutionTrace } from '../components/ExecutionTrace';
 import { EvidencePanel } from '../components/evidence';
+import { SymbolPicker } from '../components/SymbolPicker';
+import symbols from '../data/symbols.json';
 
-const SUGGESTED_QUESTIONS = [
-  "Summarize Nvidia's latest reported export-control risks.",
-  "Find SEC evidence about Nvidia's China revenue exposure.",
-  "What risks does AMD describe in its latest 10-K?",
-  "Show recent market features for NVDA.",
-  "Save a research note for NVDA: export controls remain a key risk.",
+const BASE_SUGGESTED_QUESTIONS = [
+  "Summarize {SYMBOL}'s latest reported export-control risks.",
+  "Find SEC evidence about {SYMBOL}'s China revenue exposure.",
+  "What risks does {SYMBOL} describe in its latest 10-K?",
+  "Show recent market features for {SYMBOL}.",
+  "Save a research note for {SYMBOL}: export controls remain a key risk.",
 ];
+
+function makeSuggestedQuestions(symbol: string): string[] {
+  return BASE_SUGGESTED_QUESTIONS.map((q) => q.replace('{SYMBOL}', symbol));
+}
 
 interface Message {
   role: 'user' | 'assistant';
@@ -22,11 +28,16 @@ interface Message {
 }
 
 export function ResearchAgent() {
+  const [symbol, setSymbol] = useState('NVDA');
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const secList = (symbols as { sec: string[] }).sec;
+  const hasCoverage = secList.includes(symbol.toUpperCase());
+  const suggestedQuestions = useMemo(() => makeSuggestedQuestions(symbol), [symbol]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -65,6 +76,14 @@ export function ResearchAgent() {
   return (
     <div data-tour="agent" className="space-y-4">
       <h1 className="text-xl font-semibold">AI Research Agent</h1>
+
+      <SymbolPicker
+        value={symbol}
+        onChange={setSymbol}
+        list="sec"
+        hasCoverage={hasCoverage}
+        label="Scope"
+      />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
         <Card title="Conversation" subtitle="Every tool call is surfaced as auditable evidence">
@@ -110,7 +129,7 @@ export function ResearchAgent() {
                 Suggested questions
               </p>
               <div className="flex flex-wrap gap-2">
-                {SUGGESTED_QUESTIONS.map((q) => (
+                {suggestedQuestions.map((q) => (
                   <button
                     key={q}
                     type="button"

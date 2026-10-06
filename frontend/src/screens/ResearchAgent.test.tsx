@@ -2,6 +2,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ResearchAgent } from './ResearchAgent';
+import * as symbolStorage from '../utils/symbolStorage';
 
 const mockChatResponse = {
   reply: 'Based on SEC filings, Nvidia faces export-control risks...',
@@ -79,9 +80,9 @@ describe('ResearchAgent', () => {
     vi.stubGlobal('fetch', mockFetch());
     render(<ResearchAgent />);
 
-    expect(screen.getByText(/Summarize Nvidia/)).toBeInTheDocument();
+    expect(screen.getByText(/Summarize NVDA/)).toBeInTheDocument();
     expect(screen.getByText(/Find SEC evidence/)).toBeInTheDocument();
-    expect(screen.getByText(/What risks does AMD/)).toBeInTheDocument();
+    expect(screen.getByText(/What risks does NVDA/)).toBeInTheDocument();
     expect(screen.getByText(/Show recent market features/)).toBeInTheDocument();
     expect(screen.getByText(/Save a research note/)).toBeInTheDocument();
   });
@@ -91,7 +92,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
@@ -108,7 +109,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       expect(screen.getByTestId('source-card')).toBeInTheDocument();
@@ -143,7 +144,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       const failedElements = screen.getAllByText('Failed');
@@ -156,7 +157,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       expect(screen.getByTestId('developer-details')).toBeInTheDocument();
@@ -243,7 +244,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       expect(screen.getByTestId('execution-trace')).toBeInTheDocument();
@@ -362,7 +363,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       const toolCard = screen.getByTestId('tool-call-0');
@@ -444,6 +445,56 @@ describe('ResearchAgent', () => {
     expect(screen.queryByRole('button', { name: /Injected follow-up/ })).not.toBeInTheDocument();
   });
 
+  it('picking AMD changes the suggested questions to AMD', async () => {
+    vi.stubGlobal('fetch', mockFetch());
+    vi.spyOn(symbolStorage, 'getUrlSymbol').mockReturnValue(null);
+    vi.spyOn(symbolStorage, 'setUrlSymbol').mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    // Default NVDA suggested questions should be visible
+    expect(screen.getByText(/NVDA.*latest reported export-control risks/)).toBeInTheDocument();
+
+    // Click AMD quick choice
+    await user.click(screen.getByText('AMD', { selector: 'button' }));
+
+    // Suggested questions should now reference AMD
+    expect(screen.getByText(/AMD.*latest reported export-control risks/)).toBeInTheDocument();
+    expect(screen.getByText(/AMD.*China revenue exposure/)).toBeInTheDocument();
+    expect(screen.getByText(/AMD.*describe in its latest 10-K/)).toBeInTheDocument();
+
+    // NVDA questions should be gone
+    expect(screen.queryByText(/NVDA.*latest reported export-control risks/)).not.toBeInTheDocument();
+  });
+
+  it('chat request body contains only message, no symbol field', async () => {
+    vi.stubGlobal('fetch', mockFetch());
+    vi.spyOn(symbolStorage, 'getUrlSymbol').mockReturnValue(null);
+    vi.spyOn(symbolStorage, 'setUrlSymbol').mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    // Click AMD to set scope
+    await user.click(screen.getByText('AMD', { selector: 'button' }));
+
+    // Click a suggested question that references AMD
+    await user.click(screen.getByText(/AMD.*latest reported export-control risks/));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
+    });
+
+    // The fetch call body should contain only { message: "..." }
+    const fetchMock = vi.mocked(fetch);
+    const chatCall = fetchMock.mock.calls.find((c) => c[0] === '/api/agent/chat');
+    expect(chatCall).toBeTruthy();
+    const body = JSON.parse(chatCall![1]!.body as string);
+    expect(body).toHaveProperty('message');
+    expect(body.message).toContain('AMD');
+    expect(body).not.toHaveProperty('symbol');
+    expect(body).not.toHaveProperty('write_authorization');
+  });
+
   it('keeps all conversation turns after two consecutive questions', async () => {
     const secondResponse = {
       reply: 'AMD describes risks related to competition and supply chain...',
@@ -488,7 +539,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
@@ -507,7 +558,7 @@ describe('ResearchAgent', () => {
     expect(screen.getByText(/AMD describes risks/)).toBeInTheDocument();
 
     // Both user messages should be visible
-    expect(screen.getByText(/Summarize Nvidia/)).toBeInTheDocument();
+    expect(screen.getByText(/Summarize NVDA/)).toBeInTheDocument();
     expect(screen.getByText('What risks does AMD describe?')).toBeInTheDocument();
   });
 
@@ -529,7 +580,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       expect(screen.getByText(/Based on SEC filings/)).toBeInTheDocument();
@@ -582,7 +633,7 @@ describe('ResearchAgent', () => {
     const user = userEvent.setup();
     render(<ResearchAgent />);
 
-    await user.click(screen.getByText(/Summarize Nvidia/));
+    await user.click(screen.getByText(/Summarize NVDA/));
 
     await waitFor(() => {
       expect(screen.getByText(/Based on analysis/)).toBeInTheDocument();
