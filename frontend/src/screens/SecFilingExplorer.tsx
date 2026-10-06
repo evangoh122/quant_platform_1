@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { api } from '../api/client';
 import type { ChatResponse, SecCoverageItem, SecCoverageResponse } from '../api/types';
 import { SymbolPicker } from '../components/SymbolPicker';
@@ -6,8 +6,10 @@ import { Card } from '../components/Card';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingState } from '../components/LoadingState';
+import { ChartFrame } from '../components/charts';
 
 const LINK_KEYS = ['edgar_url', 'url', 'source_url', 'href'];
+const DEFAULT_TOP_N = 25;
 
 function rowLink(row: Record<string, unknown>): string | null {
   for (const key of LINK_KEYS) {
@@ -28,6 +30,119 @@ function formatDate(iso: string | null): string {
   } catch {
     return iso;
   }
+}
+
+interface CoverageChartProps {
+  items: SecCoverageItem[];
+  defaultLimit?: number;
+}
+
+function CoverageChart({ items, defaultLimit = DEFAULT_TOP_N }: CoverageChartProps) {
+  const [showAll, setShowAll] = useState(false);
+
+  const sorted = useMemo(
+    () => [...items].sort((a, b) => b.n_chunks - a.n_chunks),
+    [items],
+  );
+
+  const displayed = showAll ? sorted : sorted.slice(0, defaultLimit);
+  const totalTickers = items.length;
+  const tickersWithChunks = items.filter((c) => c.n_chunks > 0).length;
+  const totalChunks = items.reduce((s, c) => s + c.n_chunks, 0);
+
+  if (sorted.length === 0) {
+    return <EmptyState title="No SEC coverage data" detail="No ticker coverage data is available." />;
+  }
+
+  const barHeight = 18;
+  const gap = 4;
+  const labelWidth = 50;
+  const chartWidth = 500;
+  const barAreaWidth = chartWidth - labelWidth - 70;
+  const totalHeight = displayed.length * (barHeight + gap) + 30;
+
+  const maxChunks = Math.max(...displayed.map((c) => c.n_chunks), 1);
+  const chunkScale = (v: number) => (v / maxChunks) * barAreaWidth;
+
+  const tableData = {
+    headers: ['Ticker', 'Chunks', 'Filings', 'First Filed', 'Last Filed'],
+    rows: displayed.map((c) => [
+      c.ticker,
+      c.n_chunks,
+      c.n_filings,
+      formatDate(c.first_filed),
+      formatDate(c.last_filed),
+    ]),
+  };
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center gap-4 text-sm">
+        <span className="font-medium text-slate-700 dark:text-slate-200">
+          {tickersWithChunks} / {totalTickers} tickers with chunks
+        </span>
+        <span className="text-slate-500 dark:text-slate-400">
+          {totalChunks.toLocaleString()} total chunks
+        </span>
+        {sorted.length > defaultLimit && (
+          <button
+            type="button"
+            onClick={() => setShowAll(!showAll)}
+            className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+          >
+            {showAll ? `Show top ${defaultLimit}` : `Show all ${sorted.length}`}
+          </button>
+        )}
+      </div>
+
+      <ChartFrame
+        title={`SEC Coverage — ${showAll ? 'All' : `Top ${Math.min(defaultLimit, sorted.length)}`} Tickers`}
+        caption="gold_sec_coverage · n_chunks per ticker"
+        tableData={tableData}
+        width={chartWidth}
+        height={totalHeight}
+        ariaLabel="SEC coverage chart showing chunks per ticker"
+      >
+        {displayed.map((item, i) => {
+          const y = i * (barHeight + gap) + 10;
+          const barW = chunkScale(item.n_chunks);
+
+          return (
+            <g key={item.ticker}>
+              <text
+                x={labelWidth - 4}
+                y={y + barHeight / 2 + 4}
+                textAnchor="end"
+                className="fill-slate-600 dark:fill-slate-300"
+                style={{ fontSize: 9, fontWeight: 500 }}
+              >
+                {item.ticker}
+              </text>
+              <rect
+                x={labelWidth}
+                y={y}
+                width={Math.max(barW, 1)}
+                height={barHeight}
+                rx={2}
+                fill="var(--accent, #3b82f6)"
+                opacity={0.75}
+              >
+                <title>{`${item.ticker}: ${item.n_chunks.toLocaleString()} chunks, ${item.n_filings} filings`}</title>
+              </rect>
+              <text
+                x={labelWidth + barW + 4}
+                y={y + barHeight / 2 + 4}
+                className="fill-slate-500 dark:fill-slate-400"
+                style={{ fontSize: 9 }}
+              >
+                {item.n_chunks.toLocaleString()}
+              </text>
+            </g>
+          );
+        })}
+      </ChartFrame>
+    </div>
+  );
 }
 
 export function SecFilingExplorer() {
@@ -163,6 +278,15 @@ export function SecFilingExplorer() {
             label="Equity"
           />
         )
+      )}
+
+      {coverageStatus === 'ok' && coverage.length > 0 && (
+        <Card
+          title="SEC Research Coverage"
+          subtitle="gold_sec_coverage · chunks and filings per ticker"
+        >
+          <CoverageChart items={coverage} />
+        </Card>
       )}
 
       {loading && <LoadingState />}
