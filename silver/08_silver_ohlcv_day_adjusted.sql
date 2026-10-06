@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS bootcamp_students.evangoh_capstone.silver_ohlcv_day_a
     adj_close                   DOUBLE,
     adj_vwap                    DOUBLE,
     adj_volume                  DOUBLE,
+    vwap_source                 STRING,
     raw_overnight_return        DOUBLE,
     adjusted_return_1d_unmasked DOUBLE,
     return_1d                   DOUBLE,
@@ -77,6 +78,10 @@ CREATE TABLE IF NOT EXISTS bootcamp_students.evangoh_capstone.silver_ohlcv_day_a
     processed_ts                TIMESTAMP
 ) USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
+
+-- Idempotent: add vwap_source column if table already exists without it
+ALTER TABLE bootcamp_students.evangoh_capstone.silver_ohlcv_day_adjusted
+    ADD COLUMNS (vwap_source STRING);
 
 
 -- ============================================================
@@ -129,7 +134,26 @@ UNION SELECT 'QQQ';
 
 
 -- ============================================================
--- 4b. Massive splits: one row per (symbol, ex_date)
+-- 4b. Minute-bar VWAP per (symbol, trading date)
+--     Aggregates minute bars from silver_ohlcv to produce a
+--     volume-weighted typical price per trading day (ET date).
+--     Symbols with no minute bars get no rows here — they keep
+--     NULL vwap (NEVER fabricate a daily proxy).
+-- ============================================================
+CREATE OR REPLACE TEMP VIEW _minute_vwap AS
+SELECT
+    symbol,
+    DATE(from_utc_timestamp(event_ts, 'America/New_York')) AS trading_date,
+    SUM(COALESCE(vwap, (high + low + close) / 3.0) * volume)
+        / NULLIF(SUM(volume), 0) AS minute_vwap
+FROM bootcamp_students.evangoh_capstone.silver_ohlcv
+WHERE timespan = 'minute'
+  AND volume > 0
+GROUP BY symbol, DATE(from_utc_timestamp(event_ts, 'America/New_York'));
+
+
+-- ============================================================
+-- 4c. Massive splits: one row per (symbol, ex_date)
 --     Filters to source='massive' only.  Deduplicates by
 --     latest fetched_ts (Massive can return the same split
 --     twice across runs).  Other sources are ignored.
@@ -192,7 +216,8 @@ SELECT
     dd.low,
     dd.close,
     dd.volume,
-    dd.vwap,
+    -- Resolved daily VWAP: vendor vwap if non-null, else minute-bar aggregate
+    COALESCE(dd.vwap, mv.minute_vwap) AS resolved_vwap,
     dd.trade_count,
     COALESCE(sf.cumulative_split_ratio, 1.0) AS cumulative_split_ratio,
     1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0) AS price_adjustment_factor,
@@ -201,11 +226,17 @@ SELECT
     dd.high  * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))  AS adj_high,
     dd.low   * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))  AS adj_low,
     dd.close * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))  AS adj_close,
-    CASE WHEN dd.vwap IS NOT NULL
-         THEN dd.vwap * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))
+    CASE WHEN COALESCE(dd.vwap, mv.minute_vwap) IS NOT NULL
+         THEN COALESCE(dd.vwap, mv.minute_vwap) * (1.0 / NULLIF(COALESCE(sf.cumulative_split_ratio, 1.0), 0))
          ELSE NULL
     END AS adj_vwap,
     dd.volume * COALESCE(sf.cumulative_split_ratio, 1.0) AS adj_volume,
+    -- VWAP source provenance
+    CASE
+        WHEN dd.vwap IS NOT NULL THEN 'vendor'
+        WHEN mv.minute_vwap IS NOT NULL THEN 'minute_bars'
+        ELSE NULL
+    END AS vwap_source,
     -- Raw overnight return (for break detection)
     dd.close / NULLIF(LAG(dd.close) OVER (PARTITION BY dd.symbol ORDER BY dd.event_date), 0)
         AS raw_gross_return,
@@ -225,7 +256,10 @@ FROM _deduped_daily dd
 JOIN _universe u ON u.symbol = dd.symbol
 LEFT JOIN _split_factors sf
     ON  sf.symbol = dd.symbol
-    AND sf.event_date = dd.event_date;
+    AND sf.event_date = dd.event_date
+LEFT JOIN _minute_vwap mv
+    ON  mv.symbol = dd.symbol
+    AND mv.trading_date = dd.event_date;
 
 
 -- ============================================================
@@ -361,7 +395,7 @@ USING (
         a.low,
         a.close,
         a.volume,
-        a.vwap,
+        a.resolved_vwap                AS vwap,
         a.trade_count,
         a.cumulative_split_ratio,
         a.price_adjustment_factor,
@@ -371,6 +405,7 @@ USING (
         a.adj_close,
         a.adj_vwap,
         a.adj_volume,
+        a.vwap_source,
         a.raw_gross_return - 1.0                        AS raw_overnight_return,
         a.adjusted_return_1d_unmasked,
         -- Canonical return: NULL when active break is masked
@@ -417,6 +452,7 @@ WHEN MATCHED THEN UPDATE SET
     tgt.adj_close                   = src.adj_close,
     tgt.adj_vwap                    = src.adj_vwap,
     tgt.adj_volume                  = src.adj_volume,
+    tgt.vwap_source                 = src.vwap_source,
     tgt.raw_overnight_return        = src.raw_overnight_return,
     tgt.adjusted_return_1d_unmasked = src.adjusted_return_1d_unmasked,
     tgt.return_1d                   = src.return_1d,
@@ -429,6 +465,7 @@ WHEN NOT MATCHED THEN INSERT (
     volume, vwap, trade_count,
     cumulative_split_ratio, price_adjustment_factor,
     adj_open, adj_high, adj_low, adj_close, adj_vwap, adj_volume,
+    vwap_source,
     raw_overnight_return, adjusted_return_1d_unmasked, return_1d,
     is_data_quality_break, information_available_ts, processed_ts
 ) VALUES (
@@ -437,6 +474,7 @@ WHEN NOT MATCHED THEN INSERT (
     src.volume, src.vwap, src.trade_count,
     src.cumulative_split_ratio, src.price_adjustment_factor,
     src.adj_open, src.adj_high, src.adj_low, src.adj_close, src.adj_vwap, src.adj_volume,
+    src.vwap_source,
     src.raw_overnight_return, src.adjusted_return_1d_unmasked, src.return_1d,
     src.is_data_quality_break, src.information_available_ts, src.processed_ts
 )
