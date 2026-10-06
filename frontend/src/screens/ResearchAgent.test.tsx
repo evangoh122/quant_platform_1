@@ -638,30 +638,10 @@ describe('ResearchAgent', () => {
   });
 
   it('trace reflects second response when follow-up request succeeds', async () => {
-    const secondResponse = {
+    const zeroToolResponse = {
       reply: 'AMD describes competition risks...',
-      tool_calls: [
-        {
-          name: 'search_sec_filings',
-          arguments: { ticker: 'AMD', form_type: '10-K' },
-          result: {
-            rows: [
-              {
-                chunk_id: 'chunk-2',
-                accession_number: '0009876543-24-000001',
-                form_type: '10-K',
-                accepted_ts: '2024-02-15',
-                source_url: 'https://sec.gov/filing/2',
-                ticker: 'AMD',
-                section: 'risk_factors',
-                retrieval_mode: 'hybrid',
-              },
-            ],
-          },
-          ok: true,
-        },
-      ],
-      sources: [{ tool: 'search_sec_filings', chunk_id: 'chunk-2' }],
+      tool_calls: [],
+      sources: [],
       available: true,
       empty: false,
     };
@@ -672,7 +652,7 @@ describe('ResearchAgent', () => {
       vi.fn().mockImplementation((url: string, init?: RequestInit) => {
         if (url === '/api/agent/chat' && init?.method === 'POST') {
           callCount++;
-          const body = callCount === 1 ? mockChatResponse : secondResponse;
+          const body = callCount === 1 ? mockChatResponse : zeroToolResponse;
           return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -697,9 +677,12 @@ describe('ResearchAgent', () => {
       expect(screen.getByText(/AMD describes competition risks/)).toBeInTheDocument();
     });
 
-    // Trace should reflect the second response, not the first
+    // Trace must reflect the zero-tool second response:
+    // Response is Complete (reply delivered), but retrieval and tool execution are Skipped.
+    // If the trace reused the first response's search tool call, these would be Complete.
     expect(screen.getByTestId('trace-response')).toHaveTextContent('Complete');
-    expect(screen.getByTestId('trace-retrieval')).toHaveTextContent('Complete');
+    expect(screen.getByTestId('trace-retrieval')).toHaveTextContent('Skipped');
+    expect(screen.getByTestId('trace-tool_execution')).toHaveTextContent('Skipped');
   });
 
   it('deferred follow-up: trace resets to pending then reflects rejection', async () => {
