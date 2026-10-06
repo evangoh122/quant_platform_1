@@ -189,4 +189,20 @@ describe('SymbolPicker', () => {
     expect(options[0]).toHaveTextContent('NVDA');
     expect(options[1]).toHaveTextContent('AMD');
   });
+
+  it('preserves a valid-format ticker from ?symbol= not in options and shows no-coverage', async () => {
+    urlSpy.mockReturnValue('ZZZZ');
+    const onChange = vi.fn();
+    render(<SymbolPicker value="" onChange={onChange} list="market" />);
+
+    // ZZZZ should be accepted (valid format) even though not in any list
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith('ZZZZ');
+    });
+
+    // Should show no-coverage message since ZZZZ is not in the market list
+    render(<SymbolPicker value="ZZZZ" onChange={onChange} list="market" hasCoverage={false} />);
+    expect(screen.getByText(/ZZZZ is not in the market dataset/)).toBeInTheDocument();
+    expect(screen.getByText(/No coverage/)).toBeInTheDocument();
+  });
 });

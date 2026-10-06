@@ -57,8 +57,7 @@ export function SymbolPicker({
     const urlSym = getUrlSymbol();
     if (urlSym && urlSym !== value) {
       const upper = urlSym.toUpperCase();
-      const isValid = options.includes(upper) || LISTS.market.includes(upper);
-      if (isValid) {
+      if (TICKER_RE.test(upper)) {
         onChange(upper);
       }
     }
