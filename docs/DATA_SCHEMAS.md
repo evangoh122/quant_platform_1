@@ -588,7 +588,7 @@
   split is loaded.  Returns are unaffected.  PIT consumers must use returns (return_1d),
   not historical adjusted levels (adj_close).
 
-### silver_ohlcv_day_adjusted  (24 cols)
+### silver_ohlcv_day_adjusted  (25 cols)
   symbol                             string NOT NULL
   event_date                         date NOT NULL
   event_ts                           timestamp
@@ -607,6 +607,7 @@
   adj_close                          double
   adj_vwap                           double
   adj_volume                         double
+  vwap_source                        string
   raw_overnight_return               double
   adjusted_return_1d_unmasked        double
   return_1d                          double

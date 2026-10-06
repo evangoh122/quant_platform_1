@@ -44,6 +44,7 @@ tables:
       - adj_close
       - adj_vwap
       - adj_volume
+      - vwap_source
       - raw_overnight_return
       - adjusted_return_1d_unmasked
       - return_1d

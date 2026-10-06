@@ -45,6 +45,7 @@ TABLE_COLUMNS: Dict[str, FrozenSet[str]] = {
         "symbol", "event_date",
         "adj_open", "adj_high", "adj_low", "adj_close", "adj_vwap", "adj_volume",
         "return_1d", "information_available_ts",
+        "vwap_source",
     }),
 }
 

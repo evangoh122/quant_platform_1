@@ -387,6 +387,7 @@ class TestReintroduceAdjCloseFails:
             "open", "high", "low", "close", "volume", "vwap", "trade_count",
             "cumulative_split_ratio", "price_adjustment_factor",
             "adj_open", "adj_high", "adj_low", "adj_close", "adj_vwap", "adj_volume",
+            "vwap_source",
             "raw_overnight_return", "adjusted_return_1d_unmasked",
             "return_1d", "is_data_quality_break",
             "information_available_ts", "processed_ts",

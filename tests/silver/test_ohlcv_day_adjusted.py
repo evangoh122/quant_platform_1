@@ -748,7 +748,7 @@ class TestSQLContract:
                 if col_name in ("primary", "constraint", "--"):
                     continue
                 target_cols.append(col_name)
-        assert len(target_cols) == 24, f"Expected 24 target columns, got {len(target_cols)}: {target_cols}"
+        assert len(target_cols) == 25, f"Expected 25 target columns, got {len(target_cols)}: {target_cols}"
 
         silver_section = text.split("Merge silver_ohlcv_day_adjusted")[1]
         insert_match = re.search(
@@ -772,13 +772,14 @@ class TestSQLContract:
             "symbol", "event_date", "event_ts", "open", "high", "low", "close",
             "volume", "vwap", "trade_count", "cumulative_split_ratio",
             "price_adjustment_factor", "adj_open", "adj_high", "adj_low",
-            "adj_close", "adj_vwap", "adj_volume", "raw_overnight_return",
+            "adj_close", "adj_vwap", "adj_volume", "vwap_source",
+            "raw_overnight_return",
             "adjusted_return_1d_unmasked", "return_1d", "is_data_quality_break",
             "information_available_ts", "processed_ts",
         ]
         # Missing one column
         partial_cols = all_cols[:-1]
-        assert len(partial_cols) == 23
+        assert len(partial_cols) == 24
         assert set(partial_cols) != set(all_cols), \
             "Missing column must be detected"
         assert "processed_ts" not in partial_cols, \
