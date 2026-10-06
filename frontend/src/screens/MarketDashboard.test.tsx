@@ -81,12 +81,40 @@ describe('MarketDashboard', () => {
     const tables = document.querySelectorAll('table:not(.sr-only)');
     expect(tables.length).toBeGreaterThan(0);
 
+    // Table rows contain actual data (not empty)
+    const table = tables[0];
+    const dataRows = table.querySelectorAll('tbody tr');
+    expect(dataRows.length).toBe(3);
+    expect(dataRows[0].textContent).toContain('2025-01-10');
+    expect(dataRows[0].textContent).toContain('150');
+    expect(dataRows[1].textContent).toContain('2025-01-12');
+    expect(dataRows[2].textContent).toContain('2025-01-15');
+    expect(dataRows[2].textContent).toContain('160');
+
     // Source label appears (in both chart card and table card)
     const sources = screen.getAllByText(/silver_ohlcv_day_adjusted/);
     expect(sources.length).toBeGreaterThanOrEqual(1);
 
     // Row count
     expect(screen.getByText(/3 rows/)).toBeInTheDocument();
+  });
+
+  it('sorts chart rows by event_date ascending', async () => {
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('160.00')).toBeInTheDocument();
+    });
+
+    // The accessible fallback table (sr-only) should have rows in sorted order
+    const srTable = document.querySelector('table.sr-only');
+    expect(srTable).toBeTruthy();
+    const srRows = srTable!.querySelectorAll('tbody tr');
+    expect(srRows.length).toBe(3);
+    // Sorted: Jan 10, Jan 12, Jan 15
+    expect(srRows[0].textContent).toContain('2025-01-10');
+    expect(srRows[1].textContent).toContain('2025-01-12');
+    expect(srRows[2].textContent).toContain('2025-01-15');
   });
 
   it('changes the chart range without changing the API response contract', async () => {
@@ -135,6 +163,69 @@ describe('MarketDashboard', () => {
     // Freshness badge should still be visible
     const emptyBadges = screen.getAllByText(/empty ·/);
     expect(emptyBadges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows no coverage indicator for empty envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(emptyMarketResponse),
+    }));
+
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/No market features yet/).length).toBeGreaterThanOrEqual(1);
+    });
+
+    // No "Has data" badge should appear when envelope is empty
+    expect(screen.queryByText('Has data')).not.toBeInTheDocument();
+  });
+
+  it('drops null close/volume points instead of rendering zero', async () => {
+    const withNulls = {
+      symbol: 'AAPL',
+      ohlcv: {
+        data: [
+          { symbol: 'AAPL', event_date: '2025-01-10', close: 150, open: 148, high: 152, low: 147, volume: 100, vwap: 149, price_basis: 'adjusted' },
+          { symbol: 'AAPL', event_date: '2025-01-11', close: null, open: 148, high: 152, low: 147, volume: null, vwap: 149, price_basis: 'adjusted' },
+          { symbol: 'AAPL', event_date: '2025-01-12', close: 153, open: 151, high: 155, low: 150, volume: 150, vwap: 152, price_basis: 'adjusted' },
+        ],
+        count: 3,
+        empty: false,
+        source: 'silver_ohlcv_day_adjusted',
+        freshness: { state: 'fresh', table: 'silver_ohlcv_day_adjusted', detail: '3 rows' },
+      },
+      options: {
+        data: [],
+        count: 0,
+        empty: true,
+        source: 'gold_options_features',
+        freshness: { state: 'empty', table: 'gold_options_features', detail: '0 rows' },
+      },
+    };
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(withNulls),
+    }));
+
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('153.00')).toBeInTheDocument();
+    });
+
+    // Chart should be rendered
+    const chart = screen.getByRole('img', { name: /adjusted close price chart/i });
+    expect(chart).toBeInTheDocument();
+
+    // Should show missing points message
+    expect(screen.getByText(/1 missing point/)).toBeInTheDocument();
+
+    // Volume bars: only 2 non-null volume rows should produce bars (not 3 with 0)
+    // The SVG should have exactly 2 volume rect elements
+    const rects = chart.querySelectorAll('rect');
+    expect(rects.length).toBe(2);
   });
 
   it('uses SymbolPicker instead of SymbolSelect', async () => {

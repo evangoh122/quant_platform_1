@@ -58,12 +58,15 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
     );
   }
 
-  const closes = filtered.map((r) => r.close ?? 0);
-  const volumes = filtered.map((r) => r.volume ?? 0);
-  const maxClose = Math.max(...closes);
-  const minClose = Math.min(...closes);
+  const closePoints = filtered.filter((r) => r.close != null);
+  const volPoints = filtered.filter((r) => r.volume != null);
+  const missingCount = filtered.length - closePoints.length;
+  const closes = closePoints.map((r) => r.close!);
+  const volumes = volPoints.map((r) => r.volume!);
+  const maxClose = closes.length > 0 ? Math.max(...closes) : 1;
+  const minClose = closes.length > 0 ? Math.min(...closes) : 0;
   const closeRange = maxClose - minClose || 1;
-  const maxVol = Math.max(...volumes) || 1;
+  const maxVol = volumes.length > 0 ? Math.max(...volumes) : 1;
 
   const width = 600;
   const height = 200;
@@ -76,11 +79,16 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
   const getCloseY = (v: number) => padding.top + chartH - ((v - minClose) / closeRange) * chartH;
   const getVolY = (v: number) => padding.top + chartH - (v / maxVol) * chartH * 0.3;
 
-  const linePath = filtered
-    .map((r, i) => `${i === 0 ? 'M' : 'L'}${getX(i).toFixed(1)},${getCloseY(r.close ?? 0).toFixed(1)}`)
+  const linePath = closePoints
+    .map((r, i) => {
+      const origIdx = filtered.indexOf(r);
+      return `${i === 0 ? 'M' : 'L'}${getX(origIdx).toFixed(1)},${getCloseY(r.close!).toFixed(1)}`;
+    })
     .join(' ');
 
-  const areaPath = `${linePath} L${getX(filtered.length - 1).toFixed(1)},${(padding.top + chartH).toFixed(1)} L${getX(0).toFixed(1)},${(padding.top + chartH).toFixed(1)} Z`;
+  const areaPath = closePoints.length > 0
+    ? `${linePath} L${getX(filtered.indexOf(closePoints[closePoints.length - 1])).toFixed(1)},${(padding.top + chartH).toFixed(1)} L${getX(filtered.indexOf(closePoints[0])).toFixed(1)},${(padding.top + chartH).toFixed(1)} Z`
+    : '';
 
   const tickIndices = filtered.length <= 6
     ? filtered.map((_, i) => i)
@@ -103,6 +111,11 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
             {opt.label}
           </button>
         ))}
+        {missingCount > 0 && (
+          <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
+            {missingCount} missing point{missingCount !== 1 ? 's' : ''}
+          </span>
+        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -128,9 +141,10 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
           })}
 
           {/* Volume bars */}
-          {filtered.map((r, i) => {
+          {volPoints.map((r) => {
+            const i = filtered.indexOf(r);
             const x = getX(i) - xStep * 0.3;
-            const barH = ((r.volume ?? 0) / maxVol) * chartH * 0.3;
+            const barH = (r.volume! / maxVol) * chartH * 0.3;
             return (
               <rect
                 key={`vol-${i}`}
