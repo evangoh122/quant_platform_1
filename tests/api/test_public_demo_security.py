@@ -140,6 +140,9 @@ def test_no_lakebase_import_in_demo(monkeypatch):
         for route in routes:
             # Replace path parameters with test values.
             test_route = route.replace("{symbol}", "AAPL")
+            # Add required query parameters for routes that need them.
+            if "/positioning/cot" in test_route and "?" not in test_route:
+                test_route += "?asset_class=equity_index"
             resp = client.get(test_route)
             assert resp.status_code == 200, f"GET {test_route} returned {resp.status_code}"
 
