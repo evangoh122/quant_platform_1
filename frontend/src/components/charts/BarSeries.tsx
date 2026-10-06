@@ -5,6 +5,8 @@ export interface BarDatum {
   height: number;
   fill?: string;
   label?: string;
+  stroke?: string;
+  strokeDasharray?: string;
 }
 
 interface BarSeriesProps {
@@ -24,6 +26,8 @@ export function BarSeries({ bars, ariaLabel }: BarSeriesProps) {
           height={Math.max(bar.height, 0)}
           fill={bar.fill ?? 'var(--accent, #3b82f6)'}
           opacity={0.7}
+          stroke={bar.stroke}
+          strokeDasharray={bar.strokeDasharray}
         >
           {bar.label && <title>{bar.label}</title>}
         </rect>

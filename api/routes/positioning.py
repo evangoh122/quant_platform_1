@@ -73,9 +73,10 @@ def positioning_cot(
             FROM gold_cot_features
             WHERE mapped_asset = :asset_class
               AND information_available_ts >= :cutoff
+              AND information_available_ts <= :now
             ORDER BY information_available_ts
         """
-        return read_sql(sql, {"asset_class": asset_class, "cutoff": cutoff})
+        return read_sql(sql, {"asset_class": asset_class, "cutoff": cutoff, "now": now_str})
 
     def _read_contracts() -> list[dict]:
         from db.delta_adapter import read_sql
@@ -93,6 +94,12 @@ def positioning_cot(
             FROM silver_cot_positions
             WHERE mapped_asset = :asset_class
               AND release_ts <= :now
+              AND report_date = (
+                  SELECT MAX(report_date)
+                  FROM silver_cot_positions
+                  WHERE mapped_asset = :asset_class
+                    AND release_ts <= :now
+              )
             ORDER BY report_date DESC
             LIMIT 200
         """

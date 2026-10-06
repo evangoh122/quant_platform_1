@@ -35,12 +35,12 @@ const tableColumns: Column<OptionsFeature>[] = [
   {
     key: 'put_vol',
     header: 'Put Volume',
-    render: (r) => (r.put_volume == null ? '—' : r.put_volume.toLocaleString()),
+    render: (r) => (r.put_volume == null ? '— (put missing)' : r.put_volume.toLocaleString()),
   },
   {
     key: 'call_vol',
     header: 'Call Volume',
-    render: (r) => (r.call_volume == null ? '—' : r.call_volume.toLocaleString()),
+    render: (r) => (r.call_volume == null ? '— (call missing)' : r.call_volume.toLocaleString()),
   },
   {
     key: 'pc',
@@ -112,24 +112,40 @@ function OptionsTimelineChart({ rows, symbol }: OptionsChartProps) {
 
   const putBars = sorted.map((r, i) => {
     if (r.put_volume == null) return null;
+    const hasCall = r.call_volume != null;
     return {
       x: barX(i),
       y: volScale(r.put_volume),
       width: barW,
       height: bottom - volScale(r.put_volume),
       fill: '#ef4444',
-      label: `Put: ${r.put_volume.toLocaleString()}`,
+      label: hasCall
+        ? `Put: ${r.put_volume.toLocaleString()}`
+        : `Put: ${r.put_volume.toLocaleString()} · call missing`,
+      stroke: hasCall ? undefined : '#22c55e',
+      strokeDasharray: hasCall ? undefined : '4,2',
     };
   });
 
   const callBars = sorted.map((r, i) => {
     if (r.call_volume == null) return null;
-    const putVol = r.put_volume ?? 0;
+    if (r.put_volume == null) {
+      return {
+        x: barX(i),
+        y: volScale(r.call_volume),
+        width: barW,
+        height: bottom - volScale(r.call_volume),
+        fill: '#22c55e',
+        label: `Call: ${r.call_volume.toLocaleString()} · put missing`,
+        stroke: '#ef4444',
+        strokeDasharray: '4,2',
+      };
+    }
     return {
       x: barX(i),
-      y: volScale(putVol + r.call_volume),
+      y: volScale(r.put_volume + r.call_volume),
       width: barW,
-      height: volScale(putVol) - volScale(putVol + r.call_volume),
+      height: volScale(r.put_volume) - volScale(r.put_volume + r.call_volume),
       fill: '#22c55e',
       label: `Call: ${r.call_volume.toLocaleString()}`,
     };
@@ -147,8 +163,8 @@ function OptionsTimelineChart({ rows, symbol }: OptionsChartProps) {
     headers: ['Date', 'Put Vol', 'Call Vol', 'P/C Ratio', 'Vol Anomaly Z'],
     rows: sorted.map((r) => [
       r.feature_ts,
-      r.put_volume ?? '—',
-      r.call_volume ?? '—',
+      r.put_volume == null ? '— (put missing)' : r.put_volume.toLocaleString(),
+      r.call_volume == null ? '— (call missing)' : r.call_volume.toLocaleString(),
       r.put_call_ratio?.toFixed(4) ?? '—',
       r.volume_anomaly_zscore?.toFixed(2) ?? '—',
     ]),
@@ -210,26 +226,38 @@ function OptionsTimelineChart({ rows, symbol }: OptionsChartProps) {
       />
 
       {/* Hover targets */}
-      {sorted.map((r, i) => (
-        <Tooltip
-          key={i}
-          content={`${formatDate(r.feature_ts)} · P/C ${r.put_call_ratio?.toFixed(3) ?? '—'}`}
-          x={getX(i)}
-          y={padding.top + chartH / 2}
-          chartWidth={width}
-          chartHeight={height}
-        >
-          <rect
-            x={getX(i) - xStep / 2}
-            y={padding.top}
-            width={xStep}
-            height={chartH}
-            fill="transparent"
-            onMouseEnter={() => setHoverIdx(i)}
-            onMouseLeave={() => setHoverIdx(null)}
-          />
-        </Tooltip>
-      ))}
+      {sorted.map((r, i) => {
+        const missingPut = r.put_volume == null;
+        const missingCall = r.call_volume == null;
+        const missing =
+          missingPut && missingCall
+            ? ' · data incomplete'
+            : missingPut
+              ? ' · put missing'
+              : missingCall
+                ? ' · call missing'
+                : '';
+        return (
+          <Tooltip
+            key={i}
+            content={`${formatDate(r.feature_ts)} · P/C ${r.put_call_ratio?.toFixed(3) ?? '—'}${missing}`}
+            x={getX(i)}
+            y={padding.top + chartH / 2}
+            chartWidth={width}
+            chartHeight={height}
+          >
+            <rect
+              x={getX(i) - xStep / 2}
+              y={padding.top}
+              width={xStep}
+              height={chartH}
+              fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx(null)}
+            />
+          </Tooltip>
+        );
+      })}
 
       {/* X-axis */}
       <XAxis
