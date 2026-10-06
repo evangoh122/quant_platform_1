@@ -936,6 +936,90 @@ class TestRunIngestCompanyFacts:
         assert result["failed_count"] == 1
         assert result["fetched_count"] == 1
 
+    def test_concurrent_duplicate_reservation_prevents_double_append(self):
+        """MUTATION: if seen_payloads.add is moved after the Delta append,
+        two concurrent workers with identical (cik, payload_hash) both append.
+
+        Two threads fetch the same payload for the same CIK.  The first
+        thread's Delta append BLOCKS on a threading.Event.  The second thread
+        must reach the reservation check and be recorded as skipped_duplicate
+        before the first thread's append completes.  Exactly one Delta append
+        must occur.
+        """
+        payload = _make_company_facts_payload()
+        payload_bytes = json.dumps(payload).encode()
+        payload_hash = compute_payload_hash(payload_bytes)
+        cik_url = build_source_url("0000320193")
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+
+        first_append_event = threading.Event()
+        second_checked_event = threading.Event()
+
+        append_lock = threading.Lock()
+        append_count = [0]
+
+        def blocking_delta_writer(cat, sch, rows):
+            with append_lock:
+                append_count[0] += 1
+                is_first = (append_count[0] == 1)
+            if is_first:
+                first_append_event.set()
+                second_checked_event.wait(timeout=10)
+
+        http = BarrierFakeHttpClient(
+            {
+                tickers_url: [
+                    _payload_200({
+                        "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+                    }),
+                ],
+                cik_url: [
+                    _payload_200(payload),
+                    _payload_200(payload),
+                ],
+            },
+        )
+        clock = FakeClock()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL", "AAPL2"],
+                run_id="run_concurrent_res",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
+                delta_writer=blocking_delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["mapped_count"] == 2
+        assert result["fetched_count"] == 1
+        assert result["skipped_duplicate_payloads"] == 1
+
+        statuses = {e.fetch_status for e in manifest_entries}
+        assert "success" in statuses
+        assert "skipped_duplicate" in statuses
+
+        skipped = [e for e in manifest_entries if e.fetch_status == "skipped_duplicate"]
+        assert len(skipped) == 1
+        assert skipped[0].payload_hash == payload_hash
+
+        with append_lock:
+            assert append_count[0] == 1
+
     def test_manifest_fields_complete(self):
         """Manifest entry has all required fields populated."""
         entry = CompanyFactsManifestEntry(
