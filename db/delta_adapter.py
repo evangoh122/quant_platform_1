@@ -407,16 +407,18 @@ def read_table(table: str, filters: Optional[str] = None, limit: int = 1000) -> 
     return _warehouse_query(query, limit=limit)
 
 
-def read_sql(query: str) -> Any:
+def read_sql(query: str, params: Optional[Dict[str, Any]] = None) -> Any:
     """Execute a SQL query.
 
     Uses pyspark when available, otherwise falls back to SQL warehouse.
+    When *params* is provided, only the warehouse path is used (pyspark's
+    ``spark.sql`` does not support parameterized queries natively).
     """
-    if _has_pyspark:
+    if _has_pyspark and not params:
         return _spark().sql(query)
 
-    # Warehouse fallback
-    return _warehouse_query(query, limit=5000)
+    # Warehouse fallback (supports :name parameterized placeholders)
+    return _warehouse_query(query, params=params, limit=5000)
 
 
 def latest_signals(symbol: Optional[str] = None, limit: int = 20) -> Any:

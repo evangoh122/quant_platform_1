@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.deps import FRONTEND_DIST
-from api.routes import analytics, health, market, sec, signals
+from api.routes import analytics, health, market, positioning, sec, signals
 
 APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
 
@@ -375,6 +375,7 @@ def create_app() -> FastAPI:
         application.include_router(market.router, prefix="/api/market", tags=["market"])
         application.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
         application.include_router(sec.router, prefix="/api/sec", tags=["sec"])
+        application.include_router(positioning.router, prefix="/api/positioning", tags=["positioning"])
 
     if not demo:
         from api.routes import agent_chat, orders, portfolio, watchlists

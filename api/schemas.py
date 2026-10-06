@@ -228,3 +228,35 @@ class AnalyticsResponse(BaseModel):
     watchlist_changes: Envelope[Dict[str, Any]] = Field(default_factory=Envelope)
     order_funnel: Envelope[Dict[str, Any]] = Field(default_factory=Envelope)
     usage_daily: Envelope[Dict[str, Any]] = Field(default_factory=Envelope)
+
+
+# ── positioning / COT ────────────────────────────────────────────────────────
+class CotWeeklyRow(BaseModel):
+    mapped_asset: str
+    report_date: str = ""
+    information_available_ts: str = ""
+    lev_money_net: Optional[float] = None
+    lev_money_net_chg_1w: Optional[float] = None
+    lev_money_pctile_52w: Optional[float] = None
+    lev_money_zscore_52w: Optional[float] = None
+    asset_mgr_net: Optional[float] = None
+    asset_mgr_pctile_52w: Optional[float] = None
+    crowding_score: Optional[float] = None
+    regime_label: Optional[str] = None
+
+
+class CotContractRow(BaseModel):
+    contract_name: str
+    open_interest: Optional[float] = None
+    dealer_net: Optional[float] = None
+    asset_mgr_net: Optional[float] = None
+    lev_money_net: Optional[float] = None
+    dealer_pct_oi: Optional[float] = None
+    asset_mgr_pct_oi: Optional[float] = None
+    lev_money_pct_oi: Optional[float] = None
+
+
+class PositioningResponse(BaseModel):
+    asset_class: str
+    weekly: Envelope[CotWeeklyRow] = Field(default_factory=Envelope)
+    contracts: Envelope[CotContractRow] = Field(default_factory=Envelope)
