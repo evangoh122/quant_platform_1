@@ -113,6 +113,52 @@ def test_release_ts_filter_excludes_future_rows(client):
     assert "<=" in contracts_sql or "< =" in contracts_sql
 
 
+def test_weekly_query_excludes_future_information_available(client):
+    """The weekly COT query must filter information_available_ts <= now.
+    Mutation: dropping the <= :now predicate should fail this test."""
+    captured_calls = []
+
+    def _capture_read_sql(sql, params=None):
+        captured_calls.append({"sql": sql, "params": params})
+        return []
+
+    with patch("db.delta_adapter.read_sql", side_effect=_capture_read_sql):
+        resp = client.get(
+            "/api/positioning/cot?asset_class=equity_index&weeks=52",
+            headers={"x-forwarded-email": "u@test.com"},
+        )
+
+    assert resp.status_code == 200
+    weekly_sql = captured_calls[0]["sql"].upper()
+    # Must contain the information_available_ts upper-bound filter
+    assert "INFORMATION_AVAILABLE_TS" in weekly_sql
+    assert "<=" in weekly_sql or "< =" in weekly_sql
+    # Must pass a :now parameter
+    assert "now" in captured_calls[0]["params"]
+
+
+def test_contracts_only_latest_released_week(client):
+    """The contracts query must return only the latest released week.
+    Mutation: dropping the latest-week subquery should fail this test."""
+    captured_calls = []
+
+    def _capture_read_sql(sql, params=None):
+        captured_calls.append({"sql": sql, "params": params})
+        return []
+
+    with patch("db.delta_adapter.read_sql", side_effect=_capture_read_sql):
+        resp = client.get(
+            "/api/positioning/cot?asset_class=rate",
+            headers={"x-forwarded-email": "u@test.com"},
+        )
+
+    assert resp.status_code == 200
+    contracts_sql = captured_calls[1]["sql"].upper()
+    # Must contain the MAX(report_date) subquery for latest-week filtering
+    assert "MAX(REPORT_DATE)" in contracts_sql
+    assert "SELECT MAX(REPORT_DATE)" in contracts_sql
+
+
 def test_auth_dependency_present(client):
     """Request without auth header should fail (no x-forwarded-email)."""
     resp = client.get("/api/positioning/cot?asset_class=equity_index")
