@@ -94,3 +94,10 @@ The strongest capstone visuals are those proving the research workflow: market c
 
 **Charting recommendation:** keep the current dependency-free React SVG/CSS approach with accessible table fallbacks. `frontend/package.json` contains no chart library, and Plan B explicitly favors bounded native SVG over adding Recharts or React Flow. Extract shared scales, axes, tooltips and empty-state primitives before reconsidering a library.
 
+
+## V5 — Positioning (added 2026-10-06, owner: "I don't see any sign of positioning")
+CFTC COT (`silver_cot_positions`, `gold_cot_features`) feeds the model (`gold/05_gold_model_features.sql:95-126`) but no API or screen read it, and none of the plans or reviews
+flagged that. V5 adds `/api/positioning/cot` and a Positioning screen; options OI/delta exposure is shown as a dated snapshot only. Built right after V1.
+
+## Standing check: model inputs must be visible
+Every table that feeds `gold_model_features` must be visible somewhere in the app (chart, table or evidence panel). Reviewers check this on every slice.
