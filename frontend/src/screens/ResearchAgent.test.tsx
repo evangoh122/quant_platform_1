@@ -696,4 +696,38 @@ describe('ResearchAgent', () => {
     const allText = document.body.textContent ?? '';
     expect(allText).not.toContain('{SYMBOL}');
   });
+
+  it('every AGENT_TOUR selector resolves against the rendered ResearchAgent screen', async () => {
+    const { AGENT_TOUR } = await import('../components/tours/tourSteps');
+    vi.stubGlobal('fetch', mockFetch(mockSavedNoteResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    // Drive state to expose the note-confirmation target.
+    await user.click(screen.getByText(/Save a research note/));
+    await waitFor(() => {
+      expect(screen.getByText(/Note saved/)).toBeInTheDocument();
+    });
+
+    // The evidence panel must also be present.
+    await waitFor(() => {
+      expect(screen.getByTestId('evidence-panel')).toBeInTheDocument();
+    });
+
+    for (const step of AGENT_TOUR) {
+      if (!step.selector) continue;
+      const el = document.querySelector(step.selector);
+      expect(el).toBeTruthy();
+    }
+  });
+
+  it('makeSuggestedQuestions replaces every {SYMBOL} occurrence in a two-placeholder template', async () => {
+    const { makeSuggestedQuestions } = await import('./ResearchAgent');
+    const templates = [
+      "How does {SYMBOL} compare to {SYMBOL} on risk metrics?",
+    ];
+    const questions = makeSuggestedQuestions('AAPL', templates);
+    expect(questions[0]).toBe('How does AAPL compare to AAPL on risk metrics?');
+    expect(questions[0]).not.toContain('{SYMBOL}');
+  });
 });

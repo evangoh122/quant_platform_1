@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SymbolPicker } from './SymbolPicker';
 import * as symbolStorage from '../utils/symbolStorage';
@@ -279,18 +279,20 @@ describe('SymbolPicker', () => {
 
     const input = screen.getByRole('combobox');
 
-    // Simulate selecting AMD (updates value prop via parent)
-    fireEvent.click(screen.getByText('AMD', { selector: 'button' }));
-    expect(onChange).toHaveBeenCalledWith('AMD');
+    // Blur fires the 150 ms timeout while the OLD prop (NVDA) is still rendered.
+    // The parent has not yet committed the new value.
+    fireEvent.blur(input);
 
-    // Rerender with new value (simulating parent updating)
+    // Parent now commits AMD — useEffect syncs valueRef.current to "AMD".
     rerender(<SymbolPicker value="AMD" onChange={onChange} list="market" />);
 
-    // Blur the input
-    fireEvent.blur(input);
-    vi.advanceTimersByTime(200);
+    // Let the blur timeout fire and flush React state.
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
 
-    // After blur, the input should show AMD (the ref-synced value), not NVDA (stale)
+    // The timeout must read valueRef.current ("AMD"), not the captured closure
+    // value ("NVDA") from when onBlur was created.
     expect(input).toHaveValue('AMD');
 
     vi.useRealTimers();

@@ -16,8 +16,9 @@ const BASE_SUGGESTED_QUESTIONS = [
   "Save a research note for {SYMBOL}: export controls remain a key risk.",
 ];
 
-function makeSuggestedQuestions(symbol: string): string[] {
-  return BASE_SUGGESTED_QUESTIONS.map((q) => q.replace(/\{SYMBOL\}/g, symbol));
+export function makeSuggestedQuestions(symbol: string, templates?: string[]): string[] {
+  const base = templates ?? BASE_SUGGESTED_QUESTIONS;
+  return base.map((q) => q.replace(/\{SYMBOL\}/g, symbol));
 }
 
 interface Message {

@@ -22,6 +22,7 @@ export function useTourHost() {
   const [activeTour, setActiveTour] = useState<string | null>(null);
   const [steps, setSteps] = useState<CoachStep[]>([]);
   const autoStartCheckedRef = useRef(false);
+  const manualStartRef = useRef(false);
 
   const startTour = useCallback((tourId: string) => {
     const tour = TOUR_MAP[tourId];
@@ -41,7 +42,10 @@ export function useTourHost() {
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (detail?.tour) startTour(detail.tour);
+      if (detail?.tour) {
+        manualStartRef.current = true;
+        startTour(detail.tour);
+      }
     };
     window.addEventListener('qp-tour-request', handler);
     return () => window.removeEventListener('qp-tour-request', handler);
@@ -67,7 +71,11 @@ export function useTourHost() {
             : null;
 
     if (autoTour) {
-      const timer = window.setTimeout(() => startTour(autoTour), 600);
+      const timer = window.setTimeout(() => {
+        // Do not replace a manual tour request that arrived during the delay.
+        if (manualStartRef.current) return;
+        startTour(autoTour);
+      }, 600);
       return () => window.clearTimeout(timer);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

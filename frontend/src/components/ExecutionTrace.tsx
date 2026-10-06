@@ -8,7 +8,7 @@ export interface TraceStep {
   status: 'pending' | 'running' | 'complete' | 'failed' | 'skipped';
 }
 
-function deriveSteps(toolCalls: ToolCall[], available: boolean, reply?: string): TraceStep[] {
+function deriveSteps(toolCalls: ToolCall[], _available: boolean, reply?: string): TraceStep[] {
   const retrievalTools = toolCalls.filter(
     (tc) => tc.name === 'search_sec_filings' || tc.name === 'get_latest_signal',
   );

@@ -273,3 +273,25 @@ describe('useTourHost — no-tour-chain on close', () => {
     expect(result.current.activeTour).toBeNull();
   });
 });
+
+describe('useTourHost — manual request during auto-start delay', () => {
+  it('manual qp-tour-request during 600 ms window is not replaced by auto-start', () => {
+    vi.useFakeTimers();
+    // All tours unseen → auto-start would pick 'application'
+    const { result } = renderHook(() => useTourHost());
+
+    // Before the 600 ms delay fires, issue a manual tour request.
+    act(() => {
+      window.dispatchEvent(new CustomEvent('qp-tour-request', { detail: { tour: 'agent' } }));
+    });
+    expect(result.current.activeTour).toBe('agent');
+
+    // Advance past the 600 ms auto-start delay.
+    act(() => {
+      vi.advanceTimersByTime(800);
+    });
+
+    // The manual tour must still be active — auto-start must not have replaced it.
+    expect(result.current.activeTour).toBe('agent');
+  });
+});
