@@ -106,25 +106,34 @@ function OptionsTimelineChart({ rows, symbol }: OptionsChartProps) {
     { start: padding.top + chartH, end: padding.top },
   );
 
-  const barW = Math.max(xStep * 0.35, 2);
+  const barW = Math.max(xStep * 0.5, 2);
+  const barX = (i: number) => getX(i) - barW / 2;
+  const bottom = padding.top + chartH;
 
-  const putBars = sorted.map((r, i) => ({
-    x: getX(i) - barW,
-    y: volScale(r.put_volume ?? 0),
-    width: barW,
-    height: padding.top + chartH - volScale(r.put_volume ?? 0),
-    fill: '#ef4444',
-    label: `Put: ${(r.put_volume ?? 0).toLocaleString()}`,
-  }));
+  const putBars = sorted.map((r, i) => {
+    if (r.put_volume == null) return null;
+    return {
+      x: barX(i),
+      y: volScale(r.put_volume),
+      width: barW,
+      height: bottom - volScale(r.put_volume),
+      fill: '#ef4444',
+      label: `Put: ${r.put_volume.toLocaleString()}`,
+    };
+  });
 
-  const callBars = sorted.map((r, i) => ({
-    x: getX(i),
-    y: volScale(r.call_volume ?? 0),
-    width: barW,
-    height: padding.top + chartH - volScale(r.call_volume ?? 0),
-    fill: '#22c55e',
-    label: `Call: ${(r.call_volume ?? 0).toLocaleString()}`,
-  }));
+  const callBars = sorted.map((r, i) => {
+    if (r.call_volume == null) return null;
+    const putVol = r.put_volume ?? 0;
+    return {
+      x: barX(i),
+      y: volScale(putVol + r.call_volume),
+      width: barW,
+      height: volScale(putVol) - volScale(putVol + r.call_volume),
+      fill: '#22c55e',
+      label: `Call: ${r.call_volume.toLocaleString()}`,
+    };
+  });
 
   const ratioData = sorted.map((r, i) => ({ x: getX(i), y: r.put_call_ratio }));
   const zscoreData = sorted.map((r, i) => ({ x: getX(i), y: r.volume_anomaly_zscore }));
@@ -176,9 +185,9 @@ function OptionsTimelineChart({ rows, symbol }: OptionsChartProps) {
         );
       })}
 
-      {/* Volume bars */}
-      <BarSeries bars={putBars} ariaLabel="Put volume bars" />
-      <BarSeries bars={callBars} ariaLabel="Call volume bars" />
+      {/* Stacked volume bars */}
+      <BarSeries bars={putBars.filter((b): b is NonNullable<typeof b> => b != null)} ariaLabel="Put volume bars" />
+      <BarSeries bars={callBars.filter((b): b is NonNullable<typeof b> => b != null)} ariaLabel="Call volume bars" />
 
       {/* Ratio line */}
       <LineSeries
