@@ -820,7 +820,7 @@ class TestRunIngestCompanyFacts:
 
         Uses BarrierFakeHttpClient (URL-routed, thread-safe deque) so the
         responses are consumed in the correct order even with concurrent
-        workers.
+        workers.  max_workers=1 for deterministic ordering.
         """
         payload = _make_company_facts_payload()
         payload_bytes = json.dumps(payload).encode()
@@ -864,6 +864,7 @@ class TestRunIngestCompanyFacts:
                 delta_writer=delta_writer,
                 manifest_writer=manifest_writer,
                 cache_path="/dev/null",
+                max_workers=1,
             )
         finally:
             mod._resolve_user_agent = original_resolve
@@ -927,6 +928,7 @@ class TestRunIngestCompanyFacts:
                 delta_writer=failing_delta_writer_first_call,
                 manifest_writer=mock_manifest_writer,
                 cache_path="/dev/null",
+                max_workers=1,
             )
         finally:
             mod._resolve_user_agent = original_resolve
@@ -1000,6 +1002,7 @@ class TestRunIngestCompanyFacts:
                 delta_writer=blocking_delta_writer,
                 manifest_writer=manifest_writer,
                 cache_path="/dev/null",
+                max_workers=2,
             )
         finally:
             mod._resolve_user_agent = original_resolve
@@ -1019,6 +1022,77 @@ class TestRunIngestCompanyFacts:
 
         with append_lock:
             assert append_count[0] == 1
+
+    def test_max_workers_one_uses_single_worker(self):
+        """max_workers=1 must create a ThreadPoolExecutor with exactly one worker.
+
+        Spies on ThreadPoolExecutor to verify the kwarg is forwarded.
+        Uses two tickers so min(max_workers, len(pairs)) != min(4, len(pairs)).
+        """
+        payload = _make_company_facts_payload()
+        http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+            _payload_200(payload),
+            _payload_200(payload),
+        ])
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        from concurrent.futures import ThreadPoolExecutor
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        captured_workers = []
+        original_tpe = ThreadPoolExecutor
+
+        class SpyingThreadPoolExecutor(original_tpe):
+            def __init__(self, *args, **kwargs):
+                captured_workers.append(kwargs.get("max_workers", args[0] if args else None))
+                super().__init__(*args, **kwargs)
+
+        try:
+            import concurrent.futures
+            concurrent.futures.ThreadPoolExecutor = SpyingThreadPoolExecutor
+            # Also patch the reference held by the module
+            mod.ThreadPoolExecutor = SpyingThreadPoolExecutor
+
+            run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL", "AAPL2"],
+                run_id="run_spy",
+                http_client=http,
+                clock=clock,
+                cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+                max_workers=1,
+            )
+        finally:
+            concurrent.futures.ThreadPoolExecutor = original_tpe
+            mod.ThreadPoolExecutor = original_tpe
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert len(captured_workers) == 1
+        assert captured_workers[0] == 1
+
+    def test_max_workers_zero_raises(self):
+        """max_workers=0 must raise ValueError with the specified message."""
+        with pytest.raises(ValueError, match="max_workers must be >= 1"):
+            run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL"],
+                max_workers=0,
+            )
 
     def test_manifest_fields_complete(self):
         """Manifest entry has all required fields populated."""

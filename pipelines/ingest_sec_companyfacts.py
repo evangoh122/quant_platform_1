@@ -479,6 +479,8 @@ def run_ingest_companyfacts(
     cache_path: Optional[str] = None,
     # Track already-written (cik, payload_hash) within this run
     _seen_payloads: Optional[Set[Tuple[str, str]]] = None,
+    # Concurrency
+    max_workers: int = 4,
 ) -> Dict[str, Any]:
     """Run the SEC Company Facts ingestion pipeline.
 
@@ -487,6 +489,9 @@ def run_ingest_companyfacts(
     """
     if not run_id:
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    if max_workers < 1:
+        raise ValueError("max_workers must be >= 1")
 
     result: Dict[str, Any] = {
         "run_id": run_id,
@@ -589,7 +594,7 @@ def run_ingest_companyfacts(
     # Ingest each ticker-CIK with bounded concurrency
     ingested_at = datetime.now(timezone.utc)
     lock = threading.Lock()
-    max_workers = min(4, len(ticker_cik_pairs)) if ticker_cik_pairs else 1
+    worker_count = min(max_workers, len(ticker_cik_pairs)) if ticker_cik_pairs else 1
 
     def _fetch_one(ticker: str, cik: str) -> None:
         started_at = datetime.now(timezone.utc)
@@ -700,7 +705,7 @@ def run_ingest_companyfacts(
                 manifest_writer(catalog, schema, manifest)
 
     if ticker_cik_pairs:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
                 executor.submit(_fetch_one, t, c): (t, c)
                 for t, c in ticker_cik_pairs
