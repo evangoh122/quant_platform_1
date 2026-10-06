@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { SymbolSelect } from '../components/SymbolSelect';
+import { SymbolPicker } from '../components/SymbolPicker';
 import { api } from '../api/client';
 import type { MarketSnapshot, OptionsFeature } from '../api/types';
 import { useApi } from '../hooks/useApi';
@@ -42,6 +42,8 @@ export function OptionsAnalytics() {
     [symbol],
   );
 
+  const hasCoverage = data ? !data.options.empty : undefined;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -49,10 +51,7 @@ export function OptionsAnalytics() {
         {data && <FreshnessBadge freshness={data.options.freshness} />}
       </div>
 
-      <div className="flex items-center gap-2">
-        <label className="text-sm text-slate-600 dark:text-slate-400">Company</label>
-        <SymbolSelect value={symbol} onChange={setSymbol} list="options" />
-      </div>
+      <SymbolPicker value={symbol} onChange={setSymbol} list="options" hasCoverage={hasCoverage} />
 
       {loading && <LoadingState />}
       {error && <ErrorState message={error} onRetry={reload} />}

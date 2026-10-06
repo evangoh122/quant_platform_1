@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../api/client';
 import type { ChatResponse, SecCoverageItem, SecCoverageResponse } from '../api/types';
+import { SymbolPicker } from '../components/SymbolPicker';
 import { Card } from '../components/Card';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
@@ -32,16 +33,10 @@ function formatDate(iso: string | null): string {
 export function SecFilingExplorer() {
   const [coverage, setCoverage] = useState<SecCoverageItem[]>([]);
   const [coverageStatus, setCoverageStatus] = useState<'loading' | 'ok' | 'unavailable'>('loading');
-  const [input, setInput] = useState('');
   const [selected, setSelected] = useState<string>('');
-  const [query, setQuery] = useState('');
-  const [open, setOpen] = useState(false);
-  const [highlightIdx, setHighlightIdx] = useState(0);
   const [result, setResult] = useState<ChatResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const requestIdRef = useRef(0);
 
   useEffect(() => {
@@ -66,18 +61,18 @@ export function SecFilingExplorer() {
     };
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toUpperCase();
-    if (!q) return coverage;
-    return coverage.filter((item) => item.ticker.toUpperCase().includes(q));
-  }, [coverage, query]);
-
   const handleSelect = useCallback(
     (ticker: string) => {
+      if (!ticker) {
+        requestIdRef.current += 1;
+        setSelected('');
+        setResult(null);
+        setError(null);
+        setLoading(false);
+        return;
+      }
       const reqId = ++requestIdRef.current;
       setSelected(ticker);
-      setQuery(ticker);
-      setOpen(false);
       setResult(null);
       setError(null);
       setLoading(true);
@@ -101,53 +96,6 @@ export function SecFilingExplorer() {
     },
     [],
   );
-
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (!open) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        setOpen(true);
-        e.preventDefault();
-      }
-      return;
-    }
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setHighlightIdx((i) => Math.min(i + 1, filtered.length - 1));
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setHighlightIdx((i) => Math.max(i - 1, 0));
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      if (filtered[highlightIdx]) {
-        handleSelect(filtered[highlightIdx].ticker);
-      }
-    } else if (e.key === 'Escape') {
-      setOpen(false);
-    }
-  }
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    setHighlightIdx(0);
-  }, [query]);
-
-  const resetRequest = useCallback(() => {
-    requestIdRef.current += 1;
-    setSelected('');
-    setQuery('');
-    setResult(null);
-    setError(null);
-    setLoading(false);
-  }, []);
 
   const secTool = result?.tool_calls.find((tc) => tc.name === 'search_sec_filings');
   const rawRows: Record<string, unknown>[] =
@@ -197,106 +145,24 @@ export function SecFilingExplorer() {
         </p>
       )}
 
-      {useFallback ? (
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const sym = input.trim().toUpperCase();
-            if (!sym) return;
-            handleSelect(sym);
-          }}
-        >
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
-            placeholder="Search filings for a symbol (e.g. NVDA)"
+      {coverageStatus !== 'loading' && (
+        useFallback ? (
+          <SymbolPicker
+            value={selected}
+            onChange={handleSelect}
+            list="sec"
+            label="Equity"
           />
-          <button
-            type="submit"
-            className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900"
-          >
-            Search
-          </button>
-        </form>
-      ) : (
-        <div ref={containerRef} className="relative w-full max-w-xs">
-          <div className="flex items-center rounded-md border border-slate-300 dark:border-slate-700 dark:bg-slate-900">
-            <input
-              ref={inputRef}
-              type="text"
-              role="combobox"
-              aria-expanded={open}
-              aria-controls="sec-equity-listbox"
-              aria-autocomplete="list"
-              aria-label="Select equity"
-              value={query}
-              onChange={(e) => {
-                const val = e.target.value;
-                setQuery(val);
-                setOpen(true);
-                if (selected && val !== selected) {
-                  resetRequest();
-                  setQuery(val);
-                }
-              }}
-              onFocus={() => setOpen(true)}
-              onKeyDown={handleKeyDown}
-              className="w-full bg-transparent px-3 py-1.5 text-sm outline-none"
-              placeholder="Filter by ticker…"
-            />
-            {selected && (
-              <button
-                type="button"
-                aria-label="Clear selection"
-                onClick={() => {
-                  resetRequest();
-                  inputRef.current?.focus();
-                }}
-                className="px-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          {open && filtered.length > 0 && (
-            <ul
-              id="sec-equity-listbox"
-              role="listbox"
-              className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border border-slate-300 bg-white text-sm shadow-lg dark:border-slate-700 dark:bg-slate-900"
-            >
-              {filtered.map((item, i) => (
-                <li
-                  key={item.ticker}
-                  role="option"
-                  aria-selected={item.ticker === selected}
-                  className={`flex cursor-pointer items-center justify-between px-3 py-1.5 ${
-                    i === highlightIdx
-                      ? 'bg-slate-100 dark:bg-slate-800'
-                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
-                  }`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    handleSelect(item.ticker);
-                  }}
-                  onMouseEnter={() => setHighlightIdx(i)}
-                >
-                  <span className="font-medium">{item.ticker}</span>
-                  <span className="ml-2 text-xs text-slate-500 dark:text-slate-400">
-                    {item.n_filings} filing{item.n_filings !== 1 ? 's' : ''}
-                    {item.last_filed && ` · ${formatDate(item.last_filed)}`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {open && filtered.length === 0 && (
-            <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 shadow-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
-              No matching tickers
-            </div>
-          )}
-        </div>
+        ) : (
+          <SymbolPicker
+            value={selected}
+            onChange={handleSelect}
+            secMode
+            secCoverage={coverage}
+            hasCoverage={selected ? coverage.some((c) => c.ticker === selected.toUpperCase()) : undefined}
+            label="Equity"
+          />
+        )
       )}
 
       {loading && <LoadingState />}

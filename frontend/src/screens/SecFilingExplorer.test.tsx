@@ -38,12 +38,11 @@ function makeCoverageData(count: number) {
 describe('SecFilingExplorer', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    // Default: coverage returns a small set
     mockSecCoverage.mockResolvedValue(makeCoverageData(5));
   });
 
   it('shows loading state while coverage is fetching', () => {
-    mockSecCoverage.mockReturnValue(new Promise(() => {})); // never resolves
+    mockSecCoverage.mockReturnValue(new Promise(() => {}));
     render(<SecFilingExplorer />);
     expect(screen.getByText(/Loading equities/i)).toBeInTheDocument();
   });
@@ -62,7 +61,6 @@ describe('SecFilingExplorer', () => {
     await waitFor(() => {
       expect(screen.getByText(/5 equities/i)).toBeInTheDocument();
     });
-    // Open the dropdown
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
     await waitFor(() => {
@@ -73,10 +71,6 @@ describe('SecFilingExplorer', () => {
   });
 
   it('filters tickers on typing', async () => {
-    mockSecCoverage.mockResolvedValue(
-      makeCoverageData(0),
-    );
-    // Custom data with known tickers
     mockSecCoverage.mockResolvedValue({
       data: [
         { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
@@ -99,7 +93,7 @@ describe('SecFilingExplorer', () => {
     await waitFor(() => {
       const options = screen.getAllByRole('option');
       expect(options).toHaveLength(1);
-      expect(within(options[0]).getByText('AAPL')).toBeInTheDocument();
+      expect(options[0]).toHaveTextContent('AAPL');
     });
   });
 
@@ -131,46 +125,46 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('NVDA');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(mockChat).toHaveBeenCalledWith('search SEC filings for NVDA');
     });
   });
 
-  it('coverage failure falls back to free-text input with notice', async () => {
+  it('coverage failure falls back to SymbolPicker with sec list', async () => {
     mockSecCoverage.mockRejectedValue(new Error('Network error'));
 
     render(<SecFilingExplorer />);
     await waitFor(() => {
       expect(screen.getByText(/Equity coverage data is unavailable/i)).toBeInTheDocument();
     });
-    // Should show the free-text input instead of combobox
-    expect(screen.getByPlaceholderText(/Search filings for a symbol/i)).toBeInTheDocument();
-    // Should NOT show combobox
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    // Should show SymbolPicker (combobox) even in fallback
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    expect(screen.getByText('Equity')).toBeInTheDocument();
   });
 
-  it('coverage unavailable status falls back to free-text input', async () => {
+  it('coverage unavailable status falls back to SymbolPicker with sec list', async () => {
     mockSecCoverage.mockResolvedValue({ data: [], count: 0, status: 'unavailable' });
 
     render(<SecFilingExplorer />);
     await waitFor(() => {
       expect(screen.getByText(/Equity coverage data is unavailable/i)).toBeInTheDocument();
     });
-    expect(screen.getByPlaceholderText(/Search filings for a symbol/i)).toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
   });
 
-  it('fallback free-text input still works for searching', async () => {
+  it('fallback SymbolPicker allows searching by typing', async () => {
     mockSecCoverage.mockRejectedValue(new Error('fail'));
     mockChat.mockResolvedValue(
       mockChatResponse({
         tool_calls: [
           {
             name: 'search_sec_filings',
-            arguments: { symbol: 'AAPL' },
-            result: { rows: [{ chunk_text: 'iPhone revenue', section: 'MD&A' }] },
+            arguments: { symbol: 'AMD' },
+            result: { rows: [{ chunk_text: 'AMD revenue', section: 'MD&A' }] },
             ok: true,
           },
         ],
@@ -182,52 +176,20 @@ describe('SecFilingExplorer', () => {
       expect(screen.getByText(/unavailable/i)).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByPlaceholderText(/Search filings/i), { target: { value: 'AAPL' } });
-    fireEvent.click(screen.getByText('Search'));
-
-    await waitFor(() => {
-      expect(mockChat).toHaveBeenCalledWith('search SEC filings for AAPL');
-    });
-  });
-
-  it('selector shows filing count and last filed date per option', async () => {
-    mockSecCoverage.mockResolvedValue({
-      data: [
-        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
-      ],
-      count: 1,
-      status: 'ok',
-    });
-
-    render(<SecFilingExplorer />);
-    await waitFor(() => {
-      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
-    });
-
+    // Type in the SymbolPicker combobox and select from dropdown
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-
-    await waitFor(() => {
-      expect(screen.getByText(/42 filings/)).toBeInTheDocument();
-      expect(screen.getByText(/Sep 30, 2025/)).toBeInTheDocument();
-    });
-  });
-
-  it('selector caps the list (mutation: endpoint returns many items)', async () => {
-    // Even with 228 items, the selector should render without error
-    mockSecCoverage.mockResolvedValue(makeCoverageData(228));
-
-    render(<SecFilingExplorer />);
-    await waitFor(() => {
-      expect(screen.getByText(/228 equities/i)).toBeInTheDocument();
-    });
-
-    const input = screen.getByRole('combobox');
-    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'AMD' } });
 
     await waitFor(() => {
       const options = screen.getAllByRole('option');
-      expect(options).toHaveLength(228);
+      expect(options.length).toBeGreaterThan(0);
+    });
+    const option = screen.getAllByRole('option')[0];
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(mockChat).toHaveBeenCalledWith('search SEC filings for AMD');
     });
   });
 
@@ -266,8 +228,9 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('XYZ');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(screen.getByText(/No SEC filings have been processed for XYZ yet\./i)).toBeInTheDocument();
@@ -309,8 +272,9 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('AAPL');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(screen.getByText(/iPhone revenue growth/i)).toBeInTheDocument();
@@ -354,8 +318,9 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('NVDA');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(screen.getByText(/SEC filing corpus could not be loaded/i)).toBeInTheDocument();
@@ -414,8 +379,9 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('NVDA');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(screen.getByText(/Retry/i)).toBeInTheDocument();
@@ -458,8 +424,9 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('AAPL');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(screen.getByText(/Too many requests/i)).toBeInTheDocument();
@@ -495,8 +462,9 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('AAPL');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(screen.getByText(/something_broke/i)).toBeInTheDocument();
@@ -534,25 +502,32 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
 
-    // Select AAPL
+    // Select AAPL from dropdown
     fireEvent.focus(input);
-    const optionA = await screen.findByText('AAPL');
+    fireEvent.change(input, { target: { value: 'AAPL' } });
+    await waitFor(() => {
+      const opts = screen.getAllByRole('option');
+      expect(opts.length).toBeGreaterThan(0);
+    });
+    const optionA = screen.getAllByRole('option')[0];
     fireEvent.mouseDown(optionA);
 
-    // Wait for AAPL to be selected (loading state shown)
     await waitFor(() => {
       expect(input).toHaveValue('AAPL');
     });
 
-    // Clear the input and re-open dropdown to find NVDA
-    const clearBtn = screen.getByLabelText('Clear selection');
+    // Clear and select NVDA
+    const clearBtn = screen.getByLabelText('Clear');
     fireEvent.click(clearBtn);
-    fireEvent.focus(input);
-
-    const optionB = await screen.findByText('NVDA');
+    fireEvent.change(input, { target: { value: 'NVDA' } });
+    await waitFor(() => {
+      const opts = screen.getAllByRole('option');
+      expect(opts.length).toBeGreaterThan(0);
+    });
+    const optionB = screen.getAllByRole('option')[0];
     fireEvent.mouseDown(optionB);
 
-    // Resolve B first (this is the current selection)
+    // Resolve B first
     resolveB!(
       mockChatResponse({
         tool_calls: [
@@ -570,7 +545,7 @@ describe('SecFilingExplorer', () => {
       expect(screen.getByText(/GPU revenue/i)).toBeInTheDocument();
     });
 
-    // Now resolve A (stale — should be discarded)
+    // Resolve A (stale)
     resolveA!(
       mockChatResponse({
         tool_calls: [
@@ -584,7 +559,6 @@ describe('SecFilingExplorer', () => {
       }),
     );
 
-    // B's results should still be shown, not A's
     await waitFor(() => {
       expect(screen.getByText(/GPU revenue/i)).toBeInTheDocument();
     });
@@ -619,8 +593,9 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('AAPL');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(screen.getByText(/execution_failed/i)).toBeInTheDocument();
@@ -650,82 +625,22 @@ describe('SecFilingExplorer', () => {
 
     const input = screen.getByRole('combobox');
     fireEvent.focus(input);
-    const option = await screen.findByText('AAPL');
-    fireEvent.mouseDown(option);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
 
     await waitFor(() => {
       expect(input).toHaveValue('AAPL');
     });
 
-    const clearBtn = screen.getByLabelText('Clear selection');
+    const clearBtn = screen.getByLabelText('Clear');
     fireEvent.click(clearBtn);
 
-    // After clear: input is empty, empty state shown
     await waitFor(() => {
       expect(input).toHaveValue('');
     });
     expect(screen.getByText(/Select a ticker/i)).toBeInTheDocument();
 
-    // Now resolve the old request — it should be discarded
-    resolveA!(
-      mockChatResponse({
-        tool_calls: [
-          {
-            name: 'search_sec_filings',
-            arguments: { symbol: 'AAPL' },
-            result: { rows: [{ chunk_text: 'iPhone revenue', section: 'MD&A' }] },
-            ok: true,
-          },
-        ],
-      }),
-    );
-
-    // Stale result must not appear
-    await new Promise((r) => setTimeout(r, 50));
-    expect(screen.queryByText(/iPhone revenue/i)).not.toBeInTheDocument();
-  });
-
-  it('editing ticker input invalidates in-flight request', async () => {
-    mockSecCoverage.mockResolvedValue({
-      data: [
-        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
-        { ticker: 'NVDA', cik: '2', n_filings: 20, n_chunks: 200, first_filed: null, last_filed: '2025-09-30' },
-      ],
-      count: 2,
-      status: 'ok',
-    });
-
-    let resolveA: (v: unknown) => void;
-    const promiseA = new Promise((r) => {
-      resolveA = r;
-    });
-    mockChat.mockReturnValue(promiseA);
-
-    render(<SecFilingExplorer />);
-    await waitFor(() => {
-      expect(screen.getByText(/2 equities/i)).toBeInTheDocument();
-    });
-
-    const input = screen.getByRole('combobox');
-
-    // Select AAPL
-    fireEvent.focus(input);
-    const optionA = await screen.findByText('AAPL');
-    fireEvent.mouseDown(optionA);
-
-    await waitFor(() => {
-      expect(input).toHaveValue('AAPL');
-    });
-
-    // Edit the input (simulate user typing) — should invalidate the request
-    fireEvent.change(input, { target: { value: 'N' } });
-
-    // After edit: selected is cleared, stale result should not render
-    await waitFor(() => {
-      expect(input).toHaveValue('N');
-    });
-
-    // Resolve the old request — it should be discarded
     resolveA!(
       mockChatResponse({
         tool_calls: [

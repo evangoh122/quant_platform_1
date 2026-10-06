@@ -65,6 +65,8 @@ const signalsResponse = { data: [], count: 0, empty: true, source: '', freshness
 
 const chatResponse = { reply: 'No results.', tool_calls: [] };
 
+const secCoverageResponse = { data: [], count: 0, status: 'ok' as const };
+
 function mockFetch(body: unknown) {
   return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     if (url === '/api/health') {
@@ -87,6 +89,9 @@ function mockFetch(body: unknown) {
     }
     if (url === '/api/agent/chat') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(chatResponse) });
+    }
+    if (url === '/api/sec/coverage') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(secCoverageResponse) });
     }
     if (url.startsWith('/api/orders/')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ order_id: '1', status: 'approved', ok: true }) });
