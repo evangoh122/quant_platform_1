@@ -848,6 +848,216 @@ class TestAliasMapFallbackRetry:
         )
 
 
+# ── 6c. Alias map fallback retry: all three branches ────────────────────────
+
+
+class TestAliasMapFallbackRetryAllBranches:
+    """Drive EACH fallback path through the production _load_alias_map() with a
+    fake warehouse/Spark reader.  For each branch: identity map now; before the
+    deadline no re-read; after advancing time.monotonic past the deadline with a
+    reader that now returns canonical rows → GOOG resolves to GOOGL.
+
+    The cache-forever mutation (setting _alias_map_loaded = True instead of
+    scheduling a retry) must break all three tests because after the deadline
+    the reader would be ignored.
+    """
+
+    def _reset_alias_map(self, hr):
+        """Reset alias map state between sub-tests."""
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
+
+    def _make_canonical_rows(self):
+        """Return rows that resolve GOOG → GOOGL."""
+        return [
+            {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+            {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+            {"ticker": "NVDA", "canonical_ticker": "NVDA"},
+        ]
+
+    def test_a_unresolved_column_with_suggestion(self, monkeypatch):
+        """Branch (a): exception message contains
+        [UNRESOLVED_COLUMN.WITH_SUGGESTION] ... canonical_ticker
+        (the real Databricks text for a missing column)."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        self._reset_alias_map(hr)
+
+        fake_now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now)
+
+        # Reader that raises UNRESOLVED_COLUMN on first call, returns
+        # canonical rows on subsequent calls.
+        call_count = [0]
+
+        def make_conn():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                conn = MagicMock()
+                conn.cursor.side_effect = RuntimeError(
+                    "[UNRESOLVED_COLUMN.WITH_SUGGESTION] Column `canonical_ticker` "
+                    "is not present in any of the tables accessible to the current "
+                    "scope. Did you mean one of the following columns: [ticker, cik, "
+                    "n_chunks]? line 1, pos 14\n"
+                    "\n== SQL ==\nSELECT ticker, canonical_ticker FROM "
+                    "bootcamp_students.evangoh_capstone.gold_sec_coverage\n"
+                    "--------------^^^"
+                )
+                return conn
+            else:
+                cursor = FakeCursor(
+                    rows=self._make_canonical_rows(),
+                    columns=["ticker", "canonical_ticker"],
+                )
+                conn = MagicMock()
+                conn.cursor.return_value = cursor
+                return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", make_conn)
+
+        # 1) First call → identity map (empty), NOT permanently loaded
+        amap = hr._load_alias_map()
+        assert amap == {}, f"Expected identity (empty) map, got {amap}"
+        assert hr._alias_map_loaded is False, (
+            "UNRESOLVED_COLUMN fallback must NOT set _alias_map_loaded=True"
+        )
+        assert hr._alias_map_retry_at > fake_now, (
+            "Must schedule a retry deadline"
+        )
+        assert call_count[0] == 1
+
+        # 2) Before the deadline → no re-read, still identity
+        fake_now = hr._alias_map_retry_at - 1
+        amap = hr._load_alias_map()
+        assert amap == {}
+        assert call_count[0] == 1, (
+            f"Should not retry before deadline; got {call_count[0]} reads"
+        )
+
+        # 3) Past the deadline → reload, now canonical rows available
+        fake_now = hr._alias_map_retry_at + 1
+        amap = hr._load_alias_map()
+        assert amap["GOOG"] == "GOOGL", (
+            f"GOOG should resolve to GOOGL after retry, got {amap.get('GOOG')}"
+        )
+        assert amap["GOOGL"] == "GOOGL"
+        assert hr._alias_map_loaded is True
+        assert call_count[0] == 2
+
+    def test_b_no_rows(self, monkeypatch):
+        """Branch (b): the read returns no rows (empty table)."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        self._reset_alias_map(hr)
+
+        fake_now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now)
+
+        call_count = [0]
+
+        def make_conn():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call: returns empty rows
+                cursor = FakeCursor(
+                    rows=[],
+                    columns=["ticker", "canonical_ticker"],
+                )
+                conn = MagicMock()
+                conn.cursor.return_value = cursor
+                return conn
+            else:
+                # Subsequent calls: returns canonical rows
+                cursor = FakeCursor(
+                    rows=self._make_canonical_rows(),
+                    columns=["ticker", "canonical_ticker"],
+                )
+                conn = MagicMock()
+                conn.cursor.return_value = cursor
+                return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", make_conn)
+
+        # 1) First call → identity map, NOT permanently loaded
+        amap = hr._load_alias_map()
+        assert amap == {}
+        assert hr._alias_map_loaded is False
+        assert hr._alias_map_retry_at > fake_now
+        assert call_count[0] == 1
+
+        # 2) Before the deadline → no re-read
+        fake_now = hr._alias_map_retry_at - 1
+        amap = hr._load_alias_map()
+        assert amap == {}
+        assert call_count[0] == 1
+
+        # 3) Past the deadline → reload with canonical rows
+        fake_now = hr._alias_map_retry_at + 1
+        amap = hr._load_alias_map()
+        assert amap["GOOG"] == "GOOGL"
+        assert amap["GOOGL"] == "GOOGL"
+        assert hr._alias_map_loaded is True
+        assert call_count[0] == 2
+
+    def test_c_generic_exception(self, monkeypatch):
+        """Branch (c): a generic exception (e.g. connection refused)."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        self._reset_alias_map(hr)
+
+        fake_now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now)
+
+        call_count = [0]
+
+        def make_conn():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call: generic exception (not UNRESOLVED_COLUMN)
+                conn = MagicMock()
+                conn.cursor.side_effect = RuntimeError(
+                    "connection refused by warehouse endpoint"
+                )
+                return conn
+            else:
+                # Subsequent calls: returns canonical rows
+                cursor = FakeCursor(
+                    rows=self._make_canonical_rows(),
+                    columns=["ticker", "canonical_ticker"],
+                )
+                conn = MagicMock()
+                conn.cursor.return_value = cursor
+                return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", make_conn)
+
+        # 1) First call → identity map, NOT permanently loaded
+        amap = hr._load_alias_map()
+        assert amap == {}
+        assert hr._alias_map_loaded is False
+        assert hr._alias_map_retry_at > fake_now
+        assert call_count[0] == 1
+
+        # 2) Before the deadline → no re-read
+        fake_now = hr._alias_map_retry_at - 1
+        amap = hr._load_alias_map()
+        assert amap == {}
+        assert call_count[0] == 1
+
+        # 3) Past the deadline → reload with canonical rows
+        fake_now = hr._alias_map_retry_at + 1
+        amap = hr._load_alias_map()
+        assert amap["GOOG"] == "GOOGL"
+        assert amap["GOOGL"] == "GOOGL"
+        assert hr._alias_map_loaded is True
+        assert call_count[0] == 2
+
+
 class TestFallbackMutationProof:
     """Mutation tests: removing the except ImportError fallback must break tests."""
 
