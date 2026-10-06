@@ -12,6 +12,7 @@ fake warehouse connection that records executed SQL and params.
 from __future__ import annotations
 
 import logging
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -281,6 +282,8 @@ class TestLoadAliasMapWarehouse:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
+            hr._alias_map_retry_at = 0.0
 
         cursor = FakeCursor(
             rows=[
@@ -315,6 +318,7 @@ class TestLoadAliasMapWarehouse:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         # Both have canonical_ticker=GOOGL (as gold emits with resolved counts)
         cursor = FakeCursor(
@@ -346,6 +350,7 @@ class TestLoadAliasMapWarehouse:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         # Gold table emits canonical_ticker as resolved by SQL (BRK.A wins tie)
         cursor = FakeCursor(
@@ -387,6 +392,7 @@ class TestLoadAliasMapCanonicalTicker:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         # These rows match what 07_gold_sec_coverage.sql emits:
         # both GOOG and GOOGL report n_chunks=831 (resolved to canonical GOOGL)
@@ -426,6 +432,7 @@ class TestLoadAliasMapCanonicalTicker:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         executed_sql = []
         original_execute = FakeCursor.execute
@@ -474,6 +481,7 @@ class TestMissingCanonicalTickerColumn:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         def raise_unresolved():
             raise RuntimeError(
@@ -507,6 +515,7 @@ class TestMissingCanonicalTickerColumn:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         def raise_unresolved():
             raise RuntimeError(
@@ -547,6 +556,7 @@ class TestMissingCoverageTableAliasMap:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         def boom():
             raise RuntimeError("[TABLE_OR_VIEW_NOT_FOUND] The table or view `gold_sec_coverage` does not exist.")
@@ -586,6 +596,7 @@ class TestMissingCoverageTableAliasMap:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         with LoguruCapture() as log:
             amap = hr._load_alias_map()
@@ -645,6 +656,7 @@ class TestStartupWarmupMissingTable:
         with hr._alias_map_lock:
             hr._alias_map.clear()
             hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
 
         # Simulate warehouse connect succeeds but coverage table is missing
         def boom_cursor():
@@ -667,12 +679,173 @@ class TestStartupWarmupMissingTable:
         amap = hr._load_alias_map()
         assert amap == {}
 
-        # Verify alias map is marked as loaded (won't retry)
+        # Verify alias map sets a retry deadline (not permanently loaded)
         with hr._alias_map_lock:
-            assert hr._alias_map_loaded is True
+            assert hr._alias_map_loaded is False, (
+                "Fallback should NOT mark alias map as permanently loaded; "
+                "it should schedule a retry so the map can be loaded later."
+            )
+            assert hr._alias_map_retry_at > 0, (
+                "Fallback should set a retry deadline so the map is retried."
+            )
 
 
-# ── 7. Mutation: removing except ImportError breaks fallback ─────────────────
+# ── 6b. Alias map fallback retry: failed load retries after deadline ─────────
+
+
+class TestAliasMapFallbackRetry:
+    """When _load_alias_map falls back (missing column / load failure), it must
+    NOT cache permanently.  Instead it schedules a retry after
+    _ALIAS_MAP_RETRY_INTERVAL seconds so the map can be loaded once the table
+    is rebuilt."""
+
+    def test_fallback_then_retry_loads_canonical(self, monkeypatch):
+        """First load sees no canonical_ticker → identity; after the retry
+        interval, with canonical rows available, GOOGL resolves to GOOGL's
+        canonical."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
+            hr._alias_map_retry_at = 0.0
+
+        fake_now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now)
+
+        # First call: table missing → fallback, identity map, NOT permanently loaded
+        call_count = 0
+
+        def make_conn():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: table missing
+                conn = MagicMock()
+                conn.cursor.side_effect = RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] gold_sec_coverage does not exist."
+                )
+                return conn
+            else:
+                # Subsequent calls: table exists with canonical_ticker
+                cursor = FakeCursor(
+                    rows=[
+                        {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+                        {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+                    ],
+                    columns=["ticker", "canonical_ticker"],
+                )
+                conn = MagicMock()
+                conn.cursor.return_value = cursor
+                return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", make_conn)
+
+        # First load → fallback (identity)
+        amap = hr._load_alias_map()
+        assert amap == {}
+        assert hr._alias_map_loaded is False
+        assert hr._alias_map_retry_at > fake_now
+
+        # Before the deadline → no reload, still identity
+        fake_now = hr._alias_map_retry_at - 1
+        amap = hr._load_alias_map()
+        assert amap == {}
+        assert call_count == 1, "Should not have retried before deadline"
+
+        # Past the deadline → reload, now canonical_ticker is available
+        fake_now = hr._alias_map_retry_at + 1
+        amap = hr._load_alias_map()
+        assert amap["GOOG"] == "GOOGL"
+        assert amap["GOOGL"] == "GOOGL"
+        assert hr._alias_map_loaded is True
+        assert call_count == 2
+
+    def test_no_reload_before_deadline(self, monkeypatch):
+        """Before the retry deadline, _load_alias_map returns the cached
+        (empty) map without calling the reader again."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
+            hr._alias_map_retry_at = 0.0
+
+        fake_now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now)
+
+        read_count = 0
+
+        def counting_conn():
+            nonlocal read_count
+            read_count += 1
+            conn = MagicMock()
+            conn.cursor.side_effect = RuntimeError("table missing")
+            return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", counting_conn)
+
+        # First call → fallback, sets deadline
+        hr._alias_map_loaded = False  # ensure fresh
+        hr._load_alias_map()
+        deadline = hr._alias_map_retry_at
+        assert deadline > fake_now
+        assert read_count == 1
+
+        # Multiple calls before deadline → no additional reads
+        for _ in range(5):
+            hr._load_alias_map()
+        assert read_count == 1, (
+            f"Expected 1 read (the initial load), got {read_count}. "
+            "The retry deadline is being ignored."
+        )
+
+    def test_successful_load_is_permanently_cached(self, monkeypatch):
+        """A successful load sets _alias_map_loaded=True and clears the retry
+        deadline.  Subsequent calls never re-read."""
+        from api.services import hybrid_retriever as hr
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
+            hr._alias_map_retry_at = 0.0
+
+        read_count = 0
+
+        def counting_conn():
+            nonlocal read_count
+            read_count += 1
+            cursor = FakeCursor(
+                rows=[
+                    {"ticker": "NVDA", "canonical_ticker": "NVDA"},
+                ],
+                columns=["ticker", "canonical_ticker"],
+            )
+            conn = MagicMock()
+            conn.cursor.return_value = cursor
+            return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", counting_conn)
+
+        # First load → success
+        amap = hr._load_alias_map()
+        assert amap["NVDA"] == "NVDA"
+        assert hr._alias_map_loaded is True
+        assert hr._alias_map_retry_at == 0.0
+        assert read_count == 1
+
+        # Many subsequent calls → no re-read
+        for _ in range(10):
+            hr._load_alias_map()
+        assert read_count == 1, (
+            f"Successful load should be permanent; got {read_count} reads."
+        )
 
 
 class TestFallbackMutationProof:

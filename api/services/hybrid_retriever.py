@@ -450,6 +450,8 @@ def _insert_ticker_corpus(ticker: str, corpus: TickerCorpus) -> None:
 _alias_map: Dict[str, str] = {}
 _alias_map_lock = threading.Lock()
 _alias_map_loaded = False
+_ALIAS_MAP_RETRY_INTERVAL = 300  # seconds before retrying a failed alias-map load
+_alias_map_retry_at: float = 0.0
 
 
 def _load_alias_map() -> Dict[str, str]:
@@ -462,14 +464,21 @@ def _load_alias_map() -> Dict[str, str]:
 
     If the ``canonical_ticker`` column is missing (old table schema), falls
     back to identity mapping with a WARNING — never guesses alphabetically.
+    The fallback is NOT cached permanently; a retry is scheduled after
+    ``_ALIAS_MAP_RETRY_INTERVAL`` seconds so the map can be loaded once the
+    table is rebuilt.
 
     Returns the alias map dict.  On failure returns an empty dict and logs
-    once so subsequent calls don't retry.
+    once so subsequent calls don't retry until the deadline passes.
     """
-    global _alias_map, _alias_map_loaded
+    global _alias_map, _alias_map_loaded, _alias_map_retry_at
 
     with _alias_map_lock:
         if _alias_map_loaded:
+            return _alias_map
+        # If a previous load failed, wait until the retry deadline before
+        # attempting another load (prevents hammering a broken table).
+        if _alias_map_retry_at and time.monotonic() < _alias_map_retry_at:
             return _alias_map
 
     try:
@@ -500,7 +509,7 @@ def _load_alias_map() -> Dict[str, str]:
 
         if not rows:
             with _alias_map_lock:
-                _alias_map_loaded = True
+                _alias_map_retry_at = time.monotonic() + _ALIAS_MAP_RETRY_INTERVAL
             return {}
 
         amap: Dict[str, str] = {}
@@ -513,11 +522,13 @@ def _load_alias_map() -> Dict[str, str]:
         with _alias_map_lock:
             _alias_map = amap
             _alias_map_loaded = True
+            _alias_map_retry_at = 0.0
         logger.info("Loaded ticker alias map: {} entries", len(amap))
         return amap
     except Exception as exc:
         # If canonical_ticker column is missing (old table schema), fall back
         # to identity mapping with a WARNING — never guess alphabetically.
+        # Schedule a retry so the map can be loaded once the table is rebuilt.
         msg = str(exc)
         if "UNRESOLVED_COLUMN" in msg or ("canonical_ticker" in msg and "not found" in msg.lower()):
             logger.warning(
@@ -527,12 +538,12 @@ def _load_alias_map() -> Dict[str, str]:
             )
             with _alias_map_lock:
                 _alias_map = {}
-                _alias_map_loaded = True
+                _alias_map_retry_at = time.monotonic() + _ALIAS_MAP_RETRY_INTERVAL
             return {}
         logger.warning("Failed to load ticker alias map (will use identity): {}", exc)
         with _alias_map_lock:
             _alias_map = {}
-            _alias_map_loaded = True
+            _alias_map_retry_at = time.monotonic() + _ALIAS_MAP_RETRY_INTERVAL
         return {}
 
 
@@ -780,7 +791,7 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
     global _stored_index_dim, _stored_embedding_model
-    global _alias_map_loaded
+    global _alias_map_loaded, _alias_map_retry_at
 
     if ticker:
         # Per-ticker invalidation — resolve alias first
@@ -806,6 +817,7 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     with _alias_map_lock:
         _alias_map.clear()
         _alias_map_loaded = False
+        _alias_map_retry_at = 0.0
 
     return True
 
