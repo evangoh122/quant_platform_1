@@ -205,9 +205,11 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
 
 export function MarketDashboard() {
   const [symbol, setSymbol] = useState('NVDA');
+  const hasSymbol = symbol.trim().length > 0;
   const { data, loading, error, reload } = useApi<MarketSnapshot>(
     () => api.market(symbol),
     [symbol],
+    { enabled: hasSymbol },
   );
 
   const sortedOhlcv = useMemo(() => {
@@ -231,9 +233,12 @@ export function MarketDashboard() {
 
       <SymbolPicker value={symbol} onChange={setSymbol} list="market" hasCoverage={hasCoverage} />
 
-      {loading && <LoadingState />}
-      {error && <ErrorState message={error} onRetry={reload} />}
-      {!loading && !error && (
+      {!hasSymbol && (
+        <EmptyState title="Select a symbol" detail="Choose a symbol to view market data." />
+      )}
+      {hasSymbol && loading && <LoadingState />}
+      {hasSymbol && error && <ErrorState message={error} onRetry={reload} />}
+      {hasSymbol && !loading && !error && (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <StatTile label="Latest Close" value={latest?.close?.toFixed(2) ?? '—'} hint={symbol} />

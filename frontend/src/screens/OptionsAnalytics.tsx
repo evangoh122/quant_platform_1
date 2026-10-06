@@ -37,9 +37,11 @@ const columns: Column<OptionsFeature>[] = [
 
 export function OptionsAnalytics() {
   const [symbol, setSymbol] = useState('NVDA');
+  const hasSymbol = symbol.trim().length > 0;
   const { data, loading, error, reload } = useApi<MarketSnapshot>(
     () => api.market(symbol),
     [symbol],
+    { enabled: hasSymbol },
   );
 
   const hasCoverage = data ? !data.options.empty : undefined;
@@ -53,9 +55,12 @@ export function OptionsAnalytics() {
 
       <SymbolPicker value={symbol} onChange={setSymbol} list="options" hasCoverage={hasCoverage} />
 
-      {loading && <LoadingState />}
-      {error && <ErrorState message={error} onRetry={reload} />}
-      {!loading && !error && (
+      {!hasSymbol && (
+        <EmptyState title="Select a symbol" detail="Choose a symbol to view options analytics." />
+      )}
+      {hasSymbol && loading && <LoadingState />}
+      {hasSymbol && error && <ErrorState message={error} onRetry={reload} />}
+      {hasSymbol && !loading && !error && (
         <Card title="Options Chain Metrics" subtitle="gold_options_features · IV / skew / unusual volume">
           {data && data.options.empty ? (
             <EmptyState

@@ -307,4 +307,59 @@ describe('MarketDashboard', () => {
     // Restore Date.now
     Date.now = realDateNow;
   });
+
+  it('skips fetch and shows prompt when symbol is cleared', async () => {
+    const user = userEvent.setup();
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('160.00')).toBeInTheDocument();
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    const callsBefore = fetchMock.mock.calls.length;
+
+    // Clear the symbol
+    const clearBtn = screen.getByLabelText('Clear');
+    await user.click(clearBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Select a symbol/)).toBeInTheDocument();
+    });
+
+    // No new fetch to /api/market/ with empty symbol
+    const newCalls = fetchMock.mock.calls.slice(callsBefore);
+    for (const call of newCalls) {
+      const url = String(call[0]);
+      expect(url).not.toMatch(/\/api\/market\/$/);
+      expect(url).not.toMatch(/\/api\/market\/%20/);
+    }
+  });
+
+  it('fetches again when a symbol is picked after clearing', async () => {
+    const user = userEvent.setup();
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText('160.00')).toBeInTheDocument();
+    });
+
+    // Clear the symbol
+    const clearBtn = screen.getByLabelText('Clear');
+    await user.click(clearBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Select a symbol/)).toBeInTheDocument();
+    });
+
+    // Pick NVDA from quick choices
+    await user.click(screen.getByText('NVDA', { selector: 'button' }));
+
+    // Should trigger a fetch for NVDA
+    await waitFor(() => {
+      const fetchMock = vi.mocked(fetch);
+      const lastCall = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
+      expect(String(lastCall[0])).toContain('/api/market/NVDA');
+    });
+  });
 });
