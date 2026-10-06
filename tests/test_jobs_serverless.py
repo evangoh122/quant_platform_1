@@ -474,7 +474,10 @@ def test_no_databricks_connect_import_outside_runtime():
     databricks-connect may be absent from a serverless job environment, so even an unused import fails
     before get_spark() runs (CodeRabbit PR #44).
     """
-    pattern = re.compile(r"^\s*(from\s+databricks\.connect\s+import|import\s+databricks\.connect)")
+    pattern = re.compile(
+        r"^\s*(from\s+databricks\.connect\s+import|import\s+databricks\.connect\b|"
+        r"from\s+databricks\s+import\s+.*\bconnect\b)"
+    )
     offenders = []
     for fpath, src in _read_entry_point_sources().items():
         if "_runtime.py" in fpath:
