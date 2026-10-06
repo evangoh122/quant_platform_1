@@ -2648,3 +2648,92 @@ class TestCacheMinEntries:
 
         result = _try_load_cache(str(cache_file), ttl=3600, is_fallback=False)
         assert result is not None, "Cache with <1000 entries should be accepted when is_fallback=False"
+
+
+# ── Default-spark shared-runtime tests ─────────────────────────────────────
+
+
+class TestDefaultWriterUsesSharedRuntime:
+    """Prove both default writers call and return the module-level get_spark
+    helper when no spark_factory is injected.
+
+    Each test monkeypatches ``pipelines.ingest_sec_companyfacts.get_spark``
+    with a spy/fake, instantiates the writer with no ``spark_factory``, and
+    asserts that ``_get_spark()`` delegates to the shared runtime.
+    """
+
+    def test_facts_writer_default_calls_get_spark(self, monkeypatch):
+        """SparkCompanyFactsWriter() with no spark_factory delegates to
+        the module-level get_spark and returns its result."""
+        sentinel = object()
+        call_log: List[str] = []
+
+        def spy_get_spark():
+            call_log.append("get_spark")
+            return sentinel
+
+        monkeypatch.setattr(
+            "pipelines.ingest_sec_companyfacts.get_spark", spy_get_spark
+        )
+
+        writer = SparkCompanyFactsWriter()
+        result = writer._get_spark()
+
+        assert result is sentinel
+        assert call_log == ["get_spark"]
+
+    def test_manifest_writer_default_calls_get_spark(self, monkeypatch):
+        """SparkCompanyFactsManifestWriter() with no spark_factory delegates
+        to the module-level get_spark and returns its result."""
+        sentinel = object()
+        call_log: List[str] = []
+
+        def spy_get_spark():
+            call_log.append("get_spark")
+            return sentinel
+
+        monkeypatch.setattr(
+            "pipelines.ingest_sec_companyfacts.get_spark", spy_get_spark
+        )
+
+        writer = SparkCompanyFactsManifestWriter()
+        result = writer._get_spark()
+
+        assert result is sentinel
+        assert call_log == ["get_spark"]
+
+    def test_facts_writer_explicit_factory_takes_precedence(self, monkeypatch):
+        """SparkCompanyFactsWriter(spark_factory=...) ignores get_spark."""
+        sentinel_default = object()
+        sentinel_injected = object()
+
+        def spy_get_spark():
+            return sentinel_default
+
+        monkeypatch.setattr(
+            "pipelines.ingest_sec_companyfacts.get_spark", spy_get_spark
+        )
+
+        writer = SparkCompanyFactsWriter(spark_factory=lambda: sentinel_injected)
+        result = writer._get_spark()
+
+        assert result is sentinel_injected
+        assert result is not sentinel_default
+
+    def test_manifest_writer_explicit_factory_takes_precedence(self, monkeypatch):
+        """SparkCompanyFactsManifestWriter(spark_factory=...) ignores get_spark."""
+        sentinel_default = object()
+        sentinel_injected = object()
+
+        def spy_get_spark():
+            return sentinel_default
+
+        monkeypatch.setattr(
+            "pipelines.ingest_sec_companyfacts.get_spark", spy_get_spark
+        )
+
+        writer = SparkCompanyFactsManifestWriter(spark_factory=lambda: sentinel_injected)
+        result = writer._get_spark()
+
+        assert result is sentinel_injected
+        assert result is not sentinel_default
