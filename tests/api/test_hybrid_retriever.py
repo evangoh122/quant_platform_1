@@ -1343,3 +1343,11 @@ class TestConcurrentReloadGuard:
             f"Mutation test FAILED: expected read_count > 1 with guard removed, "
             f"got {read_count}. The guard may not be the load-bearing code."
         )
+
+def test_full_reload_corpus_resets_alias_map_loading_flag(monkeypatch):
+    """reload_corpus() (full invalidation) must clear the in-flight reload flag so a stuck flag
+    can never block future alias-map loads."""
+    import api.services.hybrid_retriever as hr
+    monkeypatch.setattr(hr, "_alias_map_loading", True)
+    hr.reload_corpus()
+    assert hr._alias_map_loading is False

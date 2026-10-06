@@ -801,7 +801,7 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
     global _stored_index_dim, _stored_embedding_model
-    global _alias_map_loaded, _alias_map_retry_at
+    global _alias_map_loaded, _alias_map_retry_at, _alias_map_loading
 
     if ticker:
         # Per-ticker invalidation — resolve alias first
