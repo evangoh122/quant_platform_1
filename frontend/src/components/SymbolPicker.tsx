@@ -118,6 +118,11 @@ export function SymbolPicker({
       e.preventDefault();
       if (filtered[highlightIdx]) {
         handleSelect(filtered[highlightIdx]);
+      } else {
+        const trimmed = query.trim().toUpperCase();
+        if (trimmed && TICKER_RE.test(trimmed)) {
+          handleSelect(trimmed);
+        }
       }
     } else if (e.key === 'Escape') {
       setOpen(false);

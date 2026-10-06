@@ -245,6 +245,21 @@ describe('SymbolPicker', () => {
     expect(screen.getByText(/No coverage/)).toBeInTheDocument();
   });
 
+  it('submits a valid unmatched ticker with Enter while dropdown is open', () => {
+    const onChange = vi.fn();
+    render(<SymbolPicker value="" onChange={onChange} list="market" />);
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'ZZZZ' } });
+
+    // ZZZZ is not in the market list, so no filtered match — dropdown should still be open
+    // Press Enter without closing dropdown first
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onChange).toHaveBeenCalledWith('ZZZZ');
+  });
+
   it('submits a valid custom ticker with Enter when dropdown is closed', () => {
     const onChange = vi.fn();
     render(<SymbolPicker value="" onChange={onChange} list="market" />);

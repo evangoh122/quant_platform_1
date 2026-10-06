@@ -8,7 +8,7 @@ export interface TraceStep {
   status: 'pending' | 'running' | 'complete' | 'failed' | 'skipped';
 }
 
-function deriveSteps(toolCalls: ToolCall[], _available: boolean, reply?: string): TraceStep[] {
+function deriveSteps(toolCalls: ToolCall[], _available: boolean, reply?: string, sending = false): TraceStep[] {
   const retrievalTools = toolCalls.filter(
     (tc) => tc.name === 'search_sec_filings' || tc.name === 'get_latest_signal',
   );
@@ -29,7 +29,9 @@ function deriveSteps(toolCalls: ToolCall[], _available: boolean, reply?: string)
       : 'complete';
 
   const toolStatus: TraceStep['status'] = toolCalls.length === 0
-    ? 'pending'
+    ? hasReply
+      ? 'skipped'
+      : 'pending'
     : hasWrite
       ? writeFailed
         ? 'failed'
@@ -40,11 +42,11 @@ function deriveSteps(toolCalls: ToolCall[], _available: boolean, reply?: string)
 
   // Response stage uses reply-delivered signal, not `available`:
   // - sending with no reply → pending
-  // - reply delivered (even empty tools) → complete
-  // - finished, no reply, not sending → failed
+  // - reply delivered (even zero tools) → complete
+  // - finished, no reply → failed
   const responseStatus: TraceStep['status'] = hasReply
     ? 'complete'
-    : toolCalls.length > 0 && !hasReply
+    : !sending
       ? 'failed'
       : 'pending';
 
@@ -79,9 +81,9 @@ interface ExecutionTraceProps {
 }
 
 export function ExecutionTrace({ toolCalls, available, sending, reply }: ExecutionTraceProps) {
-  const steps = deriveSteps(toolCalls, available, reply);
+  const steps = deriveSteps(toolCalls, available, reply, sending);
 
-  if (toolCalls.length === 0 && !sending) return null;
+  if (toolCalls.length === 0 && !sending && !reply) return null;
 
   return (
     <div data-testid="execution-trace" className="space-y-2">
