@@ -450,6 +450,7 @@ def _insert_ticker_corpus(ticker: str, corpus: TickerCorpus) -> None:
 _alias_map: Dict[str, str] = {}
 _alias_map_lock = threading.Lock()
 _alias_map_loaded = False
+_alias_map_loading = False  # guards concurrent reloads after the retry deadline
 _ALIAS_MAP_RETRY_INTERVAL = 300  # seconds before retrying a failed alias-map load
 _alias_map_retry_at: float = 0.0
 
@@ -471,7 +472,7 @@ def _load_alias_map() -> Dict[str, str]:
     Returns the alias map dict.  On failure returns an empty dict and logs
     once so subsequent calls don't retry until the deadline passes.
     """
-    global _alias_map, _alias_map_loaded, _alias_map_retry_at
+    global _alias_map, _alias_map_loaded, _alias_map_retry_at, _alias_map_loading
 
     with _alias_map_lock:
         if _alias_map_loaded:
@@ -480,6 +481,12 @@ def _load_alias_map() -> Dict[str, str]:
         # attempting another load (prevents hammering a broken table).
         if _alias_map_retry_at and time.monotonic() < _alias_map_retry_at:
             return _alias_map
+        # If another thread is already reloading past the deadline, return
+        # the current (stale) map instead of duplicating the warehouse read.
+        if _alias_map_loading:
+            return _alias_map
+        # Mark that this caller will perform the reload.
+        _alias_map_loading = True
 
     try:
         try:
@@ -545,6 +552,9 @@ def _load_alias_map() -> Dict[str, str]:
             _alias_map = {}
             _alias_map_retry_at = time.monotonic() + _ALIAS_MAP_RETRY_INTERVAL
         return {}
+    finally:
+        with _alias_map_lock:
+            _alias_map_loading = False
 
 
 def _resolve_canonical_ticker(ticker: str) -> str:
@@ -817,6 +827,7 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     with _alias_map_lock:
         _alias_map.clear()
         _alias_map_loaded = False
+        _alias_map_loading = False
         _alias_map_retry_at = 0.0
 
     return True

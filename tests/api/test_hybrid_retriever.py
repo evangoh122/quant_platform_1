@@ -1086,3 +1086,260 @@ class TestFallbackMutationProof:
         assert "NVDA" in sql_with_fstring
         # The parameterized version does NOT
         assert "NVDA" not in sql_with_param
+
+
+# ── 6d. Concurrent reload guard: exactly one warehouse read ──────────────────
+
+
+class TestConcurrentReloadGuard:
+    """When the retry deadline passes, multiple concurrent callers must NOT
+    all trigger a warehouse read.  Exactly one caller should reload; the rest
+    should return the stale map immediately."""
+
+    def test_concurrent_reload_exactly_one_read(self, monkeypatch):
+        """N threads (≥4) call _load_alias_map() concurrently right after the
+        deadline with a fake reader that blocks until all threads have entered
+        → exactly one warehouse read."""
+        from api.services import hybrid_retriever as hr
+        import threading
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
+            hr._alias_map_loading = False
+
+        fake_now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now)
+
+        # First call → fallback, sets deadline
+        call_count = 0
+
+        def counting_conn_fallback():
+            nonlocal call_count
+            call_count += 1
+            conn = MagicMock()
+            conn.cursor.side_effect = RuntimeError("table missing")
+            return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", counting_conn_fallback)
+        hr._load_alias_map()
+        assert call_count == 1
+        deadline = hr._alias_map_retry_at
+        assert deadline > fake_now
+
+        # Advance past the deadline
+        fake_now = deadline + 1
+
+        # Now set up a blocking reader for the concurrent reload
+        read_count = 0
+        all_threads_ready = threading.Event()
+        reader_can_proceed = threading.Event()
+
+        def blocking_conn():
+            nonlocal read_count
+            read_count += 1
+            # Signal that this thread has entered the reader
+            all_threads_ready.set()
+            # Wait until the test lets us proceed
+            reader_can_proceed.wait(timeout=10)
+            cursor = FakeCursor(
+                rows=[
+                    {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+                    {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+                ],
+                columns=["ticker", "canonical_ticker"],
+            )
+            conn = MagicMock()
+            conn.cursor.return_value = cursor
+            return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", blocking_conn)
+
+        N_THREADS = 6
+        results = [None] * N_THREADS
+        errors = [None] * N_THREADS
+
+        def worker(idx):
+            try:
+                results[idx] = hr._load_alias_map()
+            except Exception as e:
+                errors[idx] = e
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(N_THREADS)]
+        for t in threads:
+            t.start()
+
+        # Wait for the first thread to enter the reader
+        all_threads_ready.wait(timeout=10)
+        # Give other threads a moment to reach the lock check
+        import time as _time
+        _time.sleep(0.1)
+        # Let the reader complete
+        reader_can_proceed.set()
+
+        for t in threads:
+            t.join(timeout=10)
+
+        # No errors
+        for i, e in enumerate(errors):
+            assert e is None, f"Thread {i} raised: {e}"
+
+        # Exactly one warehouse read
+        assert read_count == 1, (
+            f"Expected exactly 1 warehouse read, got {read_count}. "
+            "Multiple callers reloaded concurrently."
+        )
+
+        # All threads got a result (either stale or fresh)
+        for i in range(N_THREADS):
+            assert results[i] is not None, f"Thread {i} got no result"
+
+    def test_concurrent_reload_mutation_fails(self, monkeypatch):
+        """Mutation: remove the in-flight guard (_alias_map_loading check).
+        With the guard removed, multiple threads WILL reload concurrently,
+        causing read_count > 1 — proving the guard is load-bearing."""
+        from api.services import hybrid_retriever as hr
+        import threading
+
+        _make_warehouse_guard(monkeypatch, hr)
+        with hr._alias_map_lock:
+            hr._alias_map.clear()
+            hr._alias_map_loaded = False
+            hr._alias_map_retry_at = 0.0
+            hr._alias_map_loading = False
+
+        fake_now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now)
+
+        # First call → fallback, sets deadline
+        call_count = 0
+
+        def counting_conn_fallback():
+            nonlocal call_count
+            call_count += 1
+            conn = MagicMock()
+            conn.cursor.side_effect = RuntimeError("table missing")
+            return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", counting_conn_fallback)
+        hr._load_alias_map()
+        assert call_count == 1
+        deadline = hr._alias_map_retry_at
+
+        # Advance past the deadline
+        fake_now = deadline + 1
+
+        # MUTATION: monkey-patch the function to skip the loading guard.
+        # Replace _load_alias_map with a version that does NOT check _alias_map_loading.
+        original_func = hr._load_alias_map
+
+        def _mutated_load_alias_map():
+            """Mutated version: no in-flight guard."""
+            with hr._alias_map_lock:
+                if hr._alias_map_loaded:
+                    return hr._alias_map
+                if hr._alias_map_retry_at and time.monotonic() < hr._alias_map_retry_at:
+                    return hr._alias_map
+                # MUTATION: removed the _alias_map_loading check
+                hr._alias_map_loading = True
+
+            try:
+                try:
+                    spark = hr._get_spark()
+                except ImportError:
+                    spark = None
+
+                if spark is not None:
+                    from pyspark.sql import functions as F
+                    rows = spark.table(hr.COVERAGE_TABLE).select("ticker", "canonical_ticker").collect()
+                else:
+                    from db.delta_adapter import _get_warehouse_connection
+                    conn = _get_warehouse_connection()
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(f"SELECT ticker, canonical_ticker FROM {hr.COVERAGE_TABLE}")
+                        cols = [d[0] for d in cur.description]
+                        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    finally:
+                        cur.close()
+
+                if not rows:
+                    with hr._alias_map_lock:
+                        hr._alias_map_retry_at = time.monotonic() + hr._ALIAS_MAP_RETRY_INTERVAL
+                    return {}
+
+                amap = {}
+                for r in rows:
+                    t = (r["ticker"] or "").upper().strip()
+                    ct = (r["canonical_ticker"] or "").upper().strip()
+                    if t and ct:
+                        amap[t] = ct
+
+                with hr._alias_map_lock:
+                    hr._alias_map = amap
+                    hr._alias_map_loaded = True
+                    hr._alias_map_retry_at = 0.0
+                return amap
+            except Exception as exc:
+                msg = str(exc)
+                if "UNRESOLVED_COLUMN" in msg or ("canonical_ticker" in msg and "not found" in msg.lower()):
+                    with hr._alias_map_lock:
+                        hr._alias_map = {}
+                        hr._alias_map_retry_at = time.monotonic() + hr._ALIAS_MAP_RETRY_INTERVAL
+                    return {}
+                with hr._alias_map_lock:
+                    hr._alias_map = {}
+                    hr._alias_map_retry_at = time.monotonic() + hr._ALIAS_MAP_RETRY_INTERVAL
+                return {}
+            finally:
+                with hr._alias_map_lock:
+                    hr._alias_map_loading = False
+
+        # Set up a blocking reader
+        read_count = 0
+        all_threads_ready = threading.Event()
+        reader_can_proceed = threading.Event()
+
+        def blocking_conn():
+            nonlocal read_count
+            read_count += 1
+            all_threads_ready.set()
+            reader_can_proceed.wait(timeout=10)
+            cursor = FakeCursor(
+                rows=[
+                    {"ticker": "GOOG", "canonical_ticker": "GOOGL"},
+                    {"ticker": "GOOGL", "canonical_ticker": "GOOGL"},
+                ],
+                columns=["ticker", "canonical_ticker"],
+            )
+            conn = MagicMock()
+            conn.cursor.return_value = cursor
+            return conn
+
+        monkeypatch.setattr("db.delta_adapter._get_warehouse_connection", blocking_conn)
+
+        N_THREADS = 6
+        results = [None] * N_THREADS
+
+        def worker(idx):
+            results[idx] = _mutated_load_alias_map()
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(N_THREADS)]
+        for t in threads:
+            t.start()
+
+        all_threads_ready.wait(timeout=10)
+        import time as _time
+        _time.sleep(0.1)
+        reader_can_proceed.set()
+
+        for t in threads:
+            t.join(timeout=10)
+
+        # With the guard removed, multiple threads should have entered the reader
+        assert read_count > 1, (
+            f"Mutation test FAILED: expected read_count > 1 with guard removed, "
+            f"got {read_count}. The guard may not be the load-bearing code."
+        )
