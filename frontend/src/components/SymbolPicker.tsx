@@ -5,7 +5,8 @@ import { getRecentSymbols, pushRecentSymbol, getUrlSymbol, setUrlSymbol } from '
 type SymbolList = 'market' | 'options' | 'sec';
 
 const QUICK_CHOICES = ['NVDA', 'AAPL', 'MSFT', 'AMD', 'SPY'] as const;
-const TICKER_RE = /^[A-Z]{1,5}$/;
+// Share-class suffixes (e.g. BRK.B) are part of the data-backed universe in symbols.json.
+const TICKER_RE = /^[A-Z]{1,5}(\.[A-Z]{1,2})?$/;
 
 const LISTS: Record<SymbolList, string[]> = {
   market: (symbols as { market: string[] }).market,

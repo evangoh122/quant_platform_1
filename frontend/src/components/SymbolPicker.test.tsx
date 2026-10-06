@@ -190,6 +190,23 @@ describe('SymbolPicker', () => {
     expect(options[1]).toHaveTextContent('AMD');
   });
 
+  it('accepts a share-class ticker such as BRK.B from ?symbol=', async () => {
+    urlSpy.mockReturnValue('brk.b');
+    const onChange = vi.fn();
+    render(<SymbolPicker value="" onChange={onChange} list="market" />);
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith('BRK.B');
+    });
+  });
+
+  it('still rejects a malformed ?symbol= value', async () => {
+    urlSpy.mockReturnValue('NVDA;DROP');
+    const onChange = vi.fn();
+    render(<SymbolPicker value="" onChange={onChange} list="market" />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('preserves a valid-format ticker from ?symbol= not in options and shows no-coverage', async () => {
     urlSpy.mockReturnValue('ZZZZ');
     const onChange = vi.fn();
