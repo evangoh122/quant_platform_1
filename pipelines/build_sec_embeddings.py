@@ -31,9 +31,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
 
-# Ensure repo root is on sys.path so ``api.*`` and ``pipelines.*`` resolve
-# when invoked via ``python_file`` in a Databricks job.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_p = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
+from pipelines._runtime import get_spark, repo_root
 
 logger = logging.getLogger(__name__)
 
@@ -331,9 +331,7 @@ def main():
     CHUNKS_TABLE = f"{FQN}.silver_sec_sections"
     EMBEDDINGS_TABLE = f"{FQN}.gold_sec_chunk_embeddings"
 
-    from databricks.connect import DatabricksSession
-
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = get_spark()
 
     print("=== Build SEC Chunk Embeddings ===")
     print(f"Model: {EMBEDDING_MODEL} ({EMBEDDING_DIM}-d)")

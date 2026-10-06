@@ -25,16 +25,16 @@ import os
 import sys
 import time
 
-from databricks.connect import DatabricksSession
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_p = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
+from pipelines._runtime import get_spark, repo_root
 
 from config.universe import load_universe  # noqa: E402
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
 SCHEMA = os.getenv("SCHEMA", "evangoh_capstone")
 FQN = f"{CATALOG}.{SCHEMA}"
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = str(repo_root())
 
 # (name, path, kind). Order matters (dependencies).
 #   kind "sql" -> a .sql transform executed via spark.sql (universe temp view).
@@ -81,9 +81,6 @@ GOLD_MODEL_AVAILABILITY_COLUMNS = {
     "cot_available_ts": "TIMESTAMP",
 }
 
-
-def get_spark() -> DatabricksSession:
-    return DatabricksSession.builder.serverless(True).getOrCreate()
 
 
 def register_universe(spark) -> list[str]:
