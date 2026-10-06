@@ -336,6 +336,48 @@ describe('MarketDashboard', () => {
     }
   });
 
+  it('renders EmptyState when all close values are null and no svg axis labels', async () => {
+    const allNullClose = {
+      symbol: 'AAPL',
+      ohlcv: {
+        data: [
+          { symbol: 'AAPL', event_date: '2025-01-10', close: null, open: 148, high: 152, low: 147, volume: 100, vwap: 149, price_basis: 'adjusted' },
+          { symbol: 'AAPL', event_date: '2025-01-11', close: null, open: 148, high: 152, low: 147, volume: null, vwap: 149, price_basis: 'adjusted' },
+          { symbol: 'AAPL', event_date: '2025-01-12', close: null, open: 151, high: 155, low: 150, volume: 150, vwap: 152, price_basis: 'adjusted' },
+        ],
+        count: 3,
+        empty: false,
+        source: 'silver_ohlcv_day_adjusted',
+        freshness: { state: 'fresh', table: 'silver_ohlcv_day_adjusted', detail: '3 rows' },
+      },
+      options: {
+        data: [],
+        count: 0,
+        empty: true,
+        source: 'gold_options_features',
+        freshness: { state: 'empty', table: 'gold_options_features', detail: '0 rows' },
+      },
+    };
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(allNullClose),
+    }));
+
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No finite close values/)).toBeInTheDocument();
+    });
+
+    // No chart SVG should be rendered
+    expect(screen.queryByRole('img', { name: /adjusted close price chart/i })).not.toBeInTheDocument();
+
+    // No axis labels like 0.0, 0.5, 1.0 should appear
+    expect(screen.queryByText('0.0')).not.toBeInTheDocument();
+    expect(screen.queryByText('1.0')).not.toBeInTheDocument();
+  });
+
   it('fetches again when a symbol is picked after clearing', async () => {
     const user = userEvent.setup();
     render(<MarketDashboard />);

@@ -166,6 +166,28 @@ describe('SymbolPicker', () => {
     expect(screen.getByText('GOOG', { selector: 'button' })).toBeInTheDocument();
   });
 
+  it('updates recent list after selection without remount', () => {
+    const onChange = vi.fn();
+    render(<SymbolPicker value="NVDA" onChange={onChange} list="market" />);
+
+    // No TSLA recent button initially
+    expect(screen.queryByText('TSLA', { selector: 'button' })).not.toBeInTheDocument();
+
+    // Select TSLA from dropdown
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'TSLA' } });
+
+    // Find and click TSLA in the dropdown
+    const options = screen.getAllByRole('option');
+    const tslaOption = options.find((o) => o.textContent === 'TSLA');
+    expect(tslaOption).toBeTruthy();
+    fireEvent.mouseDown(tslaOption!);
+
+    // TSLA should now appear as a recent button in the same render tree
+    expect(screen.getByText('TSLA', { selector: 'button' })).toBeInTheDocument();
+  });
+
   it('secMode uses coverage items as options', () => {
     const onChange = vi.fn();
     const coverage = [

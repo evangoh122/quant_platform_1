@@ -59,8 +59,17 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
     );
   }
 
-  const closePoints = filtered.filter((r) => r.close != null);
+  const closePoints = filtered.filter((r) => r.close != null && Number.isFinite(r.close));
   const volPoints = filtered.filter((r) => r.volume != null);
+
+  if (closePoints.length === 0) {
+    return (
+      <EmptyState
+        title="No chart data"
+        detail={`No finite close values available for ${symbol} in the selected range.`}
+      />
+    );
+  }
   const missingCount = filtered.length - closePoints.length;
   const closes = closePoints.map((r) => r.close!);
   const volumes = volPoints.map((r) => r.volume!);

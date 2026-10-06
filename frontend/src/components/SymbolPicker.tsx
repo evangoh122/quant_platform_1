@@ -49,7 +49,7 @@ export function SymbolPicker({
     ? (secCoverage ?? []).map((c) => c.ticker)
     : LISTS[list];
 
-  const recent = useMemo(() => getRecentSymbols(), []);
+  const [recent, setRecent] = useState(() => getRecentSymbols());
 
   // Initialize from URL param once — lift to parent so the screen/API uses it
   useEffect(() => {
@@ -84,6 +84,7 @@ export function SymbolPicker({
       setCommittedValue(upper);
       setOpen(false);
       pushRecentSymbol(upper);
+      setRecent(getRecentSymbols());
       setUrlSymbol(upper);
     },
     [onChange],
