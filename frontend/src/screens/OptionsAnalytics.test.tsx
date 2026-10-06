@@ -266,6 +266,53 @@ describe('OptionsAnalytics', () => {
     expect(callGroup.querySelector('rect')).not.toBeNull();
   });
 
+  it('draws a missing segment (not zero) when call_volume is null', async () => {
+    const nullCallResponse = {
+      ...mockOptionsResponse,
+      options: {
+        ...mockOptionsResponse.options,
+        data: [
+          {
+            symbol: 'NVDA',
+            feature_ts: '2026-08-01T00:00:00Z',
+            put_volume: 100,
+            call_volume: null,
+            put_call_ratio: null,
+            iv_atm: null,
+            iv_25d_put: null,
+            iv_25d_call: null,
+            iv_skew: null,
+            iv_term_slope: null,
+            avg_spread_pct: null,
+            volume_anomaly_zscore: null,
+            oi_concentration: null,
+            net_delta_exposure: null,
+          },
+        ],
+        count: 1,
+      },
+    };
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(nullCallResponse),
+    }));
+
+    render(<OptionsAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: /call volume bars/i })).toBeInTheDocument();
+    });
+
+    const putGroup = screen.getByRole('img', { name: /put volume bars/i });
+    const callGroup = screen.getByRole('img', { name: /call volume bars/i });
+
+    // Put segment should render
+    expect(putGroup.querySelector('rect')).not.toBeNull();
+    // Call segment should be missing (no rect), not a zero-height rect
+    expect(callGroup.querySelector('rect')).toBeNull();
+  });
+
   it('shows error state on API failure', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
