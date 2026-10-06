@@ -5,6 +5,7 @@ import { getRecentSymbols, pushRecentSymbol, getUrlSymbol, setUrlSymbol } from '
 type SymbolList = 'market' | 'options' | 'sec';
 
 const QUICK_CHOICES = ['NVDA', 'AAPL', 'MSFT', 'AMD', 'SPY'] as const;
+const TICKER_RE = /^[A-Z]{1,5}$/;
 
 const LISTS: Record<SymbolList, string[]> = {
   market: (symbols as { market: string[] }).market,
@@ -41,6 +42,7 @@ export function SymbolPicker({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const initializedRef = useRef(false);
+  const [committedValue, setCommittedValue] = useState(value);
 
   const options = secMode
     ? (secCoverage ?? []).map((c) => c.ticker)
@@ -48,15 +50,16 @@ export function SymbolPicker({
 
   const recent = useMemo(() => getRecentSymbols(), []);
 
-  // Initialize from URL param once (set local state only, don't trigger onChange)
+  // Initialize from URL param once — lift to parent so the screen/API uses it
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
     const urlSym = getUrlSymbol();
     if (urlSym && urlSym !== value) {
-      const isValid = options.includes(urlSym) || LISTS.market.includes(urlSym);
+      const upper = urlSym.toUpperCase();
+      const isValid = options.includes(upper) || LISTS.market.includes(upper);
       if (isValid) {
-        setQuery(urlSym);
+        onChange(upper);
       }
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -64,6 +67,7 @@ export function SymbolPicker({
   // Keep query in sync with value
   useEffect(() => {
     setQuery(value);
+    if (value) setCommittedValue(value);
   }, [value]);
 
   const filtered = useMemo(() => {
@@ -77,6 +81,7 @@ export function SymbolPicker({
       const upper = symbol.toUpperCase();
       onChange(upper);
       setQuery(upper);
+      setCommittedValue(upper);
       setOpen(false);
       pushRecentSymbol(upper);
       setUrlSymbol(upper);
@@ -122,8 +127,8 @@ export function SymbolPicker({
     setHighlightIdx(0);
   }, [query]);
 
-  const inList = options.includes(value.toUpperCase());
-  const showNoCoverage = value && !inList;
+  const inList = options.includes(committedValue.toUpperCase());
+  const showNoCoverage = committedValue && !inList;
 
   return (
     <div className="space-y-2">
@@ -200,8 +205,21 @@ export function SymbolPicker({
             </ul>
           )}
           {open && filtered.length === 0 && (
-            <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 shadow-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
-              No matching symbols
+            <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-lg dark:border-slate-700 dark:bg-slate-900">
+              {TICKER_RE.test(query.trim().toUpperCase()) ? (
+                <button
+                  type="button"
+                  className="w-full cursor-pointer text-left text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    handleSelect(query.trim().toUpperCase());
+                  }}
+                >
+                  Submit {query.trim().toUpperCase()} — server will check coverage
+                </button>
+              ) : (
+                <span className="text-slate-500 dark:text-slate-400">No matching symbols</span>
+              )}
             </div>
           )}
         </div>
@@ -221,7 +239,7 @@ export function SymbolPicker({
 
       {showNoCoverage && (
         <p className="text-xs text-amber-600 dark:text-amber-400">
-          {value.toUpperCase()} is not in the {secMode ? 'SEC coverage' : list} dataset. Data may be unavailable.
+          {committedValue.toUpperCase()} is not in the {secMode ? 'SEC coverage' : list} dataset. Data may be unavailable.
         </p>
       )}
 

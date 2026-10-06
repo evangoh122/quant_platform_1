@@ -51,8 +51,18 @@ describe('SymbolPicker', () => {
       expect(urlSpy).toHaveBeenCalled();
     });
 
-    // The input displays the controlled value prop
-    expect(screen.getByRole('combobox')).toHaveValue('NVDA');
+    // URL param should be lifted to the parent via onChange
+    expect(onChange).toHaveBeenCalledWith('MSFT');
+  });
+
+  it('initializes from ?symbol=AMD and drives the parent', async () => {
+    urlSpy.mockReturnValue('AMD');
+    const onChange = vi.fn();
+    render(<SymbolPicker value="NVDA" onChange={onChange} list="market" />);
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith('AMD');
+    });
   });
 
   it('shows no coverage for a valid-looking symbol outside the selected dataset', () => {
@@ -101,6 +111,25 @@ describe('SymbolPicker', () => {
 
     // onChange should NOT have been called with an invalid symbol
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('allows submitting a typed ticker that passes format check', async () => {
+    const onChange = vi.fn();
+    render(<SymbolPicker value="" onChange={onChange} list="market" />);
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'ZZZZ' } });
+
+    // ZZZZ is not in market list, but passes ticker format — should show submit option
+    await waitFor(() => {
+      expect(screen.getByText(/Submit ZZZZ/)).toBeInTheDocument();
+    });
+
+    // Click submit
+    fireEvent.mouseDown(screen.getByText(/Submit ZZZZ/));
+
+    expect(onChange).toHaveBeenCalledWith('ZZZZ');
   });
 
   it('updates URL on selection', () => {
