@@ -53,11 +53,6 @@ resources:
             python_file: ../pipelines/build_sec_embeddings.py
             parameters: ["--catalog", "${var.catalog}", "--schema", "${var.schema}"]
           environment_key: serverless
-          libraries:
-            - pypi:
-                package: "sentence-transformers>=2.2.0"
-            - pypi:
-                package: "torch>=2.0.0"
       environments:
         - environment_key: serverless
           spec:
@@ -154,7 +149,6 @@ resources:
               - "--batch-size"
               - "5000"
           environment_key: serverless
-          libraries: []
       environments:
         - environment_key: serverless
           spec:
