@@ -483,6 +483,7 @@ def run_ingest_companyfacts(
     _seen_payloads: Optional[Set[Tuple[str, str]]] = None,
     # Concurrency
     max_workers: int = 4,
+    _key_wait_timeout: float = 30.0,
 ) -> Dict[str, Any]:
     """Run the SEC Company Facts ingestion pipeline.
 
@@ -599,6 +600,10 @@ def run_ingest_companyfacts(
     key_cond = threading.Condition(lock)
     # Per-key state: "in_flight" | "completed" | "failed"
     key_state: Dict[Tuple[str, str], str] = {}
+    # Per-key ownership generation: incremented each time a worker acquires
+    # ownership.  A stale outer handler compares its recorded generation
+    # against the current one to avoid clobbering a successor.
+    key_generation: Dict[Tuple[str, str], int] = {}
     worker_count = min(max_workers, len(ticker_cik_pairs)) if ticker_cik_pairs else 1
 
     def _fetch_one(ticker: str, cik: str) -> None:
@@ -624,6 +629,7 @@ def run_ingest_companyfacts(
 
             # Acquire ownership or wait for in-flight owner.
             with key_cond:
+                _my_gen = None  # ownership generation we hold (None = none)
                 while True:
                     state = key_state.get(key)
                     if state == "completed":
@@ -637,14 +643,23 @@ def run_ingest_companyfacts(
                         return
                     elif state == "in_flight":
                         # Another worker is appending; wait for outcome.
-                        key_cond.wait()
+                        notified = key_cond.wait(timeout=_key_wait_timeout)
+                        if not notified and key_state.get(key) == "in_flight":
+                            raise RuntimeError(
+                                f"Key {key} wait timed out after "
+                                f"{_key_wait_timeout}s without state change"
+                            )
                         # Loop re-checks state after wake.
                     elif state == "failed":
                         # Previous owner failed; acquire ownership for retry.
+                        key_generation[key] = key_generation.get(key, 0) + 1
+                        _my_gen = key_generation[key]
                         key_state[key] = "in_flight"
                         break
                     else:
                         # Key not seen; acquire ownership.
+                        key_generation[key] = key_generation.get(key, 0) + 1
+                        _my_gen = key_generation[key]
                         key_state[key] = "in_flight"
                         break
 
@@ -693,7 +708,12 @@ def run_ingest_companyfacts(
                 result["failed_count"] += 1
                 if payload_hash is not None:
                     key = (cik, payload_hash)
-                    if key_state.get(key) == "in_flight":
+                    # Only fail the key if we still own it; a successor may
+                    # have already acquired ownership after our inner handler
+                    # transitioned to "failed" and notified.
+                    if (key_state.get(key) == "in_flight"
+                            and _my_gen is not None
+                            and key_generation.get(key) == _my_gen):
                         key_state[key] = "failed"
                         key_cond.notify_all()
             manifest.fetch_status = "failed"
@@ -717,7 +737,12 @@ def run_ingest_companyfacts(
                 result["failed_count"] += 1
                 if payload_hash is not None:
                     key = (cik, payload_hash)
-                    if key_state.get(key) == "in_flight":
+                    # Only fail the key if we still own it; a successor may
+                    # have already acquired ownership after our inner handler
+                    # transitioned to "failed" and notified.
+                    if (key_state.get(key) == "in_flight"
+                            and _my_gen is not None
+                            and key_generation.get(key) == _my_gen):
                         key_state[key] = "failed"
                         key_cond.notify_all()
             manifest.fetch_status = "failed"

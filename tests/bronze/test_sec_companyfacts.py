@@ -2863,3 +2863,240 @@ class TestDefaultWriterUsesSharedRuntime:
 
         assert result is sentinel_injected
         assert result is not sentinel_default
+
+
+# ── Round 8 regression tests: ownership guard and bounded wait ──────────────
+
+
+class TestThreeWorkerOwnershipGuard:
+    """Round 8 regression: a stale owner must not clobber a successor's state.
+
+    Scenario:
+      - Worker 1 acquires key, starts append, FAILS (inner exception).
+      - Worker 2 acquires retry ownership after Worker 1's inner handler sets "failed".
+      - Worker 1's outer handler runs — must NOT change Worker 2's state.
+      - Worker 3 sees "completed" and skips.
+      - Exactly one successful persisted append, no duplicate success rows.
+    """
+
+    def test_three_worker_one_key_no_clobber(self):
+        payload = _make_company_facts_payload()
+        payload_bytes = json.dumps(payload).encode()
+        payload_hash = compute_payload_hash(payload_bytes)
+        cik_url = build_source_url("0000320193")
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+
+        barrier = threading.Barrier(2, timeout=10)
+
+        http = BarrierFakeHttpClient(
+            {
+                tickers_url: [
+                    _payload_200({
+                        "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+                    }),
+                ],
+                cik_url: [
+                    _payload_200(payload),
+                    _payload_200(payload),
+                    _payload_200(payload),
+                ],
+            },
+            barrier=barrier,
+            barrier_urls={cik_url},
+        )
+        clock = FakeClock()
+
+        first_append_started = threading.Event()
+        first_append_fail_allowed = threading.Event()
+        append_attempts = []
+        append_lock = threading.Lock()
+        third_skipped = threading.Event()
+
+        def tracking_delta_writer(cat, sch, rows):
+            with append_lock:
+                attempt_num = len(append_attempts) + 1
+                append_attempts.append(attempt_num)
+                is_first = (attempt_num == 1)
+            if is_first:
+                first_append_started.set()
+                first_append_fail_allowed.wait(timeout=15)
+                raise RuntimeError("Delta write failed (injected)")
+
+        manifest_entries = []
+
+        def tracking_manifest_writer(cat, sch, entry):
+            manifest_entries.append(entry)
+            if entry.fetch_status == "skipped_duplicate":
+                third_skipped.set()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            pipeline_thread = threading.Thread(
+                target=lambda: run_ingest_companyfacts(
+                    catalog="test_cat",
+                    schema="test_sch",
+                    tickers=["AAPL", "AAPL2", "AAPL3"],
+                    run_id="run_three_worker",
+                    http_client=http,
+                    clock=clock,
+                    cik_overrides={
+                        "AAPL": ["0000320193"],
+                        "AAPL2": ["0000320193"],
+                        "AAPL3": ["0000320193"],
+                    },
+                    delta_writer=tracking_delta_writer,
+                    manifest_writer=tracking_manifest_writer,
+                    cache_path="/dev/null",
+                    max_workers=3,
+                )
+            )
+            pipeline_thread.start()
+
+            assert first_append_started.wait(timeout=10), "First append did not start in time"
+            time.sleep(0.2)
+
+            # Tell Worker 1 to fail its append.
+            first_append_fail_allowed.set()
+
+            # Wait for Worker 3 to skip (pipeline complete).
+            assert third_skipped.wait(timeout=20), "Third worker did not skip in time"
+
+            pipeline_thread.join(timeout=25)
+            assert not pipeline_thread.is_alive(), "Pipeline thread did not complete in time"
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        # Worker 1's outer handler must not have clobbered Worker 2's state.
+        # If it did, we'd see Worker 2's state transitioned to "failed" and
+        # Worker 3 would re-acquire ownership and attempt a third append.
+        # Correct fixed behavior: exactly 2 append attempts (1 fail + 1 success).
+        assert len(append_attempts) == 2, (
+            f"Expected 2 append attempts (1 fail + 1 success), "
+            f"got {len(append_attempts)} — extra attempts indicate "
+            f"stale-owner clobber bug"
+        )
+        assert append_attempts[0] == 1
+        assert append_attempts[1] == 2
+
+        statuses = [e.fetch_status for e in manifest_entries]
+        assert statuses.count("success") == 1
+        assert statuses.count("failed") == 1
+        assert statuses.count("skipped_duplicate") == 1
+
+        success_entries = [e for e in manifest_entries if e.fetch_status == "success"]
+        assert len(success_entries) == 1
+        assert success_entries[0].payload_hash == payload_hash
+
+
+class TestBoundedWaitTimeout:
+    """Round 8 regression: bounded missed-release/no-notify test.
+
+    Proves the production wait exits through the intended error path within
+    a controlled bound rather than hanging the suite.
+
+    Scenario:
+      - One worker acquires the key and gets stuck in delta write (never completes).
+      - A second worker sees "in_flight" and waits.
+      - The wait times out (bounded) and raises RuntimeError.
+    """
+
+    def test_bounded_wait_exits_on_timeout(self):
+        payload = _make_company_facts_payload()
+        cik_url = build_source_url("0000320193")
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+
+        block_forever = threading.Event()
+
+        def blocking_delta_writer(cat, sch, rows):
+            block_forever.wait(timeout=60)
+
+        http = BarrierFakeHttpClient(
+            {
+                tickers_url: [
+                    _payload_200({
+                        "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+                    }),
+                ],
+                cik_url: [
+                    _payload_200(payload),
+                    _payload_200(payload),
+                ],
+            },
+        )
+        clock = FakeClock()
+        manifest_entries = []
+
+        # Dedicated event: set when the manifest writer receives a failed
+        # entry whose error indicates a wait timeout.  This replaces the
+        # global threading.Condition monkeypatch that was catching unrelated
+        # ThreadPoolExecutor internal waits.
+        timeout_manifest_event = threading.Event()
+
+        def tracking_manifest_writer(cat, sch, entry):
+            manifest_entries.append(entry)
+            if (entry.fetch_status == "failed"
+                    and entry.error_message
+                    and "timed out" in entry.error_message.lower()):
+                timeout_manifest_event.set()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result_holder = {}
+
+            def run_pipeline():
+                result_holder["result"] = run_ingest_companyfacts(
+                    catalog="test_cat",
+                    schema="test_sch",
+                    tickers=["AAPL", "AAPL2"],
+                    run_id="run_bounded_wait",
+                    http_client=http,
+                    clock=clock,
+                    cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
+                    delta_writer=blocking_delta_writer,
+                    manifest_writer=tracking_manifest_writer,
+                    cache_path="/dev/null",
+                    max_workers=2,
+                    _key_wait_timeout=0.05,
+                )
+
+            pipeline_thread = threading.Thread(target=run_pipeline)
+            pipeline_thread.start()
+
+            # Wait for the manifest writer to record the timeout failure.
+            assert timeout_manifest_event.wait(timeout=20), (
+                "Timeout manifest not received in time"
+            )
+
+            # Release the blocked owner so the pipeline thread can terminate.
+            block_forever.set()
+
+            pipeline_thread.join(timeout=25)
+            assert not pipeline_thread.is_alive(), (
+                "Pipeline thread did not complete — wait may have hung"
+            )
+
+            result = result_holder.get("result")
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+            # Ensure blocked owner is released even on test failure.
+            block_forever.set()
+
+        # One worker succeeded (the stuck owner), one failed (wait timeout).
+        assert result["fetched_count"] == 1
+        assert result["failed_count"] == 1
+
+        failed_entries = [e for e in manifest_entries if e.fetch_status == "failed"]
+        assert len(failed_entries) == 1
+        assert "timed out" in failed_entries[0].error_message.lower()
