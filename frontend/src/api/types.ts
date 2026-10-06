@@ -200,6 +200,37 @@ export interface OrderIntentResult {
   idempotency_key: string;
 }
 
+export interface CotWeeklyRow {
+  mapped_asset: string;
+  report_date: string;
+  information_available_ts: string;
+  lev_money_net: number | null;
+  lev_money_net_chg_1w: number | null;
+  lev_money_pctile_52w: number | null;
+  lev_money_zscore_52w: number | null;
+  asset_mgr_net: number | null;
+  asset_mgr_pctile_52w: number | null;
+  crowding_score: number | null;
+  regime_label: string | null;
+}
+
+export interface CotContractRow {
+  contract_name: string;
+  open_interest: number | null;
+  dealer_net: number | null;
+  asset_mgr_net: number | null;
+  lev_money_net: number | null;
+  dealer_pct_oi: number | null;
+  asset_mgr_pct_oi: number | null;
+  lev_money_pct_oi: number | null;
+}
+
+export interface PositioningResponse {
+  asset_class: string;
+  weekly: Envelope<CotWeeklyRow>;
+  contracts: Envelope<CotContractRow>;
+}
+
 export interface OrderActionResult {
   order_id: string;
   status: string;

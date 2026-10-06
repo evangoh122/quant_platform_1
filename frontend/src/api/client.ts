@@ -10,6 +10,7 @@ import type {
   OrderIntentRequest,
   OrderIntentResult,
   Portfolio,
+  PositioningResponse,
   SecCoverageResponse,
   Signal,
   WatchlistItem,
@@ -73,4 +74,9 @@ export const api = {
     post<OrderActionResult>(`/api/orders/${encodeURIComponent(orderId)}/approve`, {}),
   cancelOrder: (orderId: string): Promise<OrderActionResult> =>
     post<OrderActionResult>(`/api/orders/${encodeURIComponent(orderId)}/cancel`, {}),
+  positioning: (assetClass: string, weeks?: number): Promise<PositioningResponse> => {
+    const params = new URLSearchParams({ asset_class: assetClass });
+    if (weeks != null) params.set('weeks', String(weeks));
+    return request<PositioningResponse>(`/api/positioning/cot?${params}`);
+  },
 };

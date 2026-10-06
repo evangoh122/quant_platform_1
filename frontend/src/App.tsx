@@ -12,12 +12,14 @@ import { OrderApprovalDrawer } from './screens/OrderApprovalDrawer';
 import { SystemHealth } from './screens/SystemHealth';
 import { PlatformOverview } from './screens/PlatformOverview';
 import { ArchitectureEvidence } from './screens/ArchitectureEvidence';
+import { Positioning } from './screens/Positioning';
 import { useTourHost, CoachMarks } from './components/tours/TourHost';
 
 type ScreenId =
   | 'platform-overview'
   | 'market'
   | 'options'
+  | 'positioning'
   | 'sec'
   | 'agent'
   | 'signals'
@@ -38,6 +40,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'market', label: 'Market Explorer' },
       { id: 'options', label: 'Options Analytics' },
+      { id: 'positioning', label: 'Positioning' },
       { id: 'sec', label: 'SEC Research' },
       { id: 'agent', label: 'AI Research Agent' },
     ],
@@ -102,6 +105,8 @@ export default function App() {
         return <MarketDashboard />;
       case 'options':
         return <OptionsAnalytics />;
+      case 'positioning':
+        return <Positioning />;
       case 'sec':
         return <SecFilingExplorer />;
       case 'agent':
