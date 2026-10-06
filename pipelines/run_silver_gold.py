@@ -362,6 +362,37 @@ def run_checks(spark):
     run_availability_invariant(spark)
     run_matrix_invariant(spark)
 
+    # --- VWAP null-ratio guard ---
+    print("\n=== VWAP null-ratio checks ===")
+    gold_vwap_rows = spark.sql(
+        f"SELECT COUNT(*) FROM {FQN}.gold_ohlcv_features WHERE volume > 0"
+    ).collect()[0][0]
+    gold_vwap_nonnull = spark.sql(
+        f"SELECT COUNT(*) FROM {FQN}.gold_ohlcv_features WHERE volume > 0 AND vwap_deviation IS NOT NULL"
+    ).collect()[0][0]
+    print(f"  gold_ohlcv_features: {gold_vwap_nonnull}/{gold_vwap_rows} rows with volume>0 have non-null vwap_deviation")
+    if gold_vwap_rows > 0 and gold_vwap_nonnull == 0:
+        raise RuntimeError(
+            f"VWAP guard: gold_ohlcv_features has {gold_vwap_rows} rows with volume>0 "
+            f"but zero non-null vwap_deviation — session VWAP is not being computed"
+        )
+
+    try:
+        adj_vwap_by_source = spark.sql(
+            f"""SELECT vwap_source,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN adj_vwap IS NOT NULL THEN 1 ELSE 0 END) AS non_null
+                FROM {FQN}.silver_ohlcv_day_adjusted
+                GROUP BY vwap_source
+                ORDER BY vwap_source"""
+        ).collect()
+        print(f"  silver_ohlcv_day_adjusted adj_vwap by vwap_source:")
+        for row in adj_vwap_by_source:
+            src = row["vwap_source"] or "NULL"
+            print(f"    {src}: {row['non_null']}/{row['total']} non-null")
+    except Exception as e:
+        print(f"  silver_ohlcv_day_adjusted vwap_source breakdown: ERROR {str(e)[:120]}")
+
 
 def main():
     ap = argparse.ArgumentParser()
