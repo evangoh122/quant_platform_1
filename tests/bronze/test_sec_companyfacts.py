@@ -1023,7 +1023,133 @@ class TestRunIngestCompanyFacts:
         with append_lock:
             assert append_count[0] == 1
 
-    def test_max_workers_one_uses_single_worker(self):
+    def test_concurrent_failure_recovery_second_worker_retries(self):
+        """Synchronized regression: first worker owns append and fails;
+        second worker waits, then retries and succeeds.
+
+        Exactly two append attempts occur, exactly one succeeds.
+        No manifest claims skipped_duplicate before the successful append.
+        """
+        payload = _make_company_facts_payload()
+        payload_bytes = json.dumps(payload).encode()
+        payload_hash = compute_payload_hash(payload_bytes)
+        cik_url = build_source_url("0000320193")
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+
+        # Synchronization events
+        first_append_started = threading.Event()
+        first_append_fail_allowed = threading.Event()
+
+        append_lock = threading.Lock()
+        append_attempts = []
+
+        def synchronized_delta_writer(cat, sch, rows):
+            with append_lock:
+                attempt_num = len(append_attempts) + 1
+                append_attempts.append(attempt_num)
+                is_first = (attempt_num == 1)
+
+            if is_first:
+                # Signal that first append has started
+                first_append_started.set()
+                # Wait until we're told to fail
+                first_append_fail_allowed.wait(timeout=10)
+                raise RuntimeError("Delta write failed (injected)")
+
+        http = BarrierFakeHttpClient(
+            {
+                tickers_url: [
+                    _payload_200({
+                        "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+                    }),
+                ],
+                cik_url: [
+                    _payload_200(payload),
+                    _payload_200(payload),
+                ],
+            },
+        )
+        clock = FakeClock()
+        manifest_entries = []
+
+        def tracking_manifest_writer(cat, sch, entry):
+            manifest_entries.append(entry)
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        # Instrument key_cond.wait to add a timeout so missing notifications
+        # cause a detectable failure rather than an indefinite hang.
+        original_key_cond_cls = threading.Condition
+        wait_timeout_applied = [False]
+
+        class TimeoutCondition(original_key_cond_cls):
+            def wait(self, timeout=None):
+                if timeout is None and not wait_timeout_applied[0]:
+                    wait_timeout_applied[0] = True
+                    return super().wait(timeout=15)
+                return super().wait(timeout=timeout)
+
+        try:
+            result_holder = {}
+
+            def run_pipeline():
+                result_holder["result"] = run_ingest_companyfacts(
+                    catalog="test_cat",
+                    schema="test_sch",
+                    tickers=["AAPL", "AAPL2"],
+                    run_id="run_fail_recovery",
+                    http_client=http,
+                    clock=clock,
+                    cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
+                    delta_writer=synchronized_delta_writer,
+                    manifest_writer=tracking_manifest_writer,
+                    cache_path="/dev/null",
+                    max_workers=2,
+                )
+
+            # Patch threading.Condition to use our timeout version
+            threading.Condition = TimeoutCondition
+
+            pipeline_thread = threading.Thread(target=run_pipeline)
+            pipeline_thread.start()
+
+            # Wait for first append to start
+            assert first_append_started.wait(timeout=10), "First append did not start in time"
+
+            # Give second worker time to reach the wait() state
+            time.sleep(0.2)
+
+            # Now tell the first append to fail
+            first_append_fail_allowed.set()
+
+            # Wait for pipeline to complete
+            pipeline_thread.join(timeout=25)
+            assert not pipeline_thread.is_alive(), "Pipeline thread did not complete in time"
+
+            result = result_holder["result"]
+        finally:
+            threading.Condition = original_key_cond_cls
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        # Exactly two append attempts occurred
+        assert len(append_attempts) == 2, f"Expected 2 append attempts, got {len(append_attempts)}"
+
+        # First failed, second succeeded
+        assert result["failed_count"] == 1
+        assert result["fetched_count"] == 1
+
+        # No skipped_duplicate should appear before the successful append
+        statuses = [e.fetch_status for e in manifest_entries]
+        assert statuses.count("success") == 1
+        assert statuses.count("failed") == 1
+        assert "skipped_duplicate" not in statuses, (
+            f"Unexpected skipped_duplicate in manifest: {statuses}"
+        )
         """max_workers=1 must create a ThreadPoolExecutor with exactly one worker.
 
         Spies on ThreadPoolExecutor to verify the kwarg is forwarded.

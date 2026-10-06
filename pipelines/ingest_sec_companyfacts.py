@@ -596,6 +596,9 @@ def run_ingest_companyfacts(
     # Ingest each ticker-CIK with bounded concurrency
     ingested_at = datetime.now(timezone.utc)
     lock = threading.Lock()
+    key_cond = threading.Condition(lock)
+    # Per-key state: "in_flight" | "completed" | "failed"
+    key_state: Dict[Tuple[str, str], str] = {}
     worker_count = min(max_workers, len(ticker_cik_pairs)) if ticker_cik_pairs else 1
 
     def _fetch_one(ticker: str, cik: str) -> None:
@@ -609,6 +612,7 @@ def run_ingest_companyfacts(
         )
 
         call_attempts = [0]
+        payload_hash = None
 
         try:
             payload, raw_bytes, payload_hash, http_status, attempt_count = fetch_company_facts(client, cik, _attempts=call_attempts)
@@ -616,20 +620,33 @@ def run_ingest_companyfacts(
             manifest.payload_bytes = len(raw_bytes)
             manifest.http_status = http_status
 
-            # Skip if same (cik, payload_hash) already written this run.
-            # Reserve the key immediately to prevent a concurrent worker
-            # with the same (cik, payload_hash) from also appending.
-            with lock:
-                if (cik, payload_hash) in seen_payloads:
-                    manifest.fetch_status = "skipped_duplicate"
-                    manifest.attempt_count = attempt_count
-                    manifest.completed_at = datetime.now(timezone.utc)
-                    result["skipped_duplicate_payloads"] += 1
-                    if manifest_writer is not None:
-                        manifest_writer(catalog, schema, manifest)
-                    return
-                # Reserve: mark key as in-flight so no other worker duplicates
-                seen_payloads.add((cik, payload_hash))
+            key = (cik, payload_hash)
+
+            # Acquire ownership or wait for in-flight owner.
+            with key_cond:
+                while True:
+                    state = key_state.get(key)
+                    if state == "completed":
+                        # Already written by another worker.
+                        manifest.fetch_status = "skipped_duplicate"
+                        manifest.attempt_count = attempt_count
+                        manifest.completed_at = datetime.now(timezone.utc)
+                        result["skipped_duplicate_payloads"] += 1
+                        if manifest_writer is not None:
+                            manifest_writer(catalog, schema, manifest)
+                        return
+                    elif state == "in_flight":
+                        # Another worker is appending; wait for outcome.
+                        key_cond.wait()
+                        # Loop re-checks state after wake.
+                    elif state == "failed":
+                        # Previous owner failed; acquire ownership for retry.
+                        key_state[key] = "in_flight"
+                        break
+                    else:
+                        # Key not seen; acquire ownership.
+                        key_state[key] = "in_flight"
+                        break
 
             try:
                 # Flatten
@@ -652,13 +669,15 @@ def run_ingest_companyfacts(
                 if delta_writer is not None and rows:
                     delta_writer(catalog, schema, rows)
 
-                with lock:
+                with key_cond:
                     result["fetched_count"] += 1
                     result["total_facts"] += len(rows)
+                    key_state[key] = "completed"
+                    key_cond.notify_all()
             except Exception:
-                # Release reservation on failure so another worker can retry
-                with lock:
-                    seen_payloads.discard((cik, payload_hash))
+                with key_cond:
+                    key_state[key] = "failed"
+                    key_cond.notify_all()
                 raise
 
             if manifest_writer is not None:
@@ -670,15 +689,20 @@ def run_ingest_companyfacts(
             )
 
         except SecClientError as e:
-            with lock:
+            with key_cond:
                 result["failed_count"] += 1
+                if payload_hash is not None:
+                    key = (cik, payload_hash)
+                    if key_state.get(key) == "in_flight":
+                        key_state[key] = "failed"
+                        key_cond.notify_all()
             manifest.fetch_status = "failed"
             manifest.attempt_count = call_attempts[0]
             manifest.http_status = e.status_code
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = _classify_error(e)
             manifest.error_message = str(e)[:500]
-            with lock:
+            with key_cond:
                 result["errors"].append({
                     "ticker": ticker,
                     "cik": cik,
@@ -689,14 +713,19 @@ def run_ingest_companyfacts(
                 manifest_writer(catalog, schema, manifest)
 
         except Exception as e:
-            with lock:
+            with key_cond:
                 result["failed_count"] += 1
+                if payload_hash is not None:
+                    key = (cik, payload_hash)
+                    if key_state.get(key) == "in_flight":
+                        key_state[key] = "failed"
+                        key_cond.notify_all()
             manifest.fetch_status = "failed"
             manifest.attempt_count = call_attempts[0]
             manifest.completed_at = datetime.now(timezone.utc)
             manifest.error_category = "unexpected"
             manifest.error_message = str(e)[:500]
-            with lock:
+            with key_cond:
                 result["errors"].append({
                     "ticker": ticker,
                     "cik": cik,

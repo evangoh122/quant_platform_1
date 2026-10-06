@@ -1283,14 +1283,14 @@ def _try_load_cache(
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return None
-        
+
         # For fallback caches, treat caches with fewer than 1,000 entries as invalid
         # (likely test pollution or incomplete data; real file has ~10,400)
         if is_fallback:
             MIN_VALID_CACHE_ENTRIES = 1000
             if len(data) < MIN_VALID_CACHE_ENTRIES:
                 return None
-        
+
         return data
     except Exception:
         return None
