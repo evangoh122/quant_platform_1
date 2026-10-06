@@ -38,6 +38,8 @@ function makeCoverageData(count: number) {
 describe('SecFilingExplorer', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    localStorage.clear();
+    window.history.replaceState(null, '', window.location.pathname);
     mockSecCoverage.mockResolvedValue(makeCoverageData(5));
   });
 
@@ -190,6 +192,42 @@ describe('SecFilingExplorer', () => {
 
     await waitFor(() => {
       expect(mockChat).toHaveBeenCalledWith('search SEC filings for AMD');
+    });
+  });
+
+  it('fallback SymbolPicker allows submitting a typed ticker not in the list', async () => {
+    mockSecCoverage.mockRejectedValue(new Error('fail'));
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'TSLA' },
+            result: { rows: [{ chunk_text: 'Tesla revenue', section: 'MD&A' }] },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/unavailable/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'TSLA' } });
+
+    // TSLA is not in the sec list, but passes ticker format — should show submit option
+    await waitFor(() => {
+      expect(screen.getByText(/Submit TSLA/)).toBeInTheDocument();
+    });
+
+    fireEvent.mouseDown(screen.getByText(/Submit TSLA/));
+
+    await waitFor(() => {
+      expect(mockChat).toHaveBeenCalledWith('search SEC filings for TSLA');
     });
   });
 
