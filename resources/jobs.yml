@@ -103,9 +103,6 @@ resources:
               - "--user-agent-secret-key"
               - "sec_edgar_user_agent"
           environment_key: serverless
-          libraries:
-            - pypi:
-                package: "pyyaml>=6.0"
       environments:
         - environment_key: serverless
           spec:

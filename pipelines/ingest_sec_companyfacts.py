@@ -30,8 +30,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Ensure repo root is on sys.path so ``pipelines.*`` resolves when invoked
 # via ``python_file`` in a Databricks job.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_p = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
 
+from pipelines._runtime import get_spark
 from pipelines.sec_rag_ingest import (
     DEFAULT_REQUESTS_PER_SECOND,
     DEFAULT_SECRET_KEY,
@@ -754,8 +756,7 @@ class SparkCompanyFactsWriter:
     def _get_spark(self):
         if self._spark_factory is not None:
             return self._spark_factory()
-        from databricks.connect import DatabricksSession
-        return DatabricksSession.builder.serverless(True).getOrCreate()
+        return get_spark()
 
     def ensure_table(self, catalog: str, schema: str) -> None:
         """Create bronze_sec_xbrl_facts if absent."""
@@ -798,8 +799,7 @@ class SparkCompanyFactsManifestWriter:
     def _get_spark(self):
         if self._spark_factory is not None:
             return self._spark_factory()
-        from databricks.connect import DatabricksSession
-        return DatabricksSession.builder.serverless(True).getOrCreate()
+        return get_spark()
 
     def ensure_table(self, catalog: str, schema: str) -> None:
         """Create sec_companyfacts_ingest_log if absent; add http_status if missing."""
