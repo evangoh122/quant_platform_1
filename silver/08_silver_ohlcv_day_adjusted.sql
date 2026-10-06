@@ -143,13 +143,13 @@ UNION SELECT 'QQQ';
 CREATE OR REPLACE TEMP VIEW _minute_vwap AS
 SELECT
     symbol,
-    DATE(from_utc_timestamp(event_ts, 'America/New_York')) AS trading_date,
+    DATE(CONVERT_TIMEZONE('UTC', 'America/New_York', event_ts)) AS trading_date,
     SUM(COALESCE(vwap, (high + low + close) / 3.0) * volume)
         / NULLIF(SUM(volume), 0) AS minute_vwap
 FROM bootcamp_students.evangoh_capstone.silver_ohlcv
 WHERE timespan = 'minute'
   AND volume > 0
-GROUP BY symbol, DATE(from_utc_timestamp(event_ts, 'America/New_York'));
+GROUP BY symbol, DATE(CONVERT_TIMEZONE('UTC', 'America/New_York', event_ts));
 
 
 -- ============================================================

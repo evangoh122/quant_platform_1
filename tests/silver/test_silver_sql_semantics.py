@@ -47,11 +47,18 @@ def _shim_for_duckdb(sql: str) -> str:
 
     Known translations:
     - bootcamp_students.evangoh_capstone. prefix → stripped (use bare table names)
+    - CONVERT_TIMEZONE('UTC', 'America/New_York', event_ts) → AT TIME ZONE syntax
     """
     result = sql
 
     # Strip schema prefix
     result = result.replace("bootcamp_students.evangoh_capstone.", "")
+
+    # Replace CONVERT_TIMEZONE with DuckDB AT TIME ZONE syntax
+    result = result.replace(
+        "DATE(CONVERT_TIMEZONE('UTC', 'America/New_York', event_ts))",
+        "CAST(event_ts AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' AS DATE)"
+    )
 
     return result
 
@@ -84,6 +91,19 @@ def _setup_duckdb(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS _universe (
             symbol VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS silver_ohlcv (
+            symbol VARCHAR,
+            event_ts TIMESTAMP,
+            timespan VARCHAR,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            volume DOUBLE,
+            vwap DOUBLE
         )
     """)
     # Populate universe with AMZN and SQQQ
@@ -482,9 +502,11 @@ def _run_break_ctes(conn: duckdb.DuckDBPyConnection,
     adjusted_sql = _shim_for_duckdb(_extract_cte(sql_text, "_adjusted"))
     break_cand_sql = _shim_for_duckdb(_extract_cte(sql_text, "_break_candidates"))
     class_breaks_sql = _shim_for_duckdb(_extract_cte(sql_text, "_classified_breaks"))
+    minute_vwap_sql = _shim_for_duckdb(_extract_cte(sql_text, "_minute_vwap"))
 
     conn.execute(resolved_sql)
     conn.execute(factors_sql)
+    conn.execute(minute_vwap_sql)
     conn.execute(adjusted_sql)
     conn.execute(break_cand_sql)
     conn.execute(class_breaks_sql)
@@ -655,12 +677,14 @@ WHERE a.raw_gross_return IS NOT NULL
 # ---------------------------------------------------------------------------
 
 def _run_adjusted(conn: duckdb.DuckDBPyConnection, sql_text: str):
-    """Execute _massive_splits → _split_factors → _adjusted, return adjusted rows."""
+    """Execute _massive_splits → _split_factors → _minute_vwap → _adjusted, return adjusted rows."""
     resolved_sql = _shim_for_duckdb(_extract_cte(sql_text, "_massive_splits"))
     factors_sql = _shim_for_duckdb(_extract_cte(sql_text, "_split_factors"))
+    minute_vwap_sql = _shim_for_duckdb(_extract_cte(sql_text, "_minute_vwap"))
     adjusted_sql = _shim_for_duckdb(_extract_cte(sql_text, "_adjusted"))
     conn.execute(resolved_sql)
     conn.execute(factors_sql)
+    conn.execute(minute_vwap_sql)
     conn.execute(adjusted_sql)
     return conn.execute(
         "SELECT symbol, event_date, close, volume, "

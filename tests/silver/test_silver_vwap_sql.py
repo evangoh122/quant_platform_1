@@ -34,10 +34,9 @@ def _shim_for_duckdb(sql: str) -> str:
     """Translate Databricks-only syntax to DuckDB-compatible SQL."""
     result = sql
     result = result.replace("bootcamp_students.evangoh_capstone.", "")
-    # Replace from_utc_timestamp(event_ts, 'America/New_York') with a DuckDB-compatible expression
-    # DuckDB: event_ts AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' then cast to date
+    # Replace CONVERT_TIMEZONE('UTC', 'America/New_York', event_ts) with DuckDB syntax
     result = result.replace(
-        "DATE(from_utc_timestamp(event_ts, 'America/New_York'))",
+        "DATE(CONVERT_TIMEZONE('UTC', 'America/New_York', event_ts))",
         "CAST(event_ts AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' AS DATE)"
     )
     return result
