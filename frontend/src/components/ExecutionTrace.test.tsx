@@ -125,4 +125,22 @@ describe('ExecutionTrace', () => {
 
     expect(screen.getByTestId('trace-response')).toHaveTextContent('Failed');
   });
+
+  it('remains hidden when idle — no request attempted', () => {
+    const { container } = render(
+      <ExecutionTrace toolCalls={[]} available={true} sending={false} reply="" attempted={false} />,
+    );
+
+    expect(container.querySelector('[data-testid="execution-trace"]')).toBeNull();
+  });
+
+  it('shows failed trace when request attempted with zero tools and no reply', () => {
+    render(
+      <ExecutionTrace toolCalls={[]} available={false} sending={false} reply="" attempted={true} />,
+    );
+
+    expect(screen.getByTestId('execution-trace')).toBeInTheDocument();
+    expect(screen.getByTestId('trace-response')).toHaveTextContent('Failed');
+    expect(screen.getByTestId('trace-tool_execution')).toHaveTextContent('Pending');
+  });
 });

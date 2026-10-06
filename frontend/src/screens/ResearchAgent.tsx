@@ -168,6 +168,7 @@ export function ResearchAgent() {
             available={lastAssistant?.available ?? true}
             sending={sending}
             reply={lastAssistant?.text}
+            attempted={messages.length > 0}
           />
           <EvidencePanel
             toolCalls={lastAssistant?.toolCalls ?? []}

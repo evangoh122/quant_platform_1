@@ -78,12 +78,13 @@ interface ExecutionTraceProps {
   available: boolean;
   sending: boolean;
   reply?: string;
+  attempted?: boolean;
 }
 
-export function ExecutionTrace({ toolCalls, available, sending, reply }: ExecutionTraceProps) {
+export function ExecutionTrace({ toolCalls, available, sending, reply, attempted }: ExecutionTraceProps) {
   const steps = deriveSteps(toolCalls, available, reply, sending);
 
-  if (toolCalls.length === 0 && !sending && !reply) return null;
+  if (toolCalls.length === 0 && !sending && !reply && !attempted) return null;
 
   return (
     <div data-testid="execution-trace" className="space-y-2">
