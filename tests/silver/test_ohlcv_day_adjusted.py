@@ -1012,3 +1012,15 @@ def test_silver_merge_deletes_rows_no_longer_in_source():
     sql = (Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql").read_text(encoding="utf-8")
     merge = sql[sql.index("MERGE INTO bootcamp_students.evangoh_capstone.silver_ohlcv_day_adjusted"):]
     assert re.search(r"WHEN\s+NOT\s+MATCHED\s+BY\s+SOURCE\s+THEN\s+DELETE", merge), "silver MERGE must delete stale rows"
+
+
+def test_sql_has_no_add_columns():
+    """The SQL file must not contain unconditional ADD COLUMNS.
+
+    Column addition is handled by ensure_day_adjusted_columns() in
+    pipelines/run_silver_gold.py (idempotent, reads existing columns first)."""
+    from pathlib import Path
+
+    sql = (Path(__file__).resolve().parents[2] / "silver" / "08_silver_ohlcv_day_adjusted.sql").read_text(encoding="utf-8")
+    assert "ADD COLUMNS" not in sql, \
+        "SQL must not contain ADD COLUMNS; use ensure_day_adjusted_columns() instead"

@@ -81,6 +81,10 @@ GOLD_MODEL_AVAILABILITY_COLUMNS = {
     "cot_available_ts": "TIMESTAMP",
 }
 
+DAY_ADJUSTED_COLUMNS = {
+    "vwap_source": "STRING",
+}
+
 
 
 def register_universe(spark) -> list[str]:
@@ -135,6 +139,24 @@ def ensure_model_availability_columns(spark):
     cols = ", ".join(f"{c} {GOLD_MODEL_AVAILABILITY_COLUMNS[c]}" for c in missing)
     spark.sql(f"ALTER TABLE {FQN}.gold_model_features ADD COLUMNS ({cols})")
     print(f"  added gold_model_features columns: {', '.join(missing)}")
+
+
+def ensure_day_adjusted_columns(spark):
+    """Additive schema change on silver_ohlcv_day_adjusted.
+
+    Adds the vwap_source column if missing. Idempotent and re-runnable: only
+    columns not already present are added. Skips silently if the table is not
+    readable (e.g. first run before the CREATE TABLE DDL executes)."""
+    try:
+        existing = set(spark.table(f"{FQN}.silver_ohlcv_day_adjusted").columns)
+    except Exception:
+        return
+    missing = [c for c in DAY_ADJUSTED_COLUMNS if c not in existing]
+    if not missing:
+        return
+    cols = ", ".join(f"{c} {DAY_ADJUSTED_COLUMNS[c]}" for c in missing)
+    spark.sql(f"ALTER TABLE {FQN}.silver_ohlcv_day_adjusted ADD COLUMNS ({cols})")
+    print(f"  added silver_ohlcv_day_adjusted columns: {', '.join(missing)}")
 
 
 def run_step(spark, name, path, kind, symbols):
@@ -422,6 +444,9 @@ def main():
 
     if not args.counts and (args.only is None or args.only == "gold"):
         ensure_model_availability_columns(spark)
+
+    if not args.counts:
+        ensure_day_adjusted_columns(spark)
 
     for name, path, kind in STEPS:
         layer = "gold" if name.startswith("gold") else "silver"

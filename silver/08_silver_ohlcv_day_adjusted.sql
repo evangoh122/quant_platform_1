@@ -79,10 +79,6 @@ CREATE TABLE IF NOT EXISTS bootcamp_students.evangoh_capstone.silver_ohlcv_day_a
 ) USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true');
 
--- Idempotent: add vwap_source column if table already exists without it
-ALTER TABLE bootcamp_students.evangoh_capstone.silver_ohlcv_day_adjusted
-    ADD COLUMNS (vwap_source STRING);
-
 
 -- ============================================================
 -- 3. Deduplicated daily source (latest ingest_ts per key)

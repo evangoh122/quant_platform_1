@@ -33,6 +33,24 @@ def _extract_lagged_cte(sql_path: Path = SQL_PATH) -> str:
     return sql
 
 
+def _extract_full_feats_cte(sql_path: Path = SQL_PATH) -> str:
+    """Extract the full CTE chain (lagged -> returns -> feats) from the gold SQL.
+
+    Returns the WITH clause adapted for DuckDB, ready to be used as a CTE
+    in a SELECT statement."""
+    text = sql_path.read_text(encoding="utf-8")
+    start = text.index("WITH lagged AS (")
+    # Find the end of the feats CTE: the closing paren of feats AS ( ... )
+    # is the line before the outer SELECT.
+    outer_select_idx = text.index("\n  SELECT\n    symbol,\n    event_ts")
+    cte_text = text[start:outer_select_idx]
+    cte_text = cte_text.replace("bootcamp_students.evangoh_capstone.silver_ohlcv", "silver_ohlcv")
+    cte_text = cte_text.replace("AND symbol IN (SELECT symbol FROM universe)", "")
+    cte_text = cte_text.replace("AND DATE(event_ts) >= '{date_start}' AND DATE(event_ts) < '{date_end}'", "")
+    cte_text = cte_text.replace("current_timestamp()", "CURRENT_TIMESTAMP")
+    return cte_text
+
+
 def _setup_duckdb(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the silver_ohlcv fixture table."""
     conn.execute("""
@@ -51,10 +69,10 @@ def _setup_duckdb(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _run_lagged(conn: duckdb.DuckDBPyConnection, sql: str):
-    """Execute the lagged CTE and return rows with session_vwap.
+    """Execute the lagged CTE and return rows with session_vwap and vwap_deviation.
 
-    session_vwap is computed in the lagged CTE. We derive vwap_deviation
-    ourselves since it's a simple formula and lets us test session_vwap directly.
+    session_vwap is computed in the lagged CTE. vwap_deviation is derived in
+    Python since it's a simple formula and lets us test session_vwap directly.
     The sql is a full CTE definition like "WITH lagged AS (...)". We prepend
     a SELECT that references it.
     """
@@ -68,6 +86,24 @@ def _run_lagged(conn: duckdb.DuckDBPyConnection, sql: str):
         vwap_dev = (close - sv) / sv if sv else None
         rows.append((r[0], r[1], sv, vwap_dev))
     return rows
+
+
+def _run_vwap_deviation_sql(conn: duckdb.DuckDBPyConnection):
+    """Execute the REAL vwap_deviation expression from gold/01 via the full CTE chain.
+
+    Extracts lagged -> returns -> feats from the gold SQL and SELECTs
+    vwap_deviation from feats, joined with session_vwap from returns.
+    Returns (symbol, event_ts, session_vwap, vwap_deviation) rows."""
+    cte_sql = _extract_full_feats_cte()
+    full_sql = (
+        f"{cte_sql}\n"
+        "SELECT r.symbol, r.event_ts, r.session_vwap, f.vwap_deviation "
+        "FROM returns r "
+        "JOIN feats f ON r.symbol = f.symbol AND r.event_ts = f.event_ts "
+        "ORDER BY r.symbol, r.event_ts"
+    )
+    result = conn.execute(full_sql).fetchall()
+    return [(r[0], r[1], r[2], r[3]) for r in result]
 
 
 class TestSessionVWAP:
@@ -100,7 +136,9 @@ class TestSessionVWAP:
         conn.close()
 
     def test_vwap_deviation_from_session_vwap(self):
-        """vwap_deviation = (close - session_vwap) / session_vwap."""
+        """vwap_deviation = (close - session_vwap) / NULLIF(session_vwap, 0).
+
+        Uses the REAL expression from gold/01_gold_ohlcv_features.sql."""
         conn = duckdb.connect()
         _setup_duckdb(conn)
         conn.execute("""
@@ -108,12 +146,12 @@ class TestSessionVWAP:
             ('AAA', '2026-01-05 09:30:00', 'minute', 8, 11, 9, 10, 100, NULL),
             ('AAA', '2026-01-05 09:31:00', 'minute', 9, 12, 10, 11, 300, NULL)
         """)
-        sql = _extract_lagged_cte()
-        rows = _run_lagged(conn, sql)
+        rows = _run_vwap_deviation_sql(conn)
 
-        # bar1: vwap_deviation = (10 - 10) / 10 = 0
+        # bar1: session_vwap=10, vwap_deviation = (10-10)/10 = 0
+        assert rows[0][2] == pytest.approx(10.0)
         assert rows[0][3] == pytest.approx(0.0), f"bar1 vwap_deviation={rows[0][3]}"
-        # bar2: session_vwap=10.75, close=11 -> (11-10.75)/10.75
+        # bar2: session_vwap=10.75, vwap_deviation = (11-10.75)/10.75
         expected = (11 - 10.75) / 10.75
         assert rows[1][3] == pytest.approx(expected), f"bar2 vwap_deviation={rows[1][3]}"
         conn.close()
@@ -261,4 +299,42 @@ class TestMutationProofs:
         # (not just bar1=10)
         assert rows[0][2] != pytest.approx(10.0), \
             f"Mutation proof: with FOLLOWING, bar1 session_vwap={rows[0][2]} (sees future)"
+        conn.close()
+
+    def test_mutation_vwap_deviation_uses_session_vwap_not_vwap(self):
+        """Mutation: change vwap_deviation to absolute diff (close - session_vwap).
+        The real expression is relative: (close - session_vwap) / NULLIF(session_vwap, 0).
+        Mutation must produce different numeric output, not just a bind error."""
+        conn = duckdb.connect()
+        _setup_duckdb(conn)
+        conn.execute("""
+            INSERT INTO silver_ohlcv VALUES
+            ('AAA', '2026-01-05 09:30:00', 'minute', 8, 11, 9, 10, 100, NULL),
+            ('AAA', '2026-01-05 09:31:00', 'minute', 9, 12, 10, 11, 300, NULL)
+        """)
+        # Get the real vwap_deviation values
+        real_rows = _run_vwap_deviation_sql(conn)
+
+        # Mutate: change the expression from relative to absolute difference
+        cte_sql = _extract_full_feats_cte()
+        mutated = cte_sql.replace(
+            "(close - session_vwap) / NULLIF(session_vwap, 0)",
+            "close - session_vwap"
+        )
+        mutated_sql = (
+            f"{mutated}\n"
+            "SELECT r.symbol, r.event_ts, r.session_vwap, f.vwap_deviation "
+            "FROM returns r "
+            "JOIN feats f ON r.symbol = f.symbol AND r.event_ts = f.event_ts "
+            "ORDER BY r.symbol, r.event_ts"
+        )
+        result = conn.execute(mutated_sql).fetchall()
+        mutated_rows = [(r[0], r[1], r[2], r[3]) for r in result]
+
+        # real: bar2 vwap_deviation = (11-10.75)/10.75 ≈ 0.0233
+        # mutated: bar2 vwap_deviation = 11-10.75 = 0.25
+        real_devs = [r[3] for r in real_rows]
+        mutated_devs = [r[3] for r in mutated_rows]
+        assert real_devs != mutated_devs, \
+            f"Mutation proof: real={real_devs}, mutated={mutated_devs} — mutation not detected"
         conn.close()
