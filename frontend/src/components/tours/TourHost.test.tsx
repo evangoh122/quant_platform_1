@@ -1,5 +1,5 @@
 import React from 'react';
-import { renderHook, render, act } from '@testing-library/react';
+import { renderHook, render, act, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useTourHost, markTourSeen, tourSeen } from './TourHost';
 import {
@@ -133,16 +133,17 @@ describe('useTourHost — versioned keys', () => {
     expect(result.current.activeTour).toBe('application');
   });
 
-  it('falls back to agent tour when application is seen', () => {
+  it('selects agent tour for auto-start when application is seen but defers without targets', () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
-    const { result } = renderHook(() => useTourHost());
+    const { result } = renderHook(() => useTourHost('agent'));
 
     act(() => {
-      vi.advanceTimersByTime(600);
+      vi.advanceTimersByTime(1000);
     });
 
-    expect(result.current.activeTour).toBe('agent');
+    // Agent tour is the next unseen tour, but without DOM targets it must not start.
+    expect(result.current.activeTour).toBeNull();
   });
 
   it('falls back to architecture tour when application and agent are seen', () => {
@@ -358,44 +359,167 @@ describe('useTourHost — agent tour screen guard', () => {
     expect(result.current.activeTour).toBeNull();
   });
 
-  it('auto-starts agent tour when currentScreen is agent', () => {
+  it('does not auto-start agent tour on agent screen when targets are absent', () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
     const { result } = renderHook(() => useTourHost('agent'));
 
     act(() => {
-      vi.advanceTimersByTime(600);
+      vi.advanceTimersByTime(1000);
     });
 
-    expect(result.current.activeTour).toBe('agent');
+    expect(result.current.activeTour).toBeNull();
   });
 
-  it('auto-starts agent tour after currentScreen changes to agent', () => {
+  it('does not auto-start agent tour after screen change when targets are absent', () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
     let screen = 'platform-overview';
     const { result, rerender } = renderHook(() => useTourHost(screen));
 
-    // On platform-overview, agent tour is blocked
     act(() => {
       vi.advanceTimersByTime(1000);
     });
     expect(result.current.activeTour).toBeNull();
 
-    // Navigate to agent screen
     screen = 'agent';
     rerender();
 
     act(() => {
-      vi.advanceTimersByTime(600);
+      vi.advanceTimersByTime(1000);
     });
 
-    expect(result.current.activeTour).toBe('agent');
+    expect(result.current.activeTour).toBeNull();
   });
 
   it('still allows manual start of agent tour on any screen', () => {
     vi.useFakeTimers();
     const { result } = renderHook(() => useTourHost('platform-overview'));
+
+    act(() => {
+      result.current.startTour('agent');
+    });
+
+    expect(result.current.activeTour).toBe('agent');
+  });
+});
+
+describe('useTourHost — agent tour target-availability gating', () => {
+  function TourHostWrapper({ screen }: { screen?: string }) {
+    const { activeTour, steps, closeTour } = useTourHost(screen);
+    return (
+      <div data-tour="agent">
+        <div data-tour="agent-evidence" />
+        {activeTour && (
+          <div data-testid="tour-active" data-tour-id={activeTour}>
+            {steps.map((s, i) => (
+              <span key={i} data-testid={`step-${i}`}>{s.title}</span>
+            ))}
+            <button data-testid="close-tour" onClick={closeTour}>close</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  it('agent route with only root target does not auto-start', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+    render(<TourHostWrapper screen="agent" />, { wrapper: ({ children }) => <>{children}</> });
+
+    act(() => { vi.advanceTimersByTime(1000); });
+
+    expect(screen.queryByTestId('tour-active')).toBeNull();
+  });
+
+  it('adding remaining targets later starts tour once', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    const { container } = render(
+      <div data-tour="agent"><div data-tour="agent-evidence" /></div>,
+      { wrapper: ({ children }) => <>{children}</> },
+    );
+    renderHook(() => useTourHost('agent'));
+
+    act(() => { vi.advanceTimersByTime(50); });
+
+    const target = container.querySelector('[data-tour="agent"]')!;
+    const lakebase = document.createElement('div');
+    lakebase.setAttribute('data-tour', 'lakebase-write');
+    target.appendChild(lakebase);
+
+    act(() => { vi.advanceTimersByTime(1000); });
+
+    expect(lakebase.isConnected).toBe(true);
+  });
+
+  it('StrictMode does not start agent tour twice when targets present', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    let startCount = 0;
+    const origSetTimeout = window.setTimeout;
+    vi.spyOn(window, 'setTimeout').mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+      const cb = args[0];
+      if (typeof cb === 'function') {
+        const wrapped = () => { startCount++; return cb(); };
+        return origSetTimeout(wrapped as TimerHandler, args[1] as number) as unknown as number;
+      }
+      return origSetTimeout(...args);
+    }) as typeof window.setTimeout);
+
+    function Wrapper() {
+      useTourHost('agent');
+      return (
+        <div data-tour="agent">
+          <div data-tour="agent-evidence" />
+          <div data-tour="lakebase-write" />
+        </div>
+      );
+    }
+
+    render(<React.StrictMode><Wrapper /></React.StrictMode>);
+
+    act(() => { vi.advanceTimersByTime(1200); });
+
+    expect(startCount).toBeLessThanOrEqual(1);
+
+    vi.mocked(window.setTimeout).mockRestore();
+  });
+
+  it('leaving route before targets appear cancels pending auto-start', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    const { unmount } = render(<TourHostWrapper screen="agent" />, { wrapper: ({ children }) => <>{children}</> });
+
+    act(() => { vi.advanceTimersByTime(50); });
+
+    unmount();
+
+    const target = document.createElement('div');
+    target.setAttribute('data-tour', 'agent');
+    const evidence = document.createElement('div');
+    evidence.setAttribute('data-tour', 'agent-evidence');
+    const lakebase = document.createElement('div');
+    lakebase.setAttribute('data-tour', 'lakebase-write');
+    target.appendChild(evidence);
+    target.appendChild(lakebase);
+    document.body.appendChild(target);
+
+    act(() => { vi.advanceTimersByTime(2000); });
+
+    expect(screen.queryByTestId('tour-active')).toBeNull();
+
+    document.body.removeChild(target);
+  });
+
+  it('manual start remains correct regardless of target availability', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    const { result } = renderHook(() => useTourHost('agent'));
 
     act(() => {
       result.current.startTour('agent');

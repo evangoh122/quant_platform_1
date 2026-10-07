@@ -18,6 +18,13 @@ const TOUR_MAP: Record<string, { key: string; steps: CoachStep[] }> = {
   architecture: { key: ARCHITECTURE_TOUR_KEY, steps: ARCHITECTURE_TOUR },
 };
 
+function allTourTargetsPresent(tourSteps: CoachStep[]): boolean {
+  for (const step of tourSteps) {
+    if (step.selector && !document.querySelector(step.selector)) return false;
+  }
+  return true;
+}
+
 export function useTourHost(currentScreen?: string) {
   const [activeTour, setActiveTour] = useState<string | null>(null);
   const [steps, setSteps] = useState<CoachStep[]>([]);
@@ -25,6 +32,7 @@ export function useTourHost(currentScreen?: string) {
   const screenRef = useRef(currentScreen);
   screenRef.current = currentScreen;
   const autoStartDoneRef = useRef(false);
+  const mainTimerRef = useRef<number | null>(null);
 
   const startTour = useCallback((tourId: string) => {
     const tour = TOUR_MAP[tourId];
@@ -80,13 +88,39 @@ export function useTourHost(currentScreen?: string) {
         return;
       }
       autoStartDoneRef.current = true;
-      const timer = window.setTimeout(() => {
-        // Do not replace a manual tour request that arrived during the delay.
-        if (manualStartRef.current) return;
-        startTour(autoTour);
-      }, 600);
+
+      const scheduleAutoStart = () => {
+        mainTimerRef.current = window.setTimeout(() => {
+          if (manualStartRef.current) return;
+          startTour(autoTour);
+        }, 600);
+      };
+
+      // For the agent tour, verify all step targets exist in the DOM before
+      // scheduling. Targets like [data-tour="lakebase-write"] and
+      // [data-tour="agent-evidence"] may render after the route mounts.
+      if (autoTour === 'agent' && !allTourTargetsPresent(AGENT_TOUR)) {
+        const agentObserver = new MutationObserver(() => {
+          if (allTourTargetsPresent(AGENT_TOUR)) {
+            agentObserver.disconnect();
+            scheduleAutoStart();
+          }
+        });
+        agentObserver.observe(document.body, { childList: true, subtree: true });
+        const observerFallback = window.setTimeout(() => {
+          agentObserver.disconnect();
+        }, 10000);
+        return () => {
+          window.clearTimeout(observerFallback);
+          agentObserver.disconnect();
+          if (mainTimerRef.current != null) window.clearTimeout(mainTimerRef.current);
+          autoStartDoneRef.current = false;
+        };
+      }
+
+      scheduleAutoStart();
       return () => {
-        window.clearTimeout(timer);
+        if (mainTimerRef.current != null) window.clearTimeout(mainTimerRef.current);
         autoStartDoneRef.current = false;
       };
     }
