@@ -484,6 +484,13 @@ def run_ingest_companyfacts(
     # Concurrency
     max_workers: int = 4,
     _key_wait_timeout: float = 30.0,
+    # Test seam: called when a worker enters key_cond.wait for "in_flight"
+    # Signature: _on_key_wait(key, ticker) — ticker identifies the waiting worker.
+    _on_key_wait: Optional[Any] = None,
+    # Test seam: called before a worker attempts to reserve a key.
+    # Signature: _on_pre_reserve(ticker) — blocks until the worker may proceed.
+    # Optional, private, inert when absent.
+    _on_pre_reserve: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Run the SEC Company Facts ingestion pipeline.
 
@@ -628,6 +635,8 @@ def run_ingest_companyfacts(
             key = (cik, payload_hash)
 
             # Acquire ownership or wait for in-flight owner.
+            if _on_pre_reserve is not None:
+                _on_pre_reserve(ticker)
             with key_cond:
                 _my_gen = None  # ownership generation we hold (None = none)
                 while True:
@@ -643,6 +652,8 @@ def run_ingest_companyfacts(
                         return
                     elif state == "in_flight":
                         # Another worker is appending; wait for outcome.
+                        if _on_key_wait is not None:
+                            _on_key_wait(key, ticker)
                         notified = key_cond.wait(timeout=_key_wait_timeout)
                         if not notified and key_state.get(key) == "in_flight":
                             raise RuntimeError(

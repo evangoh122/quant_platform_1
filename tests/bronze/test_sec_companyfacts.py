@@ -2882,27 +2882,33 @@ class TestThreeWorkerOwnershipGuard:
     def test_three_worker_one_key_no_clobber(self):
         """Deterministic proof of the ownership generation guard.
 
-        Forced sequence (events, no sleep):
-          1. Owner 1 enters append → signals first_append_started, blocks
-             on first_fail_allowed.
-          2. Test signals first_fail_allowed → Owner 1 raises
+        Forced causal sequence (events, no sleep):
+          1. Worker 1 alone may reserve the key and enter/fail its append.
+             Workers 2 and 3 are gated by _on_pre_reserve.
+          2. Test releases first_fail_allowed → Worker 1 raises
              _BlockingException.
-          3. Owner 1's inner handler marks key "failed", releases lock.
-          4. Owner 2 acquires retry ownership, enters append → signals
-             second_append_entered, blocks on owner2_can_complete.
-          5. Owner 1's outer handler computes error_text =
+          3. Worker 1's inner handler marks key "failed", releases lock.
+          4. Test releases worker 2 pre-reserve gate → Worker 2 acquires
+             retry ownership, enters append → signals second_append_entered,
+             blocks on owner2_can_complete.
+          5. Test releases worker 3 pre-reserve gate → Worker 3 sees
+             "in_flight", enters key_cond.wait → fires _on_key_wait with
+             ticker identity → signals worker3_waiting (ticker="AAPL3").
+          6. Worker 1's outer handler computes error_text =
              str(exception)[:500] — the _BlockingException.__str__ blocks
              until second_append_entered is set (already set by step 4).
-          6. Owner 1's outer handler checks the generation guard.  With
-             fixed code, generation mismatch prevents clobbering Owner 2.
-          7. Test signals owner2_can_complete → Owner 2 completes →
+          7. Worker 1's outer handler checks the generation guard.  With
+             fixed code, generation mismatch prevents clobbering Worker 2.
+          8. Test sets owner2_can_complete → Owner 2 completes →
              "completed", notify_all.
-          8. Worker 3 wakes, sees "completed" → skips.
-          9. third_append_attempt never fires → exactly 2 append attempts.
+          9. Owner 3 wakes, sees "completed" → skips, signals
+             state_observed.
+         10. Test waits for state_observed → deterministic positive proof.
 
         With the stale/unguarded outer transition restored:
-          Step 6 sets "failed" while Owner 2 is still blocked → Worker 3
+          Step 7 sets "failed" while Owner 2 is still blocked → Owner 3
           wakes, acquires retry, enters append (third_append_attempt fires).
+          state_observed is never set → test times out deterministically.
         """
 
         class _BlockingException(Exception):
@@ -2939,9 +2945,15 @@ class TestThreeWorkerOwnershipGuard:
         first_fail_allowed = threading.Event()
         second_append_entered = threading.Event()
         owner2_can_complete = threading.Event()
+        worker3_waiting = threading.Event()
+        skipped_observed = threading.Event()
         third_append_attempt = threading.Event()
         append_attempts = []
         append_lock = threading.Lock()
+
+        # Pre-reserve gates: workers 2 and 3 block until released.
+        worker2_pre_reserve = threading.Event()
+        worker3_pre_reserve = threading.Event()
 
         def tracking_delta_writer(cat, sch, rows):
             with append_lock:
@@ -2963,12 +2975,27 @@ class TestThreeWorkerOwnershipGuard:
 
         def tracking_manifest_writer(cat, sch, entry):
             manifest_entries.append(entry)
+            if entry.fetch_status == "skipped_duplicate":
+                skipped_observed.set()
 
         import pipelines.ingest_sec_companyfacts as mod
         original_resolve = mod._resolve_user_agent
         original_validate = mod._validate_user_agent
         mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
         mod._validate_user_agent = lambda ua: None
+
+        def on_pre_reserve(ticker):
+            """Gate workers 2 and 3 until explicitly released."""
+            if ticker == "AAPL2":
+                worker2_pre_reserve.wait(timeout=15)
+            elif ticker == "AAPL3":
+                worker3_pre_reserve.wait(timeout=15)
+            # AAPL (worker 1) proceeds immediately.
+
+        def on_key_wait(key, ticker):
+            """Track which worker entered key_cond.wait."""
+            if ticker == "AAPL3":
+                worker3_waiting.set()
 
         try:
             pipeline_thread = threading.Thread(
@@ -2988,23 +3015,38 @@ class TestThreeWorkerOwnershipGuard:
                     manifest_writer=tracking_manifest_writer,
                     cache_path="/dev/null",
                     max_workers=3,
+                    _on_key_wait=on_key_wait,
+                    _on_pre_reserve=on_pre_reserve,
                 )
             )
             pipeline_thread.start()
 
-            # Step 1: Owner 1 enters append.
+            # Step 1: Worker 1 enters append (only worker 1 can reserve).
             assert first_append_started.wait(timeout=10), "First append did not start in time"
-            # Step 2: Tell Owner 1 to fail.
+            # Step 2: Tell Worker 1 to fail.
             first_fail_allowed.set()
-            # Step 4: Wait for Owner 2 to enter append.
+            # Step 4: Release Worker 2 to acquire retry ownership.
+            worker2_pre_reserve.set()
             assert second_append_entered.wait(timeout=10), "Second append did not start in time"
+            # Step 5: Release Worker 3 — it sees "in_flight" and enters wait.
+            worker3_pre_reserve.set()
+            assert worker3_waiting.wait(timeout=10), (
+                "Worker 3 (AAPL3) did not enter key_cond.wait — "
+                "cannot prove ordering before owner 1's outer handler"
+            )
 
-            # Owner 2 is now blocked in append (key remains "in_flight").
+            # Owner 2 is blocked in append (key remains "in_flight").
             # Owner 1's outer handler: str(e) unblocks (second_append_entered
             # is set), then generation check runs.  With fixed code, the
             # generation guard prevents clobbering Owner 2.
 
+            # Step 8: Release Owner 2.
             owner2_can_complete.set()
+
+            # Step 10: Wait for Owner 3 to observe "completed" (deterministic).
+            assert skipped_observed.wait(timeout=10), (
+                "Owner 3 did not observe 'completed' — generation guard is missing or broken"
+            )
 
             pipeline_thread.join(timeout=25)
             assert not pipeline_thread.is_alive(), "Pipeline thread did not complete in time"
@@ -3033,7 +3075,7 @@ class TestThreeWorkerOwnershipGuard:
         # With the generation guard fixed, Worker 3 sees "completed" and skips
         # without ever calling the delta writer.  If the guard is missing,
         # Worker 3 acquires retry and enters append within seconds.
-        assert not third_append_attempt.wait(timeout=3), (
+        assert not third_append_attempt.is_set(), (
             "Third worker entered append — generation guard is missing or broken"
         )
 
