@@ -2894,11 +2894,13 @@ class TestThreeWorkerOwnershipGuard:
           5. Test releases worker 3 pre-reserve gate → Worker 3 sees
              "in_flight", enters key_cond.wait → fires _on_key_wait with
              ticker identity → signals worker3_waiting (ticker="AAPL3").
-          6. Worker 1's outer handler computes error_text =
-             str(exception)[:500] — the _BlockingException.__str__ blocks
-             until second_append_entered is set (already set by step 4).
+          6. Worker 1's outer handler acquires lock.  _on_outer_lock_held
+             waits for Worker 2 to be appending and Worker 3 to be waiting,
+             then releases Owner 2 from inside the lock-held section.
           7. Worker 1's outer handler checks the generation guard.  With
              fixed code, generation mismatch prevents clobbering Worker 2.
+             With the guard removed (mutation), _on_outer_clobber fires
+             inside the lock → deterministic detection.
           8. Test sets owner2_can_complete → Owner 2 completes →
              "completed", notify_all.
           9. Owner 3 wakes, sees "completed" → skips, signals
@@ -2906,18 +2908,12 @@ class TestThreeWorkerOwnershipGuard:
          10. Test waits for state_observed → deterministic positive proof.
 
         With the stale/unguarded outer transition restored:
-          Step 7 sets "failed" while Owner 2 is still blocked → Owner 3
-          wakes, acquires retry, enters append (third_append_attempt fires).
-          state_observed is never set → test times out deterministically.
+          _on_outer_clobber fires inside the lock → test fails immediately.
         """
 
         class _BlockingException(Exception):
-            """Seam: __str__ blocks until second_append_entered is set."""
-            def __init__(self, event):
-                self._event = event
-            def __str__(self):
-                self._event.wait(timeout=10)
-                return "injected failure"
+            """Seam: raises immediately."""
+            pass
 
         payload = _make_company_facts_payload()
         payload_bytes = json.dumps(payload).encode()
@@ -2946,6 +2942,7 @@ class TestThreeWorkerOwnershipGuard:
         second_append_entered = threading.Event()
         owner2_can_complete = threading.Event()
         worker3_waiting = threading.Event()
+        worker1_outer_lock_held = threading.Event()
         skipped_observed = threading.Event()
         third_append_attempt = threading.Event()
         append_attempts = []
@@ -2954,6 +2951,12 @@ class TestThreeWorkerOwnershipGuard:
         # Pre-reserve gates: workers 2 and 3 block until released.
         worker2_pre_reserve = threading.Event()
         worker3_pre_reserve = threading.Event()
+
+        # Clobber tracking: fires when the outer handler's guard check
+        # passes and it's about to set key_state[key] = "failed".
+        # With the fix, this NEVER fires (generation guard prevents it).
+        # With the mutation (guard removed), this fires inside the lock.
+        clobber_events = []
 
         def tracking_delta_writer(cat, sch, rows):
             with append_lock:
@@ -2964,7 +2967,7 @@ class TestThreeWorkerOwnershipGuard:
             if is_first:
                 first_append_started.set()
                 first_fail_allowed.wait(timeout=15)
-                raise _BlockingException(second_append_entered)
+                raise _BlockingException()
             elif is_second:
                 second_append_entered.set()
                 owner2_can_complete.wait(timeout=15)
@@ -2997,6 +3000,28 @@ class TestThreeWorkerOwnershipGuard:
             if ticker == "AAPL3":
                 worker3_waiting.set()
 
+        def on_outer_lock_held(key_arg, ticker, key_cond_ref):
+            """Wait for Worker 2 to append and Worker 3 to wait, then
+            release Owner 2 from inside the lock-held section.
+            """
+            if ticker == "AAPL":
+                deadline = time.time() + 8
+                while (not second_append_entered.is_set()
+                       or not worker3_waiting.is_set()):
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        break
+                    key_cond_ref.wait(timeout=min(0.5, remaining))
+                worker1_outer_lock_held.set()
+                owner2_can_complete.set()
+
+        def on_outer_clobber(key_arg, ticker):
+            """Track stale-owner clobber events.  Fires inside the lock
+            when the outer handler's guard check passes and it's about
+            to set key_state[key] = "failed".
+            """
+            clobber_events.append((key_arg, ticker))
+
         try:
             pipeline_thread = threading.Thread(
                 target=lambda: run_ingest_companyfacts(
@@ -3017,6 +3042,8 @@ class TestThreeWorkerOwnershipGuard:
                     max_workers=3,
                     _on_key_wait=on_key_wait,
                     _on_pre_reserve=on_pre_reserve,
+                    _on_outer_lock_held=on_outer_lock_held,
+                    _on_outer_clobber=on_outer_clobber,
                 )
             )
             pipeline_thread.start()
@@ -3036,12 +3063,15 @@ class TestThreeWorkerOwnershipGuard:
             )
 
             # Owner 2 is blocked in append (key remains "in_flight").
-            # Owner 1's outer handler: str(e) unblocks (second_append_entered
-            # is set), then generation check runs.  With fixed code, the
-            # generation guard prevents clobbering Owner 2.
+            # Worker 1's outer handler: _on_outer_lock_held waits for
+            # Worker 2 to be appending and Worker 3 to be waiting, then
+            # releases Owner 2 from inside the lock-held section.
 
-            # Step 8: Release Owner 2.
-            owner2_can_complete.set()
+            # Step 7: Wait for Worker 1's outer handler to hold the lock
+            # and release Owner 2.
+            assert worker1_outer_lock_held.wait(timeout=15), (
+                "Worker 1's outer handler did not acquire lock in time"
+            )
 
             # Step 10: Wait for Owner 3 to observe "completed" (deterministic).
             assert skipped_observed.wait(timeout=10), (
@@ -3053,6 +3083,15 @@ class TestThreeWorkerOwnershipGuard:
         finally:
             mod._resolve_user_agent = original_resolve
             mod._validate_user_agent = original_validate
+
+        # Deterministic negative: _on_outer_clobber must NOT have fired.
+        # With the generation guard fixed, the guard prevents the stale
+        # owner from setting "failed".  If the guard is missing (mutation),
+        # _on_outer_clobber fires inside the lock → caught deterministically.
+        assert len(clobber_events) == 0, (
+            f"Stale-owner clobber detected ({len(clobber_events)} events) — "
+            f"generation guard is missing or broken: {clobber_events}"
+        )
 
         assert len(append_attempts) == 2, (
             f"Expected 2 append attempts (1 fail + 1 success), "
@@ -3072,9 +3111,6 @@ class TestThreeWorkerOwnershipGuard:
         assert success_entries[0].payload_hash == payload_hash
 
         # Deterministic negative: Worker 3 must NOT have entered append.
-        # With the generation guard fixed, Worker 3 sees "completed" and skips
-        # without ever calling the delta writer.  If the guard is missing,
-        # Worker 3 acquires retry and enters append within seconds.
         assert not third_append_attempt.is_set(), (
             "Third worker entered append — generation guard is missing or broken"
         )

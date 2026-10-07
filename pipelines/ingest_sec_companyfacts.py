@@ -491,6 +491,23 @@ def run_ingest_companyfacts(
     # Signature: _on_pre_reserve(ticker) — blocks until the worker may proceed.
     # Optional, private, inert when absent.
     _on_pre_reserve: Optional[Any] = None,
+    # Test seam: called after the inner exception handler sets "failed" and
+    # releases the lock, before the outer handler acquires it.
+    # Signature: _on_post_inner(ticker) — blocks until it may proceed.
+    # Optional, private, inert when absent.
+    _on_post_inner: Optional[Any] = None,
+    # Test seam: called inside the outer handler's ``with key_cond`` block
+    # after the lock is acquired, before the generation-guard check.
+    # Signature: _on_outer_lock_held(key, ticker, key_cond) — may call
+    # key_cond.wait() to release/reacquire the lock while blocking.
+    # Optional, private, inert when absent.
+    _on_outer_lock_held: Optional[Any] = None,
+    # Test seam: called inside the outer handler's ``with key_cond`` block
+    # when the generation guard PASSES and the handler is about to set
+    # key_state[key] = "failed".  Fires BEFORE the state change.
+    # Signature: _on_outer_clobber(key, ticker).
+    # Optional, private, inert when absent.
+    _on_outer_clobber: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Run the SEC Company Facts ingestion pipeline.
 
@@ -704,6 +721,8 @@ def run_ingest_companyfacts(
                 with key_cond:
                     key_state[key] = "failed"
                     key_cond.notify_all()
+                if _on_post_inner is not None:
+                    _on_post_inner(ticker)
                 raise
 
             if manifest_writer is not None:
@@ -717,6 +736,8 @@ def run_ingest_companyfacts(
         except SecClientError as e:
             error_text = str(e)[:500]
             with key_cond:
+                if _on_outer_lock_held is not None:
+                    _on_outer_lock_held(key, ticker, key_cond)
                 result["failed_count"] += 1
                 if payload_hash is not None:
                     key = (cik, payload_hash)
@@ -726,6 +747,8 @@ def run_ingest_companyfacts(
                     if (key_state.get(key) == "in_flight"
                             and _my_gen is not None
                             and key_generation.get(key) == _my_gen):
+                        if _on_outer_clobber is not None:
+                            _on_outer_clobber(key, ticker)
                         key_state[key] = "failed"
                         key_cond.notify_all()
             manifest.fetch_status = "failed"
@@ -747,6 +770,8 @@ def run_ingest_companyfacts(
         except Exception as e:
             error_text = str(e)[:500]
             with key_cond:
+                if _on_outer_lock_held is not None:
+                    _on_outer_lock_held(key, ticker, key_cond)
                 result["failed_count"] += 1
                 if payload_hash is not None:
                     key = (cik, payload_hash)
@@ -756,6 +781,8 @@ def run_ingest_companyfacts(
                     if (key_state.get(key) == "in_flight"
                             and _my_gen is not None
                             and key_generation.get(key) == _my_gen):
+                        if _on_outer_clobber is not None:
+                            _on_outer_clobber(key, ticker)
                         key_state[key] = "failed"
                         key_cond.notify_all()
             manifest.fetch_status = "failed"
