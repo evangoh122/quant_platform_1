@@ -21,7 +21,6 @@ const TOUR_MAP: Record<string, { key: string; steps: CoachStep[] }> = {
 export function useTourHost() {
   const [activeTour, setActiveTour] = useState<string | null>(null);
   const [steps, setSteps] = useState<CoachStep[]>([]);
-  const autoStartCheckedRef = useRef(false);
   const manualStartRef = useRef(false);
 
   const startTour = useCallback((tourId: string) => {
@@ -53,8 +52,6 @@ export function useTourHost() {
 
   // Auto-start unseen tours once per mount; closing/skipping one does NOT chain to the next.
   useEffect(() => {
-    if (autoStartCheckedRef.current) return;
-    autoStartCheckedRef.current = true;
     if (activeTour) return;
     const prefersReducedMotion = window.matchMedia(
       '(prefers-reduced-motion: reduce)',

@@ -1,4 +1,5 @@
-import { renderHook, act } from '@testing-library/react';
+import React from 'react';
+import { renderHook, render, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useTourHost, markTourSeen, tourSeen } from './TourHost';
 import {
@@ -271,6 +272,54 @@ describe('useTourHost — no-tour-chain on close', () => {
     });
 
     expect(result.current.activeTour).toBeNull();
+  });
+});
+
+describe('useTourHost — React 18 StrictMode double-mount', () => {
+  it('auto-starts exactly one tour after StrictMode setup/cleanup/setup cycle', () => {
+    vi.useFakeTimers();
+    // Simulate StrictMode: render inside a StrictMode wrapper so React
+    // double-invokes effects (mount → cleanup → re-run) on the same instance.
+    let hookResult: ReturnType<typeof useTourHost> | undefined;
+    function Wrapper() {
+      hookResult = useTourHost();
+      return null;
+    }
+    const { unmount } = render(
+      <React.StrictMode><Wrapper /></React.StrictMode>,
+    );
+
+    // After StrictMode processing, the effect has run setup/cleanup/setup.
+    // The auto-start timer should be scheduled from the second setup.
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(hookResult!.activeTour).toBe('application');
+
+    act(() => {
+      hookResult!.closeTour();
+    });
+  });
+
+  it('StrictMode cycle: does not auto-start when all tours are seen', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+    markTourSeen(AGENT_TOUR_KEY);
+    markTourSeen(ARCHITECTURE_TOUR_KEY);
+
+    let hookResult: ReturnType<typeof useTourHost> | undefined;
+    function Wrapper() {
+      hookResult = useTourHost();
+      return null;
+    }
+    render(<React.StrictMode><Wrapper /></React.StrictMode>);
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(hookResult!.activeTour).toBeNull();
   });
 });
 

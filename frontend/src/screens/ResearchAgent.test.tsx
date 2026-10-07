@@ -807,6 +807,31 @@ describe('ResearchAgent', () => {
     expect(screen.getByTestId('evidence-panel')).toHaveAttribute('data-tour', 'agent-evidence');
   });
 
+  it('all AGENT_TOUR selectors render on the Research Agent screen (no off-screen targets)', async () => {
+    vi.stubGlobal('fetch', mockFetch(mockSavedNoteResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    // [data-tour="agent"] is always present
+    expect(document.querySelector('[data-tour="agent"]')).toBeTruthy();
+
+    // Trigger a note save first (via input, since suggested questions hide after first message)
+    await user.type(screen.getByPlaceholderText('Ask the research agent…'), 'Save a research note for NVDA');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Note saved/)).toBeInTheDocument();
+    });
+
+    // [data-tour="agent-evidence"] must be on this screen
+    expect(document.querySelector('[data-tour="agent-evidence"]')).toBeTruthy();
+
+    // [data-tour="lakebase-write"] must be on this screen, not PaperPortfolio
+    const lakebaseEl = document.querySelector('[data-tour="lakebase-write"]');
+    expect(lakebaseEl).toBeTruthy();
+    expect(lakebaseEl!.closest('[data-tour="agent"]')).toBeTruthy();
+  });
+
   it('renders lakebase-write data-tour attribute on note confirmation', async () => {
     vi.stubGlobal('fetch', mockFetch(mockSavedNoteResponse));
     const user = userEvent.setup();
