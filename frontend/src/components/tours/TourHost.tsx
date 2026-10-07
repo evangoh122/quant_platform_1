@@ -18,10 +18,13 @@ const TOUR_MAP: Record<string, { key: string; steps: CoachStep[] }> = {
   architecture: { key: ARCHITECTURE_TOUR_KEY, steps: ARCHITECTURE_TOUR },
 };
 
-export function useTourHost() {
+export function useTourHost(currentScreen?: string) {
   const [activeTour, setActiveTour] = useState<string | null>(null);
   const [steps, setSteps] = useState<CoachStep[]>([]);
   const manualStartRef = useRef(false);
+  const screenRef = useRef(currentScreen);
+  screenRef.current = currentScreen;
+  const autoStartDoneRef = useRef(false);
 
   const startTour = useCallback((tourId: string) => {
     const tour = TOUR_MAP[tourId];
@@ -51,8 +54,10 @@ export function useTourHost() {
   }, [startTour]);
 
   // Auto-start unseen tours once per mount; closing/skipping one does NOT chain to the next.
+  // Re-evaluates when currentScreen changes so the agent tour can start once the
+  // user navigates to the Research Agent screen where its targets are present.
   useEffect(() => {
-    if (activeTour) return;
+    if (activeTour || autoStartDoneRef.current) return;
     const prefersReducedMotion = window.matchMedia(
       '(prefers-reduced-motion: reduce)',
     ).matches;
@@ -68,14 +73,24 @@ export function useTourHost() {
             : null;
 
     if (autoTour) {
+      // Do not auto-start the agent tour unless the user is on the agent screen,
+      // where step targets (agent, lakebase-write, agent-evidence) are present.
+      // When currentScreen is not provided, skip the guard (standalone hook usage).
+      if (autoTour === 'agent' && currentScreen !== undefined && currentScreen !== 'agent') {
+        return;
+      }
+      autoStartDoneRef.current = true;
       const timer = window.setTimeout(() => {
         // Do not replace a manual tour request that arrived during the delay.
         if (manualStartRef.current) return;
         startTour(autoTour);
       }, 600);
-      return () => window.clearTimeout(timer);
+      return () => {
+        window.clearTimeout(timer);
+        autoStartDoneRef.current = false;
+      };
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentScreen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { activeTour, steps, closeTour, startTour };
 }

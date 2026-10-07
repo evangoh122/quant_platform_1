@@ -1,8 +1,9 @@
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import App from './App';
 import { markTourSeen } from './components/tours/TourHost';
+import { APPLICATION_TOUR_KEY } from './components/tours/tourSteps';
 
 const healthyResponse = {
   status: 'ok',
@@ -217,5 +218,28 @@ describe('App health banner', () => {
     });
 
     expect(screen.queryByText(/Account services unavailable/)).not.toBeInTheDocument();
+  });
+});
+
+describe('App — agent tour auto-start guard', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('does not auto-start agent tour on Platform Overview when application tour is seen', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    // Wait past the 600 ms auto-start delay — agent tour must NOT appear
+    await new Promise((r) => setTimeout(r, 1000));
+
+    expect(screen.queryByText('Research Agent tour')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument();
   });
 });

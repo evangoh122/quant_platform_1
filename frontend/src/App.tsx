@@ -78,7 +78,7 @@ function PlaceholderScreen({ title, tourId }: { title: string; tourId?: string }
 export default function App() {
   const [screen, setScreen] = useState<ScreenId>('platform-overview');
   const [healthData, setHealthData] = useState<HealthResponse | null>(null);
-  const { activeTour, steps, closeTour } = useTourHost();
+  const { activeTour, steps, closeTour } = useTourHost(screen);
 
   useEffect(() => {
     let cancelled = false;

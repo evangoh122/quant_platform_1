@@ -344,3 +344,63 @@ describe('useTourHost — manual request during auto-start delay', () => {
     expect(result.current.activeTour).toBe('agent');
   });
 });
+
+describe('useTourHost — agent tour screen guard', () => {
+  it('does not auto-start agent tour when currentScreen is not agent', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+    const { result } = renderHook(() => useTourHost('platform-overview'));
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(result.current.activeTour).toBeNull();
+  });
+
+  it('auto-starts agent tour when currentScreen is agent', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+    const { result } = renderHook(() => useTourHost('agent'));
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.activeTour).toBe('agent');
+  });
+
+  it('auto-starts agent tour after currentScreen changes to agent', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+    let screen = 'platform-overview';
+    const { result, rerender } = renderHook(() => useTourHost(screen));
+
+    // On platform-overview, agent tour is blocked
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(result.current.activeTour).toBeNull();
+
+    // Navigate to agent screen
+    screen = 'agent';
+    rerender();
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.activeTour).toBe('agent');
+  });
+
+  it('still allows manual start of agent tour on any screen', () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useTourHost('platform-overview'));
+
+    act(() => {
+      result.current.startTour('agent');
+    });
+
+    expect(result.current.activeTour).toBe('agent');
+  });
+});

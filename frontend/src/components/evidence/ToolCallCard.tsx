@@ -114,7 +114,12 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
             Note ID: <span className="font-mono font-medium text-slate-700 dark:text-slate-300">{noteId}</span>
           </span>
         )}
-        {isWrite && toolCall.ok && noteId && (
+        {toolCall.name === 'add_to_watchlist' && toolCall.ok && (
+          <span>
+            Storage: <span className="font-medium text-emerald-600 dark:text-emerald-400">Lakebase</span>
+          </span>
+        )}
+        {toolCall.name === 'save_research_note' && toolCall.ok && noteId && (
           <span>
             Storage: <span className="font-medium text-emerald-600 dark:text-emerald-400">Lakebase</span>
           </span>

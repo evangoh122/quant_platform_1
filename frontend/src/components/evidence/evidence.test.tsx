@@ -76,6 +76,41 @@ describe('ToolCallCard', () => {
     render(<ToolCallCard toolCall={tc} index={0} />);
     expect(screen.queryByText('Lakebase')).not.toBeInTheDocument();
   });
+
+  it('shows Storage: Lakebase for successful add_to_watchlist without note_id', () => {
+    const tc: ToolCall = {
+      name: 'add_to_watchlist',
+      arguments: { ticker: 'NVDA' },
+      result: { symbol: 'NVDA', status: 'added' },
+      ok: true,
+    };
+    render(<ToolCallCard toolCall={tc} index={0} />);
+    expect(screen.getByText('Lakebase')).toBeInTheDocument();
+    expect(screen.queryByText(/Note ID/)).not.toBeInTheDocument();
+  });
+
+  it('does not show Storage: Lakebase for failed add_to_watchlist', () => {
+    const tc: ToolCall = {
+      name: 'add_to_watchlist',
+      arguments: { ticker: 'NVDA' },
+      result: { error: 'db_unavailable' },
+      ok: false,
+    };
+    render(<ToolCallCard toolCall={tc} index={0} />);
+    expect(screen.queryByText('Lakebase')).not.toBeInTheDocument();
+  });
+
+  it('shows Note ID and Storage: Lakebase for save_research_note with note_id', () => {
+    const tc: ToolCall = {
+      name: 'save_research_note',
+      arguments: { symbol: 'NVDA', content: 'test' },
+      result: { note_id: 'note-42', symbol: 'NVDA', status: 'saved' },
+      ok: true,
+    };
+    render(<ToolCallCard toolCall={tc} index={0} />);
+    expect(screen.getByText('note-42')).toBeInTheDocument();
+    expect(screen.getByText('Lakebase')).toBeInTheDocument();
+  });
 });
 
 describe('ProvenanceGrid', () => {
