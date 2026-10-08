@@ -32,6 +32,7 @@ export function useTourHost(currentScreen?: string) {
   const screenRef = useRef(currentScreen);
   screenRef.current = currentScreen;
   const autoStartDoneRef = useRef(false);
+  const [autoStartRetry, setAutoStartRetry] = useState(0);
   const mainTimerRef = useRef<number | null>(null);
 
   const startTour = useCallback((tourId: string) => {
@@ -42,12 +43,17 @@ export function useTourHost(currentScreen?: string) {
   }, []);
 
   const closeTour = useCallback(() => {
+    const wasManual = manualStartRef.current;
     if (activeTour) {
       const tour = TOUR_MAP[activeTour];
       if (tour) markTourSeen(tour.key);
     }
     manualStartRef.current = false;
     setActiveTour(null);
+    if (wasManual) {
+      autoStartDoneRef.current = false;
+      setAutoStartRetry((retry) => retry + 1);
+    }
   }, [activeTour]);
 
   useEffect(() => {
@@ -127,7 +133,7 @@ export function useTourHost(currentScreen?: string) {
         autoStartDoneRef.current = false;
       };
     }
-  }, [currentScreen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentScreen, autoStartRetry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { activeTour, steps, closeTour, startTour };
 }

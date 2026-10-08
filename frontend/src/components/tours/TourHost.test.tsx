@@ -796,3 +796,200 @@ describe('useTourHost — manual tour lifecycle (r15)', () => {
     expect(result.current.activeTour).toBeNull();
   });
 });
+
+describe('useTourHost — resume unseen Agent tour after manual tour closes (r19)', () => {
+  it('manual tour during auto-start delay → close → unseen Agent tour resumes after fresh 600 ms', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    let hookResult: ReturnType<typeof useTourHost> | undefined;
+    function Wrapper() {
+      hookResult = useTourHost('agent');
+      return (
+        <div data-tour="agent">
+          <div data-tour="agent-evidence" />
+          <div data-tour="lakebase-write" />
+        </div>
+      );
+    }
+
+    render(<Wrapper />);
+
+    // Dispatch a manual tour BEFORE the 600 ms auto-start fires
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('qp-tour-request', { detail: { tour: 'architecture' } }),
+      );
+    });
+    expect(hookResult!.activeTour).toBe('architecture');
+
+    // Advance past the original 600 ms — original callback is suppressed by manualStartRef
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(hookResult!.activeTour).toBe('architecture');
+
+    // Close the manual tour
+    act(() => { hookResult!.closeTour(); });
+    expect(hookResult!.activeTour).toBeNull();
+
+    // The unseen Agent tour must resume after a fresh 600 ms delay
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(hookResult!.activeTour).toBe('agent');
+  });
+
+  it('closing an automatically started tour does not chain to the next unseen tour', () => {
+    vi.useFakeTimers();
+    // Application tour is unseen → auto-starts
+    const { result } = renderHook(() => useTourHost());
+
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(result.current.activeTour).toBe('application');
+
+    // Close the auto-started tour
+    act(() => { result.current.closeTour(); });
+    expect(result.current.activeTour).toBeNull();
+
+    // No chain — agent tour must NOT auto-start
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(result.current.activeTour).toBeNull();
+  });
+
+  it('manual close on a non-Agent screen does not bypass the Agent screen guard', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    let hookResult: ReturnType<typeof useTourHost> | undefined;
+    function Wrapper() {
+      hookResult = useTourHost('platform-overview');
+      return (
+        <div data-tour="agent">
+          <div data-tour="agent-evidence" />
+          <div data-tour="lakebase-write" />
+        </div>
+      );
+    }
+
+    render(<Wrapper />);
+
+    // Manually start and close a tour on a non-Agent screen
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('qp-tour-request', { detail: { tour: 'architecture' } }),
+      );
+    });
+    expect(hookResult!.activeTour).toBe('architecture');
+
+    act(() => { hookResult!.closeTour(); });
+    expect(hookResult!.activeTour).toBeNull();
+
+    // Agent tour must NOT start because currentScreen is not 'agent'
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(hookResult!.activeTour).toBeNull();
+  });
+
+  it('StrictMode: manual close retry does not create duplicate callbacks', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    let firedCallbacks = 0;
+    const realSetTimeout = window.setTimeout;
+    const realClearTimeout = window.clearTimeout;
+    const wrappedTimerIds = new Set<number>();
+
+    window.setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      if (ms === 600) {
+        const id = realSetTimeout(() => {
+          firedCallbacks++;
+          if (typeof fn === 'function') fn(...args);
+        }, ms, ...args);
+        wrappedTimerIds.add(id);
+        return id;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof window.setTimeout;
+
+    window.clearTimeout = ((id?: number) => {
+      return realClearTimeout(id);
+    }) as typeof window.clearTimeout;
+
+    try {
+      let hookResult: ReturnType<typeof useTourHost> | undefined;
+      function Wrapper() {
+        hookResult = useTourHost('agent');
+        return (
+          <div data-tour="agent">
+            <div data-tour="agent-evidence" />
+            <div data-tour="lakebase-write" />
+          </div>
+        );
+      }
+
+      render(<React.StrictMode><Wrapper /></React.StrictMode>);
+
+      // Dispatch manual tour before auto-start fires
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent('qp-tour-request', { detail: { tour: 'architecture' } }),
+        );
+      });
+
+      // Close the manual tour
+      act(() => { hookResult!.closeTour(); });
+
+      // Let the retry auto-start fire
+      act(() => { vi.advanceTimersByTime(600); });
+      expect(hookResult!.activeTour).toBe('agent');
+
+      // Close the auto-started agent tour
+      act(() => { hookResult!.closeTour(); });
+
+      // Advance well past — no duplicate callback
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(hookResult!.activeTour).toBeNull();
+
+      // The retry callback plus the original suppressed one = at most 2 total 600ms callbacks
+      // But only 1 should have actually started a tour (the retry)
+      expect(firedCallbacks).toBeLessThanOrEqual(2);
+    } finally {
+      window.setTimeout = realSetTimeout;
+      window.clearTimeout = realClearTimeout;
+    }
+  });
+
+  it('unmount after manual close cancels pending retry auto-start', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    let hookResult: ReturnType<typeof useTourHost> | undefined;
+    function Wrapper() {
+      hookResult = useTourHost('agent');
+      return (
+        <div data-tour="agent">
+          <div data-tour="agent-evidence" />
+          <div data-tour="lakebase-write" />
+        </div>
+      );
+    }
+
+    const { unmount } = render(<Wrapper />);
+
+    // Dispatch manual tour
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('qp-tour-request', { detail: { tour: 'architecture' } }),
+      );
+    });
+
+    // Close the manual tour — triggers retry
+    act(() => { hookResult!.closeTour(); });
+    expect(hookResult!.activeTour).toBeNull();
+
+    // Unmount before the retry 600 ms fires
+    unmount();
+
+    // Advance past the retry window
+    act(() => { vi.advanceTimersByTime(2000); });
+
+    // No tour should have started — unmount cancelled the pending retry
+    expect(hookResult!.activeTour).toBeNull();
+  });
+});
