@@ -1,8 +1,8 @@
 # Capstone rubric readiness plan
 
 Status: planning only. Codex does not implement the production changes in this
-lane. The fixed delivery order is MiMo build -> DeepSeek check -> Codex final
-review -> Claude live validation -> PR -> CodeRabbit.
+lane. The fixed delivery order is MiMo build -> Kimi validation -> Codex final
+validation -> PR -> CodeRabbit.
 
 ## Outcome and non-negotiable prerequisite
 
@@ -36,7 +36,7 @@ owner must explicitly approve each live window.
 | Action-taking AI agent | `agent/tools_retrieval.py`, `agent/tools_write.py`, `agent/guardrails.py` | `api/routes/agent_chat.py` is keyword dispatch, not model-directed | 2 |
 | Analytics pipeline | `db/migrations/CDC.md`; `api/routes/analytics.py` | Consumer absent; route returns placeholders | 1 |
 | Frontend | `frontend/src/` and same-origin FastAPI serving | Already satisfied; do not collide with evidence/governance UX lane | Regression check only |
-| Deployed app | `resources/app.yml`, `docs/DEPLOYMENT.md`, health routes on app lane | App and Lakebase are stopped; Lakebase role/grants and URL smoke are unproven | 3, then Claude live |
+| Deployed app | `resources/app.yml`, `docs/DEPLOYMENT.md`, health routes on app lane | App and Lakebase are stopped; Lakebase role/grants and URL smoke are unproven | 3, then owner-authorized live validation |
 | Volume | Verified 2026-10-04 total of 238,622,024 rows across three Bronze tables, currently buried in `.agents/requests/BUILD-nl1-contracts.md` | Public reproducible evidence absent | 4 |
 | Variety | Market bars, options, CFTC/Fed series, SEC filing text | Public source/technology mapping is fragmented | 4 |
 | Architecture diagram | README has an old text diagram | Required PNG/JPEG absent and current flow is incomplete | 4 |
@@ -100,8 +100,8 @@ Relevant current product references:
    final analytics job, SQL warehouse, Lakebase instance, and model endpoint to
    the app identity and is therefore downstream of rounds 1-2.
 5. Build/check/review the offline portion of round 4
-   (`BUILD-submission-evidence.md`), then have Claude run its exact live evidence
-   commands after rounds 1-3 pass.
+   (`BUILD-submission-evidence.md`), then have an owner-authorized operator run
+   its exact live evidence commands after rounds 1-3 pass.
 
 Rounds 1 and 2 are not safe to implement concurrently: both change the API
 contract and migrations, and round 2's audit events must be captured by round
@@ -140,8 +140,8 @@ Everything not listed here is built and tested offline with fakes/fixtures.
 | Deployed URL smoke and `research NVDA -> save research note` demo | Yes | Use a dedicated test principal; record created IDs and no credentials. |
 | Bronze `COUNT(*)` and source-variety evidence | No | Requires SQL warehouse only, not Lakebase. |
 
-Claude's live window must end with an explicit instance/app state report. No
-script in these rounds may auto-start Lakebase.
+The owner-authorized live window must end with an explicit instance/app state
+report. No script in these rounds may auto-start Lakebase.
 
 ## Security invariants
 
@@ -189,9 +189,9 @@ script in these rounds may auto-start Lakebase.
 
 ## Definition of ready
 
-The submission is ready only after all four DeepSeek verdicts are `APPROVED`,
-Codex independently passes each offline acceptance/mutation gate, and Claude's
-live report proves:
+The submission is ready only after Kimi approves all four exact commits and
+Codex independently passes each offline acceptance/mutation gate. Required live
+evidence must prove:
 
 1. outbox changes reach all four Delta analytics tables without duplicates;
 2. the deployed app is non-degraded under its service principal;
@@ -199,4 +199,3 @@ live report proves:
    write, with both actions visible in the audit trail;
 4. public dated counts support the scale claim; and
 5. the committed PNG matches its diagram-as-code source and the public write-up.
-

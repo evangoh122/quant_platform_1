@@ -109,7 +109,7 @@ The current API marks any nonempty Delta read `fresh` and puts only a row count 
 
 ## Build slices and review gates
 
-Each slice is independently dispatched as **MiMo build → DeepSeek check → Codex review**. Every build request must require LF line endings, no edits to `.agents/dispatch.sh`, a commit, and a written verdict. Tests listed here must be added first and demonstrated failing against current `origin/main`; reviewers must repeat the named mutation and confirm the test fails for the intended reason.
+Each slice follows **MiMo build → Kimi validation → Codex final validation**. Every build request must require LF line endings, no edits to `.agents/dispatch.sh`, a commit, and the completion report defined in `AGENTS.md`. Tests listed here must be added first and demonstrated failing against current `origin/main`; validators must repeat the named mutation and confirm the test fails for the intended reason.
 
 ### M1 — Incremental planner, manifest, and equities
 

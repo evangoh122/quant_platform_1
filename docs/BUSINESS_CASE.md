@@ -88,7 +88,7 @@ Agent actions pass schema, tool allowlist, budget, symbol/evidence, role and wri
 
 ### Engineering gates
 
-The current owner workflow is: **MiMo builds → DeepSeek checks (Codex luna fallback if unavailable) → Codex reviews → Claude performs live review → PR → CodeRabbit review** (`.agents/PROTOCOL.md` provides the repository's file-based verdict format). Safety properties are expected to have mutation evidence that fails on the old or deliberately weakened code.
+The current owner workflow is: **MiMo builds → Kimi independently validates → Codex performs final validation → PR → CodeRabbit review** (`AGENTS.md` is the repository's single source of truth). Safety properties are expected to have mutation evidence that fails on the old or deliberately weakened code.
 
 CI runs the offline Python suite, frontend type-check/build, Databricks bundle validation when credentials are available, Gitleaks secret scanning, `pip-audit`, and production `npm audit` (`.github/workflows/ci.yml`; `docs/SECURITY.md`). Bundle validation is explicitly skipped when workspace credentials are absent, so a green run does not by itself prove live deployment.
 
@@ -100,4 +100,3 @@ CI runs the offline Python suite, frontend type-check/build, Databricks bundle v
 - Revised Fed/FRED history is not first-release vintage data and must not be treated as historically known (`docs/BRONZE_REFRESH_PLAN.md`).
 - Analytics refresh is on demand; streaming DLT is built but not deployed (`bundles/streaming/README.md`; `README.md`).
 - SEC coverage is broad but incomplete: 230 of 558 coverage tickers currently have chunks (live fact).
-

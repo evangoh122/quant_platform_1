@@ -353,8 +353,8 @@ pytest -q tests/api/test_research.py tests/api/test_public_demo_security.py test
 
 ## 4. Build rounds
 
-Every round follows the owner workflow: MiMo build, DeepSeek check, Codex
-review, Claude review, then PR and CodeRabbit. Each BUILD request must require
+Every round follows the owner workflow: MiMo build, Kimi validation, Codex
+final validation, then PR and CodeRabbit. Each BUILD request must require
 LF line endings, no edits to `.agents/dispatch.sh`, a commit, a written MiMo
 verdict, failing-before proof on a pre-slice `/tmp` worktree/copy, and named
 mutation evidence from the checker.
@@ -624,8 +624,8 @@ approved policy + telemetry config ─→ B11 legal/transparency
 ```
 
 - The current branch contains A1 and A2 round-three remediation, with a
-  DeepSeek check request at `2b06608`. Do not start A3 until that check and the
-  required Codex/Claude reviews approve A2.
+  historical checker request at `2b06608`. Do not start A3 until Kimi and Codex
+  approve the current A2 commit.
 - A3–A5 remain pending. B1 can be built in a separate backend-only worktree
   after the current UI sequence is safely isolated, but B2 must be reconciled
   with any API/type edits before frontend rounds. B3 must wait for A5 because

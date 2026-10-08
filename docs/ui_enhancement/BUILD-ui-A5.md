@@ -45,13 +45,13 @@ committed and checked.
 - `renders the market empty state and freshness/source instead of 0` — current
   screen has no chart empty-state contract to test.
 
-## Named mutations for DeepSeek
+## Named validation mutations
 
 Run mutations for: ignoring the URL query; not persisting recent symbols;
 removing `MSFT` or `SPY` from quick choices; accepting an invalid symbol;
 showing coverage for an empty envelope; plotting unsorted rows; hiding the
-existing table; and rendering an empty series as numeric zero. DeepSeek must
-provide file:line evidence.
+existing table; and rendering an empty series as numeric zero. Kimi and Codex
+must provide file:line evidence.
 
 ## Acceptance
 

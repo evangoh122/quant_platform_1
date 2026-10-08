@@ -105,7 +105,7 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 ## Known limitations
 
 - SEC retrieval covers all tickers via per-ticker lazy loading with SQL-warehouse fallback for Databricks Apps.
-- The agent and the analytics pipeline are minimal versions built for the capstone deadline (one DeepSeek check + live validation; a Codex review is pending). The analytics job is run on demand (it needs a short-lived `LAKEBASE_URL` at run time).
+- The agent and analytics pipeline are minimal versions built for the capstone deadline. The analytics job is run on demand (it needs a short-lived `LAKEBASE_URL` at run time).
 - Macro (Fed) series are revised values, not first-release vintages.
 - Strategy research reports are descriptive; several are marked `BLOCKED_DATA` (fewer than two complete out-of-sample years).
 - The streaming DLT pipeline is built but not deployed.

@@ -56,9 +56,9 @@ must fail against the pre-A1 implementation:
 - `renders a skeleton/empty/error/stale state primitive with semantic status`
   — no state primitive directory exists today.
 
-## Named mutations for DeepSeek
+## Named validation mutations
 
-DeepSeek must run or inspect mutations for: active navigation state hardcoded
+Kimi and Codex must run or inspect mutations for: active navigation state hardcoded
 to the first item; mobile drawer that cannot be dismissed with Escape; a
 Lakebase dependency with `circuit_breaker_state: 'open'` not showing the
 banner; the `data-tour` attribute removed from the navigation target; and a

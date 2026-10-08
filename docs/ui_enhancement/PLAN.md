@@ -2,9 +2,9 @@
 
 This is the implementation plan for the first delivery slice in
 `OWNER_PLAN.md`. It is a planning artifact; it does not implement the UI.
-Build rounds are strictly sequential: MiMo completes one request, DeepSeek
-checks it, and only then does the next request start. A handoff file is not
-edited by two active rounds at once.
+Build rounds are strictly sequential: MiMo completes one request, Kimi
+validates its exact commit, and Codex performs final validation before the next
+request starts. A handoff file is not edited by two active rounds at once.
 
 ## Verified wire contracts
 
@@ -92,5 +92,6 @@ the same time.
   `cd frontend && npm ci && npm test -- --run && npx tsc --noEmit && npm run build`
 
 - Each BUILD request must require LF line endings, no edits to
-  `.agents/dispatch.sh`, a commit, and a written MiMo verdict. DeepSeek must
-  check the resulting commit with file:line evidence.
+  `.agents/dispatch.sh`, a commit, and the MiMo completion report defined in
+  `AGENTS.md`. Kimi and Codex must validate the resulting exact commit with
+  file:line evidence.

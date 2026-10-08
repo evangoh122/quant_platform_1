@@ -22,8 +22,8 @@ work already owns parts of the public-demo surface:
   approved and has an open PR, but is not yet part of the NL integration base.
 - Render lane B owns public-demo security, identity isolation, route removal,
   rate limiting, and write guards. It has uncommitted round-nine work and must
-  not be touched from another worktree. It remains active until DeepSeek,
-  Codex, Claude, and CodeRabbit gates are complete and its PR merges.
+  not be touched from another worktree. It remains active until Kimi, Codex,
+  and CodeRabbit gates are complete and its PR merges.
 - Render lane C owns reviewed snapshot fixtures and the snapshot exporter. It
   must not start until lane B is approved and integrated.
 - The application scaffold is already integrated into `origin/main`.
@@ -38,11 +38,10 @@ only safe parallel work.
 Required review order for every implementation lane:
 
 1. MiMo implements and proves new tests fail against the pre-change code.
-2. DeepSeek independently reviews and returns `APPROVED` or
+2. Kimi independently validates and returns `APPROVED` or
    `CHANGES_REQUESTED` with file-and-line evidence.
 3. Codex runs the tests, mutation checks, and security/correctness validation.
-4. Claude performs the final architecture and integration review.
-5. Open a PR and immediately request `@coderabbitai review`.
+4. Open a PR and immediately request `@coderabbitai review`.
 
 ## V1 architecture
 
@@ -242,10 +241,10 @@ JavaScript, HTML, formatter functions, or URLs.
 
 ### Business, IT, and testing showcase page
 
-After Claude's README update is complete and integrated, add a dedicated
+After the current README update is complete and integrated, add a dedicated
 portfolio showcase page. Before implementation, compare the final README diff
-and current frontend ownership so the page does not overwrite Claude's content
-or collide with an active UI lane.
+and current frontend ownership so the page does not overwrite that content or
+collide with an active UI lane.
 
 The page tells one connected story through three expandable sections.
 
@@ -288,12 +287,11 @@ stack traces.
 Implementation follows the repository's required order:
 
 1. Codex writes the page specification, file ownership, red tests, and
-   acceptance commands after reviewing Claude's final README changes.
+   acceptance commands.
 2. MiMo implements it in a separate worktree and commit.
-3. DeepSeek independently reviews with file-and-line evidence.
+3. Kimi independently validates with file-and-line evidence.
 4. Codex runs tests, mutations, build, accessibility, and artifact validation.
-5. Claude performs the final architecture and integration review.
-6. Open the PR and immediately trigger `@coderabbitai review`.
+5. Open the PR and immediately trigger `@coderabbitai review`.
 
 ## Evaluation
 
@@ -444,7 +442,7 @@ own `evals/` and the analytics metrics are semantically different.
 
 ## Merge and release gates
 
-1. Finish lane B round nine, then DeepSeek, Codex, Claude, PR, CodeRabbit, and
+1. Finish lane B round nine, then Kimi, Codex, PR, CodeRabbit, and
    merge. Do not touch its dirty worktree from another lane.
 2. Merge approved Render lane A and cut a fresh base containing main + A + B.
 3. Complete and approve snapshot lane C if the current snapshot demo remains a

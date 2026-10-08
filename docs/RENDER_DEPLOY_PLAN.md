@@ -207,9 +207,9 @@ Render the diagram above and annotate trust boundaries: public CDN/browser, opti
 
 ## 5. Build/check task lanes
 
-MiMo owns implementation; DeepSeek independently checks the same task and records evidence. `SP: no` means it can be completed with fixtures/snapshots and no live credential. `SP: yes` means it must wait for the admin-created SP. `SP: later` means build/test with mocks now, perform the live acceptance step later.
+MiMo owns implementation; Kimi independently validates the same exact commit and records evidence, then Codex performs final validation. `SP: no` means it can be completed with fixtures/snapshots and no live credential. `SP: yes` means it must wait for the admin-created SP. `SP: later` means build/test with mocks now, perform the live acceptance step later.
 
-| ID | MiMo build task | DeepSeek acceptance tests | SP |
+| ID | MiMo build task | Independent acceptance tests | SP |
 | --- | --- | --- | --- |
 | S1 | Define versioned snapshot schemas and an allowlist exporter for results, universe, regime, freshness, and sample RAG; validate then atomically advance `latest.json`. | Run against fixtures; malformed/missing field and checksum tests fail closed; scan artifact keys/content for secrets and prohibited operational fields; partial export leaves prior pointer intact. | No |
 | S2 | Identify and serialize the canonical r4 real-data artifact; encode negative net Sharpe, DSR 0, folds, costs, trial count, and provenance. Keep synthetic ablation separate. | Compare JSON values to the signed/source artifact; UI snapshot test contains “no demonstrated edge” and “synthetic” labels where applicable; no synthetic metric appears as live. | No (owner must locate artifact) |
@@ -332,7 +332,7 @@ services:
 
 There are deliberately **no secrets**.
 
-### Build lanes (MiMo builds → DeepSeek checks → Claude/Codex validates → PR + CodeRabbit)
+### Build lanes (MiMo builds → Kimi validates → Codex validates → PR + CodeRabbit)
 
 | ID | Task | Acceptance (each test must fail on current main) |
 |---|---|---|

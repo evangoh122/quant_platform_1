@@ -49,13 +49,13 @@ committed and checked.
 - `repositions the spotlight after scroll and resize` — current app has no
   spotlight measurement.
 
-## Named mutations for DeepSeek
+## Named validation mutations
 
 Run mutations for: changing a versioned key to an unversioned key; removing
 the completion write so the tour reopens after completion; making a missing
 selector block Next; removing the focus restore; making ArrowLeft wrap to the
 last step; removing the reduced-motion guard; and measuring only once so the
-spotlight is stale after scroll. DeepSeek must report file:line evidence.
+spotlight is stale after scroll. Kimi and Codex must report file:line evidence.
 
 ## Acceptance
 

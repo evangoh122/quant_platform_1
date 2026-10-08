@@ -53,14 +53,14 @@ committed and checked.
 - `does not render unsupported or simulated execution stages` — current code
   has no execution trace.
 
-## Named mutations for DeepSeek
+## Named validation mutations
 
 Run mutations for: expanding raw JSON by default; changing `ok: false` to a
 success badge; dropping `accepted_ts`/`source_url` from a source card;
 displaying a note without its `note_id`; adding simulated timer-based stages;
 clearing the question before a failed request; allowing whitespace-only send;
-and showing a model confidence score not present in the response. DeepSeek
-must provide file:line evidence.
+and showing a model confidence score not present in the response. Kimi and
+Codex must provide file:line evidence.
 
 ## Acceptance
 

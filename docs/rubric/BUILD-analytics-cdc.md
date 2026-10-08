@@ -122,9 +122,9 @@ Do not accept "test file not found" as the only red proof. At least the API
 test must execute against current production code and fail on `count == 0` /
 `empty is True` after the adapter fake returns rows.
 
-## 3. Named checker mutations
+## 3. Named validation mutations
 
-DeepSeek must apply each mutation in a disposable copy and show a focused test
+Kimi and Codex must apply each mutation in a disposable copy and show a focused test
 fails:
 
 1. **WATERMARK-SKIP:** change pending selection to `event_id > watermark`; a
@@ -157,7 +157,7 @@ If the final bundle CLI uses environment-form variables instead, document the
 equivalent exact command. No test may connect to Lakebase, a warehouse, or the
 internet. Static imports must remain pyspark-free in the app process.
 
-## 5. Exact Claude live checks
+## 5. Exact owner-authorized live checks
 
 These are deferred until owner approval to start Lakebase:
 
@@ -185,7 +185,7 @@ These are deferred until owner approval to start Lakebase:
 
 Use LF line endings. Do not touch `.agents/dispatch.sh`, RAG ingestion files,
 strategy files, or frontend evidence screens. Commit the round. Write
-`.agents/mimo/VERDICT-rubric-analytics-cdc.md` with commits, files, red proof,
+`.agentlogs/VERDICT-rubric-analytics-cdc.md` with commits, files, red proof,
 all five mutation proofs, exact offline outputs, live checks marked pending,
-scope exclusions, and an `APPROVED`/`CHANGES_REQUESTED` self-verdict. DeepSeek's
-independent verdict is still required.
+scope exclusions, and a `SUCCESS`/`FAILURE` self-report. Kimi's independent,
+commit-bound verdict and Codex final validation are still required.

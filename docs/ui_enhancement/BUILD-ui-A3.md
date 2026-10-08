@@ -52,13 +52,13 @@ committed and checked.
 - `does not render snapshot evidence as live counters` — a test should assert
   the snapshot label and absence of live API counter semantics.
 
-## Named mutations for DeepSeek
+## Named validation mutations
 
 Check mutations for: changing the landing route back to Market Dashboard;
 removing the `Verified snapshot: 2026-10-05` label; presenting 287M+ as a
 live count; omitting `analytics_outbox`; changing the safety order so the LLM
 appears to execute directly; and replacing the baseline signal disclaimer
-with validated-performance wording. DeepSeek must cite file:line evidence.
+with validated-performance wording. Kimi and Codex must cite file:line evidence.
 
 ## Acceptance
 
