@@ -53,11 +53,6 @@ resources:
             python_file: ../pipelines/build_sec_embeddings.py
             parameters: ["--catalog", "${var.catalog}", "--schema", "${var.schema}"]
           environment_key: serverless
-          libraries:
-            - pypi:
-                package: "sentence-transformers>=2.2.0"
-            - pypi:
-                package: "torch>=2.0.0"
       environments:
         - environment_key: serverless
           spec:
@@ -91,6 +86,29 @@ resources:
             dependencies:
               - "beautifulsoup4>=4.12.0"
               - "lxml>=4.9.0"
+
+    sec_companyfacts_ingest:
+      name: quant-platform-sec-companyfacts-ingest-${bundle.target}
+      tasks:
+        - task_key: ingest_sec_companyfacts
+          spark_python_task:
+            python_file: ../pipelines/ingest_sec_companyfacts.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+              - "--user-agent-secret-scope"
+              - "evangoh_capstone"
+              - "--user-agent-secret-key"
+              - "sec_edgar_user_agent"
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+            dependencies:
+              - "pyyaml>=6.0"
 
     sec_knowledge_graph_build:
       name: quant-platform-sec-kg-build-${bundle.target}
@@ -128,7 +146,6 @@ resources:
               - "--batch-size"
               - "5000"
           environment_key: serverless
-          libraries: []
       environments:
         - environment_key: serverless
           spec:

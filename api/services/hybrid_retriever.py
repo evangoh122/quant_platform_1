@@ -450,23 +450,43 @@ def _insert_ticker_corpus(ticker: str, corpus: TickerCorpus) -> None:
 _alias_map: Dict[str, str] = {}
 _alias_map_lock = threading.Lock()
 _alias_map_loaded = False
+_alias_map_loading = False  # guards concurrent reloads after the retry deadline
+_ALIAS_MAP_RETRY_INTERVAL = 300  # seconds before retrying a failed alias-map load
+_alias_map_retry_at: float = 0.0
 
 
 def _load_alias_map() -> Dict[str, str]:
     """Load the ticker→canonical-ticker alias map from gold_sec_coverage.
 
-    Loads ONCE and caches.  The map groups tickers by CIK and picks the
-    alphabetically-first ticker as the canonical for each group.  Coverage
-    lookup and alias lookup share one cached read.
+    Loads ONCE and caches.  Reads the ``canonical_ticker`` column directly
+    from the gold table so the API never re-derives the canonical from chunk
+    counts (which would disagree with the SQL when both share-class tickers
+    report the same resolved n_chunks).
+
+    If the ``canonical_ticker`` column is missing (old table schema), falls
+    back to identity mapping with a WARNING — never guesses alphabetically.
+    The fallback is NOT cached permanently; a retry is scheduled after
+    ``_ALIAS_MAP_RETRY_INTERVAL`` seconds so the map can be loaded once the
+    table is rebuilt.
 
     Returns the alias map dict.  On failure returns an empty dict and logs
-    once so subsequent calls don't retry.
+    once so subsequent calls don't retry until the deadline passes.
     """
-    global _alias_map, _alias_map_loaded
+    global _alias_map, _alias_map_loaded, _alias_map_retry_at, _alias_map_loading
 
     with _alias_map_lock:
         if _alias_map_loaded:
             return _alias_map
+        # If a previous load failed, wait until the retry deadline before
+        # attempting another load (prevents hammering a broken table).
+        if _alias_map_retry_at and time.monotonic() < _alias_map_retry_at:
+            return _alias_map
+        # If another thread is already reloading past the deadline, return
+        # the current (stale) map instead of duplicating the warehouse read.
+        if _alias_map_loading:
+            return _alias_map
+        # Mark that this caller will perform the reload.
+        _alias_map_loading = True
 
     try:
         try:
@@ -479,7 +499,7 @@ def _load_alias_map() -> Dict[str, str]:
 
             rows = (
                 spark.table(COVERAGE_TABLE)
-                .select("ticker", "cik")
+                .select("ticker", "canonical_ticker")
                 .collect()
             )
         else:
@@ -488,7 +508,7 @@ def _load_alias_map() -> Dict[str, str]:
             conn = _get_warehouse_connection()
             cur = conn.cursor()
             try:
-                cur.execute(f"SELECT ticker, cik FROM {COVERAGE_TABLE}")
+                cur.execute(f"SELECT ticker, canonical_ticker FROM {COVERAGE_TABLE}")
                 cols = [d[0] for d in cur.description]
                 rows = [dict(zip(cols, r)) for r in cur.fetchall()]
             finally:
@@ -496,35 +516,45 @@ def _load_alias_map() -> Dict[str, str]:
 
         if not rows:
             with _alias_map_lock:
-                _alias_map_loaded = True
+                _alias_map_retry_at = time.monotonic() + _ALIAS_MAP_RETRY_INTERVAL
             return {}
 
-        # Group tickers by CIK → pick canonical (alphabetically first)
-        cik_tickers: Dict[str, List[str]] = {}
+        amap: Dict[str, str] = {}
         for r in rows:
             t = (r["ticker"] or "").upper().strip()
-            c = r["cik"] or ""
-            if t and c:
-                cik_tickers.setdefault(c, []).append(t)
-
-        amap: Dict[str, str] = {}
-        for _cik, tickers in cik_tickers.items():
-            tickers_sorted = sorted(tickers)
-            canonical = tickers_sorted[0]
-            for t in tickers_sorted:
-                amap[t] = canonical
+            ct = (r["canonical_ticker"] or "").upper().strip()
+            if t and ct:
+                amap[t] = ct
 
         with _alias_map_lock:
             _alias_map = amap
             _alias_map_loaded = True
-        logger.info("Loaded ticker alias map: {} entries, {} CIKs", len(amap), len(cik_tickers))
+            _alias_map_retry_at = 0.0
+        logger.info("Loaded ticker alias map: {} entries", len(amap))
         return amap
     except Exception as exc:
+        # If canonical_ticker column is missing (old table schema), fall back
+        # to identity mapping with a WARNING — never guess alphabetically.
+        # Schedule a retry so the map can be loaded once the table is rebuilt.
+        msg = str(exc)
+        if "UNRESOLVED_COLUMN" in msg or ("canonical_ticker" in msg and "not found" in msg.lower()):
+            logger.warning(
+                "gold_sec_coverage missing canonical_ticker column; "
+                "falling back to identity alias map. Rebuild gold table. {}",
+                exc,
+            )
+            with _alias_map_lock:
+                _alias_map = {}
+                _alias_map_retry_at = time.monotonic() + _ALIAS_MAP_RETRY_INTERVAL
+            return {}
         logger.warning("Failed to load ticker alias map (will use identity): {}", exc)
         with _alias_map_lock:
             _alias_map = {}
-            _alias_map_loaded = True
+            _alias_map_retry_at = time.monotonic() + _ALIAS_MAP_RETRY_INTERVAL
         return {}
+    finally:
+        with _alias_map_lock:
+            _alias_map_loading = False
 
 
 def _resolve_canonical_ticker(ticker: str) -> str:
@@ -771,7 +801,7 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     """
     global _corpus_loaded, _corpus, _bm25_docs, _bm25_tokenised, _bm25_index, _embeddings_map
     global _stored_index_dim, _stored_embedding_model
-    global _alias_map_loaded
+    global _alias_map_loaded, _alias_map_retry_at, _alias_map_loading
 
     if ticker:
         # Per-ticker invalidation — resolve alias first
@@ -797,6 +827,8 @@ def reload_corpus(ticker: Optional[str] = None) -> bool:
     with _alias_map_lock:
         _alias_map.clear()
         _alias_map_loaded = False
+        _alias_map_loading = False
+        _alias_map_retry_at = 0.0
 
     return True
 

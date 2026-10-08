@@ -14,7 +14,14 @@ Writes:
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import time
+from pathlib import Path
+
+_p = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
+from pipelines._runtime import repo_root
 
 import numpy as np
 import pandas as pd
@@ -23,6 +30,26 @@ from ml import evaluate, registry
 from ml.features import FEATURE_SETS
 from ml.synthetic_data import make_synthetic_matrix
 from ml.train import make_baseline, make_challenger, run_ablation
+
+
+def _resolve_output_dir(output_dir: str | None) -> Path:
+    """Return an absolute path for ablation artifacts.
+
+    Priority:
+      1. Explicit ``--output-dir`` (used as-is, must be absolute or made absolute).
+      2. Databricks runtime → ``/Volumes/{CATALOG}/{SCHEMA}/ml_artifacts``.
+      3. Local fallback   → ``<repo_root>/artifacts``.
+    """
+    if output_dir:
+        p = Path(output_dir)
+        return p if p.is_absolute() else Path.cwd() / p
+
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        catalog = os.getenv("CATALOG", "bootcamp_students")
+        schema = os.getenv("SCHEMA", "evangoh_capstone")
+        return Path("/Volumes") / catalog / schema / "ml_artifacts"
+
+    return repo_root() / "artifacts"
 
 
 def _measure_latency(model, X: pd.DataFrame, repeats: int = 200) -> list:
@@ -54,6 +81,13 @@ def main() -> None:
     parser.add_argument("--include-challenger", action="store_true")
     parser.add_argument("--label-method", choices=["fixed", "triple_barrier"], default="fixed")
     parser.add_argument("--tracking-uri", default=None)
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for ablation artifacts. "
+        "Default: /Volumes/{CATALOG}/{SCHEMA}/ml_artifacts when DATABRICKS_RUNTIME_VERSION is set, "
+        "else <repo_root>/artifacts.",
+    )
     args = parser.parse_args()
 
     if args.tracking_uri:
@@ -137,9 +171,7 @@ def main() -> None:
         )
 
     # ── Write the committed result artifact ────────────────────────────────
-    import os
-
-    out_dir = "ml/results"
+    out_dir = _resolve_output_dir(args.output_dir)
     os.makedirs(out_dir, exist_ok=True)
     lines = [
         "# A/B/C/D Ablation Results",

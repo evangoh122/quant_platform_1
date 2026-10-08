@@ -27,6 +27,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+_p = globals().get("__file__") or sys.argv[0]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -663,7 +666,8 @@ def main() -> None:
         sys.exit(1)
 
     # Acquire Spark (only inside main)
-    spark = SparkSession.builder.getOrCreate()
+    from pipelines._runtime import get_spark
+    spark = get_spark()
 
     # Acquire Postgres connection
     conn_str = os.environ.get("LAKEBASE_URL", "")
