@@ -4,7 +4,7 @@ import type { ChatResponse } from '../api/types';
 import { Card } from '../components/Card';
 import { LoadingState } from '../components/LoadingState';
 import { ExecutionTrace } from '../components/ExecutionTrace';
-import { EvidencePanel } from '../components/evidence';
+import { EvidencePanel, hasValidNoteId } from '../components/evidence';
 import { SymbolPicker } from '../components/SymbolPicker';
 import symbols from '../data/symbols.json';
 
@@ -123,7 +123,7 @@ export function ResearchAgent() {
                 <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800 dark:text-slate-200">
                   {m.text}
                 </p>
-                {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && tc.result?.note_id) && (
+                {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && hasValidNoteId(tc)) && (
                   <div data-tour="lakebase-write" className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
                     Research note saved to Lakebase.
                   </div>

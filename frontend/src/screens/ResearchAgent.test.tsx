@@ -415,6 +415,45 @@ describe('ResearchAgent', () => {
     expect(toolCard).not.toHaveTextContent('undefined');
   });
 
+  it.each([
+    ['numeric', 12345],
+    ['empty', ''],
+    ['whitespace-only', '   '],
+  ])('does not confirm a Lakebase save for a %s note_id', async (_label, noteId) => {
+    vi.stubGlobal('fetch', mockFetch({
+      ...mockSavedNoteResponse,
+      tool_calls: [{
+        ...mockSavedNoteResponse.tool_calls[0],
+        result: { ...mockSavedNoteResponse.tool_calls[0].result, note_id: noteId },
+      }],
+    }));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Save a research note/));
+    await waitFor(() => {
+      expect(screen.getByText('Note saved successfully.')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText(/Research note saved to Lakebase/)).not.toBeInTheDocument();
+    expect(document.querySelector('[data-tour="lakebase-write"]')).toBeNull();
+    expect(screen.getByTestId('tool-call-0')).toHaveTextContent('Save not confirmed');
+  });
+
+  it('confirms a Lakebase save for a valid non-empty string note_id', async () => {
+    vi.stubGlobal('fetch', mockFetch(mockSavedNoteResponse));
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+
+    await user.click(screen.getByText(/Save a research note/));
+    await waitFor(() => {
+      expect(screen.getAllByText(/Research note saved to Lakebase/)).toHaveLength(2);
+    });
+
+    expect(document.querySelector('[data-tour="lakebase-write"]')).toBeTruthy();
+    expect(screen.getByTestId('tool-call-0')).toHaveTextContent('Note note-42');
+  });
+
   it('shows agent-unavailable state when available is false and no tool calls', async () => {
     const unavailableResponse = {
       reply: 'Agent is unavailable.',

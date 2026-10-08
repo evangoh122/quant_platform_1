@@ -6,8 +6,8 @@ interface ToolCallCardProps {
   index: number;
 }
 
-function hasValidNoteId(tc: ToolCall): boolean {
-  return typeof tc.result?.note_id === 'string' && tc.result.note_id.length > 0;
+export function hasValidNoteId(tc: ToolCall): boolean {
+  return typeof tc.result?.note_id === 'string' && tc.result.note_id.trim().length > 0;
 }
 
 function deriveBadge(tc: ToolCall): { label: string; cls: string } {
