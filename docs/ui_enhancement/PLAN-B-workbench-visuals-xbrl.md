@@ -60,10 +60,17 @@ SEC access rules are build requirements:
 - Cache within one run by CIK and skip a write when the same payload hash was
   already committed for that CIK/run; a later changed payload is a new bronze
   observation.
-- Enforce the SEC identity-wide rate cap by serializing SEC ingestion jobs:
-  `max_concurrent_runs: 1` in the job resource and no overlapping manual runs.
-  The 8 requests/second target and 10 requests/second hard maximum apply across
-  all concurrent activity for the configured EDGAR_USER_AGENT identity.
+- Enforce the SEC identity-wide rate cap through a shared identity-scoped
+  limiter/serialization coordinator keyed on the configured `EDGAR_USER_AGENT`.
+  Per-job `max_concurrent_runs: 1` alone does **not** enforce a shared identity
+  cap because separate jobs, manual runs, and any other caller using the same
+  `EDGAR_USER_AGENT` would each maintain independent rate counters. The
+  coordinator must serialize all SEC HTTP activity for a given identity across
+  every caller (Company Facts ingestion, filing metadata refresh, manual/ad-hoc
+  runs). The 8 requests/second target and 10 requests/second hard maximum apply
+  to the aggregate of all concurrent activity for that identity. Deployment must
+  verify the aggregate cap by running overlapping jobs and manual requests under
+  the same `EDGAR_USER_AGENT` and confirming no burst exceeds the hard maximum.
 
 Add a Spark entry point such as `pipelines/ingest_sec_companyfacts.py`; the
 HTTP fetch may execute on the driver with bounded concurrency, but parsing and

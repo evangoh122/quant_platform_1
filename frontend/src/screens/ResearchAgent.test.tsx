@@ -1,6 +1,6 @@
 import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ResearchAgent } from './ResearchAgent';
 import * as symbolStorage from '../utils/symbolStorage';
 
@@ -74,6 +74,10 @@ function mockFetch(response: unknown = mockChatResponse) {
 describe('ResearchAgent', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('renders suggested questions when conversation is empty', () => {

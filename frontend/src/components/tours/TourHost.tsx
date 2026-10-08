@@ -46,6 +46,7 @@ export function useTourHost(currentScreen?: string) {
       const tour = TOUR_MAP[activeTour];
       if (tour) markTourSeen(tour.key);
     }
+    manualStartRef.current = false;
     setActiveTour(null);
   }, [activeTour]);
 
@@ -92,6 +93,8 @@ export function useTourHost(currentScreen?: string) {
       const scheduleAutoStart = () => {
         mainTimerRef.current = window.setTimeout(() => {
           if (manualStartRef.current) return;
+          const tour = TOUR_MAP[autoTour];
+          if (tour && tourSeen(tour.key)) return;
           startTour(autoTour);
         }, 600);
       };

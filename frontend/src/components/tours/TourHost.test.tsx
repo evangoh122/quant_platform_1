@@ -734,3 +734,63 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
     }
   });
 });
+
+describe('useTourHost — manual tour lifecycle (r15)', () => {
+  it('manual replay → close → Agent tour auto-starts after the delay', () => {
+    vi.useFakeTimers();
+    // Application is seen, agent is unseen
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    let hookResult: ReturnType<typeof useTourHost> | undefined;
+    function Wrapper() {
+      hookResult = useTourHost('agent');
+      return (
+        <div data-tour="agent">
+          <div data-tour="agent-evidence" />
+          <div data-tour="lakebase-write" />
+        </div>
+      );
+    }
+
+    render(<Wrapper />);
+
+    // Manually start and immediately close the application tour (replay)
+    act(() => {
+      hookResult!.startTour('application');
+    });
+    expect(hookResult!.activeTour).toBe('application');
+
+    act(() => {
+      hookResult!.closeTour();
+    });
+    expect(hookResult!.activeTour).toBeNull();
+
+    // Agent tour key is still unseen → auto-start should pick it up
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(hookResult!.activeTour).toBe('agent');
+  });
+
+  it('manual start+close inside 600 ms window does not reopen the just-seen tour', () => {
+    vi.useFakeTimers();
+    // All tours unseen → auto-start would pick 'application'
+    const { result } = renderHook(() => useTourHost());
+
+    // Manually start the application tour before the 600 ms fires
+    act(() => {
+      result.current.startTour('application');
+    });
+    expect(result.current.activeTour).toBe('application');
+
+    // Close it — this marks it as seen
+    act(() => {
+      result.current.closeTour();
+    });
+    expect(result.current.activeTour).toBeNull();
+
+    // Advance past the original 600 ms window
+    act(() => { vi.advanceTimersByTime(800); });
+
+    // The stale timer must NOT reopen the application tour
+    expect(result.current.activeTour).toBeNull();
+  });
+});

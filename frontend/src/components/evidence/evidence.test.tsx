@@ -111,6 +111,46 @@ describe('ToolCallCard', () => {
     expect(screen.getByText('note-42')).toBeInTheDocument();
     expect(screen.getByText('Lakebase')).toBeInTheDocument();
   });
+
+  it('treats numeric note_id as invalid — no Note badge or body', () => {
+    const tc: ToolCall = {
+      name: 'save_research_note',
+      arguments: { symbol: 'NVDA', content: 'test' },
+      result: { note_id: 12345, symbol: 'NVDA', status: 'saved' },
+      ok: true,
+    };
+    render(<ToolCallCard toolCall={tc} index={0} />);
+    expect(screen.getByText('Save not confirmed')).toBeInTheDocument();
+    expect(screen.queryByText('12345')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Note ID/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Lakebase')).not.toBeInTheDocument();
+  });
+
+  it('treats empty-string note_id as invalid — no Note badge or body', () => {
+    const tc: ToolCall = {
+      name: 'save_research_note',
+      arguments: { symbol: 'NVDA', content: 'test' },
+      result: { note_id: '', symbol: 'NVDA', status: 'saved' },
+      ok: true,
+    };
+    render(<ToolCallCard toolCall={tc} index={0} />);
+    expect(screen.getByText('Save not confirmed')).toBeInTheDocument();
+    expect(screen.queryByText(/Note ID/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Lakebase')).not.toBeInTheDocument();
+  });
+
+  it('shows Note badge and body for valid non-empty string note_id', () => {
+    const tc: ToolCall = {
+      name: 'save_research_note',
+      arguments: { symbol: 'NVDA', content: 'test' },
+      result: { note_id: 'abc-789', symbol: 'NVDA', status: 'saved' },
+      ok: true,
+    };
+    render(<ToolCallCard toolCall={tc} index={0} />);
+    expect(screen.getByText('Note abc-789')).toBeInTheDocument();
+    expect(screen.getByText('abc-789')).toBeInTheDocument();
+    expect(screen.getByText('Lakebase')).toBeInTheDocument();
+  });
 });
 
 describe('ProvenanceGrid', () => {

@@ -6,6 +6,10 @@ interface ToolCallCardProps {
   index: number;
 }
 
+function hasValidNoteId(tc: ToolCall): boolean {
+  return typeof tc.result?.note_id === 'string' && tc.result.note_id.length > 0;
+}
+
 function deriveBadge(tc: ToolCall): { label: string; cls: string } {
   if (!tc.ok) {
     return { label: 'Failed', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' };
@@ -33,10 +37,9 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
     };
   }
   if (tc.name === 'save_research_note') {
-    const noteId = tc.result?.note_id;
-    if (noteId) {
+    if (hasValidNoteId(tc)) {
       return {
-        label: `Note ${noteId}`,
+        label: `Note ${tc.result!.note_id}`,
         cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
       };
     }
@@ -81,7 +84,7 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
   const badge = deriveBadge(toolCall);
   const ticker = deriveTicker(toolCall);
   const sourceCount = deriveSourceCount(toolCall);
-  const noteId = typeof toolCall.result?.note_id === 'string' ? toolCall.result.note_id : undefined;
+  const noteId = hasValidNoteId(toolCall) ? String(toolCall.result!.note_id) : undefined;
   const isWrite = toolCall.name === 'save_research_note' || toolCall.name === 'add_to_watchlist';
 
   return (
