@@ -154,14 +154,19 @@ def _resolve_user_agent(
 
 
 def _validate_user_agent(user_agent: str) -> None:
-    """Validate user agent is non-empty and not a placeholder."""
+    """Validate user agent matches '<name> <email>' format.
+
+    Requires a non-empty application/company name token AND a valid-looking
+    contact email (with @ and a domain containing a dot). Rejects bare words,
+    emails without a name, and placeholder addresses.
+    """
     if not user_agent:
         raise ValueError(
             "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
             "Set it from environment or Databricks secret."
         )
     ua_lower = user_agent.lower()
-    # Reject placeholder domains/addresses, not any occurrence of "example"
+    # Reject placeholder domains/addresses
     _placeholder_re = re.compile(
         r"@example\.(com|org|net)\b"
         r"|^your[-_]email@"
@@ -173,6 +178,15 @@ def _validate_user_agent(user_agent: str) -> None:
         raise ValueError(
             "SEC_EDGAR_USER_AGENT must be set to a descriptive application/contact string. "
             "Set it from environment or Databricks secret."
+        )
+    # Require '<name> <email>' format: at least one name token followed by an email
+    _ua_format_re = re.compile(
+        r"^[^\s]+(\s+[^\s]+)*\s+[^\s]+@[^\s]+\.[^\s]+$"
+    )
+    if not _ua_format_re.match(user_agent.strip()):
+        raise ValueError(
+            "SEC_EDGAR_USER_AGENT must match '<application name> <contact email>' format "
+            "(e.g. 'MyApp/2.0 contact@company.com')"
         )
 
 
@@ -820,13 +834,17 @@ class SecClient:
         self,
         url: str,
         expect_json: bool = True,
+        _attempts: Optional[List[int]] = None,
     ) -> HttpResponse:
         """Execute request with rate limiting, retries, and backoff."""
         last_error: Optional[Exception] = None
+        last_status: Optional[int] = None
 
         for attempt in range(self._config.max_retries):
             self._limiter.acquire()
             self._request_count += 1
+            if _attempts is not None:
+                _attempts[0] += 1
 
             try:
                 resp = self._http.get(url, self._headers, timeout=30.0)
@@ -834,7 +852,8 @@ class SecClient:
                 if resp.status_code == 200:
                     return resp
 
-                if resp.status_code in (429, 503):
+                if resp.status_code in (403, 429, 503):
+                    last_status = resp.status_code
                     retry_after = self._parse_retry_after(resp.headers)
                     if retry_after is not None:
                         # Cap Retry-After; above cap → hard failure
@@ -856,6 +875,7 @@ class SecClient:
                     continue
 
                 if resp.status_code >= 500:
+                    last_status = resp.status_code
                     backoff = min(2 ** attempt, 60)
                     self._clock.sleep(backoff)
                     self._retry_count += 1
@@ -877,6 +897,7 @@ class SecClient:
 
         raise SecClientError(
             f"SEC request failed after {self._config.max_retries} attempts for {url}: {last_error}",
+            status_code=last_status,
             url=url,
         )
 
@@ -1205,16 +1226,18 @@ def load_company_tickers(
     cache_ttl: int = DEFAULT_TICKER_CACHE_TTL,
     force_refresh: bool = False,
     dry_run: bool = False,
+    is_fallback: bool = False,
 ) -> Dict[str, Any]:
     """Load SEC company_tickers.json with optional caching.
 
     Returns the parsed JSON payload. Uses cache sidecar for TTL.
     When dry_run=True, never writes to the persistent cache.
+    is_fallback → apply minimum entry count check (for production fallback path)
     """
     url = "https://www.sec.gov/files/company_tickers.json"
 
     if cache_path and not force_refresh:
-        cached = _try_load_cache(cache_path, cache_ttl)
+        cached = _try_load_cache(cache_path, cache_ttl, is_fallback=is_fallback)
         if cached is not None:
             return cached
 
@@ -1225,7 +1248,7 @@ def load_company_tickers(
         return payload
     except SecClientError as e:
         if cache_path:
-            cached = _try_load_cache(cache_path, ttl=0)
+            cached = _try_load_cache(cache_path, ttl=0, is_fallback=is_fallback)
             if cached is not None:
                 age_str = _cache_age_str(cache_path)
                 logger.warning("Using stale cache (age=%s) after fetch failure: %s", age_str, e)
@@ -1236,11 +1259,13 @@ def load_company_tickers(
 def _try_load_cache(
     cache_path: str,
     ttl: int,
+    is_fallback: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Try to load cached payload if valid.
 
     ttl > 0  → accept cache younger than ttl seconds
     ttl == 0 → accept cache regardless of age (stale fallback)
+    is_fallback → apply minimum entry count check (for production fallback path)
     """
     try:
         path = Path(cache_path)
@@ -1258,6 +1283,14 @@ def _try_load_cache(
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return None
+
+        # For fallback caches, treat caches with fewer than 1,000 entries as invalid
+        # (likely test pollution or incomplete data; real file has ~10,400)
+        if is_fallback:
+            MIN_VALID_CACHE_ENTRIES = 1000
+            if len(data) < MIN_VALID_CACHE_ENTRIES:
+                return None
+
         return data
     except Exception:
         return None

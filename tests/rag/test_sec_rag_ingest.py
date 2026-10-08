@@ -726,6 +726,62 @@ class TestSecClient:
         assert result == {"ok": True}
         assert call_count[0] == 2
 
+    def test_403_retry_with_backoff(self):
+        """HTTP 403 is retried with bounded exponential backoff."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return HttpResponse(403, "Forbidden", {})
+            return HttpResponse(200, json.dumps({"ok": True}), {})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+        result = client.get_json("https://example.com")
+        assert result == {"ok": True}
+        assert call_count[0] == 3
+
+    def test_403_retry_respects_retry_after(self):
+        """HTTP 403 with Retry-After header is honoured."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+        call_count = [0]
+
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return HttpResponse(403, "Forbidden", {"Retry-After": "5"})
+            return HttpResponse(200, json.dumps({"ok": True}), {})
+
+        http.get = mock_get
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(SecClientConfig(user_agent="Test"), http, limiter, clock)
+        result = client.get_json("https://example.com")
+        assert result == {"ok": True}
+        assert call_count[0] == 2
+
+    def test_403_exhausted_max_retries(self):
+        """HTTP 403 repeated max_retries times → failure."""
+        clock = FakeClock()
+        http = FakeHttpClient()
+
+        call_count = [0]
+        def mock_get(url, headers, timeout=30.0):
+            call_count[0] += 1
+            return HttpResponse(403, "Forbidden", {})
+
+        http.get = mock_get
+        config = SecClientConfig(user_agent="Test", max_retries=3)
+        limiter = RateLimiter(max_requests_per_second=10, clock=clock)
+        client = SecClient(config, http, limiter, clock)
+        with pytest.raises(SecClientError):
+            client.get_json("https://example.com")
+        assert call_count[0] == 3
+
     def test_permanent_4xx_no_retry(self):
         clock = FakeClock()
         http = FakeHttpClient()
@@ -1080,7 +1136,9 @@ class TestProcessFiling:
 class TestCikCache:
     def test_cache_hit(self, tmp_path):
         cache_file = tmp_path / "tickers.json"
-        cache_file.write_text(json.dumps({"0": {"cik_str": 1, "ticker": "TEST", "title": "Test"}}))
+        # Create a cache with 1000 entries (valid minimum)
+        payload = {str(i): {"cik_str": i, "ticker": f"TEST{i}", "title": f"Test {i}"} for i in range(1000)}
+        cache_file.write_text(json.dumps(payload))
         meta_file = tmp_path / "tickers.json.meta"
         meta_file.write_text(json.dumps({"fetched_ts": time.time()}))
 
@@ -1091,10 +1149,13 @@ class TestCikCache:
 
         result = load_company_tickers(client, cache_path=str(cache_file), cache_ttl=3600)
         assert "0" in result
+        assert len(result) == 1000
 
     def test_stale_cache_fallback(self, tmp_path):
         cache_file = tmp_path / "tickers.json"
-        cache_file.write_text(json.dumps({"0": {"cik_str": 1, "ticker": "TEST", "title": "Test"}}))
+        # Create a cache with 1000 entries (valid minimum)
+        payload = {str(i): {"cik_str": i, "ticker": f"TEST{i}", "title": f"Test {i}"} for i in range(1000)}
+        cache_file.write_text(json.dumps(payload))
         meta_file = tmp_path / "tickers.json.meta"
         meta_file.write_text(json.dumps({"fetched_ts": time.time() - 7200}))  # 2 hours old
 
@@ -3190,11 +3251,12 @@ class TestResolveUserAgent:
             _validate_user_agent("your-email@example.com")
 
     def test_valid_address_with_example_accepted(self, monkeypatch):
-        """Valid address containing 'example' (e.g. myexample.org) is accepted."""
+        """Valid address containing 'example' (e.g. myexample.org) is accepted
+        when paired with a name token."""
         from pipelines.sec_rag_ingest import _validate_user_agent
 
-        # Should NOT raise — "myexample.org" is a valid domain
-        _validate_user_agent("analyst@myexample.org")
+        # Should NOT raise — "myexample.org" is a valid domain when paired with name
+        _validate_user_agent("Analyst analyst@myexample.org")
 
     def test_value_never_appears_in_log(self, monkeypatch, caplog):
         """The resolved value must not appear in log output."""
