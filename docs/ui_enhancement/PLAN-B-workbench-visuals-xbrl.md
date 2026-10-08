@@ -353,11 +353,8 @@ pytest -q tests/api/test_research.py tests/api/test_public_demo_security.py test
 
 ## 4. Build rounds
 
-Every round follows the owner workflow: MiMo build, Kimi validation, Codex
-final validation, then PR and CodeRabbit. Each BUILD request must require
-LF line endings, no edits to `.agents/dispatch.sh`, a commit, a written MiMo
-verdict, failing-before proof on a pre-slice `/tmp` worktree/copy, and named
-mutation evidence from the checker.
+Every round follows root `AGENTS.md`. This plan defines product scope and
+acceptance behavior, not agent orchestration.
 
 Unless a round says otherwise, frontend acceptance is:
 
@@ -606,6 +603,10 @@ This is optional and must not block B1–B8. Add only after B2 is stable and PR
 
 ## 5. Ordering and dependencies
 
+Before dispatch, refresh every dependency against the default branch and open
+pull requests. Root `AGENTS.md` is the sole source for build and review workflow;
+the graph below expresses product dependencies only.
+
 The build order is:
 
 ```text
@@ -618,33 +619,26 @@ B1 XBRL data → B2 APIs ──┘      │
                  └→ B6 lineage (after A3)
 gold_sec_features ─────────→ B7 filing insights (after A4/A5)
 B3–B7 mounted targets ─────→ B8 tours
-B2 + A4 + agent PR #39 ────→ B9 optional agent tool
+B2 + A4 + current agent runtime ─→ B9 optional agent tool
 A4 + Lakebase audit contract ─→ B10 audit browser
 approved policy + telemetry config ─→ B11 legal/transparency
 ```
 
-- The current branch contains A1 and A2 round-three remediation, with a
-  historical checker request at `2b06608`. Do not start A3 until Kimi and Codex
-  approve the current A2 commit.
-- A3–A5 remain pending. B1 can be built in a separate backend-only worktree
+- B1 can be built in a separate backend-only worktree
   after the current UI sequence is safely isolated, but B2 must be reconciled
   with any API/type edits before frontend rounds. B3 must wait for A5 because
   both touch `MarketDashboard`, shared symbol selection and API types. B6 must
   wait for A3's Architecture file. B7 must wait for A4/A5 because it extends
   their evidence/SEC screen handoffs. B8 comes last so its selectors name final
   mounted elements.
-- PR #28 is the universe-wide SEC ingest dependency documented locally as 557
-  tickers pending rollout, while the live retrieval snapshot covers 16. B1
+- Universe-wide SEC ingest is a prerequisite for full-coverage claims. B1
   should read the canonical configured SEC-covered universe and be safe on the
-  currently ingested subset; do not claim 557-ticker fundamentals coverage
-  until PR #28 is merged and the jobs have run. Rebase/reconcile its universe,
+  currently ingested subset; do not claim full fundamentals coverage
+  until the ingest jobs have run. Reconcile its universe,
   CIK mapping, ingest manifest and SEC rate-limit conventions before B1 review.
-- PR #39 is an in-flight agent change. B1–B8 do not depend on its runtime
-  behavior. Reconcile B9 only after it lands so the new tool uses the final
+- B1–B8 do not depend on the agent runtime. Reconcile B9 against the current
+  runtime so the new tool uses the final
   validator/allowlist and retry semantics rather than forking them.
-- GitHub was not reachable while this plan was authored, so PR state/title was
-  not guessed; the dependencies above use the owner request and repository
-  evidence. The coordinator must refresh both PR states before dispatch.
 - Every round has exclusive ownership of shared files. In particular, do not
   run A3 and B6, A4 and B7/B9, A5 and B3/B4/B7, or B2 and any frontend slice
   that edits API types/client at the same time.
@@ -671,7 +665,7 @@ edge.
 | Company Facts lacks full segment/geography dimensions | Populate only explicit source dimensions with provenance; otherwise return unavailable flags, never narrative estimates. |
 | Acceptance timestamp absent from Company Facts | Resolve by accession against filing bronze; quarantine/unpublish unresolved facts and backfill, never substitute filed date or ingest time. |
 | Duplicate Company Facts entries/frames | Exact-ingest dedupe with accession/context identity; deterministic priority and quality flags for conflicting values. |
-| Partial issuer coverage and delayed rollout | Honest covered/empty/partial states, per-ticker ingest manifest, no 557-ticker claim before PR #28 rollout evidence. |
+| Partial issuer coverage and delayed rollout | Honest covered/empty/partial states, per-ticker ingest manifest, no full-coverage claim before rollout evidence. |
 | SEC throttling/blocking | Required identity, process-wide rate cap, Retry-After/backoff, bounded concurrency and retries, run-level cache/manifest. |
 | PIT leakage into charts, peers, or agent | Shared as-of query helper, mandatory acceptance predicate, old-code and mutation proofs, provenance echoed in every point. |
 | Graph size and misleading relationships | Server-side node/edge/depth caps, deterministic truncation, evidence-backed relation vocabulary, accessible list fallback. |

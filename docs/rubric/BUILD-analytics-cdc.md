@@ -124,7 +124,7 @@ test must execute against current production code and fail on `count == 0` /
 
 ## 3. Named validation mutations
 
-Kimi and Codex must apply each mutation in a disposable copy and show a focused test
+DeepSeek and Codex must apply each mutation in a disposable copy and show a focused test
 fails:
 
 1. **WATERMARK-SKIP:** change pending selection to `event_id > watermark`; a
@@ -187,5 +187,5 @@ Use LF line endings. Do not touch `.agents/dispatch.sh`, RAG ingestion files,
 strategy files, or frontend evidence screens. Commit the round. Write
 `.agentlogs/VERDICT-rubric-analytics-cdc.md` with commits, files, red proof,
 all five mutation proofs, exact offline outputs, live checks marked pending,
-scope exclusions, and a `SUCCESS`/`FAILURE` self-report. Kimi's independent,
+scope exclusions, and a `SUCCESS`/`FAILURE` self-report. DeepSeek's independent,
 commit-bound verdict and Codex final validation are still required.

@@ -14,34 +14,10 @@ The public claim is deliberately precise:
 
 ## Coordination and non-interference gate
 
-This plan does not modify an active implementation lane. Current repository
-work already owns parts of the public-demo surface:
-
-- Render lane A owns packaging, `render.yaml`, deployment documentation, and
-  packaging tests. Its reviewed design is a single Render web service. It is
-  approved and has an open PR, but is not yet part of the NL integration base.
-- Render lane B owns public-demo security, identity isolation, route removal,
-  rate limiting, and write guards. It has uncommitted round-nine work and must
-  not be touched from another worktree. It remains active until Kimi, Codex,
-  and CodeRabbit gates are complete and its PR merges.
-- Render lane C owns reviewed snapshot fixtures and the snapshot exporter. It
-  must not start until lane B is approved and integrated.
-- The application scaffold is already integrated into `origin/main`.
-- RAG evaluation, Golden/Silver, and ML branches already own their respective
-  files and must not be edited from this effort.
-
-No natural-language analytics implementation branch should start from stale
-`origin/main`. First integrate the approved Render/app branches into a fresh
-base. Until then, architecture documentation and interface contracts are the
-only safe parallel work.
-
-Required review order for every implementation lane:
-
-1. MiMo implements and proves new tests fail against the pre-change code.
-2. Kimi independently validates and returns `APPROVED` or
-   `CHANGES_REQUESTED` with file-and-line evidence.
-3. Codex runs the tests, mutation checks, and security/correctness validation.
-4. Open a PR and immediately request `@coderabbitai review`.
+Before implementation, refresh the dependency and ownership map against the
+current default branch and open pull requests. Do not rely on historical lane,
+branch, or worktree status recorded in planning documents. Repository workflow,
+validation, and pull-request requirements are defined only in root `AGENTS.md`.
 
 ## V1 architecture
 
@@ -284,14 +260,7 @@ run tests, wake Databricks, download a model, submit an LLM judge request, or
 expose hidden prompts, secrets, private paths, raw filing text, or internal
 stack traces.
 
-Implementation follows the repository's required order:
-
-1. Codex writes the page specification, file ownership, red tests, and
-   acceptance commands.
-2. MiMo implements it in a separate worktree and commit.
-3. Kimi independently validates with file-and-line evidence.
-4. Codex runs tests, mutations, build, accessibility, and artifact validation.
-5. Open the PR and immediately trigger `@coderabbitai review`.
+Implementation and validation follow root `AGENTS.md`.
 
 ## Evaluation
 
@@ -442,16 +411,13 @@ own `evals/` and the analytics metrics are semantically different.
 
 ## Merge and release gates
 
-1. Finish lane B round nine, then Kimi, Codex, PR, CodeRabbit, and
-   merge. Do not touch its dirty worktree from another lane.
-2. Merge approved Render lane A and cut a fresh base containing main + A + B.
-3. Complete and approve snapshot lane C if the current snapshot demo remains a
-   launch fallback.
-4. Specify and implement NL0 and NL-R against that integration base.
-5. Merge NL1, then NL2, then NL3; merge NL4 only after their contracts settle.
-6. Develop NL5 against mocks in parallel after NL1 freezes the wire schemas.
-7. NL6 and a security review gate the public deployment.
-8. Validate the current Render Blueprint schema and pricing immediately before
+1. Refresh the repository dependency graph and create a clean integration base.
+2. Complete the reviewed snapshot fallback if it remains a launch requirement.
+3. Specify and implement NL0 and NL-R against that integration base.
+4. Merge NL1, then NL2, then NL3; merge NL4 only after their contracts settle.
+5. Develop NL5 against mocks in parallel after NL1 freezes the wire schemas.
+6. NL6 and a security review gate the public deployment.
+7. Validate the current Render Blueprint schema and pricing immediately before
    launch; the desired target is a React static site plus one Starter web
    service, so the existing single-service Blueprint must be deliberately
    revised in its own reviewed lane rather than edited opportunistically.

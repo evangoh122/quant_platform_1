@@ -1,8 +1,7 @@
 # Capstone rubric readiness plan
 
-Status: planning only. Codex does not implement the production changes in this
-lane. The fixed delivery order is MiMo build -> Kimi validation -> Codex final
-validation -> PR -> CodeRabbit.
+Status: planning only. Current implementation and validation procedure is
+defined in root `AGENTS.md`.
 
 ## Outcome and non-negotiable prerequisite
 
@@ -14,14 +13,9 @@ Four MiMo-sized rounds close the remaining submission gaps:
    deployed-URL smoke test.
 4. A generated PNG architecture diagram and public, dated submission evidence.
 
-Rounds 1-3 must be based on the final, approved
-`slice/app-frontend-deploy` history, not on this planning worktree. As observed
-on 2026-10-04, that branch contains the bounded Lakebase connection path,
-circuit breaker, health diagnostics, SQL-warehouse fallback, application
-resource declarations, and deployment documentation through commit `1816ac2`.
-It also has uncommitted round-6 work. Do not cherry-pick around or reproduce
-those changes. Wait for the app lane to finish, then merge/rebase it before
-starting `BUILD-analytics-cdc.md`.
+Before starting implementation, refresh these dependencies against the current
+default branch. Do not rely on the historical branch or worktree state recorded
+when this plan was authored.
 
 No step in this plan authorizes starting the stopped Lakebase instance. The
 owner must explicitly approve each live window.
@@ -96,11 +90,10 @@ Relevant current product references:
    and establishes the feed that later captures agent actions.
 3. Build/check/review round 2 (`BUILD-llm-agent.md`). Its migration is `005` and
    extends the audit/idempotency contract after the outbox trigger exists.
-4. Build/check/review round 3 (`BUILD-deployment-hardening.md`). It wires the
+4. Define and review a round-3 deployment-hardening build request. It wires the
    final analytics job, SQL warehouse, Lakebase instance, and model endpoint to
    the app identity and is therefore downstream of rounds 1-2.
-5. Build/check/review the offline portion of round 4
-   (`BUILD-submission-evidence.md`), then have an owner-authorized operator run
+5. Define and review a round-4 submission-evidence build request, then have an owner-authorized operator run
    its exact live evidence commands after rounds 1-3 pass.
 
 Rounds 1 and 2 are not safe to implement concurrently: both change the API
@@ -189,7 +182,7 @@ report. No script in these rounds may auto-start Lakebase.
 
 ## Definition of ready
 
-The submission is ready only after Kimi approves all four exact commits and
+The submission is ready only after DeepSeek approves all four exact commits and
 Codex independently passes each offline acceptance/mutation gate. Required live
 evidence must prove:
 

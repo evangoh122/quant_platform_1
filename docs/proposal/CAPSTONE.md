@@ -56,7 +56,8 @@ See `architecture.png` (source `architecture.dot`).
 
 ## 7. Limitations and next steps
 
-- Universe-wide SEC ingest (557 tickers) is implemented on PR #28 and pending rollout; retrieval currently covers 16.
+- Universe-wide SEC ingest and retrieval coverage must be measured from the
+  current deployment before making a coverage claim.
 - The agent and analytics pipeline are minimal versions; next: more tools, scheduled analytics job, dashboard charts.
 - Streaming DLT pipeline built but not deployed; IBKR paper execution is a scaffold.
 - Strategy research is descriptive only (several results `BLOCKED_DATA`); no profitability is claimed.

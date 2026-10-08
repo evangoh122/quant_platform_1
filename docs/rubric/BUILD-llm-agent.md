@@ -122,7 +122,7 @@ at least two route/tool tests that import existing code and fail behaviorally.
 
 ## 3. Named validation mutations
 
-Kimi and Codex apply these in disposable copies:
+DeepSeek and Codex apply these in disposable copies:
 
 1. **MODEL-EXECUTES-DIRECTLY:** bypass `validate_next_action` before registry
    execution; the validator-spy test must fail and no write may occur.
@@ -186,6 +186,6 @@ Use LF endings. Do not touch `.agents/dispatch.sh`, order/execution guardrail
 semantics, RAG ingestion, or strategy files. Commit and write
 `.agentlogs/VERDICT-rubric-llm-agent.md` with commits, files, red proof, six
 mutation outputs, offline command output, live checks pending, cost/security
-notes, and a `SUCCESS`/`FAILURE` self-report. Kimi independently returns
+notes, and a `SUCCESS`/`FAILURE` self-report. DeepSeek independently returns
 `APPROVED` or `CHANGES_REQUESTED` with file:line evidence before Codex final
 validation.

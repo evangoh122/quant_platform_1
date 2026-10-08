@@ -43,7 +43,7 @@ This is a research and platform-engineering case, not evidence of profitability.
 | Domain / source | Principal tables | Live size | Freshness | PIT key |
 |---|---|---:|---|---|
 | SEC EDGAR text | `bronze_sec_filings_v2`, `silver_sec_sections`, `gold_sec_chunk_embeddings`, `gold_sec_coverage`, `silver_sec_entities` | 191,248 bronze rows: 225 tickers / 2,845 10-K and 10-Q filings since 2024-09; 133,886 chunks across 229 tickers; 133,886 embeddings; coverage: 558 tickers / 230 with chunks; 90,456 entities | Measured 2026-10-06; embedding run complete using BAAI/bge-small-en-v1.5 | `accepted_ts <= as_of`; missing or invalid availability timestamps fail closed in evaluation/retrieval (`silver/05_silver_sec_sections.sql`; `agent/tools_retrieval.py`; `tests/rag/test_rag_eval_round3.py`) |
-| SEC XBRL fundamentals | `bronze_sec_xbrl_facts`, `silver_sec_xbrl_facts`; gold quarterly fundamentals **planned** | 129,822 facts for NVDA, AAPL, MSFT, AMD and XOM; 59,610 acceptance-time-resolved; 70,212 quarantined because their filings fall outside the 2024-09+ window | Bronze is in open PR #42; silver is on a stacked branch, not merged here | Resolved SEC filing `accepted_ts`; unresolved facts remain quarantined rather than assigned an invented historical availability time |
+| SEC XBRL fundamentals | `bronze_sec_xbrl_facts`, `silver_sec_xbrl_facts`; gold quarterly fundamentals **planned** | Historical snapshot: 129,822 facts for NVDA, AAPL, MSFT, AMD and XOM; 59,610 acceptance-time-resolved; 70,212 quarantined because their filings fall outside the 2024-09+ window | Refresh table availability and row counts from the current deployment before publication | Resolved SEC filing `accepted_ts`; unresolved facts remain quarantined rather than assigned an invented historical availability time |
 | CFTC COT | `bronze_cftc_fut`, `bronze_cftc_com`, `silver_cot_positions`, `gold_cot_features` | `gold_cot_features`: 1,464 | Measured 2026-10-06; no separate latest-source timestamp reported | Report/as-of date and publication availability (`silver/07_silver_cot_positions.sql`; `gold/04_gold_cot_features.sql`) |
 | Federal Reserve / FRED | `bronze_fed_series`, `bronze_economic_metrics` | Tables exist; current row counts not supplied in the live facts | Measured table existence 2026-10-06 | Ingest time for bootstrapped revised series; revised macro is not true vintage data (`docs/BRONZE_REFRESH_PLAN.md`) |
 
@@ -68,7 +68,8 @@ This is a research and platform-engineering case, not evidence of profitability.
 
 - **UI redesign A1–A5** is on `feat/ui-enhancement` and is not deployed.
 - **Plan B XBRL visuals and knowledge-graph presentation** are planned. The repository already contains SEC knowledge-graph build code, but this statement does not claim the planned UI is live (`sec_kg/`; `pipelines/build_sec_knowledge_graph.py`).
-- **Gold quarterly XBRL fundamentals** are planned after the bronze PR #42 and stacked silver work.
+- **Gold quarterly XBRL fundamentals** remain planned; refresh their dependency
+  status from the current default branch before implementation.
 - **Expanded analytics metrics and scheduled operation** are planned; the current analytics job is on demand (`pipelines/lakebase_analytics.py`; `docs/rubric/PLAN.md`).
 - **Massive incremental ingestion** is planned in `docs/data/PLAN-massive-incremental.md` on `feat/ui-enhancement`; it is not present on this branch and no schedule is active. The in-branch refresh design is `docs/BRONZE_REFRESH_PLAN.md`.
 
@@ -88,7 +89,9 @@ Agent actions pass schema, tool allowlist, budget, symbol/evidence, role and wri
 
 ### Engineering gates
 
-The current owner workflow is: **MiMo builds → Kimi independently validates → Codex performs final validation → PR → CodeRabbit review** (`AGENTS.md` is the repository's single source of truth). Safety properties are expected to have mutation evidence that fails on the old or deliberately weakened code.
+Root `AGENTS.md` is the single source of truth for implementation and review.
+Safety properties are expected to have mutation evidence that fails on the old
+or deliberately weakened code.
 
 CI runs the offline Python suite, frontend type-check/build, Databricks bundle validation when credentials are available, Gitleaks secret scanning, `pip-audit`, and production `npm audit` (`.github/workflows/ci.yml`; `docs/SECURITY.md`). Bundle validation is explicitly skipped when workspace credentials are absent, so a green run does not by itself prove live deployment.
 

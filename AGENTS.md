@@ -5,16 +5,16 @@ This file is the repository's single source of truth for delegated changes.
 ## Required chain
 
 1. **MiMo implements** from a scoped `BUILD-*.md` request.
-2. **Kimi independently validates** the exact committed SHA and returns
+2. **DeepSeek independently validates** the exact committed SHA and returns
    `APPROVED`, `CHANGES_REQUESTED`, or `FAILED`.
-3. **Codex performs final validation** only after Kimi approves that exact SHA.
+3. **Codex performs final validation** only after DeepSeek approves that exact SHA.
 4. Open or update the PR and immediately comment `@coderabbitai review`.
-5. Any valid CodeRabbit finding returns to MiMo and restarts Kimi → Codex.
+5. Any valid CodeRabbit finding returns to MiMo and restarts DeepSeek → Codex.
 
 MiMo's report is a builder self-report, never independent approval. Any later
-commit invalidates Kimi and Codex results. Do not substitute Claude, DeepSeek,
-GPT, or another model for Kimi when Kimi is unavailable or cannot be positively
-identified; report the gate as blocked.
+commit invalidates DeepSeek and Codex results. Do not substitute Claude, Kimi,
+GPT, or another model for DeepSeek when DeepSeek is unavailable or cannot be
+positively identified; report the gate as blocked.
 
 ## Build requests and evidence
 
@@ -30,6 +30,12 @@ Run MiMo from the intended worktree:
 timeout 7500 ./.agents/dispatch.sh mimo .agents/requests/BUILD-<topic>.md 7200 < /dev/null
 ```
 
+Run DeepSeek against the exact MiMo commit with a scoped validation request:
+
+```bash
+timeout 7500 ./.agents/dispatch.sh deepseek .agents/requests/VALIDATE-<topic>.md 7200 < /dev/null
+```
+
 After every run restore the dispatcher, make it executable, and verify the
 branch, HEAD ownership, worktree status, and unexpected files. Preserve
 unrelated user changes.
@@ -40,7 +46,7 @@ MiMo must emit exactly one terminal report after its evidence file is readable:
 BUILD DONE | status: <SUCCESS|FAILURE> | sha: <40-character SHA or NO_COMMIT> | branch: <branch> | evidence: <path>
 ```
 
-Kimi must emit exactly one terminal report after its evidence artifact is
+DeepSeek must emit exactly one terminal report after its evidence artifact is
 written and verified readable:
 
 ```text
@@ -53,9 +59,9 @@ seconds; the outer guard is 7500 seconds so evidence can flush.
 
 ## Validation requirements
 
-Kimi and Codex must identify and validate the exact SHA, inspect the diff, run
-the relevant tests independently, and reproduce the important old-behavior and
-mutation proofs. Codex may start only after a readable Kimi `APPROVED` report
+DeepSeek and Codex must identify and validate the exact SHA, inspect the diff,
+run the relevant tests independently, and reproduce the important old-behavior
+and mutation proofs. Codex may start only after a readable DeepSeek `APPROVED` report
 for the current SHA. Findings must include file:line and concrete test evidence.
 
 ## Pull requests and authority
