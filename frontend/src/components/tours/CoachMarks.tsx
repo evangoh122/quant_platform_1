@@ -12,22 +12,30 @@ export interface CoachStep {
   title: string;
   body: string;
   placement?: 'top' | 'bottom' | 'auto';
+  /** Screen ID to navigate to before showing this step (for cross-screen tours) */
+  navigateTo?: string;
+  /** Timeout in ms to wait for target to appear (default: 3000) */
+  waitForTargetTimeout?: number;
 }
 
 interface CoachMarksProps {
   steps: CoachStep[];
   run: boolean;
   onClose: () => void;
+  /** Called when a step requests navigation to a different screen */
+  onNavigate?: (screenId: string) => void;
 }
 
 const PAD = 8;
 const CARD_W = 320;
 
-export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
+export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMarksProps) {
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [waitingForTarget, setWaitingForTarget] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  const observerRef = useRef<MutationObserver | null>(null);
 
   const step = steps[index];
 
@@ -59,16 +67,72 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
     }
   }, [run]);
 
+  // Handle navigation and target waiting for cross-screen steps
   useLayoutEffect(() => {
-    if (!run) return;
-    const el = step?.selector
-      ? (document.querySelector(step.selector) as HTMLElement | null)
-      : null;
-    const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    el?.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
-    const t = window.setTimeout(measure, el ? 280 : 0);
-    return () => window.clearTimeout(t);
-  }, [run, step, measure]);
+    if (!run || !step) return;
+
+    // If step requires navigation, trigger it first
+    if (step.navigateTo && onNavigate) {
+      onNavigate(step.navigateTo);
+    }
+
+    const timeout = step.waitForTargetTimeout ?? 3000;
+
+    // If step has a selector, check if target exists
+    if (step.selector) {
+      const el = document.querySelector(step.selector) as HTMLElement | null;
+
+      if (el) {
+        // Target exists immediately
+        setWaitingForTarget(false);
+        const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        el.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
+        const t = window.setTimeout(measure, 280);
+        return () => window.clearTimeout(t);
+      } else {
+        // Target not found - wait with bounded observer/timeout
+        setWaitingForTarget(true);
+        let resolved = false;
+
+        const resolveTarget = () => {
+          if (resolved) return;
+          resolved = true;
+          setWaitingForTarget(false);
+          const foundEl = document.querySelector(step.selector!) as HTMLElement | null;
+          if (foundEl) {
+            const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            foundEl.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
+            setTimeout(measure, 280);
+          }
+        };
+
+        // Set up MutationObserver to watch for target
+        const observer = new MutationObserver(() => {
+          if (document.querySelector(step.selector!)) {
+            observer.disconnect();
+            resolveTarget();
+          }
+        });
+        observerRef.current = observer;
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        // Bounded timeout - if target doesn't appear, show skip/defer state
+        const timeoutId = window.setTimeout(() => {
+          observer.disconnect();
+          resolveTarget();
+        }, timeout);
+
+        return () => {
+          observer.disconnect();
+          window.clearTimeout(timeoutId);
+        };
+      }
+    } else {
+      // No selector - centered card (introductory step)
+      setWaitingForTarget(false);
+      setRect(null);
+    }
+  }, [run, step, measure, onNavigate]);
 
   useEffect(() => {
     if (!run) return;
@@ -172,6 +236,57 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const isMobile = vw < 640;
+
+  // Show waiting state if we're waiting for a target
+  if (waitingForTarget) {
+    return (
+      <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true" aria-label="Guided tour">
+        <div className="absolute inset-0 bg-black/58" />
+        <div
+          ref={cardRef}
+          tabIndex={-1}
+          className="absolute left-1/2 bottom-5 -translate-x-1/2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 shadow-2xl focus:outline-none"
+          style={{ width: Math.min(CARD_W, vw - 24) }}
+        >
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+              Step {index + 1} of {steps.length}
+            </span>
+            <button
+              onClick={handleClose}
+              aria-label="Skip tour"
+              className="p-1 -m-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] bg-transparent border-0 cursor-pointer"
+            >
+              &times;
+            </button>
+          </div>
+          <h3 className="text-[15px] font-semibold text-[var(--text-primary)] mb-1.5 tracking-tight">
+            {step.title}
+          </h3>
+          <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed m-0">
+            {step.body}
+          </p>
+          <p className="mt-2 text-[12px] text-[var(--text-muted)] italic">
+            Waiting for screen to load...
+          </p>
+          <div className="flex items-center justify-end gap-2 mt-4">
+            <button
+              onClick={() => {
+                if (index >= steps.length - 1) {
+                  handleClose();
+                } else {
+                  setIndex((i) => i + 1);
+                }
+              }}
+              className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] bg-transparent border-0 p-0 cursor-pointer"
+            >
+              Skip step
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   let cardStyle: CSSProperties;
   if (!rect || isMobile) {

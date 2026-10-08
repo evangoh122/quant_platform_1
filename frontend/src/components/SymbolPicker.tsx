@@ -149,9 +149,9 @@ export function SymbolPicker({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <label className="text-sm text-slate-600 dark:text-slate-400">{label}</label>
+        <label className="text-sm text-[var(--text-muted)]">{label}</label>
         <div ref={containerRef} className="relative w-full max-w-xs">
-          <div className="flex items-center rounded-md border border-slate-300 dark:border-slate-700 dark:bg-slate-900">
+          <div className="flex items-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
             <input
               ref={inputRef}
               type="text"
@@ -175,7 +175,7 @@ export function SymbolPicker({
                   setOpen(false);
                 }, 150);
               }}
-              className="w-full bg-transparent px-3 py-1.5 text-sm outline-none"
+              className="w-full bg-transparent px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none"
               placeholder="Type a symbol…"
             />
             {query && (
@@ -187,7 +187,7 @@ export function SymbolPicker({
                   onChange('');
                   inputRef.current?.focus();
                 }}
-                className="px-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="px-2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
               >
                 ×
               </button>
@@ -197,7 +197,7 @@ export function SymbolPicker({
             <ul
               id="symbol-picker-listbox"
               role="listbox"
-              className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border border-slate-300 bg-white text-sm shadow-lg dark:border-slate-700 dark:bg-slate-900"
+              className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-sm shadow-lg"
             >
               {filtered.map((sym, i) => (
                 <li
@@ -206,8 +206,8 @@ export function SymbolPicker({
                   aria-selected={sym === value.toUpperCase()}
                   className={`cursor-pointer px-3 py-1.5 ${
                     i === highlightIdx
-                      ? 'bg-slate-100 dark:bg-slate-800'
-                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                      ? 'bg-[var(--accent-dim)]'
+                      : 'hover:bg-[var(--surface-raised)]'
                   }`}
                   onMouseDown={(e) => {
                     e.preventDefault();
@@ -221,11 +221,11 @@ export function SymbolPicker({
             </ul>
           )}
           {open && filtered.length === 0 && (
-            <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-lg dark:border-slate-700 dark:bg-slate-900">
+            <div className="absolute z-10 mt-1 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm shadow-lg">
               {TICKER_RE.test(query.trim().toUpperCase()) ? (
                 <button
                   type="button"
-                  className="w-full cursor-pointer text-left text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+                  className="w-full cursor-pointer text-left text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                   onMouseDown={(e) => {
                     e.preventDefault();
                     handleSelect(query.trim().toUpperCase());
@@ -234,7 +234,7 @@ export function SymbolPicker({
                   Submit {query.trim().toUpperCase()} — server will check coverage
                 </button>
               ) : (
-                <span className="text-slate-500 dark:text-slate-400">No matching symbols</span>
+                <span className="text-[var(--text-muted)]">No matching symbols</span>
               )}
             </div>
           )}
@@ -242,11 +242,7 @@ export function SymbolPicker({
 
         {hasCoverage !== undefined && value && (
           <span
-            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
-              hasCoverage
-                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-            }`}
+            className={`badge ${hasCoverage ? 'badge-green' : 'badge-muted'}`}
           >
             {hasCoverage ? 'Has data' : 'No coverage'}
           </span>
@@ -254,22 +250,22 @@ export function SymbolPicker({
       </div>
 
       {showNoCoverage && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
+        <p className="text-xs text-[var(--warning)]">
           {committedValue.toUpperCase()} is not in the {secMode ? 'SEC coverage' : list} dataset. Data may be unavailable.
         </p>
       )}
 
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-xs text-slate-500 dark:text-slate-400">Quick:</span>
+        <span className="text-xs text-[var(--text-muted)]">Quick:</span>
         {QUICK_CHOICES.map((sym) => (
           <button
             key={sym}
             type="button"
             onClick={() => handleSelect(sym)}
-            className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
+            className={`rounded-[var(--radius-md)] px-2 py-0.5 text-xs font-medium transition-colors ${
               sym === value.toUpperCase()
-                ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
-                : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                ? 'bg-[var(--accent-fill)] text-[var(--accent-ink)]'
+                : 'bg-[var(--surface-raised)] text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]'
             }`}
           >
             {sym}
@@ -277,7 +273,7 @@ export function SymbolPicker({
         ))}
         {recent.length > 0 && (
           <>
-            <span className="ml-2 text-xs text-slate-500 dark:text-slate-400">Recent:</span>
+            <span className="ml-2 text-xs text-[var(--text-muted)]">Recent:</span>
             {recent
               .filter((s) => !QUICK_CHOICES.includes(s as (typeof QUICK_CHOICES)[number]))
               .slice(0, 4)
@@ -286,10 +282,10 @@ export function SymbolPicker({
                   key={sym}
                   type="button"
                   onClick={() => handleSelect(sym)}
-                  className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`rounded-[var(--radius-md)] px-2 py-0.5 text-xs font-medium transition-colors ${
                     sym === value.toUpperCase()
-                      ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                      ? 'bg-[var(--accent-fill)] text-[var(--accent-ink)]'
+                      : 'bg-[var(--surface-raised)] text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]'
                   }`}
                 >
                   {sym}

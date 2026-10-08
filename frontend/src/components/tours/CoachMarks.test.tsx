@@ -166,7 +166,7 @@ describe('CoachMarks', () => {
     );
 
     expect(screen.getByText('Missing Step')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Skip step' }));
     expect(screen.getByText('Continue Step')).toBeInTheDocument();
   });
 

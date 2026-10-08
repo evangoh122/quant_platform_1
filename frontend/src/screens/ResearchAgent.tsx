@@ -111,16 +111,16 @@ export function ResearchAgent() {
             {messages.map((m, i) => (
               <div
                 key={i}
-                className={`rounded-lg p-3 ${
+                className={`rounded-[var(--radius-lg)] p-3 ${
                   m.role === 'user'
-                    ? 'bg-slate-100 dark:bg-slate-800'
-                    : 'bg-blue-50 dark:bg-blue-950/40'
+                    ? 'msg-user'
+                    : 'msg-assistant'
                 }`}
               >
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
                   {m.role}
                 </div>
-                <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800 dark:text-slate-200">
+                <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--text-primary)]">
                   {m.text}
                 </p>
                 {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && hasValidNoteId(tc)) && (
@@ -132,7 +132,7 @@ export function ResearchAgent() {
             ))}
             {sending && <LoadingState label="Agent is working…" />}
             {error && (
-              <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">
+              <div role="alert" className="rounded-[var(--radius-md)] border border-[var(--negative)] bg-[var(--negative)]/10 p-2 text-sm text-[var(--negative)]">
                 {error}
               </div>
             )}
@@ -159,17 +159,17 @@ export function ResearchAgent() {
             </div>
           )}
 
-          <form className="mt-3 flex gap-2" onSubmit={handleSubmit}>
+          <form data-tour="agent-input" className="mt-3 flex gap-2" onSubmit={handleSubmit}>
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900"
+              className="flex-1 rounded-md border border-[var(--border)] px-3 py-2 text-sm bg-[var(--surface-raised)] text-[var(--text-primary)]"
               placeholder="Ask the research agent…"
             />
             <button
               type="submit"
               disabled={sending || !input.trim()}
-              className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+              className="rounded-md bg-[var(--accent-fill)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] disabled:opacity-50"
             >
               Send
             </button>

@@ -18,6 +18,8 @@ const TOUR_MAP: Record<string, { key: string; steps: CoachStep[] }> = {
   architecture: { key: ARCHITECTURE_TOUR_KEY, steps: ARCHITECTURE_TOUR },
 };
 
+export type TourNavigationHandler = (screenId: string) => void;
+
 function allTourTargetsPresent(tourSteps: CoachStep[]): boolean {
   for (const step of tourSteps) {
     if (step.selector && !document.querySelector(step.selector)) return false;
@@ -25,7 +27,7 @@ function allTourTargetsPresent(tourSteps: CoachStep[]): boolean {
   return true;
 }
 
-export function useTourHost(currentScreen?: string) {
+export function useTourHost(currentScreen?: string, onNavigate?: TourNavigationHandler) {
   const [activeTour, setActiveTour] = useState<string | null>(null);
   const [steps, setSteps] = useState<CoachStep[]>([]);
   const manualStartRef = useRef(false);
@@ -34,6 +36,14 @@ export function useTourHost(currentScreen?: string) {
   const autoStartDoneRef = useRef(false);
   const [autoStartRetry, setAutoStartRetry] = useState(0);
   const mainTimerRef = useRef<number | null>(null);
+  const navigateRef = useRef(onNavigate);
+  navigateRef.current = onNavigate;
+
+  const handleTourNavigate = useCallback((screenId: string) => {
+    if (navigateRef.current) {
+      navigateRef.current(screenId);
+    }
+  }, []);
 
   const startTour = useCallback((tourId: string) => {
     const tour = TOUR_MAP[tourId];
@@ -89,7 +99,7 @@ export function useTourHost(currentScreen?: string) {
 
     if (autoTour) {
       // Do not auto-start the agent tour unless the user is on the agent screen,
-      // where step targets (agent, lakebase-write, agent-evidence) are present.
+      // where step targets (agent, agent-input, agent-evidence) are present.
       // When currentScreen is not provided, skip the guard (standalone hook usage).
       if (autoTour === 'agent' && currentScreen !== undefined && currentScreen !== 'agent') {
         return;
@@ -106,7 +116,7 @@ export function useTourHost(currentScreen?: string) {
       };
 
       // For the agent tour, verify all step targets exist in the DOM before
-      // scheduling. Targets like [data-tour="lakebase-write"] and
+      // scheduling. Targets like [data-tour="agent-input"] and
       // [data-tour="agent-evidence"] may render after the route mounts.
       if (autoTour === 'agent' && !allTourTargetsPresent(AGENT_TOUR)) {
         const agentObserver = new MutationObserver(() => {
@@ -135,5 +145,5 @@ export function useTourHost(currentScreen?: string) {
     }
   }, [currentScreen, autoStartRetry]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { activeTour, steps, closeTour, startTour };
+  return { activeTour, steps, closeTour, startTour, handleTourNavigate };
 }

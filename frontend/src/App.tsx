@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from './api/client';
 import type { HealthResponse } from './api/types';
 import { AppShell, type NavGroup } from './layout/AppShell';
@@ -78,7 +78,8 @@ function PlaceholderScreen({ title, tourId }: { title: string; tourId?: string }
 export default function App() {
   const [screen, setScreen] = useState<ScreenId>('platform-overview');
   const [healthData, setHealthData] = useState<HealthResponse | null>(null);
-  const { activeTour, steps, closeTour } = useTourHost(screen);
+  const handleNavigate = useCallback((id: string) => setScreen(id as ScreenId), []);
+  const { activeTour, steps, closeTour, handleTourNavigate } = useTourHost(screen, handleNavigate);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,7 +136,7 @@ export default function App() {
       >
         {renderScreen()}
       </AppShell>
-      <CoachMarks steps={steps} run={!!activeTour} onClose={closeTour} />
+      <CoachMarks steps={steps} run={!!activeTour} onClose={closeTour} onNavigate={handleTourNavigate} />
     </>
   );
 }
