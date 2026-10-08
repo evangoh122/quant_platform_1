@@ -89,6 +89,10 @@ Thumbs.db
 .agents/coordinator-*.sh
 *.agent.log
 
+# ---- local scratch work ----
+_scratch/
+tmp/
+
 # local RAG/KG data exports
 
 # RAG eval local data (corpus export, results)

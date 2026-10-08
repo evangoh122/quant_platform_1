@@ -193,7 +193,7 @@ Key rewiring:
   - PIT leakage hard gate, bootstrap CIs, abstention/trap scoring
   - Run: `python -m evals.rag_eval --adapter jsonl --golden ... --corpus ... --embeddings ...`
   - See `evals/rag_eval/README.md` for full documentation
-- FinanceBench benchmark: see historical note in `docs/FINANCEBENCH_EVAL_PLAN.md`
+- FinanceBench benchmark: see historical note in `FINANCEBENCH_EVAL_PLAN.md`
 
 ### 5.2 Test suite migration
 From `IBKR_workbench/tests/` — adapt DuckDB assertions to Delta queries:

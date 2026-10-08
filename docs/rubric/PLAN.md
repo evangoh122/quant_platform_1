@@ -37,7 +37,7 @@ owner must explicitly approve each live window.
 | Analytics pipeline | `db/migrations/CDC.md`; `api/routes/analytics.py` | Consumer absent; route returns placeholders | 1 |
 | Frontend | `frontend/src/` and same-origin FastAPI serving | Already satisfied; do not collide with evidence/governance UX lane | Regression check only |
 | Deployed app | `resources/app.yml`, `docs/DEPLOYMENT.md`, health routes on app lane | App and Lakebase are stopped; Lakebase role/grants and URL smoke are unproven | 3, then owner-authorized live validation |
-| Volume | Verified 2026-10-04 total of 238,622,024 rows across three Bronze tables, currently buried in `.agents/requests/BUILD-nl1-contracts.md` | Public reproducible evidence absent | 4 |
+| Volume | Verified 2026-10-04 total of 238,622,024 rows across three Bronze tables, recorded in historical build evidence recoverable from Git | Public reproducible evidence absent | 4 |
 | Variety | Market bars, options, CFTC/Fed series, SEC filing text | Public source/technology mapping is fragmented | 4 |
 | Architecture diagram | README has an old text diagram | Required PNG/JPEG absent and current flow is incomplete | 4 |
 | Portable deployment | `app.yaml`, `databricks.yml`, `resources/app.yml`, `db/lakebase.py` | Personal schema/user/host defaults and environment-specific IDs remain | 3 |
