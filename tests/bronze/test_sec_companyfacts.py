@@ -808,15 +808,172 @@ class TestRunIngestCompanyFacts:
         assert len(skipped) == 1
         assert skipped[0].payload_hash == payload_hash
 
-    def test_duplicate_manifest_attempt_count_with_retries(self):
-        """MUTATION: if manifest.attempt_count = attempt_count is removed
-        from the skipped_duplicate branch, the skipped entry carries the
-        default attempt_count (1) instead of the actual retry count (2).
+    def test_three_alias_dedup_one_submission(self):
+        """Three tickers sharing one CIK → exactly one executor submission,
+        one SEC request, one Delta append, deterministic canonical ticker
+        (alphabetically first), and exactly two truthful alias manifest entries.
 
-        Two tickers map to the same CIK.  The first fetch succeeds directly
-        (1 attempt).  The second fetch gets a 429 then succeeds (2 attempts)
-        — but it is skipped_duplicate.  Its manifest must record
-        attempt_count=2.
+        Canonical ticker is AAPL (sorted: AAPL, AAPL2, AAPL3).
+        """
+        payload = _make_company_facts_payload()
+        payload_bytes = json.dumps(payload).encode()
+        payload_hash = compute_payload_hash(payload_bytes)
+        cik_url = build_source_url("0000320193")
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+
+        http_call_count = [0]
+        original_http = FakeHttpClient([
+            _payload_200({
+                "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+            }),
+            _payload_200(payload),
+        ])
+
+        class CountingHttpClient:
+            """Wraps FakeHttpClient to count Company Facts requests."""
+            def __init__(self, inner):
+                self._inner = inner
+                self.calls = inner.calls
+
+            def get(self, url, headers, timeout=30.0):
+                if "companyfacts" in url:
+                    http_call_count[0] += 1
+                return self._inner.get(url, headers, timeout)
+
+        http = CountingHttpClient(original_http)
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL3", "AAPL", "AAPL2"],
+                run_id="run_three_alias",
+                http_client=http,
+                clock=clock,
+                cik_overrides={
+                    "AAPL": ["0000320193"],
+                    "AAPL2": ["0000320193"],
+                    "AAPL3": ["0000320193"],
+                },
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+                max_workers=3,
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert http_call_count[0] == 1, (
+            f"Expected 1 SEC request, got {http_call_count[0]}"
+        )
+        assert result["fetched_count"] == 1
+        assert result["mapped_count"] == 3
+
+        expected_row_count = len(flatten_company_facts(
+            payload, "0000320193", "AAPL", "run_three_alias",
+            datetime.now(timezone.utc), "url", payload_hash,
+        ))
+        assert len(delta_rows) == expected_row_count
+
+        success_entries = [e for e in manifest_entries if e.fetch_status == "success"]
+        assert len(success_entries) == 1
+        assert success_entries[0].ticker == "AAPL"
+        assert success_entries[0].payload_hash == payload_hash
+
+        alias_entries = [e for e in manifest_entries if e.fetch_status == "skipped_duplicate"]
+        assert len(alias_entries) == 2
+        alias_tickers = sorted(e.ticker for e in alias_entries)
+        assert alias_tickers == ["AAPL2", "AAPL3"]
+        for entry in alias_entries:
+            assert entry.payload_hash == payload_hash
+            assert entry.cik == "0000320193"
+
+    def test_failed_canonical_no_alias_skipped(self):
+        """A failed canonical worker must NOT cause aliases to be reported as
+        skipped_duplicate when nothing was ingested.  Only the canonical
+        worker's failure manifest entry is written.
+        """
+        cik_url = build_source_url("0000320193")
+        tickers_url = "https://www.sec.gov/files/company_tickers.json"
+
+        http = BarrierFakeHttpClient(
+            {
+                tickers_url: [
+                    _payload_200({
+                        "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
+                    }),
+                ],
+                cik_url: [
+                    HttpResponse(status_code=404, text="Not Found", headers={}),
+                ],
+            },
+        )
+        clock = FakeClock()
+        delta_writer, delta_rows = _make_delta_writer()
+        manifest_writer, manifest_entries = _make_manifest_writer()
+
+        import pipelines.ingest_sec_companyfacts as mod
+        original_resolve = mod._resolve_user_agent
+        original_validate = mod._validate_user_agent
+        mod._resolve_user_agent = lambda **kw: "TestApp/1.0 test@example.com"
+        mod._validate_user_agent = lambda ua: None
+
+        try:
+            result = run_ingest_companyfacts(
+                catalog="test_cat",
+                schema="test_sch",
+                tickers=["AAPL", "AAPL2", "AAPL3"],
+                run_id="run_fail_canonical",
+                http_client=http,
+                clock=clock,
+                cik_overrides={
+                    "AAPL": ["0000320193"],
+                    "AAPL2": ["0000320193"],
+                    "AAPL3": ["0000320193"],
+                },
+                delta_writer=delta_writer,
+                manifest_writer=manifest_writer,
+                cache_path="/dev/null",
+            )
+        finally:
+            mod._resolve_user_agent = original_resolve
+            mod._validate_user_agent = original_validate
+
+        assert result["failed_count"] == 1
+        assert result["fetched_count"] == 0
+
+        statuses = {e.fetch_status for e in manifest_entries}
+        assert "skipped_duplicate" not in statuses, (
+            "Aliases must not be reported as skipped_duplicate when "
+            "canonical worker failed and nothing was ingested"
+        )
+
+        failed_entries = [e for e in manifest_entries if e.fetch_status == "failed"]
+        assert len(failed_entries) == 1
+        assert failed_entries[0].ticker == "AAPL"
+        assert failed_entries[0].http_status == 404
+
+        assert len(delta_rows) == 0
+
+    def test_duplicate_manifest_attempt_count_with_retries(self):
+        """With CIK-level deduplication, the alias manifest entry records the
+        canonical worker's attempt count, not the alias's own (non-existent)
+        retry count.
+
+        Two tickers map to the same CIK.  Only the canonical ticker (AAPL,
+        alphabetically first) is submitted as a worker.  AAPL fetches
+        successfully (1 attempt).  AAPL2 is an alias whose manifest entry
+        is written by the canonical worker with attempt_count=1.
 
         Uses BarrierFakeHttpClient (URL-routed, thread-safe deque) so the
         responses are consumed in the correct order even with concurrent
@@ -836,9 +993,7 @@ class TestRunIngestCompanyFacts:
                     }),
                 ],
                 cik_url: [
-                    _payload_200(payload),  # first fetch: direct success, 1 attempt
-                    HttpResponse(status_code=429, text="rate limited", headers={"Retry-After": "1"}),
-                    _payload_200(payload),  # second fetch retry: success, 2 attempts
+                    _payload_200(payload),  # canonical fetch: direct success, 1 attempt
                 ],
             },
         )
@@ -877,34 +1032,28 @@ class TestRunIngestCompanyFacts:
         skipped = [e for e in manifest_entries if e.fetch_status == "skipped_duplicate"]
         assert len(skipped) == 1
         assert skipped[0].payload_hash == payload_hash
-        assert skipped[0].attempt_count == 2
+        assert skipped[0].attempt_count == 1
 
     def test_first_write_failure_allows_second_write(self):
-        """MUTATION: if seen_payloads.add happens before Delta write,
-        a failed first write prevents the identical second payload from being written.
+        """With CIK-level deduplication, only one worker (canonical ticker)
+        is submitted per CIK.  If the canonical worker's Delta write fails,
+        the failure is reported truthfully — no alias manifest entries are
+        written because nothing was ingested.
 
-        Uses sequential execution (max_workers=1) so ordering is deterministic:
-        first fetch fails at Delta write → second fetch must still write the
-        identical payload (because seen_payloads.add only happens after success).
+        Uses sequential execution (max_workers=1) so ordering is deterministic.
         """
         payload = _make_company_facts_payload()
-        payload_bytes = json.dumps(payload).encode()
-        payload_hash = compute_payload_hash(payload_bytes)
 
         http = FakeHttpClient([
             _payload_200({
                 "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
             }),
             _payload_200(payload),
-            _payload_200(payload),
         ])
         clock = FakeClock()
 
-        call_count = [0]
-        def failing_delta_writer_first_call(cat, sch, rows):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("Delta write failed")
+        def failing_delta_writer(cat, sch, rows):
+            raise RuntimeError("Delta write failed")
 
         manifest_entries = []
         def mock_manifest_writer(cat, sch, entry):
@@ -925,7 +1074,7 @@ class TestRunIngestCompanyFacts:
                 http_client=http,
                 clock=clock,
                 cik_overrides={"AAPL": ["0000320193"], "AAPL2": ["0000320193"]},
-                delta_writer=failing_delta_writer_first_call,
+                delta_writer=failing_delta_writer,
                 manifest_writer=mock_manifest_writer,
                 cache_path="/dev/null",
                 max_workers=1,
@@ -934,9 +1083,11 @@ class TestRunIngestCompanyFacts:
             mod._resolve_user_agent = original_resolve
             mod._validate_user_agent = original_validate
 
-        # First CIK failed (Delta write error), second CIK succeeded
         assert result["failed_count"] == 1
-        assert result["fetched_count"] == 1
+        assert result["fetched_count"] == 0
+
+        statuses = {e.fetch_status for e in manifest_entries}
+        assert "skipped_duplicate" not in statuses
 
     def test_concurrent_duplicate_reservation_prevents_double_append(self):
         """MUTATION: if seen_payloads.add is moved after the Delta append,
@@ -1003,6 +1154,7 @@ class TestRunIngestCompanyFacts:
                 manifest_writer=manifest_writer,
                 cache_path="/dev/null",
                 max_workers=2,
+                _ticker_cik_pairs_for_test=[("AAPL", "0000320193"), ("AAPL2", "0000320193")],
             )
         finally:
             mod._resolve_user_agent = original_resolve
@@ -1109,6 +1261,7 @@ class TestRunIngestCompanyFacts:
                     manifest_writer=tracking_manifest_writer,
                     cache_path="/dev/null",
                     max_workers=2,
+                    _ticker_cik_pairs_for_test=[("AAPL", "0000320193"), ("AAPL2", "0000320193")],
                 )
 
             # Patch threading.Condition to use our timeout version
@@ -1150,17 +1303,19 @@ class TestRunIngestCompanyFacts:
         assert "skipped_duplicate" not in statuses, (
             f"Unexpected skipped_duplicate in manifest: {statuses}"
         )
+
+    def test_max_workers_one_creates_single_worker(self):
         """max_workers=1 must create a ThreadPoolExecutor with exactly one worker.
 
         Spies on ThreadPoolExecutor to verify the kwarg is forwarded.
-        Uses two tickers so min(max_workers, len(pairs)) != min(4, len(pairs)).
+        With CIK deduplication, two tickers mapping to the same CIK produce
+        only one canonical pair, so min(max_workers, len(pairs)) == 1.
         """
         payload = _make_company_facts_payload()
         http = FakeHttpClient([
             _payload_200({
                 "0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."},
             }),
-            _payload_200(payload),
             _payload_200(payload),
         ])
         clock = FakeClock()
@@ -1185,7 +1340,6 @@ class TestRunIngestCompanyFacts:
         try:
             import concurrent.futures
             concurrent.futures.ThreadPoolExecutor = SpyingThreadPoolExecutor
-            # Also patch the reference held by the module
             mod.ThreadPoolExecutor = SpyingThreadPoolExecutor
 
             run_ingest_companyfacts(
@@ -3044,6 +3198,11 @@ class TestThreeWorkerOwnershipGuard:
                     _on_pre_reserve=on_pre_reserve,
                     _on_outer_lock_held=on_outer_lock_held,
                     _on_outer_clobber=on_outer_clobber,
+                    _ticker_cik_pairs_for_test=[
+                        ("AAPL", "0000320193"),
+                        ("AAPL2", "0000320193"),
+                        ("AAPL3", "0000320193"),
+                    ],
                 )
             )
             pipeline_thread.start()
@@ -3190,6 +3349,7 @@ class TestBoundedWaitTimeout:
                     cache_path="/dev/null",
                     max_workers=2,
                     _key_wait_timeout=0.05,
+                    _ticker_cik_pairs_for_test=[("AAPL", "0000320193"), ("AAPL2", "0000320193")],
                 )
 
             pipeline_thread = threading.Thread(target=run_pipeline)

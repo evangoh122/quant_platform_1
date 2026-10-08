@@ -508,6 +508,12 @@ def run_ingest_companyfacts(
     # Signature: _on_outer_clobber(key, ticker).
     # Optional, private, inert when absent.
     _on_outer_clobber: Optional[Any] = None,
+    # Test seam: bypass CIK deduplication and submit the given pairs directly.
+    # Each entry is (ticker, cik).  When provided, the canonical/alias
+    # deduplication is skipped entirely — used by concurrency tests that
+    # need multiple workers for the same CIK.
+    # Optional, private, inert when absent.
+    _ticker_cik_pairs_for_test: Optional[List[Tuple[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Run the SEC Company Facts ingestion pipeline.
 
@@ -611,14 +617,36 @@ def run_ingest_companyfacts(
             result["missing_count"] += 1
             logger.warning("CIK mapping: %s — %s: %s", mapping.status, symbol, mapping.reason)
 
+    # Deduplicate by CIK: group aliases per CIK, pick a deterministic
+    # canonical ticker (alphabetically first), and submit only one worker
+    # per distinct CIK.  This prevents redundant SEC fetches when multiple
+    # ticker aliases share the same CIK.
+    # Test seam: _ticker_cik_pairs_for_test bypasses deduplication entirely
+    # for concurrency tests that need multiple workers per CIK.
+    canonical_pairs: List[Tuple[str, str]] = []  # (canonical_ticker, cik)
+    cik_aliases: Dict[str, List[str]] = {}  # cik -> [alias_tickers]
+    if _ticker_cik_pairs_for_test is not None:
+        canonical_pairs = list(_ticker_cik_pairs_for_test)
+    else:
+        cik_to_tickers: Dict[str, List[str]] = {}
+        for symbol, cik in ticker_cik_pairs:
+            cik_to_tickers.setdefault(cik, []).append(symbol)
+
+        for cik, tickers in cik_to_tickers.items():
+            canonical = sorted(tickers)[0]
+            canonical_pairs.append((canonical, cik))
+            cik_aliases[cik] = [t for t in tickers if t != canonical]
+
     if dry_run:
+        total_aliases = sum(len(v) for v in cik_aliases.values())
         logger.info(
-            "DRY RUN: mapped=%d, missing=%d, ticker-CIK pairs=%d",
-            result["mapped_count"], result["missing_count"], len(ticker_cik_pairs),
+            "DRY RUN: mapped=%d, missing=%d, unique CIKs=%d, total aliases=%d",
+            result["mapped_count"], result["missing_count"],
+            len(canonical_pairs), total_aliases,
         )
         return result
 
-    # Ingest each ticker-CIK with bounded concurrency
+    # Ingest each unique CIK with bounded concurrency
     ingested_at = datetime.now(timezone.utc)
     lock = threading.Lock()
     key_cond = threading.Condition(lock)
@@ -628,9 +656,9 @@ def run_ingest_companyfacts(
     # ownership.  A stale outer handler compares its recorded generation
     # against the current one to avoid clobbering a successor.
     key_generation: Dict[Tuple[str, str], int] = {}
-    worker_count = min(max_workers, len(ticker_cik_pairs)) if ticker_cik_pairs else 1
+    worker_count = min(max_workers, len(canonical_pairs)) if canonical_pairs else 1
 
-    def _fetch_one(ticker: str, cik: str) -> None:
+    def _fetch_one(ticker: str, cik: str, aliases: Optional[List[str]] = None) -> None:
         started_at = datetime.now(timezone.utc)
         source_url = build_source_url(cik)
         manifest = CompanyFactsManifestEntry(
@@ -728,6 +756,28 @@ def run_ingest_companyfacts(
             if manifest_writer is not None:
                 manifest_writer(catalog, schema, manifest)
 
+            # Write alias manifest entries — truthful provenance for aliases
+            # that share this CIK.  Only written after successful fetch so
+            # aliases are never reported as skipped_duplicate when nothing
+            # was ingested.
+            if aliases and manifest_writer is not None:
+                for alias in aliases:
+                    alias_entry = CompanyFactsManifestEntry(
+                        ingest_run_id=run_id,
+                        cik=cik,
+                        ticker=alias,
+                        fetch_status="skipped_duplicate",
+                        attempt_count=attempt_count,
+                        payload_hash=payload_hash,
+                        payload_bytes=len(raw_bytes),
+                        fact_count=0,
+                        http_status=http_status,
+                        started_at=started_at,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                    manifest_writer(catalog, schema, alias_entry)
+                    result["skipped_duplicate_payloads"] += 1
+
             logger.info(
                 "Fetched %s (CIK %s): %d facts, hash=%s, attempts=%d",
                 ticker, cik, len(rows), payload_hash[:12], attempt_count,
@@ -800,11 +850,11 @@ def run_ingest_companyfacts(
             if manifest_writer is not None:
                 manifest_writer(catalog, schema, manifest)
 
-    if ticker_cik_pairs:
+    if canonical_pairs:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
-                executor.submit(_fetch_one, t, c): (t, c)
-                for t, c in ticker_cik_pairs
+                executor.submit(_fetch_one, t, c, cik_aliases.get(c, [])): (t, c)
+                for t, c in canonical_pairs
             }
             for future in as_completed(futures):
                 future.result()  # propagate unhandled exceptions
