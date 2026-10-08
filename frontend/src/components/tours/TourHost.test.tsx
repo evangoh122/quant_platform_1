@@ -281,8 +281,28 @@ describe('useTourHost — StrictMode double-mount dedup (r13)', () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
 
-    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
-    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+    let firedCallbacks = 0;
+    let clearedWrappers = 0;
+    const realSetTimeout = window.setTimeout;
+    const realClearTimeout = window.clearTimeout;
+    const wrappedTimerIds = new Set<number>();
+
+    window.setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      if (ms === 600) {
+        const id = realSetTimeout(() => {
+          firedCallbacks++;
+          if (typeof fn === 'function') fn(...args);
+        }, ms, ...args);
+        wrappedTimerIds.add(id);
+        return id;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof window.setTimeout;
+
+    window.clearTimeout = ((id?: number) => {
+      if (id !== undefined && wrappedTimerIds.has(id)) clearedWrappers++;
+      return realClearTimeout(id);
+    }) as typeof window.clearTimeout;
 
     try {
       let hookResult: ReturnType<typeof useTourHost> | undefined;
@@ -299,15 +319,12 @@ describe('useTourHost — StrictMode double-mount dedup (r13)', () => {
       render(<React.StrictMode><Wrapper /></React.StrictMode>);
 
       // Under StrictMode: mount → cleanup → remount.
-      // Two setTimeout(_, 600) calls total; the first must be cleared.
-      const timer600Calls = setTimeoutSpy.mock.calls.filter(([, ms]) => ms === 600);
-      expect(timer600Calls.length).toBe(2);
+      // Cleanup must clear the first 600 ms timer (dedup).
+      expect(clearedWrappers).toBeGreaterThanOrEqual(1);
 
-      // At least one clearTimeout for the first600 ms timer
-      expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
-
-      // Exactly one activation
+      // Exactly one activation callback must execute
       act(() => { vi.advanceTimersByTime(600); });
+      expect(firedCallbacks).toBe(1);
       expect(hookResult!.activeTour).toBe('agent');
 
       // Close and advance — no duplicate callback
@@ -316,9 +333,10 @@ describe('useTourHost — StrictMode double-mount dedup (r13)', () => {
 
       act(() => { vi.advanceTimersByTime(5000); });
       expect(hookResult!.activeTour).toBeNull();
+      expect(firedCallbacks).toBe(1);
     } finally {
-      setTimeoutSpy.mockRestore();
-      clearTimeoutSpy.mockRestore();
+      window.setTimeout = realSetTimeout;
+      window.clearTimeout = realClearTimeout;
     }
   });
 
@@ -567,7 +585,28 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
 
-    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+    let firedCallbacks = 0;
+    let clearedWrappers = 0;
+    const realSetTimeout = window.setTimeout;
+    const realClearTimeout = window.clearTimeout;
+    const wrappedTimerIds = new Set<number>();
+
+    window.setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      if (ms === 600) {
+        const id = realSetTimeout(() => {
+          firedCallbacks++;
+          if (typeof fn === 'function') fn(...args);
+        }, ms, ...args);
+        wrappedTimerIds.add(id);
+        return id;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof window.setTimeout;
+
+    window.clearTimeout = ((id?: number) => {
+      if (id !== undefined && wrappedTimerIds.has(id)) clearedWrappers++;
+      return realClearTimeout(id);
+    }) as typeof window.clearTimeout;
 
     try {
       let hookResult: ReturnType<typeof useTourHost> | undefined;
@@ -583,12 +622,13 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
 
       render(<React.StrictMode><Wrapper /></React.StrictMode>);
 
-      // Count 600 ms timer registrations
-      const timer600Calls = setTimeoutSpy.mock.calls.filter(([, ms]) => ms === 600);
-      expect(timer600Calls.length).toBe(2);
+      // Under StrictMode: mount → cleanup → remount.
+      // Cleanup must clear the first 600 ms timer (dedup).
+      expect(clearedWrappers).toBeGreaterThanOrEqual(1);
 
-      // Exactly one activation
+      // Exactly one activation callback must execute
       act(() => { vi.advanceTimersByTime(600); });
+      expect(firedCallbacks).toBe(1);
       expect(hookResult!.activeTour).toBe('agent');
 
       // Close
@@ -598,12 +638,14 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
       // Advance well past the 600 ms window — no second callback fires
       act(() => { vi.advanceTimersByTime(5000); });
       expect(hookResult!.activeTour).toBeNull();
+      expect(firedCallbacks).toBe(1);
     } finally {
-      setTimeoutSpy.mockRestore();
+      window.setTimeout = realSetTimeout;
+      window.clearTimeout = realClearTimeout;
     }
   });
 
-  it('mounted route exit prevents activation after screen change', () => {
+  it('mounted route exit prevents activation after screen change', async () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
 
@@ -629,14 +671,16 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
     root.appendChild(evidence);
     root.appendChild(lakebase);
 
-    // Flush MutationObserver and advance timers
-    act(() => { vi.advanceTimersByTime(0); });
+    // Flush MutationObserver microtask to deliver records
+    await act(async () => {});
+
+    // Advance timers past the 600 ms auto-start window
     act(() => { vi.advanceTimersByTime(3000); });
 
     expect(hookResult!.activeTour).toBeNull();
   });
 
-  it('unmount disconnects observer — no activation from late target insertion', () => {
+  it('unmount disconnects observer — no activation from late target insertion', async () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
 
@@ -671,7 +715,10 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
       container.appendChild(evidence);
       container.appendChild(lakebase);
 
-      // Flush MutationObserver and advance timers
+      // Flush MutationObserver microtask to deliver records
+      await act(async () => {});
+
+      // Advance timers past the 600 ms auto-start window
       act(() => { vi.advanceTimersByTime(5000); });
 
       // No new 600 ms activation timer should have been scheduled
