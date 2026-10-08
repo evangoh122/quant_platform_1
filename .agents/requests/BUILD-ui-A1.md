@@ -85,4 +85,3 @@ cd frontend && npm ci && npm test -- --run && npx tsc --noEmit && npm run build
 
 Use LF line endings, do not touch `.agents/dispatch.sh`, commit the A1
 changes, and write a MiMo verdict naming the commit and test results.
-

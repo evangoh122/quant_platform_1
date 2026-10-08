@@ -13,4 +13,3 @@ Validation:
 - Chronological-sort mutation caused MarketDashboard tests to fail.
 - No tracked files were edited.
 ===VERDICT END===
-

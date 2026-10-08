@@ -94,4 +94,3 @@ the same time.
 - Each BUILD request must require LF line endings, no edits to
   `.agents/dispatch.sh`, a commit, and a written MiMo verdict. DeepSeek must
   check the resulting commit with file:line evidence.
-

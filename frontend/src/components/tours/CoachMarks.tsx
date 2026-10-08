@@ -308,4 +308,3 @@ export function markTourSeen(key: string): void {
     /* ignore */
   }
 }
-

@@ -18,4 +18,3 @@ Validation:
 - No tracked files edited
 
 ===VERDICT END===
-

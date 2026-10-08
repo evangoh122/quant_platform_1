@@ -19,4 +19,3 @@ Validation:
 - Validation and mutations ran in `/tmp` archive copies
 - No tracked files edited
 ===VERDICT END===
-
