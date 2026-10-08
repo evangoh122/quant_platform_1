@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { SymbolSelect } from '../components/SymbolSelect';
+import { SymbolPicker } from '../components/SymbolPicker';
 import { api } from '../api/client';
 import type { MarketSnapshot, OptionsFeature } from '../api/types';
 import { useApi } from '../hooks/useApi';
@@ -37,10 +37,14 @@ const columns: Column<OptionsFeature>[] = [
 
 export function OptionsAnalytics() {
   const [symbol, setSymbol] = useState('NVDA');
+  const hasSymbol = symbol.trim().length > 0;
   const { data, loading, error, reload } = useApi<MarketSnapshot>(
     () => api.market(symbol),
     [symbol],
+    { enabled: hasSymbol },
   );
+
+  const hasCoverage = data ? !data.options.empty : undefined;
 
   return (
     <div className="space-y-4">
@@ -49,14 +53,14 @@ export function OptionsAnalytics() {
         {data && <FreshnessBadge freshness={data.options.freshness} />}
       </div>
 
-      <div className="flex items-center gap-2">
-        <label className="text-sm text-slate-600 dark:text-slate-400">Company</label>
-        <SymbolSelect value={symbol} onChange={setSymbol} list="options" />
-      </div>
+      <SymbolPicker value={symbol} onChange={setSymbol} list="options" hasCoverage={hasCoverage} />
 
-      {loading && <LoadingState />}
-      {error && <ErrorState message={error} onRetry={reload} />}
-      {!loading && !error && (
+      {!hasSymbol && (
+        <EmptyState title="Select a symbol" detail="Choose a symbol to view options analytics." />
+      )}
+      {hasSymbol && loading && <LoadingState />}
+      {hasSymbol && error && <ErrorState message={error} onRetry={reload} />}
+      {hasSymbol && !loading && !error && (
         <Card title="Options Chain Metrics" subtitle="gold_options_features · IV / skew / unusual volume">
           {data && data.options.empty ? (
             <EmptyState
