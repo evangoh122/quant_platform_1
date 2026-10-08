@@ -756,7 +756,9 @@ describe('useTourHost — manual tour lifecycle (r15)', () => {
 
     // Manually start and immediately close the application tour (replay)
     act(() => {
-      hookResult!.startTour('application');
+      window.dispatchEvent(
+        new CustomEvent('qp-tour-request', { detail: { tour: 'application' } }),
+      );
     });
     expect(hookResult!.activeTour).toBe('application');
 
