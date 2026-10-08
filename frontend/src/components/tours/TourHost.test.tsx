@@ -276,31 +276,50 @@ describe('useTourHost — no-tour-chain on close', () => {
   });
 });
 
-describe('useTourHost — React 18 StrictMode double-mount', () => {
-  it('auto-starts exactly one tour after StrictMode setup/cleanup/setup cycle', () => {
+describe('useTourHost — StrictMode double-mount dedup (r13)', () => {
+  it('fires exactly one 600 ms auto-start callback under StrictMode', () => {
     vi.useFakeTimers();
-    // Simulate StrictMode: render inside a StrictMode wrapper so React
-    // double-invokes effects (mount → cleanup → re-run) on the same instance.
-    let hookResult: ReturnType<typeof useTourHost> | undefined;
-    function Wrapper() {
-      hookResult = useTourHost();
-      return null;
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+
+    try {
+      let hookResult: ReturnType<typeof useTourHost> | undefined;
+      function Wrapper() {
+        hookResult = useTourHost('agent');
+        return (
+          <div data-tour="agent">
+            <div data-tour="agent-evidence" />
+            <div data-tour="lakebase-write" />
+          </div>
+        );
+      }
+
+      render(<React.StrictMode><Wrapper /></React.StrictMode>);
+
+      // Under StrictMode: mount → cleanup → remount.
+      // Two setTimeout(_, 600) calls total; the first must be cleared.
+      const timer600Calls = setTimeoutSpy.mock.calls.filter(([, ms]) => ms === 600);
+      expect(timer600Calls.length).toBe(2);
+
+      // At least one clearTimeout for the first600 ms timer
+      expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+      // Exactly one activation
+      act(() => { vi.advanceTimersByTime(600); });
+      expect(hookResult!.activeTour).toBe('agent');
+
+      // Close and advance — no duplicate callback
+      act(() => { hookResult!.closeTour(); });
+      expect(hookResult!.activeTour).toBeNull();
+
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(hookResult!.activeTour).toBeNull();
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
     }
-    const { unmount } = render(
-      <React.StrictMode><Wrapper /></React.StrictMode>,
-    );
-
-    // After StrictMode processing, the effect has run setup/cleanup/setup.
-    // The auto-start timer should be scheduled from the second setup.
-    act(() => {
-      vi.advanceTimersByTime(600);
-    });
-
-    expect(hookResult!.activeTour).toBe('application');
-
-    act(() => {
-      hookResult!.closeTour();
-    });
   });
 
   it('StrictMode cycle: does not auto-start when all tours are seen', () => {
@@ -503,126 +522,168 @@ describe('useTourHost — agent tour target-availability gating', () => {
   });
 });
 
-describe('useTourHost — delayed Agent-tour regression (strengthened)', () => {
-  it('with only the route/root target present, the tour does not activate', () => {
+describe('useTourHost — observable tour cleanup regressions (r13)', () => {
+  it('delays activation until all targets appear, then fires after 600 ms', async () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
 
+    const container = document.createElement('div');
+    container.setAttribute('data-tour', 'agent');
+    document.body.appendChild(container);
+
+    try {
+      let hookResult: ReturnType<typeof useTourHost> | undefined;
+      function Wrapper() {
+        hookResult = useTourHost('agent');
+        return null;
+      }
+
+      render(<Wrapper />);
+
+      // No targets present → no activation even after extended wait
+      act(() => { vi.advanceTimersByTime(2000); });
+      expect(hookResult!.activeTour).toBeNull();
+
+      // Append the missing required targets
+      const evidence = document.createElement('div');
+      evidence.setAttribute('data-tour', 'agent-evidence');
+      const lakebase = document.createElement('div');
+      lakebase.setAttribute('data-tour', 'lakebase-write');
+      container.appendChild(evidence);
+      container.appendChild(lakebase);
+
+      // Flush MutationObserver microtask so the observer callback fires
+      await act(async () => {});
+
+      // Advance the newly scheduled 600 ms timer
+      act(() => { vi.advanceTimersByTime(600); });
+      expect(hookResult!.activeTour).toBe('agent');
+    } finally {
+      document.body.removeChild(container);
+    }
+  });
+
+  it('StrictMode fires exactly one activation callback — no duplicate on re-advance', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+
+    try {
+      let hookResult: ReturnType<typeof useTourHost> | undefined;
+      function Wrapper() {
+        hookResult = useTourHost('agent');
+        return (
+          <div data-tour="agent">
+            <div data-tour="agent-evidence" />
+            <div data-tour="lakebase-write" />
+          </div>
+        );
+      }
+
+      render(<React.StrictMode><Wrapper /></React.StrictMode>);
+
+      // Count 600 ms timer registrations
+      const timer600Calls = setTimeoutSpy.mock.calls.filter(([, ms]) => ms === 600);
+      expect(timer600Calls.length).toBe(2);
+
+      // Exactly one activation
+      act(() => { vi.advanceTimersByTime(600); });
+      expect(hookResult!.activeTour).toBe('agent');
+
+      // Close
+      act(() => { hookResult!.closeTour(); });
+      expect(hookResult!.activeTour).toBeNull();
+
+      // Advance well past the 600 ms window — no second callback fires
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(hookResult!.activeTour).toBeNull();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('mounted route exit prevents activation after screen change', () => {
+    vi.useFakeTimers();
+    markTourSeen(APPLICATION_TOUR_KEY);
+
+    let screen = 'agent';
     let hookResult: ReturnType<typeof useTourHost> | undefined;
-    function Wrapper() {
-      hookResult = useTourHost('agent');
+    function Wrapper({ s }: { s: string }) {
+      hookResult = useTourHost(s);
       return <div data-tour="agent" />;
     }
 
-    render(<Wrapper />);
+    const { container, rerender } = render(<Wrapper s={screen} />);
 
-    act(() => { vi.advanceTimersByTime(2000); });
+    // Switch away from agent screen — hook stays mounted
+    screen = 'platform-overview';
+    rerender(<Wrapper s={screen} />);
 
-    expect(hookResult!.activeTour).toBeNull();
-  });
-
-  it('after the last required target appears, the tour activates', () => {
-    vi.useFakeTimers();
-    markTourSeen(APPLICATION_TOUR_KEY);
-
-    let hookResult: ReturnType<typeof useTourHost> | undefined;
-    function Wrapper() {
-      hookResult = useTourHost('agent');
-      return (
-        <div data-tour="agent">
-          <div data-tour="agent-evidence" />
-          <div data-tour="lakebase-write" />
-        </div>
-      );
-    }
-
-    render(<Wrapper />);
-
-    act(() => { vi.advanceTimersByTime(600); });
-
-    expect(hookResult!.activeTour).toBe('agent');
-  });
-
-  it('activates exactly once, including under StrictMode/timer advancement', () => {
-    vi.useFakeTimers();
-    markTourSeen(APPLICATION_TOUR_KEY);
-
-    let hookResult: ReturnType<typeof useTourHost> | undefined;
-    function Wrapper() {
-      hookResult = useTourHost('agent');
-      return (
-        <div data-tour="agent">
-          <div data-tour="agent-evidence" />
-          <div data-tour="lakebase-write" />
-        </div>
-      );
-    }
-
-    render(<React.StrictMode><Wrapper /></React.StrictMode>);
-
-    act(() => { vi.advanceTimersByTime(600); });
-    expect(hookResult!.activeTour).toBe('agent');
-
-    act(() => { hookResult!.closeTour(); });
-    expect(hookResult!.activeTour).toBeNull();
-
-    act(() => { vi.advanceTimersByTime(2000); });
-    expect(hookResult!.activeTour).toBeNull();
-  });
-
-  it('route exit cancels pending activation and prevents a late start', () => {
-    vi.useFakeTimers();
-    markTourSeen(APPLICATION_TOUR_KEY);
-
-    let hookResult: ReturnType<typeof useTourHost> | undefined;
-    function Wrapper() {
-      hookResult = useTourHost('agent');
-      return <div data-tour="agent" />;
-    }
-
-    const { unmount } = render(<Wrapper />);
-
-    act(() => { vi.advanceTimersByTime(100); });
-    expect(hookResult!.activeTour).toBeNull();
-
-    unmount();
-
-    const target = document.createElement('div');
-    target.setAttribute('data-tour', 'agent');
+    // Append required targets to the rendered container
+    const root = container.querySelector('[data-tour="agent"]') ?? container;
     const evidence = document.createElement('div');
     evidence.setAttribute('data-tour', 'agent-evidence');
     const lakebase = document.createElement('div');
     lakebase.setAttribute('data-tour', 'lakebase-write');
-    target.appendChild(evidence);
-    target.appendChild(lakebase);
-    document.body.appendChild(target);
+    root.appendChild(evidence);
+    root.appendChild(lakebase);
 
+    // Flush MutationObserver and advance timers
+    act(() => { vi.advanceTimersByTime(0); });
     act(() => { vi.advanceTimersByTime(3000); });
 
     expect(hookResult!.activeTour).toBeNull();
-
-    document.body.removeChild(target);
   });
 
-  it('unmount during MutationObserver wait cancels pending activation', () => {
+  it('unmount disconnects observer — no activation from late target insertion', () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
 
-    let hookResult: ReturnType<typeof useTourHost> | undefined;
-    function Wrapper() {
-      hookResult = useTourHost('agent');
-      return <div data-tour="agent" />;
+    const container = document.createElement('div');
+    container.setAttribute('data-tour', 'agent');
+    document.body.appendChild(container);
+
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+
+    try {
+      let hookResult: ReturnType<typeof useTourHost> | undefined;
+      function Wrapper() {
+        hookResult = useTourHost('agent');
+        return null;
+      }
+
+      const { unmount } = render(<Wrapper />);
+
+      // Observer is active, no targets yet → no activation
+      act(() => { vi.advanceTimersByTime(50); });
+      expect(hookResult!.activeTour).toBeNull();
+
+      // Unmount — cleanup should disconnect observer and clear timers
+      unmount();
+      const callsBeforeTargetInsertion = setTimeoutSpy.mock.calls.length;
+
+      // Add targets after unmount
+      const evidence = document.createElement('div');
+      evidence.setAttribute('data-tour', 'agent-evidence');
+      const lakebase = document.createElement('div');
+      lakebase.setAttribute('data-tour', 'lakebase-write');
+      container.appendChild(evidence);
+      container.appendChild(lakebase);
+
+      // Flush MutationObserver and advance timers
+      act(() => { vi.advanceTimersByTime(5000); });
+
+      // No new 600 ms activation timer should have been scheduled
+      const newCalls = setTimeoutSpy.mock.calls.slice(callsBeforeTargetInsertion);
+      const activationTimers = newCalls.filter(([, ms]) => ms === 600);
+      expect(activationTimers.length).toBe(0);
+
+      // State remains null
+      expect(hookResult!.activeTour).toBeNull();
+    } finally {
+      setTimeoutSpy.mockRestore();
+      document.body.removeChild(container);
     }
-
-    const { unmount } = render(<Wrapper />);
-
-    act(() => { vi.advanceTimersByTime(50); });
-    expect(hookResult!.activeTour).toBeNull();
-
-    unmount();
-
-    act(() => { vi.advanceTimersByTime(5000); });
-
-    expect(hookResult!.activeTour).toBeNull();
   });
 });
