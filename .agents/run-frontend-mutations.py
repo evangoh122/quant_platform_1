@@ -11,6 +11,7 @@ FRONTEND = os.path.join(REPO, "frontend")
 PAPER = os.path.join(FRONTEND, "src/screens/PaperPortfolio.tsx")
 TEST = "src/screens/PaperPortfolio.test.tsx"
 VITEST = os.path.join(FRONTEND, "node_modules/.bin/vitest")
+NODE = os.path.expanduser("~/.nvm/versions/node/v26.5.0/bin/node")
 
 R3_MUTATIONS = [
     {
@@ -96,9 +97,11 @@ R4_MUTATIONS = [
 
 
 def run_test(test_name):
+    env = os.environ.copy()
+    env["PATH"] = os.path.dirname(NODE) + ":" + env.get("PATH", "")
     result = subprocess.run(
-        [VITEST, "run", "-t", test_name, TEST],
-        capture_output=True, text=True, cwd=FRONTEND, timeout=60,
+        [NODE, VITEST, "run", "-t", test_name, TEST],
+        capture_output=True, text=True, cwd=FRONTEND, timeout=60, env=env,
     )
     return result.returncode != 0, result.stdout + result.stderr
 
