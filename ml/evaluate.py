@@ -15,6 +15,7 @@ Spark cluster.
 
 from __future__ import annotations
 
+import warnings
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -98,13 +99,39 @@ def deflated_sharpe_ratio(
     n_trials: int = 4,
     periods_per_year: int = 252,
 ) -> float:
-    """Probability Sharpe exceeds the multiple-testing expected maximum.
+    """RESEARCH-ONLY — KNOWN-UNRELIABLE.  Do not use for production gates.
 
-    This is the Bailey/Lopez de Prado normal approximation.  ``n_trials``
-    should be the actual number of configurations evaluated in the run
-    (arms x models x label methods) so the penalty is honest rather than
-    hard-coded.
+    .. warning::
+        This implementation is quarantined and kept as-is deliberately (it is
+        NOT rewritten here).  Known defects:
+
+        * it feeds an **annualized** Sharpe into the per-period Bailey / Lopez
+          de Prado PSR variance terms ``skew * sr`` and
+          ``((kurt - 1) / 4) * sr**2`` and into the ``sqrt(n - 1)`` scaling,
+          which are defined for the *per-period* Sharpe ratio;
+        * the expected-maximum benchmark ``norm.ppf(1 - 1 / n_trials)`` is a
+          unit-variance expected maximum and ignores the variance of the trial
+          Sharpe estimates entirely.
+
+        The returned number is therefore not a calibrated probability and is
+        biased optimistic.  Every call emits a ``UserWarning``.  Nothing under
+        ``api/`` or ``frontend/`` may import this function or ``ml.evaluate``
+        (guarded by test).
+
+    Probability Sharpe exceeds the multiple-testing expected maximum
+    (Bailey/Lopez de Prado normal approximation, as originally written).
+    ``n_trials`` should be the actual number of configurations evaluated in
+    the run (arms x models x label methods) so the penalty is honest rather
+    than hard-coded.
     """
+    warnings.warn(
+        "ml.evaluate.deflated_sharpe_ratio is RESEARCH-ONLY / known-unreliable: "
+        "annualized Sharpe is fed into per-period PSR variance terms and the "
+        "expected maximum assumes unit-variance trial SRs. Do not use for "
+        "production gates, reports or API metrics.",
+        UserWarning,
+        stacklevel=2,
+    )
     values = pd.Series(np.asarray(returns, dtype=float)).dropna().to_numpy()
     if len(values) < 3 or np.std(values, ddof=1) == 0:
         return float("nan")
@@ -123,7 +150,7 @@ def build_backtest(
     signals: pd.DataFrame,
     cost_params: Optional[CostParams] = None,
     periods_per_year: int = 3276,  # 252 trading days x 13 half-hour bars
-) -> Dict[str, float]:
+) -> Dict[str, float | int | str]:
     """Transaction-cost-adjusted strategy metrics from per-row signals.
 
     ``signals`` must contain ``symbol``, ``prediction_ts``, ``y_prob`` and
@@ -131,6 +158,13 @@ def build_backtest(
     (long/short). Turnover is the fraction of positions flipped between
     consecutive bars of the same symbol, and each flip is charged one-way cost
     via ``strategies/cost_model.py``.
+
+    Annualization: ``periods_per_year`` **must match the label horizon of
+    ``forward_return``** (daily labels -> 252). The default of 3276 assumes
+    30-minute bars (252 x 13); using it with daily labels would overstate
+    every annualized ratio by sqrt(252). The factor actually used is echoed
+    back as ``result["periods_per_year"]`` alongside the report's
+    ``observation_count`` / ``sample_state``.
     """
     if cost_params is None:
         cost_params = CostParams()
@@ -139,10 +173,14 @@ def build_backtest(
     df["position"] = np.where(df["y_prob"] >= 0.5, 1.0, -1.0)
     df["gross_return"] = df["position"] * df["forward_return"]
 
-    # Turnover: |position_t - position_{t-1}| per symbol (0/2).
+    # Turnover convention: one-way = |position_t - position_{t-1}| / 2 per
+    # symbol row, matching strategies/backtest.py::one_way_turnover (one-way
+    # turnover = sum |Δw| / 2: |Δw| is two-way traded notional, /2 keeps one
+    # side). A long→short flip is one two-sided trade of 2 position-units →
+    # turnover 1.0; unchanged positions → 0. The first row has no predecessor
+    # and is treated as flat (0 turnover).
     df["prev_position"] = df.groupby("symbol")["position"].shift(1)
     df["turnover"] = (df["position"] - df["prev_position"].fillna(df["position"])).abs()
-    # A long→short (or reverse) flip = |Δ| of 2; scale to fraction [0,1].
     df["turnover"] = (df["turnover"] / 2.0).clip(0.0, 1.0)
 
     # One-way cost in bps per trade; cost drag = turnover * cost_bps / 1e4.
@@ -163,6 +201,12 @@ def build_backtest(
             "sortino_ratio": float("nan"),
             "calmar_ratio": float("nan"),
             "win_rate": float("nan"),
+            "observation_count": 0,
+            "sample_state": "insufficient_sample",
+            "periods_per_year": periods_per_year,
+            "sharpe_ci_95_low": float("nan"),
+            "sharpe_ci_95_high": float("nan"),
+            "sharpe_ci_method": "iid_normal_approx",
         }
 
     # Aggregate simultaneous symbols into one equal-weight portfolio return per
@@ -211,6 +255,13 @@ def build_backtest(
         "hit_rate": hit,
         "turnover": avg_turnover,
         "avg_holding_period": avg_holding,
+        # Annualization / sample transparency (see performance_metrics).
+        "periods_per_year": periods_per_year,
+        "observation_count": report["observation_count"],
+        "sample_state": report["sample_state"],
+        "sharpe_ci_95_low": report["sharpe_ci_95_low"],
+        "sharpe_ci_95_high": report["sharpe_ci_95_high"],
+        "sharpe_ci_method": report["sharpe_ci_method"],
     }
 
 

@@ -117,7 +117,7 @@ metrics:
   bars_per_day_15min: 26                   # 390min / 15min = 26 bars
   bars_per_day_5min: 78                    # 390min / 5min  = 78 bars
   pnl_normalization: half_book             # half_book | full_book (WQ uses half)
-  turnover_two_way: false                  # false = one-way (WQ default); true = divide by 2
+  turnover_two_way: false                  # false = one-way turnover = sum|Δw|/2 (what strategies/backtest.py::one_way_turnover computes; WQ default); true = two-way = sum|Δw|
   corr_target: pnl                         # pnl | signal (what to correlate for self/prod corr)
   risk_free_rate: 0.0                      # assumed 0 for market-neutral
 

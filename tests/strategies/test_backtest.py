@@ -12,6 +12,7 @@ from strategies.backtest import (
     enforce_execution_lag,
     filter_to_universe,
     neutralize_daily,
+    one_way_turnover,
     run_backtest,
 )
 from strategies.cost_model import CostParams
@@ -692,4 +693,29 @@ def test_never_held_adv_name_charged_100pct_participation():
     assert exit_cost_frac == pytest.approx(expected_cost_frac, rel=1e-6), (
         f"Exit cost {exit_cost_frac:.8f} should be 100% participation "
         f"(expected {expected_cost_frac:.8f}) for never-ADV name"
+    )
+
+
+def test_one_way_turnover_long_flat_short():
+    """Pin the turnover convention on hand-computed weights.
+
+    one-way turnover = sum_s |w_t - w_{t-1}| / (2 * target_gross): the
+    numerator is the two-way traded notional and the /2 keeps one side
+    (strategies/backtest.py::one_way_turnover; same convention as
+    ml/evaluate.py::build_backtest's |Δposition|/2).
+    """
+    dates = pd.date_range("2024-01-01", periods=3, freq="B")
+    weights = pd.DataFrame({"A": [1.0, 0.0, -1.0]}, index=dates)
+
+    turnover = one_way_turnover(weights, target_gross=1.0)
+
+    # Hand computation — unit weights long -> flat -> short:
+    #   t0: entering the book trades 1.0 two-way -> |1.0| / 2      = 0.5
+    #   t1: 1.0 -> 0.0 trades 1.0 two-way        -> |0 - 1| / 2    = 0.5
+    #   t2: 0.0 -> -1.0 trades 1.0 two-way       -> |-1 - 0| / 2   = 0.5
+    assert turnover.tolist() == pytest.approx([0.5, 0.5, 0.5], abs=1e-12)
+
+    # Same trades against a 2.0-gross book are half the turnover.
+    assert one_way_turnover(weights, target_gross=2.0).tolist() == pytest.approx(
+        [0.25, 0.25, 0.25], abs=1e-12
     )
