@@ -7,27 +7,29 @@ This file is the repository's single source of truth for delegated changes.
 1. **MiMo implements** from a scoped `BUILD-*.md` request.
 2. **DeepSeek independently validates** the exact committed SHA and returns
    `APPROVED`, `CHANGES_REQUESTED`, or `FAILED`.
-3. **Codex Sol performs the routine final validation** of the exact SHA after
-   DeepSeek approves. This runs on every commit push and iteration round.
+3. **One final gate, chosen by complexity**, runs on the exact SHA after
+   DeepSeek approves: **Codex Sol** for simple/routine changes, **Opus 5.5**
+   (`claude-opus-5-5`) for complex changes or any escalation trigger (see
+   "Reviewer selection and escalation"). Exactly one final gate per head SHA.
 4. Open or update the PR (CodeRabbit is requested per the CodeRabbit rules
    below).
 5. Valid CodeRabbit findings return to MiMo and restart steps 2–3.
-6. **Opus 5.5** (`claude-opus-5-5`) performs ONE final review of the exact PR
-   head SHA before any merge into `main`/production — and whenever an
-   escalation trigger applies — after CI and CodeRabbit are clean. The owner
-   then authorizes the merge.
+6. After CI and CodeRabbit are clean the owner authorizes the merge (or has
+   pre-authorized it for named PRs).
 
 MiMo's report is a builder self-report, never independent approval. Any later
 commit invalidates DeepSeek, Codex Sol and Opus results. Codex Sol and Opus
-5.5 are separate gates, never substitutes for DeepSeek or each other. Do not
+5.5 are alternative final gates, never substitutes for DeepSeek. Do not
 substitute Claude, Kimi, GPT, or another model for DeepSeek when DeepSeek is
 unavailable or cannot be positively identified; report the gate as blocked.
 
 ## Reviewer selection and escalation
 
-Codex Sol (currently `gpt-6.1-sol`, the owner's "GPT-6.1 Sol"; the model slug may change with Codex releases)
-is the default reviewer for commit pushes and routine PR iteration. Opus 5.5
-(`claude-opus-5-5`) is REQUIRED when at least one of the following applies:
+Codex Sol (currently `gpt-6.1-sol`, the owner's "GPT-6.1 Sol"; the model slug
+may change with Codex releases) is the final gate for simple, routine changes.
+Opus 5.5 (`claude-opus-5-5`) is the final gate for complex changes: use it when
+at least one of the following applies, or when the coordinator judges the change
+too complex for a routine check (record the reason):
 
 1. **Critical core architecture**: renames/moves modules, changes public
    interfaces, or touches 3+ top-level packages.
@@ -41,16 +43,14 @@ is the default reviewer for commit pushes and routine PR iteration. Opus 5.5
    `api/deps.py`, `api/demo.py`, `db/lakebase.py`, `security/**`,
    `.github/**`, `app.yaml`, `databricks.yml`, `resources/**`, `render.yaml`,
    `requirements*.txt`. This list is non-exhaustive.
-4. **The final merge is made directly into `main`/production.**
+4. **A release or submission-candidate merge**, or any change to
+   deployment/production configuration.
 
-This repository has no integration branch; every PR targets `main` directly.
-Opus is therefore required before EVERY merge into `main` (one review per
-head SHA, rerun after any later commit), unless the owner exempts a docs-only
-PR below; Codex Sol alone never suffices for a merge into `main`. Codex Sol
-covers every push and iteration. If the owner later
-adds an integration branch, routine feature→integration PRs use Codex Sol only.
-
-The owner may exempt docs-only PRs from the Opus review by saying so in the PR.
+This repository has no integration branch; every PR targets `main` directly, so
+merging into `main` is not by itself an escalation trigger. A change that
+triggers none of the above uses Codex Sol as its single final gate; a change
+that triggers any of them uses Opus 5.5 as its single final gate. Neither
+substitutes for DeepSeek.
 
 The coordinator records the reviewer used and the trigger in the PR description.
 Opus is read-only (never edits, commits, pushes, or deploys), must be positively
