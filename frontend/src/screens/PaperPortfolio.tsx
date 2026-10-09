@@ -61,7 +61,7 @@ export function PaperPortfolio() {
                 !totalPnlKnown
                   ? undefined
                   : unpricedUnrealized > 0 || unpricedRealized > 0
-                    ? `realized ${realized.toFixed(2)}${unpricedUnrealized > 0 ? ` (${unpricedUnrealized} unpriced)` : ''}`
+                    ? `partial · realized ${realized.toFixed(2)}${unpricedUnrealized > 0 ? ` · ${unpricedUnrealized} unrealized unpriced` : ''}${unpricedRealized > 0 ? ` · ${unpricedRealized} realized unpriced` : ''}`
                     : undefined
               }
             />

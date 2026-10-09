@@ -98,8 +98,8 @@ describe('PaperPortfolio', () => {
     const allThreeHundred = screen.getAllByText('300.00');
     expect(allThreeHundred.length).toBeGreaterThanOrEqual(1);
 
-    // "unpriced" note with count 1
-    expect(screen.getByText(/1 unpriced/)).toBeInTheDocument();
+    // "unpriced" note: "partial · realized 500.00 · 1 unrealized unpriced · 1 realized unpriced"
+    expect(screen.getByText(/1 unrealized unpriced/)).toBeInTheDocument();
   });
 
   it('shows em dash for Total P&L when all P&L values are null', async () => {
@@ -264,8 +264,169 @@ describe('PaperPortfolio', () => {
     // Total P&L = 50 + 300 = 350
     expect(screen.getByText('350.00')).toBeInTheDocument();
 
-    // Hint: "realized 50.00 (1 unpriced)" — unpricedUnrealized=1
+    // Hint: "partial · realized 50.00 · 1 unrealized unpriced" — unpricedUnrealized=1
+    expect(screen.getByText(/partial/)).toBeInTheDocument();
     expect(screen.getByText(/realized 50\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/1 unpriced/)).toBeInTheDocument();
+    expect(screen.getByText(/1 unrealized unpriced/)).toBeInTheDocument();
+  });
+
+  it('shows partial hint with realized unpriced when all unrealized present but one realized null', async () => {
+    // AAPL: realized=null, unrealized=-200  (realized unpriced)
+    // MSFT: realized=500, unrealized=100   (fully priced)
+    // realized = 500 (MSFT only), unrealized = -200 + 100 = -100
+    // total = 400, unpricedRealized=1, unpricedUnrealized=0
+    const oneRealizedNull = {
+      ...mockPortfolioWithNullPnl,
+      positions: {
+        ...mockPortfolioWithNullPnl.positions,
+        data: [
+          {
+            account_id: 'default',
+            symbol: 'AAPL',
+            quantity: 100,
+            avg_cost: 150.0,
+            market_price: 155.0,
+            realized_pnl: null,
+            unrealized_pnl: -200.0,
+            updated_at: '2026-10-07',
+          },
+          {
+            account_id: 'default',
+            symbol: 'MSFT',
+            quantity: 50,
+            avg_cost: 300.0,
+            market_price: 310.0,
+            realized_pnl: 500.0,
+            unrealized_pnl: 100.0,
+            updated_at: '2026-10-07',
+          },
+        ],
+      },
+    };
+    mockFetch(oneRealizedNull);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    // Total = 500 + (-100) = 400.00
+    expect(screen.getByText('400.00')).toBeInTheDocument();
+
+    // Hint must contain "partial" and "1 realized unpriced"
+    expect(screen.getByText(/partial/)).toBeInTheDocument();
+    expect(screen.getByText(/1 realized unpriced/)).toBeInTheDocument();
+    // No unrealized unpriced clause
+    expect(screen.queryByText(/unrealized unpriced/)).not.toBeInTheDocument();
+  });
+
+  it('shows partial hint with unrealized unpriced when all realized present but two unrealized null', async () => {
+    // AAPL: realized=100, unrealized=null  (unrealized unpriced)
+    // MSFT: realized=200, unrealized=null  (unrealized unpriced)
+    // GOOG: realized=50,  unrealized=300  (fully priced)
+    // realized = 100+200+50 = 350, unrealized = 300
+    // total = 650, unpricedRealized=0, unpricedUnrealized=2
+    const twoUnrealizedNull = {
+      ...mockPortfolioWithNullPnl,
+      positions: {
+        ...mockPortfolioWithNullPnl.positions,
+        data: [
+          {
+            account_id: 'default',
+            symbol: 'AAPL',
+            quantity: 100,
+            avg_cost: 150.0,
+            market_price: null,
+            realized_pnl: 100.0,
+            unrealized_pnl: null,
+            updated_at: '2026-10-07',
+          },
+          {
+            account_id: 'default',
+            symbol: 'MSFT',
+            quantity: 50,
+            avg_cost: 300.0,
+            market_price: null,
+            realized_pnl: 200.0,
+            unrealized_pnl: null,
+            updated_at: '2026-10-07',
+          },
+          {
+            account_id: 'default',
+            symbol: 'GOOG',
+            quantity: 200,
+            avg_cost: 100.0,
+            market_price: 110.0,
+            realized_pnl: 50.0,
+            unrealized_pnl: 300.0,
+            updated_at: '2026-10-07',
+          },
+        ],
+      },
+    };
+    mockFetch(twoUnrealizedNull);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    // Total = 350 + 300 = 650.00
+    expect(screen.getByText('650.00')).toBeInTheDocument();
+
+    // Hint must contain "partial" and "2 unrealized unpriced"
+    expect(screen.getByText(/partial/)).toBeInTheDocument();
+    expect(screen.getByText(/2 unrealized unpriced/)).toBeInTheDocument();
+    // No realized unpriced clause — use negative lookbehind to avoid matching "unrealized unpriced"
+    expect(screen.queryByText(/(?<![un])realized unpriced/)).not.toBeInTheDocument();
+  });
+
+  it('shows partial hint with both counts when both kinds of null present', async () => {
+    // AAPL: realized=null, unrealized=50   (realized unpriced)
+    // MSFT: realized=200, unrealized=null  (unrealized unpriced)
+    // realized = 200 (MSFT), unrealized = 50 (AAPL)
+    // total = 250, unpricedRealized=1, unpricedUnrealized=1
+    const bothNull = {
+      ...mockPortfolioWithNullPnl,
+      positions: {
+        ...mockPortfolioWithNullPnl.positions,
+        data: [
+          {
+            account_id: 'default',
+            symbol: 'AAPL',
+            quantity: 100,
+            avg_cost: 150.0,
+            market_price: 155.0,
+            realized_pnl: null,
+            unrealized_pnl: 50.0,
+            updated_at: '2026-10-07',
+          },
+          {
+            account_id: 'default',
+            symbol: 'MSFT',
+            quantity: 50,
+            avg_cost: 300.0,
+            market_price: 310.0,
+            realized_pnl: 200.0,
+            unrealized_pnl: null,
+            updated_at: '2026-10-07',
+          },
+        ],
+      },
+    };
+    mockFetch(bothNull);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    // Total = 200 + 50 = 250.00
+    expect(screen.getByText('250.00')).toBeInTheDocument();
+
+    // Hint must contain "partial", "1 unrealized unpriced", and "1 realized unpriced"
+    expect(screen.getByText(/partial/)).toBeInTheDocument();
+    expect(screen.getByText(/1 unrealized unpriced/)).toBeInTheDocument();
+    expect(screen.getByText(/1 realized unpriced/)).toBeInTheDocument();
   });
 });
