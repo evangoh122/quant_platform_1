@@ -67,6 +67,48 @@ class TestStartForTradingDays:
         result = start_for_trading_days(end, 3)
         assert result == date(2026, 9, 30)  # Wednesday
 
+
+class TestWeekendEndConsistency:
+    """CodeRabbit finding (d): Fri/Sat/Sun ends must produce the same start.
+
+    Contract: end rolls back to the latest session on or before end, then
+    counts back n sessions.  Saturday and Sunday's session is the preceding
+    Friday, so Fri/Sat/Sun with the same n yield identical starts.
+    """
+
+    @pytest.mark.parametrize("end,n,expected", [
+        # n=1: Fri 2026-10-02 → roll back to Fri (no count) → 1 back = Thu 10-01
+        #       Sat 2026-10-03 → roll back to Fri (no count) → 1 back = Thu 10-01
+        #       Sun 2026-10-04 → roll back to Fri (no count) → 1 back = Thu 10-01
+        (date(2026, 10, 2), 1, date(2026, 10, 1)),  # Friday
+        (date(2026, 10, 3), 1, date(2026, 10, 1)),  # Saturday
+        (date(2026, 10, 4), 1, date(2026, 10, 1)),  # Sunday
+        # n=5: Fri → 5 back = Thu 2026-09-25
+        #       Sat → roll to Fri → 5 back = Thu 2026-09-25
+        #       Sun → roll to Fri → 5 back = Thu 2026-09-25
+        (date(2026, 10, 2), 5, date(2026, 9, 25)),  # Friday
+        (date(2026, 10, 3), 5, date(2026, 9, 25)),  # Saturday
+        (date(2026, 10, 4), 5, date(2026, 9, 25)),  # Sunday
+    ], ids=[
+        "fri-n1", "sat-n1", "sun-n1",
+        "fri-n5", "sat-n5", "sun-n5",
+    ])
+    def test_weekend_ends_same_as_friday(self, end, n, expected):
+        """Fri/Sat/Sun with same n must all return the same start date.
+
+        Arithmetic (n=1):
+          Fri 10-02: session is Fri 10-02 → count 1 back → Thu 10-01
+          Sat 10-03: roll to Fri 10-02 → count 1 back → Thu 10-01
+          Sun 10-04: roll to Fri 10-02 → count 1 back → Thu 10-01
+
+        Arithmetic (n=5):
+          Fri 10-02: Thu→Wed→Tue→Mon→Fri = 5 back → Thu 09-25
+          Sat 10-03: roll to Fri 10-02, same 5 back → Thu 09-25
+          Sun 10-04: roll to Fri 10-02, same 5 back → Thu 09-25
+        """
+        result = start_for_trading_days(end, n)
+        assert result == expected
+
     def test_result_is_always_weekday(self):
         """For various n values, the result must always be a weekday."""
         end = date(2026, 10, 7)

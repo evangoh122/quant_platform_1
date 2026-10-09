@@ -68,7 +68,7 @@ def _assert_desc_order_before_limit(rec: _RecordingDF, expected_col: str, site: 
     )
 
 
-def test_market_features_orders_event_date_desc_before_limit():
+def test_market_features_orders_event_date_desc_before_limit(fake_pyspark):
     """market_features PySpark branch: orderBy(event_date DESC) before limit.
 
     The warehouse fallback (_build_market_features_daily_query) orders
@@ -79,15 +79,14 @@ def test_market_features_orders_event_date_desc_before_limit():
     stub_spark = MagicMock()
     stub_spark.table.return_value = rec
 
-    with patch("db.delta_adapter._has_pyspark", True), \
-         patch("db.delta_adapter._spark", return_value=stub_spark):
+    with patch("db.delta_adapter._spark", return_value=stub_spark):
         from db.delta_adapter import market_features
         market_features("AAPL", "2026-01-01", "2026-06-01", limit=100)
 
     _assert_desc_order_before_limit(rec, "event_date", "db.delta_adapter.market_features")
 
 
-def test_read_analytics_table_orders_event_date_desc_before_limit():
+def test_read_analytics_table_orders_event_date_desc_before_limit(fake_pyspark):
     """read_analytics_table PySpark branch: orderBy(event_date DESC) before limit.
 
     Its warehouse fallback orders ``ORDER BY event_date DESC`` (bounded
@@ -97,15 +96,14 @@ def test_read_analytics_table_orders_event_date_desc_before_limit():
     stub_spark = MagicMock()
     stub_spark.table.return_value = rec
 
-    with patch("db.delta_adapter._has_pyspark", True), \
-         patch("db.delta_adapter._spark", return_value=stub_spark):
+    with patch("db.delta_adapter._spark", return_value=stub_spark):
         from db.delta_adapter import read_analytics_table
         read_analytics_table("usage_daily", limit=500)
 
     _assert_desc_order_before_limit(rec, "event_date", "db.delta_adapter.read_analytics_table")
 
 
-def test_read_analytics_table_ordering_applies_to_all_sections():
+def test_read_analytics_table_ordering_applies_to_all_sections(fake_pyspark):
     """Every analytics section goes through the same ordered limit."""
     for section in ("agent_activity", "watchlist_changes", "order_funnel",
                     "usage_daily", "model_performance", "latency",
@@ -114,8 +112,7 @@ def test_read_analytics_table_ordering_applies_to_all_sections():
         stub_spark = MagicMock()
         stub_spark.table.return_value = rec
 
-        with patch("db.delta_adapter._has_pyspark", True), \
-             patch("db.delta_adapter._spark", return_value=stub_spark):
+        with patch("db.delta_adapter._spark", return_value=stub_spark):
             from db.delta_adapter import read_analytics_table
             read_analytics_table(section, limit=500)
 

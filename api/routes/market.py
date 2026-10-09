@@ -31,6 +31,11 @@ _MAX_DAYS = 1000
 _MAX_ROWS = 5000
 
 
+def _join_detail(*parts: str) -> str:
+    """Join non-empty detail strings with '; ', avoiding leading separators."""
+    return "; ".join(p for p in parts if p)
+
+
 @router.get("/{symbol}", response_model=MarketSnapshot)
 def market_features(
     symbol: str = Path(..., min_length=1, max_length=10),
@@ -88,7 +93,7 @@ def market_features(
         count=len(ohlcv_rows),
         empty=not ohlcv_rows,
         source="silver_ohlcv_day_adjusted",
-        freshness=Freshness(state=ohlcv_state, table="silver_ohlcv_day_adjusted", detail=ohlcv_detail + "; weekday approximation (calendar_limited)"),
+        freshness=Freshness(state=ohlcv_state, table="silver_ohlcv_day_adjusted", detail=_join_detail(ohlcv_detail, "weekday approximation (calendar_limited)")),
     )
     options = Envelope(
         data=[
@@ -113,6 +118,6 @@ def market_features(
         count=len(opt_rows),
         empty=not opt_rows,
         source="gold_options_features",
-        freshness=Freshness(state=opt_state, table="gold_options_features", detail=opt_detail + "; weekday approximation (calendar_limited)"),
+        freshness=Freshness(state=opt_state, table="gold_options_features", detail=opt_detail),
     )
     return MarketSnapshot(symbol=symbol, ohlcv=ohlcv, options=options)

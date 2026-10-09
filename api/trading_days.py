@@ -22,6 +22,11 @@ def start_for_trading_days(end: date, n: int) -> date:
     (5 weekdays back, spanning a weekend).  If ``end`` falls on a weekend it
     is first rolled back to the preceding Friday without consuming a count.
 
+    Contract: ``end`` rolls back to the latest session on or before ``end``,
+    then counts back ``n`` sessions.  This means Saturday, Sunday, and Friday
+    all produce the same start for a given ``n`` (the Saturday/Sunday session
+    is the preceding Friday).
+
     Parameters
     ----------
     end:

@@ -17,6 +17,7 @@ class _RecordingDF:
 
     def __init__(self):
         self._calls: list[str] = []
+        self._order_col = None
         self._rows = []
 
     def where(self, *a, **kw):
@@ -45,14 +46,13 @@ class _RecordingDF:
         return {}
 
 
-def test_orderBy_called_before_limit():
+def test_orderBy_called_before_limit(fake_pyspark):
     """orderBy must appear before limit in the call chain."""
     rec = _RecordingDF()
     stub_spark = MagicMock()
     stub_spark.table.return_value = rec
 
-    with patch("db.delta_adapter._has_pyspark", True), \
-         patch("agent.tools_retrieval._spark", return_value=stub_spark), \
+    with patch("agent.tools_retrieval._spark", return_value=stub_spark), \
          patch("db.delta_adapter._fqn", return_value="cat.schema.gold_options_features"), \
          patch("agent.guardrails.normalize_symbol", side_effect=lambda s: s):
         from agent.tools_retrieval import get_options_features
@@ -65,14 +65,19 @@ def test_orderBy_called_before_limit():
     )
 
 
-def test_orderBy_uses_feature_ts_desc():
-    """orderBy must use feature_ts descending (newest first)."""
+def test_orderBy_uses_feature_ts_desc(fake_pyspark):
+    """orderBy must use feature_ts descending (newest first).
+
+    CodeRabbit finding (a): the previous test asserted only that "feature_ts"
+    appeared in the column string, without failing if the direction was flipped
+    to ascending.  The ``DESC`` assertion is now explicit so that mutation M2
+    (flip to .asc()) MUST fail this test.
+    """
     rec = _RecordingDF()
     stub_spark = MagicMock()
     stub_spark.table.return_value = rec
 
-    with patch("db.delta_adapter._has_pyspark", True), \
-         patch("agent.tools_retrieval._spark", return_value=stub_spark), \
+    with patch("agent.tools_retrieval._spark", return_value=stub_spark), \
          patch("db.delta_adapter._fqn", return_value="cat.schema.gold_options_features"), \
          patch("agent.guardrails.normalize_symbol", side_effect=lambda s: s):
         from agent.tools_retrieval import get_options_features
@@ -81,9 +86,12 @@ def test_orderBy_uses_feature_ts_desc():
     assert rec._order_col is not None, "orderBy was called but no column was passed"
     col_str = str(rec._order_col)
     assert "feature_ts" in col_str, f"orderBy column should reference feature_ts, got: {col_str}"
+    assert re.search(r"\bDESC\b", col_str), (
+        f"orderBy must be descending (newest first), got: {col_str}"
+    )
 
 
-def test_shuffled_rows_returned_newest_first_when_ordered():
+def test_shuffled_rows_returned_newest_first_when_ordered(fake_pyspark):
     """Behavioral: with orderBy, the stub returns rows in the ordered sequence.
     Without orderBy, the stub returns shuffled rows (simulating nondeterminism)."""
 
@@ -116,8 +124,7 @@ def test_shuffled_rows_returned_newest_first_when_ordered():
     stub_spark = MagicMock()
     stub_spark.table.return_value = odf
 
-    with patch("db.delta_adapter._has_pyspark", True), \
-         patch("agent.tools_retrieval._spark", return_value=stub_spark), \
+    with patch("agent.tools_retrieval._spark", return_value=stub_spark), \
          patch("db.delta_adapter._fqn", return_value="cat.schema.gold_options_features"), \
          patch("agent.guardrails.normalize_symbol", side_effect=lambda s: s):
         from agent.tools_retrieval import get_options_features
@@ -130,7 +137,7 @@ def test_shuffled_rows_returned_newest_first_when_ordered():
 # ——— r2: get_cot_positioning (single-row .limit(1) lookup) ————————————
 
 
-def test_cot_positioning_orders_report_date_desc_before_limit():
+def test_cot_positioning_orders_report_date_desc_before_limit(fake_pyspark):
     """get_cot_positioning PySpark branch: orderBy(report_date DESC) before limit(1).
 
     A .limit(1) over a time series is nondeterministic without ordering; the
@@ -141,8 +148,7 @@ def test_cot_positioning_orders_report_date_desc_before_limit():
     stub_spark = MagicMock()
     stub_spark.table.return_value = rec
 
-    with patch("db.delta_adapter._has_pyspark", True), \
-         patch("agent.tools_retrieval._spark", return_value=stub_spark):
+    with patch("agent.tools_retrieval._spark", return_value=stub_spark):
         from agent.tools_retrieval import get_cot_positioning
         get_cot_positioning("equity_index")
 
