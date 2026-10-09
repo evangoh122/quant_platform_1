@@ -69,6 +69,10 @@ def performance_metrics(
     autocorrelation** — volatility clustering, overlapping labels and stale
     marks all make the true interval wider.  The CI bounds are NaN when the
     sample is insufficient.
+
+    Drawdown is measured from the starting equity of 1.0: a series that begins
+    with a loss will report that loss as drawdown even if the running peak
+    never exceeds 1.0.
     """
     if periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive")
@@ -131,7 +135,8 @@ def performance_metrics(
         else float("nan")
     )
 
-    drawdown = equity / equity.cummax() - 1.0
+    peak = np.maximum(equity.cummax(), 1.0)
+    drawdown = equity / peak - 1.0
     max_drawdown = float(-drawdown.min())
     calmar = cagr / max_drawdown if max_drawdown > 0 else float("nan")
 

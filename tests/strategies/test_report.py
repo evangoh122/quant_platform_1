@@ -204,3 +204,89 @@ def test_sharpe_ci_95_matches_iid_normal_approx_half_width():
     assert (high - low) / 2.0 == pytest.approx(CI_HALF_WIDTH, abs=1e-12)
     assert high - sharpe == pytest.approx(CI_HALF_WIDTH, abs=1e-12)
     assert sharpe - low == pytest.approx(CI_HALF_WIDTH, abs=1e-12)
+
+
+# ── R3: initial-equity drawdown fix ─────────────────────────────────────────
+
+
+def test_initial_loss_drawdown_from_starting_equity():
+    """A series that starts with a loss and never recovers must report the
+    loss as max_drawdown, measured from the starting equity of 1.0.
+
+    Returns [-0.10, 0, 0]: equity 0.9, 0.9, 0.9; peak includes 1.0;
+    dd = 0.9/1.0 - 1 = -0.10 => max_drawdown = 0.10.
+    """
+    result = performance_metrics(
+        [-0.10, 0.0, 0.0], periods_per_year=252, min_observations_for_ratios=1
+    )
+    assert result["total_return"] == pytest.approx(-0.10, abs=1e-12)
+    assert result["max_drawdown"] == pytest.approx(0.10, abs=1e-12)
+
+
+def test_initial_loss_then_partial_recovery():
+    """Partial recovery after an initial loss: drawdown is still from 1.0.
+
+    Returns [-0.10, 0.05, 0.0]:
+      equity 0.9, 0.945, 0.945; peak 1.0;
+      dd = 0.9/1.0 - 1 = -0.10 => max_drawdown = 0.10.
+    """
+    result = performance_metrics(
+        [-0.10, 0.05, 0.0], periods_per_year=252, min_observations_for_ratios=1
+    )
+    assert result["total_return"] == pytest.approx(-0.055, abs=1e-12)
+    assert result["max_drawdown"] == pytest.approx(0.10, abs=1e-12)
+
+
+def test_initial_gain_then_drawdown():
+    """Drawdown from a post-gain peak, not the initial equity.
+
+    Returns [0.10, -0.20]: equity 1.1, 0.88; peak 1.1;
+    dd = 0.88/1.1 - 1 = -0.20 => max_drawdown = 0.20.
+    """
+    result = performance_metrics(
+        [0.10, -0.20], periods_per_year=252, min_observations_for_ratios=1
+    )
+    assert result["total_return"] == pytest.approx(-0.12, abs=1e-12)
+    assert result["max_drawdown"] == pytest.approx(0.20, abs=1e-12)
+
+
+def test_all_gains_drawdown_zero_calmar_nan():
+    """All gains => max_drawdown 0 and Calmar NaN (division guard).
+
+    Returns [0.05, 0.03]: equity 1.05, 1.0815; peak 1.0815;
+    dd never negative => max_drawdown = 0; calmar = NaN.
+    """
+    result = performance_metrics(
+        [0.05, 0.03], periods_per_year=252, min_observations_for_ratios=1
+    )
+    assert result["max_drawdown"] == pytest.approx(0.0, abs=1e-12)
+    assert math.isnan(result["calmar_ratio"])
+
+
+def test_initial_equity_is_true_peak():
+    """When equity never exceeds 1.0, the initial equity is the true peak.
+
+    Returns [-0.05, 0.02, -0.03]:
+      equity 0.95, 0.969, 0.93993; peak max(cummax, 1.0) = 1.0 throughout;
+      dd: -0.05, -0.031, -0.06007; max_drawdown = 0.06007.
+    """
+    result = performance_metrics(
+        [-0.05, 0.02, -0.03], periods_per_year=252, min_observations_for_ratios=1
+    )
+    # 0.969 * 0.97 = 0.93993; 0.93993 / 1.0 - 1 = -0.06007 => max_drawdown
+    assert result["max_drawdown"] == pytest.approx(0.06007, abs=1e-12)
+
+
+def test_later_peak_is_true_peak():
+    """When equity exceeds 1.0, a later peak can be the true peak.
+
+    Returns [0.05, 0.03, -0.10]:
+      equity 1.05, 1.0815, 0.97335;
+      peak at step 3: 1.0815 (from cummax);
+      dd = 0.97335/1.0815 - 1 = -0.10 => max_drawdown = 0.10.
+    This is larger than dd from initial 1.0 (0.97335/1.0 - 1 = -0.02665).
+    """
+    result = performance_metrics(
+        [0.05, 0.03, -0.10], periods_per_year=252, min_observations_for_ratios=1
+    )
+    assert result["max_drawdown"] == pytest.approx(0.10, abs=1e-12)

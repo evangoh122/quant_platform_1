@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from strategies.backtest import (
+    _max_drawdown,
     cap_weight_changes_by_adv,
     compute_costs,
     enforce_execution_lag,
@@ -719,3 +720,27 @@ def test_one_way_turnover_long_flat_short():
     assert one_way_turnover(weights, target_gross=2.0).tolist() == pytest.approx(
         [0.25, 0.25, 0.25], abs=1e-12
     )
+
+
+# ── R3: initial-equity drawdown fix for _max_drawdown ───────────────────────
+
+
+def test_max_drawdown_initial_loss_from_starting_equity():
+    """_max_drawdown must include initial equity 1.0 in the running peak.
+
+    Returns [-0.10, 0, 0]: equity 0.9, 0.9, 0.9; peak 1.0;
+    dd = 0.9/1.0 - 1 = -0.10; _max_drawdown returns the raw min = -0.10.
+    """
+    r = pd.Series([-0.10, 0.0, 0.0])
+    assert _max_drawdown(r) == pytest.approx(-0.10, abs=1e-12)
+
+
+def test_max_drawdown_later_peak():
+    """When equity exceeds 1.0, the post-peak drawdown dominates.
+
+    Returns [0.05, 0.03, -0.10]:
+      equity 1.05, 1.0815, 0.97335; peak 1.0815;
+      dd = 0.97335/1.0815 - 1 = -0.10; _max_drawdown returns raw min = -0.10.
+    """
+    r = pd.Series([0.05, 0.03, -0.10])
+    assert _max_drawdown(r) == pytest.approx(-0.10, abs=1e-12)

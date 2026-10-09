@@ -257,7 +257,8 @@ def one_way_turnover(weights: pd.DataFrame, target_gross: float = 1.0) -> pd.Ser
 
 def _max_drawdown(returns: pd.Series) -> float:
     equity = (1.0 + returns).cumprod()
-    return float((equity / equity.cummax() - 1.0).min())
+    peak = np.maximum(equity.cummax(), 1.0)
+    return float((equity / peak - 1.0).min())
 
 
 def _sharpe(returns: pd.Series, periods: int = 252) -> float:
