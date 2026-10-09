@@ -803,6 +803,15 @@ describe('B3: General emission guard — every className token in src is emitted
         }
       }
     }
+    const interp = /className=\{`[^`]*\$\{[^}]*?'([a-z][\w-\[\]().,:\/# ]*)'/g;
+    while ((m = interp.exec(content)) !== null) {
+      for (const part of m[1].split(/\s+/)) {
+        const trimmed = part.replace(/^['"]|['"};,]+$/g, '');
+        if (trimmed && isLikelyCssClass(trimmed)) {
+          allTokens.push(trimmed);
+        }
+      }
+    }
     const cond = /className=\{[^}`]*?'([a-z][\w-\[\]().,:\/# ]*)'/g;
     while ((m = cond.exec(content)) !== null) {
       for (const part of m[1].split(/\s+/)) {
@@ -819,6 +828,7 @@ describe('B3: General emission guard — every className token in src is emitted
     const stripped = token.replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '');
     if (/[.()=>'"!;`]/.test(stripped)) return false;
     if (!/^[a-zA-Z@_:-]/.test(token)) return false;
+    if (/^[a-z]+$/.test(token)) return false;
     return true;
   }
 
