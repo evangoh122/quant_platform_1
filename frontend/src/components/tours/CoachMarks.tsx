@@ -97,6 +97,12 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
       initialScreenRef.current = currentScreenRef.current;
       setIndex(0);
       setTargetTimedOut(false);
+    } else {
+      // Reset while hidden so the next run never evaluates a stale step's navigateTo.
+      setIndex(0);
+      setWaitingForTarget(false);
+      setTargetTimedOut(false);
+      setScreenAnnouncement('');
     }
   }, [run]);
 
@@ -130,6 +136,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
         setWaitingForTarget(true);
         setTargetTimedOut(false);
         let resolved = false;
+        let measureTimer: number | undefined;
 
         const resolveTarget = () => {
           if (resolved) return;
@@ -140,7 +147,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
             setTargetTimedOut(false);
             const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             foundEl.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
-            setTimeout(measure, 280);
+            measureTimer = window.setTimeout(measure, 280);
           } else {
             setTargetTimedOut(true);
           }
@@ -165,6 +172,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
         return () => {
           observer.disconnect();
           window.clearTimeout(timeoutId);
+          if (measureTimer !== undefined) window.clearTimeout(measureTimer);
         };
       }
     } else {
@@ -188,7 +196,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
   useEffect(() => {
     if (!run || !cardRef.current) return;
     cardRef.current.focus();
-  }, [run, index]);
+  }, [run, index, waitingForTarget, targetTimedOut]);
 
   // Tab wrap: cycle from last focusable to first and Shift+Tab from first to last
   useEffect(() => {
@@ -229,7 +237,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
 
     card.addEventListener('keydown', onKeyDown);
     return () => card.removeEventListener('keydown', onKeyDown);
-  }, [run, index]);
+  }, [run, index, waitingForTarget, targetTimedOut]);
 
   useLayoutEffect(() => {
     const card = cardRef.current;
@@ -269,9 +277,9 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
 
   useEffect(() => {
     if (!run) return;
-    const card = cardRef.current;
-    if (!card) return;
     const onFocus = (e: FocusEvent) => {
+      const card = cardRef.current;
+      if (!card) return;
       if (!card.contains(e.target as Node)) {
         e.stopPropagation();
         card.focus();
