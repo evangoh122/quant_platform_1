@@ -41,6 +41,8 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
   const openerRef = useRef<HTMLElement | null>(null);
   const observerRef = useRef<MutationObserver | null>(null);
   const initialScreenRef = useRef<string | undefined>(undefined);
+  const currentScreenRef = useRef(currentScreen);
+  currentScreenRef.current = currentScreen;
 
   const step = steps[index];
 
@@ -68,11 +70,11 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
   useEffect(() => {
     if (run) {
       openerRef.current = document.activeElement as HTMLElement;
-      initialScreenRef.current = currentScreen;
+      initialScreenRef.current = currentScreenRef.current;
       setIndex(0);
       setTargetTimedOut(false);
     }
-  }, [run, currentScreen]);
+  }, [run]);
 
   // Handle navigation and target waiting for cross-screen steps
   useLayoutEffect(() => {

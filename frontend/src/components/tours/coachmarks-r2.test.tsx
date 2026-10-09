@@ -1,14 +1,18 @@
-import { render, screen, act, fireEvent, within } from '@testing-library/react';
+import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import CoachMarks, { tourSeen, markTourSeen, type CoachStep } from './CoachMarks';
 import { useTourHost } from './TourHost';
 import { EvidencePanel } from '../evidence/EvidencePanel';
+import { DeveloperDetails } from '../evidence/DeveloperDetails';
 import { AppShell, type NavGroup } from '../../layout/AppShell';
+import App from '../../App';
+import { ArchitectureEvidence } from '../../screens/ArchitectureEvidence';
+import { ResearchAgent } from '../../screens/ResearchAgent';
 import {
   APPLICATION_TOUR,
   AGENT_TOUR,
@@ -153,6 +157,49 @@ function mockFetch(body: unknown) {
     if (url.startsWith('/api/orders/')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ order_id: '1', status: 'approved', ok: true }) });
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
   });
+}
+
+// ---------- stateful-test helpers ----------
+
+function stubVisibleTourRects() {
+  return vi
+    .spyOn(Element.prototype, 'getBoundingClientRect')
+    .mockImplementation(function (this: Element): DOMRect {
+      if (this.hasAttribute('data-tour')) return fakeRect();
+      return fakeRect({ top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0, x: 0, y: 0 });
+    });
+}
+
+function expectActiveScreen(label: string) {
+  expect(screen.getByRole('button', { name: label })).toHaveAttribute('aria-current', 'page');
+}
+
+function readTourCounter(dialog: HTMLElement) {
+  return within(dialog).getByText(/^Step \d+ of \d+$/).textContent ?? '';
+}
+
+function renderAppMarkAllSeen() {
+  installMockLocalStorage();
+  markTourSeen(APPLICATION_TOUR_KEY);
+  markTourSeen(AGENT_TOUR_KEY);
+  markTourSeen(ARCHITECTURE_TOUR_KEY);
+  setViewport(1024, 768);
+  vi.stubGlobal('fetch', mockFetch(healthyResponse));
+  return render(<App />);
+}
+
+async function startApplicationTourFrom(startLabel: string) {
+  renderAppMarkAllSeen();
+  await screen.findByRole('button', { name: 'Take a tour' });
+  fireEvent.click(screen.getByRole('button', { name: startLabel }));
+  await waitFor(() => expectActiveScreen(startLabel));
+  fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
+  return screen.findByRole('dialog', { name: 'Guided tour' });
+}
+
+async function advanceTo(dialog: HTMLElement, stepLabel: string) {
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+  return within(dialog).findByText(stepLabel);
 }
 
 // ---------- TEST 1: Route-aware header tour (uses real AppShell) ----------
@@ -476,50 +523,33 @@ describe('Test 7: Missing targets use bounded skip/defer policy', () => {
   });
 });
 
-// ---------- TEST 8: Manual replay route-aware with seen key 1 (real component) ----------
+// ---------- TEST 8: Manual replay ignores seen keys via real App + TourHost ----------
 
-describe('Test 8: Manual replay remains route-aware when seen key is 1', () => {
-  beforeEach(() => { installMockLocalStorage(); });
-  afterEach(() => { restoreLocalStorage(); });
+describe('Test 8: Manual replay opens the tour even when its seen key is 1 (real App + TourHost)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    restoreLocalStorage();
+  });
 
-  it('manual Take a tour opens agent tour on agent screen even when all seen', () => {
-    // Seed seen keys using real production constants
-    markTourSeen(APPLICATION_TOUR_KEY);
-    markTourSeen(AGENT_TOUR_KEY);
-    markTourSeen(ARCHITECTURE_TOUR_KEY);
+  it('Take a tour on the agent screen opens the agent tour although every seen key is 1', async () => {
+    renderAppMarkAllSeen();
     expect(tourSeen(APPLICATION_TOUR_KEY)).toBe(true);
     expect(tourSeen(AGENT_TOUR_KEY)).toBe(true);
     expect(tourSeen(ARCHITECTURE_TOUR_KEY)).toBe(true);
-
-    const dispatched: string[] = [];
-    const handler = (e: Event) => { dispatched.push((e as CustomEvent).detail.tour); };
-    window.addEventListener('qp-tour-request', handler);
-
-    const { unmount } = renderRealAppShell('agent');
+    await screen.findByRole('button', { name: 'Take a tour' });
+    fireEvent.click(screen.getByRole('button', { name: 'AI Research Agent' }));
+    await waitFor(() => expectActiveScreen('AI Research Agent'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
-    expect(dispatched).toEqual(['agent']);
-
-    window.removeEventListener('qp-tour-request', handler);
-    unmount();
+    expect(await screen.findByText('Research Agent tour')).toBeInTheDocument();
   });
 
-  it('manual Take a tour opens architecture tour on architecture screen even when all seen', () => {
-    markTourSeen(APPLICATION_TOUR_KEY);
-    markTourSeen(AGENT_TOUR_KEY);
-    markTourSeen(ARCHITECTURE_TOUR_KEY);
-
-    const dispatched: string[] = [];
-    const handler = (e: Event) => { dispatched.push((e as CustomEvent).detail.tour); };
-    window.addEventListener('qp-tour-request', handler);
-
-    const { unmount } = renderRealAppShell('architecture');
+  it('Take a tour on a default screen opens the application tour although every seen key is 1', async () => {
+    renderAppMarkAllSeen();
+    await screen.findByRole('button', { name: 'Take a tour' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
-    expect(dispatched).toEqual(['architecture']);
-
-    window.removeEventListener('qp-tour-request', handler);
-    unmount();
+    expect(await screen.findByText('Welcome to QP1')).toBeInTheDocument();
   });
 });
 
@@ -676,46 +706,52 @@ describe('Test 10: No old light surface/Blue CTA/Slate classes in rendered compo
   }
 });
 
-// ---------- TEST 11: Part B1 - ArchitectureEvidence honesty ----------
+// ---------- TEST 11: Part B1 - ArchitectureEvidence honesty (rendered DOM) ----------
 
 describe('Test 11: ArchitectureEvidence removes false Verified wording', () => {
-  it('no "Verified" claim appears with placeholder data', () => {
-    const content = readFileSync(join(__dirname, '../../screens/ArchitectureEvidence.tsx'), 'utf-8');
-    // The component should not contain "Verified" in its rendered text
-    // (it was removed because commit/date are placeholders)
-    expect(content).not.toMatch(/Verified Test Groups/);
-    expect(content).not.toMatch(/Verified architecture/);
-    expect(content).toContain('Expected Test Groups');
-    expect(content).toContain('Test coverage');
-    // Status text conveyed to screen readers
-    expect(content).toMatch(/role="status"/);
+  it('renders no Verified claim with placeholder data, and shows Expected Test Groups + status text', () => {
+    render(<ArchitectureEvidence />);
+
+    expect(screen.getByRole('heading', { name: 'Expected Test Groups' })).toBeInTheDocument();
+    expect(screen.getAllByText(/Test coverage/).length).toBeGreaterThan(0);
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.queryByText('Verified Test Groups')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Verified architecture/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Verified$/)).not.toBeInTheDocument();
   });
 });
 
-// ---------- TEST 12: Part B2 - Skip link ----------
+// ---------- TEST 12: Part B2 - Skip link (rendered DOM) ----------
 
 describe('Test 12: Skip link is first focusable in AppShell', () => {
-  it('skip link targets #main-content and main has tabIndex=-1', () => {
-    const content = readFileSync(join(__dirname, '../../layout/AppShell.tsx'), 'utf-8');
-    // Skip link must be present
-    expect(content).toContain('Skip to main content');
-    expect(content).toContain('href="#main-content"');
-    // main element must have id and tabIndex
-    expect(content).toMatch(/id="main-content"/);
-    expect(content).toMatch(/tabIndex=\{-1\}/);
-    // Skip link must come before Sidebar in the JSX
-    const skipIdx = content.indexOf('Skip to main content');
-    const sidebarIdx = content.indexOf('<Sidebar');
-    expect(skipIdx).toBeLessThan(sidebarIdx);
-  });
-
-  it('skip link is the first focusable element in the rendered shell', () => {
-    const onNavigate = vi.fn();
+  it('skip link is the first focusable element in DOM order and targets #main-content', () => {
     render(
       <AppShell
         groups={TEST_GROUPS}
         currentId="platform-overview"
-        onNavigate={onNavigate}
+        onNavigate={() => {}}
+        health={healthyHealth}
+      >
+        <div />
+      </AppShell>,
+    );
+
+    const focusables = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    expect(focusables.length).toBeGreaterThan(1);
+    expect(focusables[0]).toHaveTextContent('Skip to main content');
+    expect(focusables[0]).toHaveAttribute('href', '#main-content');
+  });
+
+  it('skip link targets #main-content and main has tabIndex=-1', () => {
+    render(
+      <AppShell
+        groups={TEST_GROUPS}
+        currentId="platform-overview"
+        onNavigate={() => {}}
         health={healthyHealth}
       >
         <div />
@@ -732,32 +768,46 @@ describe('Test 12: Skip link is first focusable in AppShell', () => {
   });
 });
 
-// ---------- TEST 13: Part B3 - Research Agent accessible label ----------
+// ---------- TEST 13: Part B3 - Research Agent accessible label (rendered DOM) ----------
 
 describe('Test 13: Research Agent input has accessible label', () => {
-  it('input has a visible label element or aria-label', () => {
-    const content = readFileSync(join(__dirname, '../../screens/ResearchAgent.tsx'), 'utf-8');
-    // Either a <label> or aria-label must be present
-    const hasLabel = content.includes('<label') || content.includes('aria-label');
-    expect(hasLabel).toBe(true);
-    // If using htmlFor, the input must have matching id
-    if (content.includes('htmlFor')) {
-      expect(content).toMatch(/id="research-agent-input"/);
-    }
+  it('input is labelled by its label element (rendered DOM/ARIA)', () => {
+    render(<ResearchAgent />);
+
+    const input = screen.getByRole('textbox', { name: /research question/i });
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveAttribute('id', 'research-agent-input');
   });
 });
 
-// ---------- TEST 14: Part B5 - Collapsible aria-expanded/aria-controls ----------
+// ---------- TEST 14: Part B5 - Collapsible aria-expanded/aria-controls (rendered DOM) ----------
 
 describe('Test 14: DeveloperDetails collapsible has aria-expanded and aria-controls', () => {
-  it('summary has aria-expanded and aria-controls referencing a real id', () => {
-    const content = readFileSync(join(__dirname, '../../components/evidence/DeveloperDetails.tsx'), 'utf-8');
-    expect(content).toContain('aria-expanded');
-    expect(content).toContain('aria-controls');
-    // id is set via a variable: id={contentId}
-    expect(content).toMatch(/id=\{contentId\}/);
-    expect(content).toContain("contentId = 'developer-details-content'");
-    expect(content).toContain('aria-controls={contentId}');
+  it('summary has aria-expanded and aria-controls referencing a real element id', () => {
+    render(<DeveloperDetails arguments={{ a: 1 }} result={{ b: 2 }} />);
+
+    const summary = screen.getByText('Developer details');
+    expect(summary.tagName).toBe('SUMMARY');
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
+    expect(summary).toHaveAttribute('aria-controls', 'developer-details-content');
+
+    const controlled = document.getElementById('developer-details-content');
+    expect(controlled).not.toBeNull();
+    expect(controlled).toBeInTheDocument();
+  });
+
+  it('aria-expanded tracks the disclosure state', () => {
+    render(<DeveloperDetails arguments={{ a: 1 }} result={{ b: 2 }} />);
+
+    const summary = screen.getByText('Developer details');
+    const details = summary.closest('details') as HTMLDetailsElement;
+    details.open = true;
+    fireEvent(details, new Event('toggle'));
+    expect(summary).toHaveAttribute('aria-expanded', 'true');
+
+    details.open = false;
+    fireEvent(details, new Event('toggle'));
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
   });
 });
 
@@ -787,40 +837,175 @@ describe('Test 15: Tour target timeout shows explicit state with live region', (
   });
 });
 
-// ---------- TEST 16: Part B7 - Tour exit restores screen ----------
+// ---------- TEST 16: Stateful cross-screen tour + restore starting screen ----------
 
-describe('Test 16: Tour exit restores the screen the user started from', () => {
-  it('onNavigate restores initial screen when Escape closes the tour', () => {
-    const onNavigate = vi.fn();
-    const onClose = vi.fn();
+describe('Test 16: Stateful tour advances past every navigateTo step and restores the starting screen', () => {
+  let rectSpy: ReturnType<typeof stubVisibleTourRects>;
 
-    // Step 0 has no navigateTo (intro), Step 1 navigates away.
-    // currentScreen='platform-overview' simulates the user's starting screen.
-    const steps: CoachStep[] = [
+  beforeEach(() => {
+    rectSpy = stubVisibleTourRects();
+  });
+
+  afterEach(() => {
+    rectSpy.mockRestore();
+    vi.unstubAllGlobals();
+    restoreLocalStorage();
+  });
+
+  async function settleTargetStep(
+    dialog: HTMLElement,
+    stepLabel: string,
+    activeNavLabel: string,
+    targetSelector: string,
+  ) {
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+    await within(dialog).findByText(stepLabel);
+    await waitFor(() => {
+      expect(document.querySelector(targetSelector)).not.toBeNull();
+      expect(within(dialog).queryByText('Waiting for screen to load...')).not.toBeInTheDocument();
+    });
+    await waitFor(() => expectActiveScreen(activeNavLabel));
+    const target = document.querySelector(targetSelector) as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    expect(rect.width).toBeGreaterThan(0);
+    expect(rect.height).toBeGreaterThan(0);
+    await waitFor(
+      () => {
+        const spotlight = dialog.querySelector('[style*="box-shadow"]') as HTMLElement | null;
+        expect(spotlight).not.toBeNull();
+        expect(parseFloat(spotlight!.style.width)).toBeGreaterThan(0);
+      },
+      { timeout: 3000 },
+    );
+    expect(readTourCounter(dialog)).toBe(stepLabel);
+  }
+
+  it('application tour reaches the last step past every navigateTo step without resetting to step 1, and Done restores the starting screen', async () => {
+    const dialog = await startApplicationTourFrom('Signal Explorer');
+    const counters: string[] = [readTourCounter(dialog)];
+    expect(counters[0]).toBe('Step 1 of 5');
+
+    await advanceTo(dialog, 'Step 2 of 5');
+    counters.push(readTourCounter(dialog));
+
+    await settleTargetStep(dialog, 'Step 3 of 5', 'Market Explorer', '[data-tour="market-research"]');
+    counters.push(readTourCounter(dialog));
+
+    await settleTargetStep(dialog, 'Step 4 of 5', 'AI Research Agent', '[data-tour="agent"]');
+    counters.push(readTourCounter(dialog));
+
+    await settleTargetStep(dialog, 'Step 5 of 5', 'System Health', '[data-tour="analytics-evidence"]');
+    counters.push(readTourCounter(dialog));
+
+    expect(counters).toEqual(['Step 1 of 5', 'Step 2 of 5', 'Step 3 of 5', 'Step 4 of 5', 'Step 5 of 5']);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument(),
+    );
+    expectActiveScreen('Signal Explorer');
+  });
+
+  it('Escape after a navigateTo step restores the screen the user started on', async () => {
+    const dialog = await startApplicationTourFrom('Signal Explorer');
+    await advanceTo(dialog, 'Step 2 of 5');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+    await within(dialog).findByText('Step 3 of 5');
+    await waitFor(() => expectActiveScreen('Market Explorer'));
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument(),
+    );
+    expectActiveScreen('Signal Explorer');
+  });
+
+  it('Skip tour after a navigateTo step restores the screen the user started on', async () => {
+    const dialog = await startApplicationTourFrom('Signal Explorer');
+    await advanceTo(dialog, 'Step 2 of 5');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+    await within(dialog).findByText('Step 3 of 5');
+    await waitFor(() => expectActiveScreen('Market Explorer'));
+
+    fireEvent.click(within(dialog).getByText('Skip tour'));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument(),
+    );
+    expectActiveScreen('Signal Explorer');
+  });
+
+  it('close calls onNavigate with the screen the user started on (stateful harness)', () => {
+    const navCalls: string[] = [];
+    const harnessSteps: CoachStep[] = [
       { title: 'Intro', body: 'Hello' },
-      { selector: '[data-tour="agent"]', title: 'Agent', body: 'Agent step', navigateTo: 'agent' },
+      {
+        selector: '[data-tour="harness-target"]',
+        title: 'Market',
+        body: 'Body',
+        navigateTo: 'market',
+      },
     ];
 
+    function Harness() {
+      const [screenId, setScreenId] = useState('signals');
+      const onNavigate = useCallback((id: string) => {
+        navCalls.push(id);
+        setScreenId(id);
+      }, []);
+      return (
+        <div>
+          <div data-testid="current-screen">{screenId}</div>
+          {screenId === 'market' && <div data-tour="harness-target" />}
+          <CoachMarks
+            steps={harnessSteps}
+            run={true}
+            onClose={() => {}}
+            onNavigate={onNavigate}
+            currentScreen={screenId}
+          />
+        </div>
+      );
+    }
+
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+    expect(navCalls).toEqual(['market']);
+    expect(screen.getByTestId('current-screen')).toHaveTextContent('market');
+    expect(readTourCounter(screen.getByRole('dialog', { name: 'Guided tour' }))).toBe('Step 2 of 2');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(navCalls).toEqual(['market', 'signals']);
+    expect(screen.getByTestId('current-screen')).toHaveTextContent('signals');
+  });
+});
+
+// ---------- TEST 17: Mobile drawer background inert ----------
+
+describe('Test 17: Mobile drawer background is inert while open', () => {
+  it('background has the inert attribute while open and not when closed', () => {
     render(
-      <div>
-        <CoachMarks
-          steps={steps}
-          run={true}
-          onClose={onClose}
-          onNavigate={onNavigate}
-          currentScreen="platform-overview"
-        />
-      </div>,
+      <AppShell
+        groups={TEST_GROUPS}
+        currentId="platform-overview"
+        onNavigate={() => {}}
+        health={healthyHealth}
+      >
+        <div />
+      </AppShell>,
     );
 
-    onNavigate.mockClear();
+    expect(document.querySelector('[inert]')).toBeNull();
 
-    // Press Escape to close the tour
-    act(() => { fireEvent.keyDown(window, { key: 'Escape' }); });
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    const drawer = screen.getByRole('dialog', { name: 'Navigation' });
+    const background = document.querySelector('[inert]');
+    expect(background).not.toBeNull();
+    expect(background).toHaveAttribute('aria-hidden', 'true');
+    expect(drawer).not.toHaveAttribute('inert');
 
-    // onClose was called
-    expect(onClose).toHaveBeenCalled();
-    // onNavigate was called to restore the initial screen
-    expect(onNavigate).toHaveBeenCalledWith('platform-overview');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument();
+    expect(document.querySelector('[inert]')).toBeNull();
   });
 });
