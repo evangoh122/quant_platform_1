@@ -96,8 +96,8 @@ backtest:
     - sharpe_ratio
     - sortino_ratio
     - calmar_ratio
-    - profit_factor
-    - win_rate
+    - row_profit_factor
+    - row_win_rate
     - payoff_ratio
     - cagr
     - max_drawdown

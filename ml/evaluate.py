@@ -166,6 +166,9 @@ def build_backtest(
     back as ``result["periods_per_year"]`` alongside the report's
     ``observation_count`` / ``sample_state``.
     """
+    if periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
+
     if cost_params is None:
         cost_params = CostParams()
 
@@ -197,10 +200,11 @@ def build_backtest(
             "hit_rate": float("nan"),
             "turnover": float("nan"),
             "avg_holding_period": float("nan"),
-            "profit_factor": float("nan"),
+            "row_profit_factor": float("nan"),
             "sortino_ratio": float("nan"),
             "calmar_ratio": float("nan"),
-            "win_rate": float("nan"),
+            "row_win_rate": float("nan"),
+            "row_count": 0,
             "observation_count": 0,
             "sample_state": "insufficient_sample",
             "periods_per_year": periods_per_year,
@@ -246,8 +250,9 @@ def build_backtest(
         "sharpe_ratio": report["sharpe_ratio"],
         "sortino_ratio": report["sortino_ratio"],
         "calmar_ratio": report["calmar_ratio"],
-        "profit_factor": report["profit_factor"],
-        "win_rate": report["win_rate"],
+        "row_profit_factor": report["profit_factor"],
+        "row_win_rate": report["win_rate"],
+        "row_count": report["trade_count"],
         "total_return": report["total_return"],
         "cagr": report["cagr"],
         "annualized_volatility": report["annualized_volatility"],

@@ -21,6 +21,7 @@ from ml.evaluate import (
     predictive_metrics,
 )
 from strategies.cost_model import CostParams
+from strategies.report import performance_metrics
 
 
 def test_predictive_metrics_are_finite_and_in_range():
@@ -49,8 +50,8 @@ def test_build_backtest_applies_costs():
     # A perfectly-directional strategy: hit rate is 1.0 before costs.
     assert gross["hit_rate"] == 1.0
     assert "sharpe" in gross and "max_drawdown" in gross
-    assert gross["win_rate"] == 1.0
-    assert gross["profit_factor"] > 1.5
+    assert gross["row_win_rate"] == 1.0
+    assert gross["row_profit_factor"] > 1.5
     assert "sortino_ratio" in gross and "calmar_ratio" in gross
 
 
@@ -168,3 +169,90 @@ def test_no_api_or_frontend_imports_ml_evaluate_or_deflated_sharpe():
         "quarantined ml.evaluate leaked into api/ or frontend/:\n"
         + "\n".join(violations)
     )
+
+
+# ── R2: row-level metric rename and periods_per_year validation ──────────────
+
+
+def test_build_backtest_row_level_metrics_differ_from_period_proxy():
+    """row_win_rate/row_profit_factor/row_count are row-level, not period-proxy.
+
+    Fixture: AAPL with forward_returns [0.01, -0.005, 0.0, 0.003].
+    Position is always +1 (y_prob >= 0.5), zero turnover, so net = forward.
+
+    Row-level (trade_pnls=net): 4 values, 1 zero-return row.
+      wins=2 (0.01, 0.003), losses=1 (-0.005), 1 zero.
+      row_win_rate = 2/4 = 0.5, row_profit_factor = 0.013/0.005 = 2.6.
+
+    Period-proxy (trade_pnls=None): nonzero returns only, 3 values.
+      wins=2, losses=1. proxy_win_rate = 2/3 != 0.5.
+    """
+    signals = pd.DataFrame(
+        {
+            "symbol": ["AAPL"] * 4,
+            "prediction_ts": pd.date_range(
+                "2026-01-05", periods=4, freq="B", tz="UTC"
+            ),
+            "y_prob": [0.9, 0.9, 0.9, 0.9],
+            "forward_return": [0.01, -0.005, 0.0, 0.003],
+        }
+    )
+    result = build_backtest(signals, cost_params=CostParams(), periods_per_year=252)
+
+    # Row-level keys are present.
+    assert result["row_win_rate"] == pytest.approx(0.5)
+    assert result["row_profit_factor"] == pytest.approx(2.6)
+    assert result["row_count"] == 4
+
+    # Old keys must NOT exist (mutation: restore old names -> fails).
+    assert "win_rate" not in result
+    assert "profit_factor" not in result
+    assert "trade_count" not in result
+
+    # The Opus-survivor mutation (trade_pnls=net -> None) must now FAIL:
+    # row_win_rate=0.5 != proxy_win_rate=2/3.
+    portfolio_net = signals.groupby("prediction_ts", sort=True)["forward_return"].mean()
+    proxy = performance_metrics(portfolio_net, periods_per_year=252)
+    assert result["row_win_rate"] != proxy["win_rate"]
+
+
+def test_periods_per_year_zero_raises_valueerror_empty():
+    empty = pd.DataFrame(
+        columns=["symbol", "prediction_ts", "y_prob", "forward_return"]
+    )
+    with pytest.raises(ValueError, match="periods_per_year"):
+        build_backtest(empty, periods_per_year=0)
+
+
+def test_periods_per_year_negative_raises_valueerror_empty():
+    empty = pd.DataFrame(
+        columns=["symbol", "prediction_ts", "y_prob", "forward_return"]
+    )
+    with pytest.raises(ValueError, match="periods_per_year"):
+        build_backtest(empty, periods_per_year=-1)
+
+
+def test_periods_per_year_zero_raises_valueerror_nonempty():
+    signals = pd.DataFrame(
+        {
+            "symbol": ["AAPL"],
+            "prediction_ts": pd.Timestamp("2026-01-05", tz="UTC"),
+            "y_prob": [0.9],
+            "forward_return": [0.01],
+        }
+    )
+    with pytest.raises(ValueError, match="periods_per_year"):
+        build_backtest(signals, periods_per_year=0)
+
+
+def test_periods_per_year_negative_raises_valueerror_nonempty():
+    signals = pd.DataFrame(
+        {
+            "symbol": ["AAPL"],
+            "prediction_ts": pd.Timestamp("2026-01-05", tz="UTC"),
+            "y_prob": [0.9],
+            "forward_return": [0.01],
+        }
+    )
+    with pytest.raises(ValueError, match="periods_per_year"):
+        build_backtest(signals, periods_per_year=-1)

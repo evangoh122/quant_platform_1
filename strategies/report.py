@@ -29,8 +29,10 @@ def performance_metrics(
     """Calculate a compact, consistently-defined backtest report.
 
     ``returns`` is the portfolio return series. ``trade_pnls`` should contain
-    one net P&L or net return per completed trade; when omitted, non-zero
-    periodic returns are used as a conservative proxy for trades.
+    one net P&L or net return per **completed trade**; when omitted, non-zero
+    periodic returns are used as a conservative proxy for trades (one proxy
+    trade per nonzero return period).  Do not pass per-row returns as
+    ``trade_pnls`` unless each row truly represents a completed trade.
 
     Annualization transparency
     --------------------------
