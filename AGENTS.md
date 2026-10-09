@@ -7,14 +7,64 @@ This file is the repository's single source of truth for delegated changes.
 1. **MiMo implements** from a scoped `BUILD-*.md` request.
 2. **DeepSeek independently validates** the exact committed SHA and returns
    `APPROVED`, `CHANGES_REQUESTED`, or `FAILED`.
-3. **Codex performs final validation** only after DeepSeek approves that exact SHA.
-4. Open or update the PR and immediately comment `@coderabbitai review`.
-5. Any valid CodeRabbit finding returns to MiMo and restarts DeepSeek → Codex.
+3. **Codex Sol performs the routine final validation** of the exact SHA after
+   DeepSeek approves. This runs on every commit push and iteration round.
+4. Open or update the PR (CodeRabbit is requested per the CodeRabbit rules
+   below).
+5. Valid CodeRabbit findings return to MiMo and restart steps 2–3.
+6. **Opus 5.5** (`claude-opus-5-5`) performs ONE final review of the exact PR
+   head SHA before any merge into `main`/production — and whenever an
+   escalation trigger applies — after CI and CodeRabbit are clean. The owner
+   then authorizes the merge.
 
 MiMo's report is a builder self-report, never independent approval. Any later
-commit invalidates DeepSeek and Codex results. Do not substitute Claude, Kimi,
-GPT, or another model for DeepSeek when DeepSeek is unavailable or cannot be
-positively identified; report the gate as blocked.
+commit invalidates DeepSeek, Codex Sol and Opus results. Codex Sol and Opus
+5.5 are separate gates, never substitutes for DeepSeek or each other. Do not
+substitute Claude, Kimi, GPT, or another model for DeepSeek when DeepSeek is
+unavailable or cannot be positively identified; report the gate as blocked.
+
+## Reviewer selection and escalation
+
+Codex Sol (currently `gpt-5.6-sol`; the owner's name for it is GPT-6.1 Sol)
+is the default reviewer for commit pushes and routine PR iteration. Opus 5.5
+(`claude-opus-5-5`) is REQUIRED when at least one of the following applies:
+
+1. **Critical core architecture**: renames/moves modules, changes public
+   interfaces, or touches 3+ top-level packages.
+2. **Database schemas and data contracts**: `db/migrations/**`,
+   `db/schema_contract.py`, `api/schemas.py`, table/view definitions under
+   `bronze/`, `silver/`, `gold/`, `sql/`.
+3. **Payment-gateway equivalent** — order placement, approvals, guardrails and
+   broker/execution code: `api/routes/orders.py`, `agent/guardrails.py`,
+   `agent/tools_write.py`, `execution/**`, anything handling credentials,
+   authentication/roles or approvals; also deployment/security configuration:
+   `api/deps.py`, `api/demo.py`, `db/lakebase.py`, `security/**`,
+   `.github/**`, `app.yaml`, `databricks.yml`, `resources/**`, `render.yaml`,
+   `requirements*.txt`. This list is non-exhaustive.
+4. **The final merge is made directly into `main`/production.**
+
+This repository has no integration branch; every PR targets `main` directly.
+Opus gives one final review of the exact PR head SHA before each merge into
+`main`, while Codex Sol covers every push and iteration. If the owner later
+adds an integration branch, routine feature→integration PRs use Codex Sol only.
+
+The owner may exempt docs-only PRs from the Opus review by saying so in the PR.
+
+The coordinator records the reviewer used and the trigger in the PR description.
+Opus is read-only (never edits, commits, pushes, or deploys), must be positively
+identified, and returns one terminal line:
+
+```text
+OPUS FINAL | verdict: <APPROVED|CHANGES_REQUESTED> | sha: <40-char SHA>
+```
+
+Codex Sol returns:
+
+```text
+CODEX FINAL | verdict: <APPROVED|CHANGES_REQUESTED> | sha: <40-char SHA>
+```
+
+A missing or incomplete report is failure, not approval.
 
 ## Build requests and evidence
 
@@ -64,6 +114,16 @@ run the relevant tests independently, and reproduce the important old-behavior
 and mutation proofs. Codex may start only after a readable DeepSeek `APPROVED` report
 for the current SHA. Findings must include file:line and concrete test evidence.
 
+### CI parity (standing rule)
+
+CI runs `pytest -q -m "not spark and not lakebase and not databricks"` with NO
+pyspark installed (`.github/workflows/ci.yml`) while developer machines may
+have pyspark, so tests can pass locally and fail CI. Every acceptance run must
+execute that exact command both normally and with pyspark blocked via a stub
+package that raises `ModuleNotFoundError("No module named 'pyspark'")` placed
+first on `PYTHONPATH` in a temp directory outside the repo; tests must not
+require pyspark. No hard-coded home-directory paths.
+
 ## Pull requests and authority
 
 After opening or updating every PR, run:
@@ -71,6 +131,17 @@ After opening or updating every PR, run:
 ```bash
 gh pr comment <PR_NUMBER> --body "@coderabbitai review"
 ```
+
+The workflow `.github/workflows/coderabbit-trigger.yml` already posts
+`@coderabbitai review` when a PR is opened, reopened, or marked ready — do NOT
+also comment manually at open. Comment `@coderabbitai review` manually only
+after pushing commits that have passed DeepSeek and Codex Sol. Use
+`@coderabbitai full review` only when needed (e.g. after merging main/rebasing,
+or when the incremental review answers "already reviewed" although the
+changeset effectively changed).
+
+The owner's budget is 5 CodeRabbit reviews per hour: batch fixes, never loop
+or retry-poll, record which PR gets the next slot.
 
 If the comment fails, do not loop or bypass restrictions. Report exactly:
 
