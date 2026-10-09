@@ -85,15 +85,14 @@ Relevant current product references:
 
 ## Dependency order and safe parallelism
 
-1. Finish and approve `slice/app-frontend-deploy`.
-2. Build/check/review round 1 (`BUILD-analytics-cdc.md`). Its migration is `004`
+1. Build/check/review round 1 (`BUILD-analytics-cdc.md`). Its migration is `004`
    and establishes the feed that later captures agent actions.
-3. Build/check/review round 2 (`BUILD-llm-agent.md`). Its migration is `005` and
+2. Build/check/review round 2 (`BUILD-llm-agent.md`). Its migration is `005` and
    extends the audit/idempotency contract after the outbox trigger exists.
-4. Define and review a round-3 deployment-hardening build request. It wires the
+3. Define and review a round-3 deployment-hardening build request. It wires the
    final analytics job, SQL warehouse, Lakebase instance, and model endpoint to
    the app identity and is therefore downstream of rounds 1-2.
-5. Define and review a round-4 submission-evidence build request, then have an owner-authorized operator run
+4. Define and review a round-4 submission-evidence build request, then have an owner-authorized operator run
    its exact live evidence commands after rounds 1-3 pass.
 
 Rounds 1 and 2 are not safe to implement concurrently: both change the API

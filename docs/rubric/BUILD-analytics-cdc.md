@@ -2,8 +2,8 @@
 
 ## 0. Assignment and base
 
-MiMo implements this round end to end. Base it on the final approved
-`slice/app-frontend-deploy` branch plus any already-merged prerequisite work.
+MiMo implements this round end to end. Base it on the current default branch
+(`main`) plus any already-merged prerequisite work.
 Do not start Lakebase during the build. Do not implement native logical
 replication, Lakeflow Connect, or synced tables.
 

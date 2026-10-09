@@ -90,8 +90,8 @@ Thumbs.db
 *.agent.log
 
 # ---- local scratch work ----
-_scratch/
-tmp/
+/_scratch/
+/tmp/
 
 # local RAG/KG data exports
 

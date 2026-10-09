@@ -524,8 +524,8 @@ cd frontend && npm ci && npm test -- --run && npx tsc --noEmit && npm run build
 
 ### B9 — Optional read-only agent fundamentals tool (separate scope)
 
-This is optional and must not block B1–B8. Add only after B2 is stable and PR
-#39's agent changes are merged/reconciled.
+This is optional and must not block B1–B8. Add only after B2 is stable and the
+current agent runtime verified.
 
 - **Files:** existing agent tool schema/registry, validator/allowlist and
   runtime, tests, plus A4 `ToolCallCard` rendering after A4 lands.
@@ -680,7 +680,7 @@ Plan B is complete only when each dispatched slice has its required check and
 reviews, the new tests have demonstrated failure on old code and named mutation
 survival, PIT behavior is proved with amendment fixtures, all UI states are
 honest and accessible at 360 px, frontend bundle impact is recorded, and the
-coordinator has verified the actual merge/rollout state of PRs #28 and #39.
+coordinator has verified the actual merge/rollout state of PR #28.
 
 ## 7. Gap audit (2026-10-06)
 
