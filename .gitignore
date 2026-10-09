@@ -79,9 +79,19 @@ Thumbs.db
 # ---- databricks ----
 .databricks/
 
-# ---- agent coordination scratch (verdicts ARE tracked; logs are not) ----
+# ---- transient agent coordination artifacts ----
 .agentlogs/
+.agents/requests/*
+!.agents/requests/.gitkeep
+.agents/*/VERDICT-*.md
+.agents/*/VALIDATION-*.md
+.agents/run-*.sh
+.agents/coordinator-*.sh
 *.agent.log
+
+# ---- local scratch work ----
+/_scratch/
+/tmp/
 
 # local RAG/KG data exports
 

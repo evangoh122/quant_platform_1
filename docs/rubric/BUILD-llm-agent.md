@@ -120,9 +120,9 @@ must execute against current `api/routes/agent_chat.py` and prove:
 Collection failure for the new modules is expected but is not sufficient; keep
 at least two route/tool tests that import existing code and fail behaviorally.
 
-## 3. Named checker mutations
+## 3. Named validation mutations
 
-DeepSeek applies these in disposable copies:
+DeepSeek and Codex apply these in disposable copies:
 
 1. **MODEL-EXECUTES-DIRECTLY:** bypass `validate_next_action` before registry
    execution; the validator-spy test must fail and no write may occur.
@@ -154,7 +154,7 @@ All tests use fake model/retrieval/write/audit transports. Assert zero network
 calls and zero live credentials. No external model SDK dependency is needed;
 use the already-required Databricks SDK.
 
-## 5. Exact Claude live checks
+## 5. Exact owner-authorized live checks
 
 Run only after round 3 grants/wiring and explicit owner approval for Lakebase
 and app compute:
@@ -184,7 +184,8 @@ and app compute:
 
 Use LF endings. Do not touch `.agents/dispatch.sh`, order/execution guardrail
 semantics, RAG ingestion, or strategy files. Commit and write
-`.agents/mimo/VERDICT-rubric-llm-agent.md` with commits, files, red proof, six
+`.agentlogs/VERDICT-rubric-llm-agent.md` with commits, files, red proof, six
 mutation outputs, offline command output, live checks pending, cost/security
-notes, and verdict. DeepSeek independently returns `APPROVED` or
-`CHANGES_REQUESTED` with file:line evidence.
+notes, and a `SUCCESS`/`FAILURE` self-report. DeepSeek independently returns
+`APPROVED` or `CHANGES_REQUESTED` with file:line evidence before Codex final
+validation.

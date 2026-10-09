@@ -207,9 +207,12 @@ Render the diagram above and annotate trust boundaries: public CDN/browser, opti
 
 ## 5. Build/check task lanes
 
-MiMo owns implementation; DeepSeek independently checks the same task and records evidence. `SP: no` means it can be completed with fixtures/snapshots and no live credential. `SP: yes` means it must wait for the admin-created SP. `SP: later` means build/test with mocks now, perform the live acceptance step later.
+Implementation and validation follow root `AGENTS.md`. `SP: no` means the task
+can be completed with fixtures/snapshots and no live credential. `SP: yes`
+means it must wait for the admin-created SP. `SP: later` means build/test with
+mocks now, perform the live acceptance step later.
 
-| ID | MiMo build task | DeepSeek acceptance tests | SP |
+| ID | MiMo build task | Independent acceptance tests | SP |
 | --- | --- | --- | --- |
 | S1 | Define versioned snapshot schemas and an allowlist exporter for results, universe, regime, freshness, and sample RAG; validate then atomically advance `latest.json`. | Run against fixtures; malformed/missing field and checksum tests fail closed; scan artifact keys/content for secrets and prohibited operational fields; partial export leaves prior pointer intact. | No |
 | S2 | Identify and serialize the canonical r4 real-data artifact; encode negative net Sharpe, DSR 0, folds, costs, trial count, and provenance. Keep synthetic ablation separate. | Compare JSON values to the signed/source artifact; UI snapshot test contains “no demonstrated edge” and “synthetic” labels where applicable; no synthetic metric appears as live. | No (owner must locate artifact) |
@@ -257,7 +260,11 @@ Suggested sequence: S1–S7 and precomputed S11 first; S8 in parallel with mocks
 
 Do not deploy until S1–S7, precomputed S11, and S12 pass; the r4 provenance question is resolved; public route enumeration proves that orders/approvals/cancels/Lakebase writes are unreachable; and the page works with the API and all secrets absent. S9–S10 are required only for automated fresh snapshots/live SQL, not for a reviewed snapshot-only preview.
 
-## 7. Claude review addendum (2026-10-03): findings on main and the revised approach
+## 7. Historical review snapshot (2026-10-03)
+
+This section records evidence and decisions from the review date. It is not a
+current workflow or repository-status source; root `AGENTS.md` governs current
+implementation and validation.
 
 This section **supersedes §1–§2 where they differ**. It keeps FastAPI as one Render web service
 in `PUBLIC_DEMO=1` mode, serving reviewed snapshot JSON, instead of a static-only site, because the
@@ -332,7 +339,10 @@ services:
 
 There are deliberately **no secrets**.
 
-### Build lanes (MiMo builds → DeepSeek checks → Claude/Codex validates → PR + CodeRabbit)
+### Historical implementation lanes
+
+If any lane is renewed, create a current scoped build request and follow root
+`AGENTS.md`; the table below is retained only as historical design context.
 
 | ID | Task | Acceptance (each test must fail on current main) |
 |---|---|---|

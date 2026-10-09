@@ -1,10 +1,8 @@
 # UI enhancement implementation plan
 
-This is the implementation plan for the first delivery slice in
-`OWNER_PLAN.md`. It is a planning artifact; it does not implement the UI.
-Build rounds are strictly sequential: MiMo completes one request, DeepSeek
-checks it, and only then does the next request start. A handoff file is not
-edited by two active rounds at once.
+This historical implementation plan documents the first delivery slice in
+`OWNER_PLAN.md`. It is not a source of current repository status or agent
+workflow. Root `AGENTS.md` governs any renewed implementation.
 
 ## Verified wire contracts
 
@@ -91,6 +89,4 @@ the same time.
 
   `cd frontend && npm ci && npm test -- --run && npx tsc --noEmit && npm run build`
 
-- Each BUILD request must require LF line endings, no edits to
-  `.agents/dispatch.sh`, a commit, and a written MiMo verdict. DeepSeek must
-  check the resulting commit with file:line evidence.
+- Any renewed implementation follows root `AGENTS.md`.

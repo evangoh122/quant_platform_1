@@ -1,8 +1,7 @@
 # Capstone rubric readiness plan
 
-Status: planning only. Codex does not implement the production changes in this
-lane. The fixed delivery order is MiMo build -> DeepSeek check -> Codex final
-review -> Claude live validation -> PR -> CodeRabbit.
+Status: planning only. Current implementation and validation procedure is
+defined in root `AGENTS.md`.
 
 ## Outcome and non-negotiable prerequisite
 
@@ -14,14 +13,9 @@ Four MiMo-sized rounds close the remaining submission gaps:
    deployed-URL smoke test.
 4. A generated PNG architecture diagram and public, dated submission evidence.
 
-Rounds 1-3 must be based on the final, approved
-`slice/app-frontend-deploy` history, not on this planning worktree. As observed
-on 2026-10-04, that branch contains the bounded Lakebase connection path,
-circuit breaker, health diagnostics, SQL-warehouse fallback, application
-resource declarations, and deployment documentation through commit `1816ac2`.
-It also has uncommitted round-6 work. Do not cherry-pick around or reproduce
-those changes. Wait for the app lane to finish, then merge/rebase it before
-starting `BUILD-analytics-cdc.md`.
+Before starting implementation, refresh these dependencies against the current
+default branch. Do not rely on the historical branch or worktree state recorded
+when this plan was authored.
 
 No step in this plan authorizes starting the stopped Lakebase instance. The
 owner must explicitly approve each live window.
@@ -36,8 +30,8 @@ owner must explicitly approve each live window.
 | Action-taking AI agent | `agent/tools_retrieval.py`, `agent/tools_write.py`, `agent/guardrails.py` | `api/routes/agent_chat.py` is keyword dispatch, not model-directed | 2 |
 | Analytics pipeline | `db/migrations/CDC.md`; `api/routes/analytics.py` | Consumer absent; route returns placeholders | 1 |
 | Frontend | `frontend/src/` and same-origin FastAPI serving | Already satisfied; do not collide with evidence/governance UX lane | Regression check only |
-| Deployed app | `resources/app.yml`, `docs/DEPLOYMENT.md`, health routes on app lane | App and Lakebase are stopped; Lakebase role/grants and URL smoke are unproven | 3, then Claude live |
-| Volume | Verified 2026-10-04 total of 238,622,024 rows across three Bronze tables, currently buried in `.agents/requests/BUILD-nl1-contracts.md` | Public reproducible evidence absent | 4 |
+| Deployed app | `resources/app.yml`, `docs/DEPLOYMENT.md`, health routes on app lane | App and Lakebase are stopped; Lakebase role/grants and URL smoke are unproven | 3, then owner-authorized live validation |
+| Volume | Verified 2026-10-04 total of 238,622,024 rows across three Bronze tables, recorded in historical build evidence recoverable from Git | Public reproducible evidence absent | 4 |
 | Variety | Market bars, options, CFTC/Fed series, SEC filing text | Public source/technology mapping is fragmented | 4 |
 | Architecture diagram | README has an old text diagram | Required PNG/JPEG absent and current flow is incomplete | 4 |
 | Portable deployment | `app.yaml`, `databricks.yml`, `resources/app.yml`, `db/lakebase.py` | Personal schema/user/host defaults and environment-specific IDs remain | 3 |
@@ -91,17 +85,21 @@ Relevant current product references:
 
 ## Dependency order and safe parallelism
 
-1. Finish and approve `slice/app-frontend-deploy`.
-2. Build/check/review round 1 (`BUILD-analytics-cdc.md`). Its migration is `004`
+1. Build/check/review round 1 (`BUILD-analytics-cdc.md`). Its migration is `004`
    and establishes the feed that later captures agent actions.
-3. Build/check/review round 2 (`BUILD-llm-agent.md`). Its migration is `005` and
+2. Build/check/review round 2 (`BUILD-llm-agent.md`). Its migration is `005` and
    extends the audit/idempotency contract after the outbox trigger exists.
-4. Build/check/review round 3 (`BUILD-deployment-hardening.md`). It wires the
-   final analytics job, SQL warehouse, Lakebase instance, and model endpoint to
-   the app identity and is therefore downstream of rounds 1-2.
-5. Build/check/review the offline portion of round 4
-   (`BUILD-submission-evidence.md`), then have Claude run its exact live evidence
-   commands after rounds 1-3 pass.
+3. Define and review a round-3 deployment-hardening build request, then run it
+   through the required chain in `AGENTS.md` (MiMo builds and commits, then the
+   exact committed SHA is validated per that file) before the round is treated
+   as complete. It wires the final analytics job, SQL warehouse, Lakebase
+   instance, and model endpoint to the app identity and is therefore
+   downstream of rounds 1-2.
+4. Define and review a round-4 submission-evidence build request, then run it
+   through the required chain in `AGENTS.md` (MiMo builds and commits, then the
+   exact committed SHA is validated per that file) before the round is treated
+   as complete, then have an owner-authorized operator run its exact live
+   evidence commands after rounds 1-3 pass.
 
 Rounds 1 and 2 are not safe to implement concurrently: both change the API
 contract and migrations, and round 2's audit events must be captured by round
@@ -140,8 +138,8 @@ Everything not listed here is built and tested offline with fakes/fixtures.
 | Deployed URL smoke and `research NVDA -> save research note` demo | Yes | Use a dedicated test principal; record created IDs and no credentials. |
 | Bronze `COUNT(*)` and source-variety evidence | No | Requires SQL warehouse only, not Lakebase. |
 
-Claude's live window must end with an explicit instance/app state report. No
-script in these rounds may auto-start Lakebase.
+The owner-authorized live window must end with an explicit instance/app state
+report. No script in these rounds may auto-start Lakebase.
 
 ## Security invariants
 
@@ -189,9 +187,11 @@ script in these rounds may auto-start Lakebase.
 
 ## Definition of ready
 
-The submission is ready only after all four DeepSeek verdicts are `APPROVED`,
-Codex independently passes each offline acceptance/mutation gate, and Claude's
-live report proves:
+The submission is ready only after DeepSeek approves and Codex independently
+validates one final exact committed SHA: the submission HEAD that contains
+rounds 1-4, with the offline acceptance and mutation gates re-run at that
+exact SHA. Per-round approvals of earlier commits are interim and are not
+carried forward across later commits. Required live evidence must prove:
 
 1. outbox changes reach all four Delta analytics tables without duplicates;
 2. the deployed app is non-degraded under its service principal;
@@ -199,4 +199,3 @@ live report proves:
    write, with both actions visible in the audit trail;
 4. public dated counts support the scale claim; and
 5. the committed PNG matches its diagram-as-code source and the public write-up.
-
