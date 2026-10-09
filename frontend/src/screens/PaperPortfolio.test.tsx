@@ -40,74 +40,232 @@ const mockPortfolioWithNullPnl = {
   },
 };
 
+function mockFetch(data: unknown) {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve(data),
+  }));
+}
+
 describe('PaperPortfolio', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
   it('renders em dash for null P&L values', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(mockPortfolioWithNullPnl),
-    }));
-
+    mockFetch(mockPortfolioWithNullPnl);
     render(<PaperPortfolio />);
 
     await waitFor(() => {
       expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
     });
 
-    // The em dash should appear for null realized_pnl and unrealized_pnl of AAPL
-    const emDashes = screen.getAllByText('—');
     // AAPL has null market_price, null realized_pnl, null unrealized_pnl = 3 dashes
-    // MSFT has non-null values for all
+    // MSFT has non-null values for all = 0 dashes
+    const emDashes = screen.getAllByText('\u2014');
     expect(emDashes.length).toBeGreaterThanOrEqual(3);
   });
 
   it('does not render $0.00 for null P&L cells', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(mockPortfolioWithNullPnl),
-    }));
-
+    mockFetch(mockPortfolioWithNullPnl);
     render(<PaperPortfolio />);
 
     await waitFor(() => {
       expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
     });
 
-    // $0.00 should NOT appear for the null P&L position
-    // MSFT's realized (500.00) and unrealized (-200.00) are fine
-    // AAPL's realized and unrealized should be "—", not "0.00"
+    // Total P&L should be 300.00 (realized 500, unrealized -200), not 0.00.
+    // AAPL's P&L cells are em dashes, not "0.00".
     const allText = document.body.textContent || '';
-    // Count occurrences of "0.00" — should only come from non-P&L fields if any
-    // The key assertion: "0.00" should not appear as a P&L value for AAPL
-    // Since AAPL's quantity (100) and avg_cost (150.00→"150.00") don't produce "0.00",
-    // any "0.00" would be a bug from null coercion
     const zeroZeroMatches = allText.match(/\b0\.00\b/g) || [];
-    // "0.00" should not appear at all since no field legitimately has that value
     expect(zeroZeroMatches.length).toBe(0);
   });
 
-  it('excludes null P&L from totals and shows unpriced note', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(mockPortfolioWithNullPnl),
-    }));
-
+  it('sums realized and unrealized independently; shows unpriced note', async () => {
+    // Codex's case: realized=50 with null unrealized must count toward realized.
+    // realized = 500 (MSFT only; AAPL excluded — null realized)
+    // unrealized = -200 (MSFT only; AAPL excluded — null unrealized)
+    // total = 300.00
+    // 1 position has null unrealized → unpriced note
+    mockFetch(mockPortfolioWithNullPnl);
     render(<PaperPortfolio />);
 
     await waitFor(() => {
       expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
     });
 
-    // Total P&L should be based only on MSFT: realized=500, unrealized=-200, total=300
-    // AAPL is excluded because its P&L is null
-    // "300.00" appears in both the StatTile and MSFT's avg_cost column
+    // Total P&L = 500 + (-200) = 300.00
     const allThreeHundred = screen.getAllByText('300.00');
-    expect(allThreeHundred.length).toBeGreaterThanOrEqual(2);
+    expect(allThreeHundred.length).toBeGreaterThanOrEqual(1);
 
-    // "unpriced" note should appear indicating 1 position was excluded
+    // "unpriced" note with count 1
+    expect(screen.getByText(/1 unpriced/)).toBeInTheDocument();
+  });
+
+  it('shows em dash for Total P&L when all P&L values are null', async () => {
+    const allNull = {
+      ...mockPortfolioWithNullPnl,
+      positions: {
+        ...mockPortfolioWithNullPnl.positions,
+        data: [
+          {
+            account_id: 'default',
+            symbol: 'AAPL',
+            quantity: 100,
+            avg_cost: 150.0,
+            market_price: null,
+            realized_pnl: null,
+            unrealized_pnl: null,
+            updated_at: '2026-10-07',
+          },
+          {
+            account_id: 'default',
+            symbol: 'MSFT',
+            quantity: 50,
+            avg_cost: 300.0,
+            market_price: null,
+            realized_pnl: null,
+            unrealized_pnl: null,
+            updated_at: '2026-10-07',
+          },
+        ],
+      },
+    };
+    mockFetch(allNull);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    // Total P&L StatTile value should be "—" (em dash)
+    // The em dash appears in table cells AND in the StatTile value.
+    // AAPL: 3 null cells (market, realized, unrealized) + MSFT: 3 null cells = 6 table dashes
+    // + 1 StatTile Total P&L value dash = 7 total
+    const emDashes = screen.getAllByText('\u2014');
+    expect(emDashes.length).toBeGreaterThanOrEqual(7);
+
+    // No "0.00" anywhere — the total must not coerce null to 0.
+    const allText = document.body.textContent || '';
+    expect(allText).not.toMatch(/\b0\.00\b/);
+
+    // No "unpriced" note when total is completely unknown.
+    expect(screen.queryByText(/unpriced/)).not.toBeInTheDocument();
+  });
+
+  it('shows correct totals when all positions are fully priced', async () => {
+    const allPriced = {
+      ...mockPortfolioWithNullPnl,
+      positions: {
+        ...mockPortfolioWithNullPnl.positions,
+        data: [
+          {
+            account_id: 'default',
+            symbol: 'AAPL',
+            quantity: 100,
+            avg_cost: 150.0,
+            market_price: 155.0,
+            realized_pnl: 500.0,
+            unrealized_pnl: -200.0,
+            updated_at: '2026-10-07',
+          },
+          {
+            account_id: 'default',
+            symbol: 'GOOG',
+            quantity: 200,
+            avg_cost: 100.0,
+            market_price: 110.0,
+            realized_pnl: 100.0,
+            unrealized_pnl: 0.0,
+            updated_at: '2026-10-07',
+          },
+        ],
+      },
+    };
+    // Hand-computed:
+    // realized = 500 + 100 = 600
+    // unrealized = -200 + 0 = -200
+    // total = 600 + (-200) = 400
+    mockFetch(allPriced);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('400.00')).toBeInTheDocument();
+
+    // No unpriced note — all positions have both values.
+    expect(screen.queryByText(/unpriced/)).not.toBeInTheDocument();
+  });
+
+  it('handles empty positions', async () => {
+    const empty = {
+      ...mockPortfolioWithNullPnl,
+      positions: {
+        ...mockPortfolioWithNullPnl.positions,
+        data: [],
+        count: 0,
+        empty: true,
+      },
+    };
+    mockFetch(empty);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    // Empty positions → EmptyState message.
+    expect(screen.getByText('No positions')).toBeInTheDocument();
+  });
+
+  it('counts unpriced realized independently of unpriced unrealized', async () => {
+    // Positions: AAPL realized=50/unrealized=null, GOOG realized=null/unrealized=300
+    // realized = 50 (AAPL only; GOOG has null realized)
+    // unrealized = 300 (GOOG only; AAPL has null unrealized)
+    // unpricedUnrealized = 1 (AAPL), unpricedRealized = 1 (GOOG)
+    // total = 350
+    const mixed = {
+      ...mockPortfolioWithNullPnl,
+      positions: {
+        ...mockPortfolioWithNullPnl.positions,
+        data: [
+          {
+            account_id: 'default',
+            symbol: 'AAPL',
+            quantity: 100,
+            avg_cost: 150.0,
+            market_price: 155.0,
+            realized_pnl: 50.0,
+            unrealized_pnl: null,
+            updated_at: '2026-10-07',
+          },
+          {
+            account_id: 'default',
+            symbol: 'GOOG',
+            quantity: 200,
+            avg_cost: 100.0,
+            market_price: null,
+            realized_pnl: null,
+            unrealized_pnl: 300.0,
+            updated_at: '2026-10-07',
+          },
+        ],
+      },
+    };
+    mockFetch(mixed);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    // Total P&L = 50 + 300 = 350
+    expect(screen.getByText('350.00')).toBeInTheDocument();
+
+    // Hint: "realized 50.00 (1 unpriced)" — unpricedUnrealized=1
+    expect(screen.getByText(/realized 50\.00/)).toBeInTheDocument();
     expect(screen.getByText(/1 unpriced/)).toBeInTheDocument();
   });
 });

@@ -31,11 +31,14 @@ export function PaperPortfolio() {
   const { data, loading, error, reload } = useApi<Portfolio>(() => api.portfolio());
 
   const positions = data?.positions.data ?? [];
-  const pricedPositions = positions.filter((p) => p.realized_pnl != null && p.unrealized_pnl != null);
-  const unpricedCount = positions.length - pricedPositions.length;
-  const realized = pricedPositions.reduce((sum, p) => sum + (p.realized_pnl ?? 0), 0);
-  const unrealized = pricedPositions.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0);
-  const hasUnpriced = unpricedCount > 0;
+  const realized = positions.reduce((sum, p) => (p.realized_pnl != null ? sum + p.realized_pnl : sum), 0);
+  const unrealized = positions.reduce((sum, p) => (p.unrealized_pnl != null ? sum + p.unrealized_pnl : sum), 0);
+  const unpricedUnrealized = positions.filter((p) => p.unrealized_pnl == null).length;
+  const unpricedRealized = positions.filter((p) => p.realized_pnl == null).length;
+  const hasRealized = positions.some((p) => p.realized_pnl != null);
+  const hasUnrealized = positions.some((p) => p.unrealized_pnl != null);
+  const totalPnlKnown = hasRealized || hasUnrealized;
+  const totalPnl = realized + unrealized;
 
   return (
     <div data-tour="lakebase-write" className="space-y-4">
@@ -51,7 +54,17 @@ export function PaperPortfolio() {
           <div className="grid grid-cols-3 gap-3">
             <StatTile label="Positions" value={(data?.positions.data.length ?? 0).toString()} />
             <StatTile label="Open Orders" value={(data?.orders.data.length ?? 0).toString()} />
-            <StatTile label="Total P&L" value={(realized + unrealized).toFixed(2)} hint={`realized ${realized.toFixed(2)}${hasUnpriced ? ` (${unpricedCount} unpriced)` : ''}`} />
+            <StatTile
+              label="Total P&L"
+              value={totalPnlKnown ? totalPnl.toFixed(2) : '\u2014'}
+              hint={
+                !totalPnlKnown
+                  ? undefined
+                  : unpricedUnrealized > 0 || unpricedRealized > 0
+                    ? `realized ${realized.toFixed(2)}${unpricedUnrealized > 0 ? ` (${unpricedUnrealized} unpriced)` : ''}`
+                    : undefined
+              }
+            />
           </div>
 
           <Card title="Positions" subtitle="Lakebase · positions">
