@@ -13,6 +13,9 @@ TEST = "src/screens/PaperPortfolio.test.tsx"
 VITEST = os.path.join(FRONTEND, "node_modules/.bin/vitest")
 NODE = os.path.expanduser("~/.nvm/versions/node/v26.5.0/bin/node")
 
+MIDDLE_DOT = "\u00b7"  # actual · character
+EM_DASH = "\\u2014"    # literal \u2014 in the file
+
 R3_MUTATIONS = [
     {
         "id": "r3-M1",
@@ -44,7 +47,7 @@ R3_MUTATIONS = [
         "id": "r3-M2",
         "desc": "Coerce null to 0",
         "test": "PaperPortfolio > shows em dash for Total P&L when all P&L values are null",
-        "old": "value={totalPnlKnown ? totalPnl.toFixed(2) : '\\u2014'}",
+        "old": f"value={{totalPnlKnown ? totalPnl.toFixed(2) : '{EM_DASH}'}}",
         "new": "value={totalPnl.toFixed(2)}",
     },
     {
@@ -56,7 +59,7 @@ R3_MUTATIONS = [
             "                !totalPnlKnown\n"
             "                  ? undefined\n"
             "                  : unpricedUnrealized > 0 || unpricedRealized > 0\n"
-            "                    ? `partial \\u00b7 realized ${realized.toFixed(2)}${unpricedUnrealized > 0 ? ` \\u00b7 ${unpricedUnrealized} unrealized unpriced` : ''}${unpricedRealized > 0 ? ` \\u00b7 ${unpricedRealized} realized unpriced` : ''}`\n"
+            f"                    ? `partial {MIDDLE_DOT} realized ${{realized.toFixed(2)}}${{unpricedUnrealized > 0 ? ` {MIDDLE_DOT} ${{unpricedUnrealized}} unrealized unpriced` : ''}}${{unpricedRealized > 0 ? ` {MIDDLE_DOT} ${{unpricedRealized}} realized unpriced` : ''}}`\n"
             "                    : undefined\n"
             "              }"
         ),
@@ -76,14 +79,14 @@ R4_MUTATIONS = [
         "id": "r4-M1",
         "desc": "Drop the unpricedRealized clause from the hint",
         "test": "PaperPortfolio > shows partial hint with both counts when both kinds of null present",
-        "old": "${unpricedRealized > 0 ? ` \\u00b7 ${unpricedRealized} realized unpriced` : ''}`",
+        "old": f"${{unpricedRealized > 0 ? ` {MIDDLE_DOT} ${{unpricedRealized}} realized unpriced` : ''}}`",
         "new": "``",
     },
     {
         "id": "r4-M2",
         "desc": "Drop the word partial from the hint",
         "test": "PaperPortfolio > shows partial hint with realized unpriced when all unrealized present but one realized null",
-        "old": "partial \\u00b7 realized",
+        "old": f"partial {MIDDLE_DOT} realized",
         "new": "realized",
     },
     {
@@ -110,7 +113,7 @@ def apply_mutation(mutation):
     with open(PAPER, "r") as f:
         content = f.read()
     if mutation["old"] not in content:
-        return False, "old text not found"
+        return False, f"old text not found (len={len(mutation['old'])})"
     mutated = content.replace(mutation["old"], mutation["new"], 1)
     with open(PAPER, "w") as f:
         f.write(mutated)
