@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { render, screen, act, fireEvent } from '@testing-library/react';
+import { render, screen, act, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -168,6 +168,35 @@ describe('CoachMarks', () => {
     expect(screen.getByText('Missing Step')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Skip step' }));
     expect(screen.getByText('Continue Step')).toBeInTheDocument();
+  });
+
+  it('shows "Skip step" button while waiting for target to appear', () => {
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="never-appears"]', title: 'Waiting', body: 'Body', waitForTargetTimeout: 5000 },
+    ];
+    render(
+      <div>
+        <CoachMarks steps={steps} run={true} onClose={() => {}} />
+      </div>,
+    );
+
+    expect(screen.getByText('Waiting')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Skip step' })).toBeInTheDocument();
+  });
+
+  it('shows "Next step" button when target times out', async () => {
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="never-appears"]', title: 'Timed Out', body: 'Body', waitForTargetTimeout: 100 },
+    ];
+    render(
+      <div>
+        <CoachMarks steps={steps} run={true} onClose={() => {}} />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Next step' })).toBeInTheDocument();
+    });
   });
 
   it('closes on Escape and restores focus to the opener', () => {
