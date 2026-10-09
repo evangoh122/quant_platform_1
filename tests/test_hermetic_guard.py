@@ -542,15 +542,17 @@ class TestMarkerOptOut:
     def test_marker_opt_out_distinguishes_guard_vs_bypass(self):
         """Marker opt-out must be distinguishable from guard-active.
 
-        In a subprocess, run:
-        - An unmarked test that tries connect to a non-loopback IP.
-          The guard must raise HermeticViolation.
-        - A @pytest.mark.network test that patches native connect to a
-          recorder, then calls connect to a non-loopback IP.  The guard
-          must be bypassed and the recorder must be reached.
+        For each marker (network, databricks, spark, lakebase), run in a
+        subprocess:
+        - A marked test: verify socket.socket.connect.__qualname__ does NOT
+          contain "_fail" (guard bypassed), then wrap with a recorder and
+          attempt a non-loopback connect.  The recorder must be reached.
+        - An unmarked test: verify the guard raises HermeticViolation and
+          the recorder is NOT reached.
 
-        This proves the marker actually disables the guard, not just that
-        loopback works in both cases.
+        If "network" is dropped from the opt-out set, the marked-network
+        test's qualname check fails because the guard wrapper is still
+        installed.  Similarly for databricks/spark/lakebase.
         """
         test_code = textwrap.dedent("""\
             import socket
@@ -558,24 +560,16 @@ class TestMarkerOptOut:
 
             _RECORDED = []
 
-            def test_unmarked_guard_active():
-                \"\"\"Unmarked: guard must raise HermeticViolation.\"\"\"
-                from tests.hermetic import HermeticViolation
-                with pytest.raises(HermeticViolation):
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    try:
-                        sock.connect(("203.0.113.1", 443))
-                    finally:
-                        sock.close()
-
             @pytest.mark.network
-            def test_marked_guard_bypassed():
-                \"\"\"Marked: guard must be bypassed; native connect is callable.\"\"\"
-                # Guard is bypassed for marked tests, so socket.socket.connect
-                # is the ORIGINAL connect.  Replace it with a recorder.
-                _real_connect = socket.socket.connect
-                def _recording_connect(self, address, *a, **kw):
-                    _RECORDED.append(("marked", address))
+            def test_marked_network_guard_bypassed():
+                \"\"\"Network marker: guard must be bypassed.\"\"\"
+                qualname = getattr(socket.socket.connect, "__qualname__", "")
+                assert "_fail" not in qualname, (
+                    f"Guard wrapper still installed for marked network test: {qualname}"
+                )
+                _real = socket.socket.connect
+                def _recording_connect(self_addr, address, *a, **kw):
+                    _RECORDED.append(("network", address))
                     return None
                 socket.socket.connect = _recording_connect
                 try:
@@ -584,11 +578,93 @@ class TestMarkerOptOut:
                         sock.connect(("203.0.113.1", 443))
                     finally:
                         sock.close()
-                    assert len([r for r in _RECORDED if r[0] == "marked"]) == 1, (
-                        "Recorder should have been reached for marked test"
-                    )
+                    recorded = [r for r in _RECORDED if r[0] == "network"]
+                    assert len(recorded) == 1, "Recorder not reached for marked network test"
                 finally:
-                    socket.socket.connect = _real_connect
+                    socket.socket.connect = _real
+
+            @pytest.mark.databricks
+            def test_marked_databricks_guard_bypassed():
+                \"\"\"Databricks marker: guard must be bypassed.\"\"\"
+                qualname = getattr(socket.socket.connect, "__qualname__", "")
+                assert "_fail" not in qualname, (
+                    f"Guard wrapper still installed for marked databricks test: {qualname}"
+                )
+                _real = socket.socket.connect
+                def _recording_connect(self_addr, address, *a, **kw):
+                    _RECORDED.append(("databricks", address))
+                    return None
+                socket.socket.connect = _recording_connect
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        sock.connect(("203.0.113.1", 443))
+                    finally:
+                        sock.close()
+                    recorded = [r for r in _RECORDED if r[0] == "databricks"]
+                    assert len(recorded) == 1, "Recorder not reached for marked databricks test"
+                finally:
+                    socket.socket.connect = _real
+
+            @pytest.mark.spark
+            def test_marked_spark_guard_bypassed():
+                \"\"\"Spark marker: guard must be bypassed.\"\"\"
+                qualname = getattr(socket.socket.connect, "__qualname__", "")
+                assert "_fail" not in qualname, (
+                    f"Guard wrapper still installed for marked spark test: {qualname}"
+                )
+                _real = socket.socket.connect
+                def _recording_connect(self_addr, address, *a, **kw):
+                    _RECORDED.append(("spark", address))
+                    return None
+                socket.socket.connect = _recording_connect
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        sock.connect(("203.0.113.1", 443))
+                    finally:
+                        sock.close()
+                    recorded = [r for r in _RECORDED if r[0] == "spark"]
+                    assert len(recorded) == 1, "Recorder not reached for marked spark test"
+                finally:
+                    socket.socket.connect = _real
+
+            @pytest.mark.lakebase
+            def test_marked_lakebase_guard_bypassed():
+                \"\"\"Lakebase marker: guard must be bypassed.\"\"\"
+                qualname = getattr(socket.socket.connect, "__qualname__", "")
+                assert "_fail" not in qualname, (
+                    f"Guard wrapper still installed for marked lakebase test: {qualname}"
+                )
+                _real = socket.socket.connect
+                def _recording_connect(self_addr, address, *a, **kw):
+                    _RECORDED.append(("lakebase", address))
+                    return None
+                socket.socket.connect = _recording_connect
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        sock.connect(("203.0.113.1", 443))
+                    finally:
+                        sock.close()
+                    recorded = [r for r in _RECORDED if r[0] == "lakebase"]
+                    assert len(recorded) == 1, "Recorder not reached for marked lakebase test"
+                finally:
+                    socket.socket.connect = _real
+
+            def test_unmarked_guard_active():
+                \"\"\"Unmarked: guard must raise HermeticViolation.\"\"\"
+                from tests.hermetic import HermeticViolation
+                qualname = getattr(socket.socket.connect, "__qualname__", "")
+                assert "_fail" in qualname, (
+                    f"Guard wrapper not installed for unmarked test: {qualname}"
+                )
+                with pytest.raises(HermeticViolation):
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        sock.connect(("203.0.113.1", 443))
+                    finally:
+                        sock.close()
         """)
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=".") as f:
             f.write(test_code)
@@ -609,65 +685,16 @@ class TestMarkerOptOut:
             os.unlink(test_file)
 
     def test_mutation_opt_out_on_unmarked_must_fail(self):
-        """Mutation proof: if @pytest.mark.network is applied to a test,
-        the guard must be bypassed.  The test connects to non-loopback via
-        a recorder (no real packet).  If the marker does NOT bypass the guard,
-        HermeticViolation is raised and this test fails.
+        """Mutation proof: if _check_opt_out returns True for all tests,
+        the guard must be bypassed.  An unmarked test with the guard bypassed
+        must NOT raise HermeticViolation for non-loopback connect.
         """
         test_code = textwrap.dedent("""\
             import socket
             import pytest
 
-            @pytest.mark.network
-            def test_with_marker_guard_bypassed():
-                \"\"\"With marker, guard is bypassed — connect reaches native.\"\"\"
-                _RECORDED = []
-                _real_connect = socket.socket.connect
-                def _recording_connect(self, address, *a, **kw):
-                    _RECORDED.append(address)
-                    return None
-                socket.socket.connect = _recording_connect
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    try:
-                        sock.connect(("203.0.113.1", 443))
-                    finally:
-                        sock.close()
-                    assert len(_RECORDED) == 1, "Recorder should be reached with marker"
-                finally:
-                    socket.socket.connect = _real_connect
-        """)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=".") as f:
-            f.write(test_code)
-            test_file = f.name
-
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pytest", test_file, "-v", "--no-header", "-q",
-                 "-p", "tests.hermetic"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            # This should pass — marker bypasses guard, recorder is reached.
-            assert result.returncode == 0, (
-                f"Mutation proof 1 failed (marker should bypass guard):\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
-        finally:
-            os.unlink(test_file)
-
-    def test_mutation_no_opt_out_on_marked_must_fail(self):
-        """Mutation proof: if @pytest.mark.network is removed from a test,
-        the guard must block non-loopback connect and raise HermeticViolation.
-        """
-        test_code = textwrap.dedent("""\
-            import socket
-            import pytest
-
-            # No @pytest.mark.network — guard must be active.
-            def test_without_marker_guard_active():
-                \"\"\"Without marker, guard must raise HermeticViolation.\"\"\"
+            def test_unmarked_guard_active():
+                \"\"\"Without marker, guard must be active.\"\"\"
                 from tests.hermetic import HermeticViolation
                 with pytest.raises(HermeticViolation):
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -688,9 +715,59 @@ class TestMarkerOptOut:
                 text=True,
                 timeout=30,
             )
-            # This should pass — guard is active without marker, raises HermeticViolation.
             assert result.returncode == 0, (
-                f"Mutation proof 2 failed (guard should block without marker):\n"
+                f"Mutation proof 1 failed (guard should block without marker):\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+        finally:
+            os.unlink(test_file)
+
+    def test_mutation_no_opt_out_on_marked_must_fail(self):
+        """Mutation proof: if "network" is dropped from opt-out markers,
+        the guard remains active for @pytest.mark.network tests.
+        The marked test's qualname check detects the guard wrapper.
+        """
+        test_code = textwrap.dedent("""\
+            import socket
+            import pytest
+
+            @pytest.mark.network
+            def test_marked_network_guard_bypassed():
+                \"\"\"With network marker, guard must be bypassed.\"\"\"
+                qualname = getattr(socket.socket.connect, "__qualname__", "")
+                assert "_fail" not in qualname, (
+                    f"Guard wrapper still installed for marked network test: {qualname}"
+                )
+                _real = socket.socket.connect
+                _RECORDED = []
+                def _recording_connect(self_addr, address, *a, **kw):
+                    _RECORDED.append(address)
+                    return None
+                socket.socket.connect = _recording_connect
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        sock.connect(("203.0.113.1", 443))
+                    finally:
+                        sock.close()
+                    assert len(_RECORDED) == 1, "Recorder should be reached with marker"
+                finally:
+                    socket.socket.connect = _real
+        """)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=".") as f:
+            f.write(test_code)
+            test_file = f.name
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest", test_file, "-v", "--no-header", "-q",
+                 "-p", "tests.hermetic"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert result.returncode == 0, (
+                f"Mutation proof 2 failed (marker should bypass guard):\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
         finally:
