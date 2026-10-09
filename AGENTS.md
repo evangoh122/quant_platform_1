@@ -25,7 +25,7 @@ unavailable or cannot be positively identified; report the gate as blocked.
 
 ## Reviewer selection and escalation
 
-Codex Sol (currently `gpt-5.6-sol`; the owner's name for it is GPT-6.1 Sol)
+Codex Sol (currently `gpt-6.1-sol`, the owner's "GPT-6.1 Sol"; the model slug may change with Codex releases)
 is the default reviewer for commit pushes and routine PR iteration. Opus 5.5
 (`claude-opus-5-5`) is REQUIRED when at least one of the following applies:
 
