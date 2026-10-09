@@ -90,10 +90,10 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
   return (
     <div
       data-testid={`tool-call-${index}`}
-      className="rounded-md border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900"
+      className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-3"
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs font-semibold text-slate-800 dark:text-slate-200">
+        <span className="font-mono text-xs font-semibold text-[var(--text-primary)]">
           {toolCall.name}
         </span>
         <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.cls}`}>
@@ -101,20 +101,20 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
         </span>
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--text-muted)]">
         {ticker && (
           <span>
-            Ticker: <span className="font-medium text-slate-700 dark:text-slate-300">{ticker}</span>
+            Ticker: <span className="font-medium text-[var(--text-secondary)]">{ticker}</span>
           </span>
         )}
         {sourceCount !== undefined && (
           <span>
-            Sources: <span className="font-medium text-slate-700 dark:text-slate-300">{sourceCount}</span>
+            Sources: <span className="font-medium text-[var(--text-secondary)]">{sourceCount}</span>
           </span>
         )}
         {isWrite && toolCall.ok && noteId && (
           <span>
-            Note ID: <span className="font-mono font-medium text-slate-700 dark:text-slate-300">{noteId}</span>
+            Note ID: <span className="font-mono font-medium text-[var(--text-secondary)]">{noteId}</span>
           </span>
         )}
         {toolCall.name === 'add_to_watchlist' && toolCall.ok && (

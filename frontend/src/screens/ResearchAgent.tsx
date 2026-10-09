@@ -104,7 +104,7 @@ export function ResearchAgent() {
         <Card title="Conversation" subtitle="Every tool call is surfaced as auditable evidence">
           <div ref={scrollRef} className="max-h-[32rem] space-y-3 overflow-y-auto">
             {messages.length === 0 && (
-              <p className="text-sm text-slate-500 dark:text-slate-400">
+              <p className="text-sm text-[var(--text-muted)]">
                 Ask about signals, market features, or SEC filings.
               </p>
             )}
@@ -140,7 +140,7 @@ export function ResearchAgent() {
 
           {messages.length === 0 && (
             <div className="mt-4 space-y-2">
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              <p className="text-xs font-medium text-[var(--text-muted)]">
                 Suggested questions
               </p>
               <div className="flex flex-wrap gap-2">
@@ -150,7 +150,7 @@ export function ResearchAgent() {
                     type="button"
                     disabled={sending}
                     onClick={() => void send(q)}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                    className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] disabled:opacity-50"
                   >
                     {q}
                   </button>

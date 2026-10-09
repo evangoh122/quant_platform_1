@@ -40,8 +40,9 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
   }, []);
 
   const handleTour = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('qp-tour-request', { detail: { tour: 'application' } }));
-  }, []);
+    const tour = currentId === 'agent' ? 'agent' : currentId === 'architecture' ? 'architecture' : 'application';
+    window.dispatchEvent(new CustomEvent('qp-tour-request', { detail: { tour } }));
+  }, [currentId]);
 
   const lakebaseDown = health?.dependencies.some(
     (d) => d.name === 'lakebase' && (!d.ok || d.circuit_breaker_state === 'open'),

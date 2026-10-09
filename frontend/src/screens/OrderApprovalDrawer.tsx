@@ -68,21 +68,21 @@ function ApprovalRow({ order, busy, result, onApprove, onReject }: { order: Orde
     <Card title={`${order.side} ${order.quantity} ${order.symbol}`} subtitle={order.order_id}>
       <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm md:grid-cols-3">
         <div>
-          <dt className="text-xs text-slate-500">Notional</dt>
+          <dt className="text-xs text-[var(--text-muted)]">Notional</dt>
           <dd>${order.notional.toFixed(2)}</dd>
         </div>
         <div>
-          <dt className="text-xs text-slate-500">Order type</dt>
+          <dt className="text-xs text-[var(--text-muted)]">Order type</dt>
           <dd>{order.order_type}{order.limit_price != null ? ` @ ${order.limit_price}` : ''}</dd>
         </div>
         <div>
-          <dt className="text-xs text-slate-500">Signal age</dt>
+          <dt className="text-xs text-[var(--text-muted)]">Signal age</dt>
           <dd>{order.signal_id ? `${timeAgo(order.created_at)} (signal ${order.signal_id})` : 'no signal linked'}</dd>
         </div>
       </dl>
 
       {result && (
-        <div className={`mt-3 rounded-md p-2 text-xs ${result.ok ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+        <div className={`mt-3 rounded-md p-2 text-xs ${result.ok ? 'bg-[var(--positive)]/10 text-[var(--positive)]' : 'bg-[var(--warning)]/10 text-[var(--warning)]'}`}>
           <div className="font-semibold">Status: {result.status}</div>
           {result.reason && <div>{result.reason}</div>}
           {result.risk && <pre className="mt-1 whitespace-pre-wrap break-all text-[11px]">{JSON.stringify(result.risk, null, 2)}</pre>}

@@ -33,7 +33,7 @@ export const APPLICATION_TOUR: CoachStep[] = [
     selector: '[data-tour="analytics-evidence"]',
     title: 'Analytics & evidence',
     body: 'Monitor model performance, latency, and agent activity. Every metric is traceable to its source.',
-    navigateTo: 'analytics',
+    navigateTo: 'health',
     waitForTargetTimeout: 3000,
   },
 ];

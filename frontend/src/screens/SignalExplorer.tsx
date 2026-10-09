@@ -35,7 +35,7 @@ export function SignalExplorer() {
         <h1 className="text-xl font-semibold">Signal Explorer</h1>
         {data && <FreshnessBadge freshness={data.freshness} />}
       </div>
-      <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+      <div className="rounded-md border border-[var(--info)]/20 bg-[var(--info)]/8 px-3 py-2 text-xs text-[var(--info)]">
         <strong>Baseline demonstration</strong>
         {data?.data && data.data.length > 0 && (
           <>

@@ -296,10 +296,19 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
       width: Math.min(CARD_W, vw - 24),
     };
   } else {
+    const effectivePlacement = step?.placement ?? 'auto';
     const below = rect.bottom + 12;
-    const wantAbove = below + 180 > vh && rect.top > 200;
+    const above = vh - rect.top + 12;
+    let wantAbove: boolean;
+    if (effectivePlacement === 'top') {
+      wantAbove = true;
+    } else if (effectivePlacement === 'bottom') {
+      wantAbove = false;
+    } else {
+      wantAbove = below + 180 > vh && rect.top > 200;
+    }
     const top = wantAbove ? undefined : below;
-    const bottom = wantAbove ? vh - rect.top + 12 : undefined;
+    const bottom = wantAbove ? above : undefined;
     let left = rect.left + rect.width / 2 - CARD_W / 2;
     left = Math.min(Math.max(12, left), vw - CARD_W - 12);
     cardStyle = { left, top, bottom, width: CARD_W };
