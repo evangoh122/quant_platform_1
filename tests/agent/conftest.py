@@ -69,7 +69,16 @@ def fake_pyspark(monkeypatch):
     ``str`` includes the column name and direction marker (DESC/ASC).
     Patches ``db.delta_adapter._has_pyspark`` and ``db.delta_adapter.F`` so
     the PySpark branches execute.
+
+    IMPORTANT: import adapter modules FIRST with the real environment so their
+    module-level state (_has_pyspark, F) is determined by reality, THEN inject
+    fakes.  monkeypatch teardown restores the originals exactly.
     """
+    # Import adapters BEFORE injecting fakes so their module-level state
+    # reflects the real environment (no pyspark → _has_pyspark=False).
+    import db.delta_adapter as _da
+    import agent.tools_retrieval  # noqa: F401
+
     pyspark_mod = ModuleType("pyspark")
     pyspark_sql_mod = ModuleType("pyspark.sql")
     pyspark_sql_mod.SparkSession = MagicMock()
@@ -87,8 +96,6 @@ def fake_pyspark(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyspark", pyspark_mod)
     monkeypatch.setitem(sys.modules, "pyspark.sql", pyspark_sql_mod)
     monkeypatch.setitem(sys.modules, "pyspark.sql.functions", functions_mod)
-
-    import db.delta_adapter as _da
 
     monkeypatch.setattr(_da, "_has_pyspark", True, raising=False)
     monkeypatch.setattr(_da, "F", functions_mod, raising=False)

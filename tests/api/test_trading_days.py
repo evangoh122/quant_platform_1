@@ -83,9 +83,9 @@ class TestWeekendEndConsistency:
         (date(2026, 10, 2), 1, date(2026, 10, 1)),  # Friday
         (date(2026, 10, 3), 1, date(2026, 10, 1)),  # Saturday
         (date(2026, 10, 4), 1, date(2026, 10, 1)),  # Sunday
-        # n=5: Fri → 5 back = Thu 2026-09-25
-        #       Sat → roll to Fri → 5 back = Thu 2026-09-25
-        #       Sun → roll to Fri → 5 back = Thu 2026-09-25
+        # n=5: Fri → 5 back = Fri 2026-09-25
+        #       Sat → roll to Fri → 5 back = Fri 2026-09-25
+        #       Sun → roll to Fri → 5 back = Fri 2026-09-25
         (date(2026, 10, 2), 5, date(2026, 9, 25)),  # Friday
         (date(2026, 10, 3), 5, date(2026, 9, 25)),  # Saturday
         (date(2026, 10, 4), 5, date(2026, 9, 25)),  # Sunday
@@ -102,9 +102,9 @@ class TestWeekendEndConsistency:
           Sun 10-04: roll to Fri 10-02 → count 1 back → Thu 10-01
 
         Arithmetic (n=5):
-          Fri 10-02: Thu→Wed→Tue→Mon→Fri = 5 back → Thu 09-25
-          Sat 10-03: roll to Fri 10-02, same 5 back → Thu 09-25
-          Sun 10-04: roll to Fri 10-02, same 5 back → Thu 09-25
+          Fri 10-02: Thu→Wed→Tue→Mon→Fri = 5 back → Fri 09-25
+          Sat 10-03: roll to Fri 10-02, same 5 back → Fri 09-25
+          Sun 10-04: roll to Fri 10-02, same 5 back → Fri 09-25
         """
         result = start_for_trading_days(end, n)
         assert result == expected
@@ -115,6 +115,11 @@ class TestWeekendEndConsistency:
         for n in range(1, 300):
             result = start_for_trading_days(end, n)
             assert result.weekday() < 5, f"n={n}: result {result} is not a weekday"
+
+    def test_weekday_label_anchor(self):
+        """2026-09-25 is a Friday (weekday=4). Anchors the labels above."""
+        assert date(2026, 9, 25).weekday() == 4, "2026-09-25 must be Friday"
+        assert date(2026, 10, 1).weekday() == 3, "2026-10-01 must be Thursday"
 
 
 class TestMarketRouteTradingDays:
