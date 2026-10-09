@@ -13,19 +13,15 @@ Two scenarios are covered:
 A final test proves the harness is real: a buggy conftest (inject fakes
 BEFORE importing the adapter) MUST fail, making mutation M1 detectable.
 
-Mechanism: a CUSTOM conftest.py is generated into each ``tmp_path`` that
-imports the adapter INSIDE the fixture body (before creating fakes) so the
-adapter is never imported at conftest-collection time.  The generated test
-module has no top-level import of ``db.delta_adapter``; instead it asserts
-the adapter is absent from ``sys.modules`` at fixture setup via the
-``adapter_not_yet_imported`` fixture ordered BEFORE ``fake_pyspark``.
-``--confcutdir=<tmp_path>`` prevents pytest from picking up the repo-root
-conftest files.
-
-The real ``tests/agent/conftest.py`` imports the adapter at module level
-(line 79), which means it is always first imported at conftest-collection
-time before any fixture runs, so the fixture's import ORDER can never
-matter.  This harness avoids that by deferring the import into the fixture.
+Mechanism: the REAL ``tests/agent/conftest.py`` is copied into each
+``tmp_path`` so the subprocess exercises the actual committed fixture.
+The real conftest imports the adapter INSIDE the fixture body (lines 79-80),
+not at module level, so the adapter is never imported at conftest-collection
+time.  The generated test module has no top-level import of
+``db.delta_adapter``; instead it asserts the adapter is absent from
+``sys.modules`` at fixture setup via the ``adapter_not_yet_imported``
+fixture ordered BEFORE ``fake_pyspark``.  ``--confcutdir=<tmp_path>``
+prevents pytest from picking up the repo-root conftest files.
 """
 from __future__ import annotations
 
@@ -44,126 +40,16 @@ _REAL_CONFTEST = Path(__file__).resolve().parent / "conftest.py"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-_CONFTEST_TEMPLATE = '''\
-"""Custom conftest: adapter imported INSIDE the fixture, not at module level.
-
-The real tests/agent/conftest.py imports db.delta_adapter at module level
-which means the adapter is always first imported against the real environment
-(no fakes) at collection time, before any fixture runs.  This conftest
-defers the import so the harness can detect the original bug (mutation M1).
-
-Import order inside the fixture:
-  1. Import adapter against the REAL environment (no fakes in sys.modules).
-  2. Create fake pyspark modules and inject into sys.modules.
-  3. monkeypatch adapter attributes (_has_pyspark, F).
-     monkeypatch records the original values and restores on teardown.
-"""
-import sys
-from types import ModuleType
-from unittest.mock import MagicMock
-
-import pytest
-
-
-class _FakeCol:
-    """Stub Column whose str includes column name and direction marker."""
-
-    def __init__(self, name: str = "", _desc: bool = False):
-        self._name = name
-        self._desc = _desc
-
-    def desc(self):
-        return _FakeCol(self._name, _desc=True)
-
-    def asc(self):
-        return _FakeCol(self._name, _desc=False)
-
-    def alias(self, alias):
-        return _FakeCol(alias, self._desc)
-
-    def between(self, low, high):
-        return _FakeCol(self._name, self._desc)
-
-    def __eq__(self, other):
-        return _FakeCol(self._name, self._desc)
-
-    def __gt__(self, other):
-        return _FakeCol(self._name, self._desc)
-
-    def __lt__(self, other):
-        return _FakeCol(self._name, self._desc)
-
-    def __ge__(self, other):
-        return _FakeCol(self._name, self._desc)
-
-    def __le__(self, other):
-        return _FakeCol(self._name, self._desc)
-
-    def __and__(self, other):
-        return _FakeCol(f"{self._name} & {other}", self._desc)
-
-    def __or__(self, other):
-        return _FakeCol(f"{self._name} | {other}", self._desc)
-
-    def __str__(self):
-        direction = " DESC" if self._desc else " ASC"
-        return f"Column<{self._name}{direction}>"
-
-    def __repr__(self):
-        return self.__str__()
-
-
-def _fake_col(name: str):
-    return _FakeCol(name)
-
-
-@pytest.fixture
-def fake_pyspark(monkeypatch):
-    """Inject stub pyspark modules so ordering tests work without real pyspark.
-
-    IMPORTANT: adapter is imported INSIDE the fixture body, FIRST, against the
-    REAL environment (no fakes).  Fakes are injected AFTER.  monkeypatch
-    records the original values and restores them on teardown.
-    """
-    # 1. Import adapter FIRST against the REAL environment.
-    import db.delta_adapter as _da
-    import agent.tools_retrieval  # noqa: F401
-
-    # 2. Create fake pyspark modules.
-    pyspark_mod = ModuleType("pyspark")
-    pyspark_sql_mod = ModuleType("pyspark.sql")
-    pyspark_sql_mod.SparkSession = MagicMock()
-    pyspark_sql_mod.DataFrame = MagicMock()
-
-    functions_mod = ModuleType("pyspark.sql.functions")
-    functions_mod.col = _fake_col
-    functions_mod.lit = lambda v: v
-    functions_mod.lower = lambda col: col
-    functions_mod.unix_timestamp = lambda col=None: col
-
-    pyspark_mod.sql = pyspark_sql_mod
-    pyspark_sql_mod.functions = functions_mod
-
-    # 3. Inject fakes into sys.modules.
-    monkeypatch.setitem(sys.modules, "pyspark", pyspark_mod)
-    monkeypatch.setitem(sys.modules, "pyspark.sql", pyspark_sql_mod)
-    monkeypatch.setitem(sys.modules, "pyspark.sql.functions", functions_mod)
-
-    # 4. Patch adapter attributes; monkeypatch records originals for teardown.
-    monkeypatch.setattr(_da, "_has_pyspark", True, raising=False)
-    monkeypatch.setattr(_da, "F", functions_mod, raising=False)
-
-    return pyspark_mod, pyspark_sql_mod, functions_mod
-'''
-
-# Buggy variant: inject fakes BEFORE importing adapter (mutation M1).
-_BUGGY_CONFTEST_MARKER = "# BUG: inject fakes BEFORE importing the adapter"
-
-
 def _write_conftest(tmp_path: Path) -> None:
-    """Write a conftest.py into tmp_path that imports adapter INSIDE the fixture."""
+    """Copy the REAL tests/agent/conftest.py into tmp_path.
+
+    The real conftest imports the adapter INSIDE the fixture body (lines 79-80),
+    not at module level, so the adapter is never imported at conftest-collection
+    time.  Using the real source ensures mutations (M1, M2, M3) to the actual
+    fixture are detected by the positive regression tests.
+    """
     dest = tmp_path / "conftest.py"
-    dest.write_text(_CONFTEST_TEMPLATE)
+    dest.write_bytes(_REAL_CONFTEST.read_bytes())
 
 
 def _write_test_module(tmp_path: Path) -> Path:
@@ -171,8 +57,9 @@ def _write_test_module(tmp_path: Path) -> Path:
 
     NO top-level import of db.delta_adapter.  The adapter_not_yet_imported
     fixture asserts the adapter is absent from sys.modules at fixture setup
-    time (before fake_pyspark imports it).  test_a requests both fixtures;
-    test_b asserts the post-teardown state through sys.modules.
+    time (before fake_pyspark imports it inside the fixture body).  test_a
+    requests both fixtures; test_b asserts the post-teardown state through
+    sys.modules.
     """
     test_file = tmp_path / "test_fixture_leak.py"
     test_file.write_text(textwrap.dedent('''\
@@ -195,8 +82,7 @@ def _write_test_module(tmp_path: Path) -> Path:
             this assertion catches it.
             """
             assert "db.delta_adapter" not in sys.modules, (
-                "db.delta_adapter was imported before fake_pyspark fixture ran "
-                "(conftest imports it at module level -- the original bug)"
+                "db.delta_adapter was imported before fake_pyspark fixture ran"
             )
             assert "agent.tools_retrieval" not in sys.modules, (
                 "agent.tools_retrieval was imported before fake_pyspark fixture ran"
@@ -233,7 +119,8 @@ def _write_pyspark_available_test_module(tmp_path: Path) -> Path:
     """Write a two-test module for the pyspark-IS-importable case.
 
     NO top-level import of db.delta_adapter.  The adapter_not_yet_imported
-    fixture asserts clean state before fake_pyspark runs.
+    fixture asserts clean state before fake_pyspark runs inside the fixture
+    body.
     """
     test_file = tmp_path / "test_fixture_leak_pyspark.py"
     test_file.write_text(textwrap.dedent('''\
@@ -250,8 +137,7 @@ def _write_pyspark_available_test_module(tmp_path: Path) -> Path:
         def adapter_not_yet_imported():
             """Assert adapter is NOT in sys.modules before fake_pyspark runs."""
             assert "db.delta_adapter" not in sys.modules, (
-                "db.delta_adapter was imported before fake_pyspark fixture ran "
-                "(conftest imports it at module level -- the original bug)"
+                "db.delta_adapter was imported before fake_pyspark fixture ran"
             )
             assert "agent.tools_retrieval" not in sys.modules, (
                 "agent.tools_retrieval was imported before fake_pyspark fixture ran"
@@ -444,14 +330,14 @@ class TestHarnessIsReal:
     """
 
     def test_buggy_conftest_must_fail(self, tmp_path):
-        """Mutation M1 proof: a buggy conftest that injects fakes before
-        importing the adapter MUST fail the leak assertion.
+        """Mutation M1/M2/M3 proof: buggy conftest variants derived from the
+        REAL conftest source MUST fail the leak assertions.
 
-        Two detection checks:
-        1. Hand-written buggy conftest (historical).
-        2. Programmatic buggy variant derived from the REAL conftest text:
-           read tests/agent/conftest.py, move adapter-import lines after the
-           monkeypatch.setitem lines, run the harness against it.
+        Detection checks:
+        1. Hand-written buggy conftest (historical, M1).
+        2. Programmatic M1: move adapter-import lines after monkeypatch.setitem.
+        3. Programmatic M2: remove _has_pyspark restore from real conftest.
+        4. Programmatic M3: remove F restore from real conftest.
         """
         blocker_dir = _make_nospark_blocker(tmp_path)
 
@@ -588,4 +474,66 @@ class TestHarnessIsReal:
         combined2 = result2.stdout + result2.stderr
         assert "leaked" in combined2, (
             f"Programmatic failure message should contain 'leaked':\n{combined2}"
+        )
+
+        # -- detection check 3: M2 — remove _has_pyspark restore from real conftest --
+        # In nospark, removing the setattr means the fixture never overrides
+        # _has_pyspark to True, so test_a fails ("expected _has_pyspark=True,
+        # got False").  In pyspark-available, _has_pyspark is already True
+        # (the adapter found real pyspark), so the monkeypatch was redundant
+        # and its removal is benign — M2 is only detectable in nospark.
+        m2_text = real_text.replace(
+            '    monkeypatch.setattr(_da, "_has_pyspark", True, raising=False)\n',
+            '',
+        )
+        assert m2_text != real_text, (
+            "M2 mutation is identical to real conftest"
+        )
+
+        m2_dir = tmp_path / "m2"
+        m2_dir.mkdir()
+        (m2_dir / "conftest.py").write_text(m2_text, encoding="utf-8")
+        test_file_m2_nospark = _write_test_module(m2_dir)
+
+        # M2 nospark: test_a fails (fixture didn't set _has_pyspark=True)
+        result3 = _run_pytest_subprocess(test_file_m2_nospark, pythonpath)
+
+        assert result3.returncode != 0, (
+            f"M2 nospark buggy conftest should have failed but passed:\n"
+            f"stdout: {result3.stdout}\nstderr: {result3.stderr}"
+        )
+        combined3 = result3.stdout + result3.stderr
+        assert "1 failed" in combined3, (
+            f"M2 nospark should show '1 failed':\n{combined3}"
+        )
+
+        # -- detection check 4: M3 — remove F restore from real conftest --
+        # In nospark, removing the F setattr means the fixture never sets F on
+        # the adapter, so test_a fails ("During fixture: F should exist").
+        # In pyspark-available, the original F (real pyspark.sql.functions)
+        # stays intact through teardown, so test_b doesn't detect this mutation.
+        # We verify the nospark detection here; pyspark-available original-F
+        # restoration is covered by the unmutated positive test above.
+        m3_text = real_text.replace(
+            '    monkeypatch.setattr(_da, "F", functions_mod, raising=False)\n',
+            '',
+        )
+        assert m3_text != real_text, (
+            "M3 mutation is identical to real conftest"
+        )
+
+        m3_dir = tmp_path / "m3"
+        m3_dir.mkdir()
+        (m3_dir / "conftest.py").write_text(m3_text, encoding="utf-8")
+        test_file_m3 = _write_test_module(m3_dir)
+
+        result4 = _run_pytest_subprocess(test_file_m3, pythonpath)
+
+        assert result4.returncode != 0, (
+            f"M3 buggy conftest should have failed but passed:\n"
+            f"stdout: {result4.stdout}\nstderr: {result4.stderr}"
+        )
+        combined4 = result4.stdout + result4.stderr
+        assert "1 failed" in combined4, (
+            f"M3 should show '1 failed':\n{combined4}"
         )
