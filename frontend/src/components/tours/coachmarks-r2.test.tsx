@@ -789,9 +789,10 @@ describe('Test 14: DeveloperDetails collapsible has aria-expanded and aria-contr
     const summary = screen.getByText('Developer details');
     expect(summary.tagName).toBe('SUMMARY');
     expect(summary).toHaveAttribute('aria-expanded', 'false');
-    expect(summary).toHaveAttribute('aria-controls', 'developer-details-content');
+    const controlsId = summary.getAttribute('aria-controls');
+    expect(controlsId).toBeTruthy();
 
-    const controlled = document.getElementById('developer-details-content');
+    const controlled = document.getElementById(controlsId!);
     expect(controlled).not.toBeNull();
     expect(controlled).toBeInTheDocument();
   });

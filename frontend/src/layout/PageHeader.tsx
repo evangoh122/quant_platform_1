@@ -28,9 +28,9 @@ export function PageHeader({ currentId, groups, onMenuToggle, onTour }: PageHead
           data-testid="env-badge"
           className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
             env === 'prod'
-              ? 'bg-[var(--positive)]/15 text-[var(--positive)]'
+              ? 'bg-positive-dim text-[var(--positive)]'
               : env === 'staging'
-                ? 'bg-[var(--warning)]/15 text-[var(--warning)]'
+                ? 'bg-warning-dim text-[var(--warning)]'
                 : 'bg-[var(--surface-raised)] text-[var(--text-muted)]'
           }`}
         >

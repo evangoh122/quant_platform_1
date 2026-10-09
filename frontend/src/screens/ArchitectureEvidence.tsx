@@ -72,7 +72,10 @@ export function ArchitectureEvidence() {
         <h2 className="mb-3 text-lg font-semibold text-[var(--text-primary)]">
           Business Workflow
         </h2>
-        <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+        <div
+          data-tour="provenance"
+          className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+        >
           <ol className="space-y-2 text-sm text-[var(--text-secondary)]" aria-label="Business workflow steps">
             <li className="flex items-start gap-2">
               <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-[10px] font-bold text-[var(--accent-ink)]">1</span>
@@ -193,9 +196,11 @@ export function ArchitectureEvidence() {
           Known Limitations
         </h2>
         <div
-          data-tour="provenance"
-          className="rounded-[var(--radius-lg)] border border-[var(--warning)] bg-[var(--warning)]/10 p-4"
+          className="rounded-[var(--radius-lg)] border border-[var(--warning)] bg-warning-dim p-4"
         >
+          <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--warning)]">
+            <span aria-hidden="true">&#9888;</span> Limitations
+          </p>
           <ul className="space-y-2 text-sm text-[var(--warning)]" aria-label="Known limitations">
             {LIMITATIONS.map((limitation) => (
               <li key={limitation} className="flex items-start gap-2">

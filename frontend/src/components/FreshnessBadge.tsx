@@ -1,10 +1,10 @@
 import type { Freshness } from '../api/types';
 
 const STATE_STYLES: Record<Freshness['state'], string> = {
-  fresh: 'bg-[var(--positive)]/15 text-[var(--positive)]',
-  stale: 'bg-[var(--warning)]/15 text-[var(--warning)]',
+  fresh: 'bg-positive-dim text-[var(--positive)]',
+  stale: 'bg-warning-dim text-[var(--warning)]',
   empty: 'bg-[var(--surface-raised)] text-[var(--text-muted)]',
-  unavailable: 'bg-[var(--negative)]/15 text-[var(--negative)]',
+  unavailable: 'bg-negative-dim text-[var(--negative)]',
 };
 
 export function FreshnessBadge({ freshness }: { freshness: Freshness }) {

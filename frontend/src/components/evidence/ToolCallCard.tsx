@@ -12,14 +12,14 @@ export function hasValidNoteId(tc: ToolCall): boolean {
 
 function deriveBadge(tc: ToolCall): { label: string; cls: string } {
   if (!tc.ok) {
-    return { label: 'Failed', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' };
+    return { label: 'Failed', cls: 'bg-[var(--danger-fill)] text-[var(--on-danger)]' };
   }
   if (tc.name === 'search_sec_filings') {
     const rows = tc.result?.rows;
     if (!Array.isArray(rows)) {
       return {
         label: 'SEC search',
-        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+        cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
       };
     }
     const nonError = rows.filter(
@@ -27,7 +27,7 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
     );
     return {
       label: `${nonError.length} source${nonError.length !== 1 ? 's' : ''}`,
-      cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+      cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
     };
   }
   if (tc.name === 'get_latest_signal') {
@@ -40,7 +40,7 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
     if (hasValidNoteId(tc)) {
       return {
         label: `Note ${tc.result!.note_id}`,
-        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+        cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
       };
     }
     return {
@@ -51,12 +51,12 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
   if (tc.name === 'add_to_watchlist') {
     return {
       label: 'Watchlist',
-      cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+      cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
     };
   }
   return {
     label: 'OK',
-    cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+    cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
   };
 }
 
@@ -119,18 +119,18 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
         )}
         {toolCall.name === 'add_to_watchlist' && toolCall.ok && (
           <span>
-            Storage: <span className="font-medium text-emerald-600 dark:text-emerald-400">Lakebase</span>
+            Storage: <span className="font-medium text-[var(--on-success)]">Lakebase</span>
           </span>
         )}
         {toolCall.name === 'save_research_note' && toolCall.ok && noteId && (
           <span>
-            Storage: <span className="font-medium text-emerald-600 dark:text-emerald-400">Lakebase</span>
+            Storage: <span className="font-medium text-[var(--on-success)]">Lakebase</span>
           </span>
         )}
       </div>
 
       {toolCall.name === 'save_research_note' && toolCall.ok && noteId && (
-        <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+        <p className="mt-2 text-xs text-[var(--on-success)]">
           Research note saved to Lakebase.
         </p>
       )}

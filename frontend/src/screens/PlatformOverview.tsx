@@ -21,7 +21,7 @@ function EvidenceCard({ label, value, detail }: EvidenceCardProps) {
         <p className="mt-1 text-xs text-[var(--text-muted)]">{detail}</p>
       )}
       <p className="mt-2 text-xs text-[var(--text-muted)]">
-        Verified snapshot: {SNAPSHOT_DATE}
+        Recorded snapshot: {SNAPSHOT_DATE} (not a live verification)
       </p>
     </div>
   );
@@ -56,7 +56,7 @@ interface StepperStageProps {
 function StepperStage({ label, isLast }: StepperStageProps) {
   return (
     <li className="flex items-center gap-2">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-xs font-bold text-white">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-xs font-bold text-[var(--accent-ink)]">
         &#10003;
       </span>
       <span className="text-sm text-[var(--text-secondary)]">{label}</span>
@@ -102,7 +102,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
           <button
             type="button"
             onClick={() => onNavigate('agent')}
-            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] shadow-sm transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
           >
             Ask the Research Agent
           </button>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 
 interface DeveloperDetailsProps {
   arguments: Record<string, unknown>;
@@ -7,7 +7,7 @@ interface DeveloperDetailsProps {
 
 export function DeveloperDetails({ arguments: args, result }: DeveloperDetailsProps) {
   const [open, setOpen] = useState(false);
-  const contentId = 'developer-details-content';
+  const contentId = useId();
 
   return (
     <details

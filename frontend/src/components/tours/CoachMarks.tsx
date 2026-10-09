@@ -34,6 +34,21 @@ const CARD_H_FALLBACK = 180;
 const GAP = 12;
 const VIEWPORT_MARGIN = 12;
 
+export const SCREEN_NAMES: Record<string, string> = {
+  'platform-overview': 'Platform Overview',
+  'market': 'Market Explorer',
+  'options': 'Options Analytics',
+  'sec': 'SEC Research',
+  'agent': 'AI Research Agent',
+  'signals': 'Signal Explorer',
+  'strategy-lab': 'Strategy Lab',
+  'portfolio': 'Paper Portfolio',
+  'orders': 'Order Approval',
+  'analytics': 'Analytics',
+  'health': 'System Health',
+  'architecture': 'Architecture & Tests',
+};
+
 export default function CoachMarks({ steps, run, onClose, onNavigate, currentScreen }: CoachMarksProps) {
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -61,6 +76,11 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
       return;
     }
     const r = el.getBoundingClientRect();
+    // Treat zero-area target as missing (e.g. hidden sidebar on mobile)
+    if (r.width === 0 && r.height === 0) {
+      setRect(null);
+      return;
+    }
     const w = window.innerWidth;
     const h = window.innerHeight;
     const fullyOffScreen = r.bottom < 0 || r.top > h || r.right < 0 || r.left > w;
@@ -88,7 +108,8 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
     // If step requires navigation, trigger it first
     if (step.navigateTo && onNavigate) {
       onNavigate(step.navigateTo);
-      setScreenAnnouncement(`Navigated to ${step.navigateTo} screen`);
+      const screenName = SCREEN_NAMES[step.navigateTo] ?? step.navigateTo;
+      setScreenAnnouncement(`Navigated to ${screenName}`);
     }
 
     const timeout = step.waitForTargetTimeout ?? 3000;
@@ -270,7 +291,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
   if (waitingForTarget || targetTimedOut) {
     return (
       <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true" aria-label="Guided tour">
-        <div className="absolute inset-0 bg-black/58" />
+        <div className="absolute inset-0 bg-black/60" />
         <div
           ref={cardRef}
           tabIndex={-1}
@@ -383,12 +404,12 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
             top: clamped.top,
             width: clamped.width,
             height: clamped.height,
-            boxShadow: '0 0 0 9999px rgba(0,0,0,0.58)',
+            boxShadow: '0 0 0 9999px rgba(0,0,0,0.60)',
             border: '2px solid var(--accent, #6366f1)',
           }}
         />
       ) })() : (
-        <div className="absolute inset-0 bg-black/58" />
+        <div className="absolute inset-0 bg-black/60" />
       )}
 
       <div className="absolute inset-0" onClick={(e) => e.stopPropagation()} />
@@ -448,7 +469,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
             )}
             <button
               onClick={next}
-              className="rounded-[var(--radius-sm)] bg-[var(--accent)] px-3.5 py-1.5 text-[13px] font-medium text-white hover:opacity-90"
+              className="rounded-[var(--radius-sm)] bg-[var(--accent)] px-3.5 py-1.5 text-[13px] font-medium text-[var(--accent-ink)] hover:opacity-90"
             >
               {index >= steps.length - 1 ? 'Done' : 'Next'}
             </button>

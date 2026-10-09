@@ -18,21 +18,21 @@ export const APPLICATION_TOUR: CoachStep[] = [
   {
     selector: '[data-tour="market-research"]',
     title: 'Market research',
-    body: 'Explore OHLCV data and options analytics for any symbol. Charts and metrics update in real time.',
+    body: 'Explore OHLCV data and options analytics for any symbol. Charts and metrics show the latest recorded data.',
     navigateTo: 'market',
     waitForTargetTimeout: 3000,
   },
   {
     selector: '[data-tour="agent"]',
     title: 'AI Research Agent',
-    body: 'Ask natural-language questions about market data, signals, and SEC filings. The agent retrieves, grounds, and verifies each answer.',
+    body: 'Ask natural-language questions about market data, signals, and SEC filings. The agent retrieves and grounds each answer in source data.',
     navigateTo: 'agent',
     waitForTargetTimeout: 3000,
   },
   {
     selector: '[data-tour="analytics-evidence"]',
     title: 'Analytics & evidence',
-    body: 'Monitor model performance, latency, and agent activity. Every metric is traceable to its source.',
+    body: 'Monitor model performance, latency, and agent activity. Metrics are sourced from recorded analytics data.',
     navigateTo: 'health',
     waitForTargetTimeout: 3000,
   },
@@ -77,13 +77,13 @@ export const ARCHITECTURE_TOUR: CoachStep[] = [
   {
     selector: '[data-tour="provenance"]',
     title: 'Provenance & lineage',
-    body: 'Track data from source through transformation to consumption. Every table and metric has a documented lineage.',
+    body: 'Track data from source through transformation to consumption. The workflow shows the end-to-end pipeline stages.',
     navigateTo: 'architecture',
     waitForTargetTimeout: 3000,
   },
   {
     selector: '[data-tour="pipeline-nodes"]',
     title: 'Pipeline nodes',
-    body: 'The architecture diagram shows ingestion, feature engineering, signal generation, and execution stages. Each node links to its test evidence.',
+    body: 'The architecture diagram shows ingestion, feature engineering, signal generation, and execution stages. Test evidence is pending build branch runs.',
   },
 ];

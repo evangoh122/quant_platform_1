@@ -68,6 +68,7 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
         className="fixed left-4 top-3 z-40 rounded-[var(--radius-sm)] p-2 text-[var(--text-primary)] hover:bg-[var(--surface-raised)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         aria-label={open ? 'Close navigation' : 'Open navigation'}
         aria-expanded={open}
+        aria-controls="mobile-nav-drawer"
       >
         {open ? '✕' : '☰'}
       </button>
@@ -78,10 +79,10 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
             className="absolute inset-0 bg-black/40"
             onClick={onClose}
             aria-hidden="true"
-            {...{ inert: '' }}
           />
           <div
             ref={drawerRef}
+            id="mobile-nav-drawer"
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"

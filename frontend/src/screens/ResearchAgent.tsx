@@ -124,7 +124,7 @@ export function ResearchAgent() {
                   {m.text}
                 </p>
                 {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && hasValidNoteId(tc)) && (
-                  <div data-tour="lakebase-write" className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                  <div data-tour="lakebase-write" className="mt-2 rounded-md border border-[var(--success-fill)] bg-success-fill p-2 text-xs text-[var(--on-success)]">
                     Research note saved to Lakebase.
                   </div>
                 )}
@@ -132,7 +132,7 @@ export function ResearchAgent() {
             ))}
             {sending && <LoadingState label="Agent is working…" />}
             {error && (
-              <div role="alert" className="rounded-[var(--radius-md)] border border-[var(--negative)] bg-[var(--negative)]/10 p-2 text-sm text-[var(--negative)]">
+              <div role="alert" className="rounded-[var(--radius-md)] border border-[var(--negative)] bg-negative-dim p-2 text-sm text-[var(--negative)]">
                 {error}
               </div>
             )}
@@ -167,7 +167,7 @@ export function ResearchAgent() {
               id="research-agent-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              className="flex-1 rounded-md border border-[var(--border)] px-3 py-2 text-sm bg-[var(--surface-raised)] text-[var(--text-primary)]"
+              className="flex-1 rounded-md border border-[var(--border-strong)] px-3 py-2 text-sm bg-[var(--surface-raised)] text-[var(--text-primary)]"
               placeholder="Ask the research agent…"
             />
             <button

@@ -151,7 +151,7 @@ export function SymbolPicker({
       <div className="flex items-center gap-2">
         <label className="text-sm text-[var(--text-muted)]">{label}</label>
         <div ref={containerRef} className="relative w-full max-w-xs">
-          <div className="flex items-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
+          <div className="flex items-center rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-elevated)]">
             <input
               ref={inputRef}
               type="text"

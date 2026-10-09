@@ -376,7 +376,7 @@ describe('ResearchAgent', () => {
 
     // The badge should be on the tool card, not just in execution trace
     const toolCard = screen.getByTestId('tool-call-0');
-    const badge = toolCard.querySelector('.bg-red-100, .dark\\:bg-red-900\\/30');
+    const badge = toolCard.querySelector('[class*="danger-fill"]');
     expect(badge).not.toBeNull();
   });
 

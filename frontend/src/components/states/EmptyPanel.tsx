@@ -18,7 +18,7 @@ export function EmptyPanel({ title, detail, action }: EmptyPanelProps) {
       {action && (
         <button
           onClick={action.onClick}
-          className="mt-4 rounded-[var(--radius-sm)] bg-[var(--accent)] px-4 py-2 text-xs font-medium text-white hover:opacity-90 focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
+          className="mt-4 rounded-[var(--radius-sm)] bg-[var(--accent)] px-4 py-2 text-xs font-medium text-[var(--accent-ink)] hover:opacity-90 focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
         >
           {action.label}
         </button>

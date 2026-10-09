@@ -59,9 +59,9 @@ function deriveSteps(toolCalls: ToolCall[], _available: boolean, reply?: string,
 
 const STATUS_STYLES: Record<TraceStep['status'], string> = {
   pending: 'bg-[var(--surface-raised)] text-[var(--text-muted)]',
-  running: 'bg-[var(--info)]/15 text-[var(--info)]',
-  complete: 'bg-[var(--positive)]/15 text-[var(--positive)]',
-  failed: 'bg-[var(--negative)]/15 text-[var(--negative)]',
+  running: 'bg-info-dim text-[var(--info)]',
+  complete: 'bg-positive-dim text-[var(--positive)]',
+  failed: 'bg-negative-dim text-[var(--negative)]',
   skipped: 'bg-[var(--surface-raised)] text-[var(--text-muted)]',
 };
 

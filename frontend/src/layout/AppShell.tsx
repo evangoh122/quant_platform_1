@@ -56,13 +56,15 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
       >
         Skip to main content
       </a>
-      <Sidebar
-        groups={groups}
-        currentId={currentId}
-        onNavigate={handleNavigate}
-        collapsed={!sidebarOpen}
-        onToggle={handleToggleSidebar}
-      />
+      <div {...(mobileOpen ? { inert: '', 'aria-hidden': true } : {})}>
+        <Sidebar
+          groups={groups}
+          currentId={currentId}
+          onNavigate={handleNavigate}
+          collapsed={!sidebarOpen}
+          onToggle={handleToggleSidebar}
+        />
+      </div>
 
       <MobileNavigation
         groups={groups}
@@ -73,7 +75,7 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
         onClose={handleCloseMobile}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div {...(mobileOpen ? { inert: '', 'aria-hidden': true } : {})} className="flex min-w-0 flex-1 flex-col">
         <PageHeader
           currentId={currentId}
           groups={groups}

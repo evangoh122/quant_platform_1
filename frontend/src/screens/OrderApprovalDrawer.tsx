@@ -82,7 +82,7 @@ function ApprovalRow({ order, busy, result, onApprove, onReject }: { order: Orde
       </dl>
 
       {result && (
-        <div className={`mt-3 rounded-md p-2 text-xs ${result.ok ? 'bg-[var(--positive)]/10 text-[var(--positive)]' : 'bg-[var(--warning)]/10 text-[var(--warning)]'}`}>
+        <div className={`mt-3 rounded-md p-2 text-xs ${result.ok ? 'bg-success-fill text-[var(--on-success)]' : 'bg-warning-dim text-[var(--warning)]'}`}>
           <div className="font-semibold">Status: {result.status}</div>
           {result.reason && <div>{result.reason}</div>}
           {result.risk && <pre className="mt-1 whitespace-pre-wrap break-all text-[11px]">{JSON.stringify(result.risk, null, 2)}</pre>}
@@ -90,10 +90,10 @@ function ApprovalRow({ order, busy, result, onApprove, onReject }: { order: Orde
       )}
 
       <div className="mt-3 flex gap-2">
-        <button onClick={onApprove} disabled={busy} className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+        <button onClick={onApprove} disabled={busy} className="rounded-md bg-[var(--success-fill)] px-3 py-1.5 text-sm font-medium text-[var(--on-success)] hover:opacity-90 disabled:opacity-50">
           Approve & place
         </button>
-        <button onClick={onReject} disabled={busy} className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
+        <button onClick={onReject} disabled={busy} className="rounded-md bg-[var(--danger-fill)] px-3 py-1.5 text-sm font-medium text-[var(--on-danger)] hover:opacity-90 disabled:opacity-50">
           Reject
         </button>
       </div>

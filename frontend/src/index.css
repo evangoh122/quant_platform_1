@@ -22,13 +22,27 @@
   --accent-dim: rgba(214, 182, 90, 0.14);
   --accent-glow: rgba(214, 182, 90, 0.2);
 
-  /* Financial signals */
+  /* Surface elevation: raised obsidian between surface and border */
+  --surface-elevated: #1A1D23;
+
+  /* Strong border for interactive inputs (WCAG 1.4.11 >= 3:1 on surface) */
+  --border-strong: #5E636A;
+
+  /* Financial signals — status-chrome (UI) vs trade-direction (P&L) */
+  /* --positive/--negative: UI status badges (success/danger chrome) */
+  /* --bullish/--bearish: trade-direction markers (up/down P&L) */
   --positive: #43D19E;
   --bearish: #FF727F;
   --neutral: #A8B0BC;
   --warning: #F59E0B;
   --negative: #EF4444;
   --info: #3B82F6;
+
+  /* Success / Danger semantic tokens (contrast-checked on surface #111317) */
+  --success-fill: #1A3A2A;
+  --on-success: #A7F3D0;
+  --danger-fill: #3A1A1A;
+  --on-danger: #FCA5A5;
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -48,6 +62,12 @@
   --font-mono: "JetBrains Mono", "SF Mono", "Geist Mono", "Fira Code", ui-monospace, monospace;
 }
 
+/* Font stacks as :root vars (fallback for Tailwind 3 which ignores @theme) */
+:root {
+  --font-sans: "Geist", "Segoe UI Variable", "SF Pro Display", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Geist Mono", "Fira Code", ui-monospace, monospace;
+}
+
 *,
 *::before,
 *::after {
@@ -64,7 +84,7 @@ html {
 
 body {
   margin: 0;
-  font-family: var(--font-sans);
+  font-family: var(--font-sans, "Segoe UI Variable", "SF Pro Display", system-ui, -apple-system, sans-serif);
   background-color: var(--canvas);
   color: var(--text-primary);
   line-height: 1.5;
@@ -105,8 +125,29 @@ table,
 
 code,
 [data-mono] {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "JetBrains Mono", "SF Mono", ui-monospace, monospace);
 }
+
+/* Tinted background utilities (Tailwind 3 cannot apply opacity to arbitrary var colors) */
+.bg-positive-dim { background-color: color-mix(in srgb, var(--positive) 15%, transparent); }
+.bg-warning-dim { background-color: color-mix(in srgb, var(--warning) 15%, transparent); }
+.bg-warning-dim-5 { background-color: color-mix(in srgb, var(--warning) 5%, transparent); }
+.bg-warning-dim-10 { background-color: color-mix(in srgb, var(--warning) 10%, transparent); }
+.bg-warning-dim-20 { background-color: color-mix(in srgb, var(--warning) 20%, transparent); }
+.bg-warning-dim-30 { background-color: color-mix(in srgb, var(--warning) 30%, transparent); }
+.bg-negative-dim { background-color: color-mix(in srgb, var(--negative) 10%, transparent); }
+.bg-negative-dim-5 { background-color: color-mix(in srgb, var(--negative) 5%, transparent); }
+.bg-negative-dim-20 { background-color: color-mix(in srgb, var(--negative) 20%, transparent); }
+.bg-info-dim { background-color: color-mix(in srgb, var(--info) 15%, transparent); }
+.bg-info-dim-8 { background-color: color-mix(in srgb, var(--info) 8%, transparent); }
+.bg-info-dim-20 { background-color: color-mix(in srgb, var(--info) 20%, transparent); }
+
+/* Tinted border utilities */
+.border-positive-dim-20 { border-color: color-mix(in srgb, var(--positive) 20%, transparent); }
+.border-negative-dim-20 { border-color: color-mix(in srgb, var(--negative) 20%, transparent); }
+.border-warning-dim-20 { border-color: color-mix(in srgb, var(--warning) 20%, transparent); }
+.border-warning-dim-30 { border-color: color-mix(in srgb, var(--warning) 30%, transparent); }
+.border-info-dim-20 { border-color: color-mix(in srgb, var(--info) 20%, transparent); }
 
 :where(button, a, input, select, textarea, summary, [role="button"]):focus-visible {
   outline: 2px solid var(--accent);
