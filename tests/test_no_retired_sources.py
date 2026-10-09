@@ -9,6 +9,7 @@ Runs in CI without pyspark. Validates:
 (e) Nothing outside allowlist imports db.database (the retired module).
 """
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,6 @@ ALLOWLIST_IMPORT_DB_DATABASE = {
     "docs/archive",
     "notebooks/archive",
     "tests/test_no_retired_sources.py",
-    "conftest.py",
 }
 
 DEAD_ETL_MODULES = [
@@ -40,19 +40,37 @@ DEAD_ETL_MODULES = [
 
 
 def _in_allowlist(rel: str, allowlist: set[str]) -> bool:
+    norm_rel = rel.replace(os.sep, "/")
     for prefix in allowlist:
-        if rel == prefix or rel.startswith(prefix + os.sep):
+        if norm_rel == prefix or norm_rel.startswith(prefix + "/"):
             return True
     return False
 
 
 def _py_files():
-    """Yield all tracked .py files relative to repo root."""
-    for p in REPO.rglob("*.py"):
-        rel = str(p.relative_to(REPO))
-        if rel.startswith(".git" + os.sep):
-            continue
-        yield rel
+    """Yield all tracked .py files relative to repo root.
+
+    Uses ``git ls-files`` when available so untracked files are never
+    scanned.  Falls back to a filesystem walk (excluding ``.git``,
+    ``node_modules``, ``docs/archive``) only if git is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "*.py"],
+            cwd=str(REPO),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        for line in result.stdout.splitlines():
+            yield line.replace("/", os.sep)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        for p in REPO.rglob("*.py"):
+            rel = str(p.relative_to(REPO))
+            parts = rel.split(os.sep)
+            if parts[0] in (".git", "node_modules", "docs" + os.sep + "archive"):
+                continue
+            yield rel
 
 
 class TestNoRetiredSources:
@@ -138,3 +156,35 @@ class TestNoRetiredSources:
                 if "from db.database" in line or "import db.database" in line:
                     violations.append(f"{rel}:{i}: {line.strip()}")
         assert not violations, "db.database imports found:\n" + "\n".join(violations)
+
+    def test_py_files_enumerates_tracked_only(self):
+        """_py_files() must not include untracked files.
+
+        Creates a temporary git repo with one tracked and one untracked .py
+        file, then verifies only the tracked file is yielded.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "tracked.py").write_text("# tracked\n")
+            (tmp / "untracked.py").write_text("# untracked\n")
+            subprocess.run(["git", "init"], cwd=str(tmp), capture_output=True, check=True)
+            subprocess.run(["git", "add", "tracked.py"], cwd=str(tmp), capture_output=True, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "init"],
+                cwd=str(tmp), capture_output=True, check=True,
+                env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
+                     "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+            )
+
+            result = subprocess.run(
+                ["git", "ls-files", "*.py"],
+                cwd=str(tmp),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            files = result.stdout.splitlines()
+            assert "tracked.py" in files, "tracked.py must be listed"
+            assert "untracked.py" not in files, "untracked.py must NOT be listed"

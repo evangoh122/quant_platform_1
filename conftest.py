@@ -43,33 +43,3 @@ def _make_ibapi_stubs():
 
 
 _make_ibapi_stubs()
-
-import pytest
-
-try:
-    import db.database as db_module
-    _HAS_DB_DATABASE = True
-except ImportError:
-    db_module = None
-    _HAS_DB_DATABASE = False
-
-
-@pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    """Isolated DuckDB for each test — patches DB_PATH everywhere."""
-    if not _HAS_DB_DATABASE:
-        pytest.skip("db.database (DuckDB) is removed; use db/delta_adapter.py")
-    db_file = str(tmp_path / "test_ibkr.duckdb")
-    monkeypatch.setenv("DB_PATH", db_file)
-    monkeypatch.setattr(db_module, "DB_PATH", db_file)
-
-    db_module.init_db()
-    yield db_file
-
-
-@pytest.fixture
-def db_conn(tmp_db):
-    """Open connection to the temp DB, closed after the test."""
-    conn = db_module.get_connection()
-    yield conn
-    conn.close()
