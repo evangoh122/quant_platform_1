@@ -1273,6 +1273,29 @@ class TestDistinctDatesEastern:
         # ET dates span Mar 10 to Jun 18 = 101 distinct; old UTC code would give 100
         assert result[0]["distinct_prediction_dates"] == 101
 
+    def test_same_utc_date_different_et_date_summer_edt(self):
+        """DST-sensitive window [04:00, 05:00) UTC: EDT vs fixed-UTC-5 differ.
+
+        2026-07-11 04:30 UTC = 2026-07-11 00:30 EDT (ET date Jul 11)
+        2026-07-11 12:00 UTC = 2026-07-11 08:00 EDT (ET date Jul 11)
+
+        Same UTC date (Jul 11), same ET date (Jul 11) under correct EDT.
+        Fixed UTC-5 mutant: 04:30 UTC − 5h = 23:30 Jul 10 → date Jul 10;
+        12:00 UTC − 5h = 07:00 Jul 11 → date Jul 11 → 2 distinct dates (WRONG).
+        200 rows: 100 pairs, each pair on same ET date → 100 distinct.
+        """
+        ts_a = pd.Timestamp("2026-07-11 04:30", tz="UTC")  # 00:30 EDT Jul 11
+        ts_b = pd.Timestamp("2026-07-11 12:00", tz="UTC")  # 08:00 EDT Jul 11
+        timestamps = []
+        for i in range(100):
+            timestamps.append(ts_a + pd.Timedelta(days=i))
+            timestamps.append(ts_b + pd.Timedelta(days=i))
+        outcomes = self._make_outcomes(timestamps)
+        result = summarize_outcomes(outcomes, min_n=100, min_dates=50, rho=0.2)
+        assert len(result) == 1
+        # ET dates: each pair = 1 date → 100 distinct; fixed UTC-5 gives 200
+        assert result[0]["distinct_prediction_dates"] == 100
+
     def test_different_utc_date_same_et_date_est(self):
         """Different UTC dates but same ET date (EST, UTC-5): must collapse to fewer dates.
 
@@ -1281,6 +1304,8 @@ class TestDistinctDatesEastern:
 
         Different UTC dates (Jan 14 vs Jan 15), but same ET date (Jan 14).
         Old UTC .dt.date code counts 51 distinct dates; correct ET code counts 50.
+        Fixed UTC-4 mutant: 04:00 UTC − 4h = 00:00 Jan 15 → date Jan 15
+        (differs from EST date Jan 14) → 51 distinct (WRONG).
         All pairs stay within EST (before Mar 8 2026 DST transition).
         """
         ts_a = pd.Timestamp("2026-01-14 23:00", tz="UTC")  # 18:00 EST Jan 14
