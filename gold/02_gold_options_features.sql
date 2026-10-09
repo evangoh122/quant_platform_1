@@ -84,7 +84,8 @@ USING (
     SELECT
       symbol, d, total_volume,
       AVG(total_volume) OVER w    AS avg_vol,
-      STDDEV(total_volume) OVER w AS std_vol
+      STDDEV(total_volume) OVER w AS std_vol,
+      COUNT(total_volume) OVER w  AS vol_count
     FROM day
     WINDOW w AS (PARTITION BY symbol ORDER BY d ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)
   ),
@@ -193,7 +194,9 @@ USING (
     snap.iv_skew                                          AS iv_skew,
     snap.iv_term_slope                                    AS iv_term_slope,
     snap.avg_spread_pct                                   AS avg_spread_pct,
-    (day.total_volume - vw.avg_vol) / NULLIF(vw.std_vol, 0) AS volume_anomaly_zscore,
+    CASE WHEN vw.vol_count >= 20
+         THEN (day.total_volume - vw.avg_vol) / NULLIF(vw.std_vol, 0)
+    END AS volume_anomaly_zscore,
     snap.oi_concentration                                 AS oi_concentration,
     snap.net_delta_exposure                               AS net_delta_exposure,
     current_timestamp()                                   AS processed_ts

@@ -36,8 +36,8 @@ def portfolio(user: AppUser = Depends(get_current_user)) -> Portfolio:
                 quantity=float(r.get("quantity") or 0),
                 avg_cost=float(r.get("avg_cost") or 0),
                 market_price=r.get("market_price"),
-                realized_pnl=float(r.get("realized_pnl") or 0),
-                unrealized_pnl=float(r.get("unrealized_pnl") or 0),
+                realized_pnl=r.get("realized_pnl"),
+                unrealized_pnl=r.get("unrealized_pnl"),
                 updated_at=iso(r.get("updated_at")) or "",
             )
             for r in positions

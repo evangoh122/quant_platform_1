@@ -112,6 +112,7 @@ def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: in
             .table(_fqn("gold_options_features"))
             .where(F.col("symbol") == symbol)
             .select(*_OPTIONS_COLS)
+            .orderBy(F.col("feature_ts").desc())
         )
         return [r.asDict() for r in df.limit(limit).collect()]
 

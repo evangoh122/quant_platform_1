@@ -2,13 +2,14 @@
 
 OHLCV features (``silver_ohlcv_day_adjusted``) and options features
 (``gold_options_features``) for a symbol.  Bounded by default: last 252 trading
-days, explicit row LIMIT, single options query.  Reads go through the existing
+days (weekday approximation — NYSE holidays are not excluded), explicit row
+LIMIT, single options query.  Reads go through the existing
 ``agent.tools_retrieval`` contracts (which normalize the symbol), never through
 string-built SQL.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
@@ -21,6 +22,7 @@ from api.schemas import (
     OptionsFeature,
     iso,
 )
+from api.trading_days import start_for_trading_days
 
 router = APIRouter()
 
@@ -43,9 +45,11 @@ def market_features(
     except ValueError:
         raise HTTPException(status_code=422, detail="invalid symbol") from None
 
-    # Bounded date window: last N trading days
+    # Bounded date window: last N trading days (weekday approximation)
     end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=days)
+    from datetime import date
+    start_dt_date = start_for_trading_days(end_dt.date(), days)
+    start_dt = datetime.combine(start_dt_date, end_dt.time(), tzinfo=end_dt.tzinfo)
     start_time = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_time = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -84,7 +88,7 @@ def market_features(
         count=len(ohlcv_rows),
         empty=not ohlcv_rows,
         source="silver_ohlcv_day_adjusted",
-        freshness=Freshness(state=ohlcv_state, table="silver_ohlcv_day_adjusted", detail=ohlcv_detail),
+        freshness=Freshness(state=ohlcv_state, table="silver_ohlcv_day_adjusted", detail=ohlcv_detail + "; weekday approximation (calendar_limited)"),
     )
     options = Envelope(
         data=[
@@ -109,6 +113,6 @@ def market_features(
         count=len(opt_rows),
         empty=not opt_rows,
         source="gold_options_features",
-        freshness=Freshness(state=opt_state, table="gold_options_features", detail=opt_detail),
+        freshness=Freshness(state=opt_state, table="gold_options_features", detail=opt_detail + "; weekday approximation (calendar_limited)"),
     )
     return MarketSnapshot(symbol=symbol, ohlcv=ohlcv, options=options)

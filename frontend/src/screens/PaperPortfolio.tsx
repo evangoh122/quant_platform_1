@@ -14,8 +14,8 @@ const positionColumns: Column<Position>[] = [
   { key: 'qty', header: 'Quantity', render: (r) => r.quantity.toString() },
   { key: 'avg', header: 'Avg Cost', render: (r) => r.avg_cost.toFixed(2) },
   { key: 'mkt', header: 'Market', render: (r) => (r.market_price == null ? '—' : r.market_price.toFixed(2)) },
-  { key: 'realized', header: 'Realized P&L', render: (r) => r.realized_pnl.toFixed(2) },
-  { key: 'unrealized', header: 'Unrealized P&L', render: (r) => r.unrealized_pnl.toFixed(2) },
+  { key: 'realized', header: 'Realized P&L', render: (r) => (r.realized_pnl == null ? '—' : r.realized_pnl.toFixed(2)) },
+  { key: 'unrealized', header: 'Unrealized P&L', render: (r) => (r.unrealized_pnl == null ? '—' : r.unrealized_pnl.toFixed(2)) },
 ];
 
 const orderColumns: Column<Order>[] = [
@@ -30,8 +30,12 @@ const orderColumns: Column<Order>[] = [
 export function PaperPortfolio() {
   const { data, loading, error, reload } = useApi<Portfolio>(() => api.portfolio());
 
-  const realized = (data?.positions.data ?? []).reduce((sum, p) => sum + p.realized_pnl, 0);
-  const unrealized = (data?.positions.data ?? []).reduce((sum, p) => sum + p.unrealized_pnl, 0);
+  const positions = data?.positions.data ?? [];
+  const pricedPositions = positions.filter((p) => p.realized_pnl != null && p.unrealized_pnl != null);
+  const unpricedCount = positions.length - pricedPositions.length;
+  const realized = pricedPositions.reduce((sum, p) => sum + (p.realized_pnl ?? 0), 0);
+  const unrealized = pricedPositions.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0);
+  const hasUnpriced = unpricedCount > 0;
 
   return (
     <div data-tour="lakebase-write" className="space-y-4">
@@ -47,7 +51,7 @@ export function PaperPortfolio() {
           <div className="grid grid-cols-3 gap-3">
             <StatTile label="Positions" value={(data?.positions.data.length ?? 0).toString()} />
             <StatTile label="Open Orders" value={(data?.orders.data.length ?? 0).toString()} />
-            <StatTile label="Total P&L" value={(realized + unrealized).toFixed(2)} hint={`realized ${realized.toFixed(2)}`} />
+            <StatTile label="Total P&L" value={(realized + unrealized).toFixed(2)} hint={`realized ${realized.toFixed(2)}${hasUnpriced ? ` (${unpricedCount} unpriced)` : ''}`} />
           </div>
 
           <Card title="Positions" subtitle="Lakebase · positions">
