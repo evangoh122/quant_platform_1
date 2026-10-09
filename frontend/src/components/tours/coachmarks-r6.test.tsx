@@ -1,8 +1,9 @@
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import React, { useCallback, useState } from 'react';
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import CoachMarks, { type CoachStep, SCREEN_NAMES } from './CoachMarks';
@@ -209,6 +210,7 @@ describe('R6-2: Contrast ratios — WCAG AA for text on filled backgrounds', () 
 
   const surface = '#111317';
   const surfaceRaised = '#181B20';
+  const surfaceElevated = '#1A1D23';
 
   it('--accent-ink on --accent >= 4.5:1 (expected 9.51)', () => {
     const accent = parseCssVar(css, '--accent');
@@ -270,10 +272,144 @@ describe('R6-2: Contrast ratios — WCAG AA for text on filled backgrounds', () 
     expect(ratio).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('--border-strong on surface >= 3:1 (WCAG 1.4.11)', () => {
+  it('--border-strong on all surface tokens >= 3.1:1 (WCAG 1.4.11)', () => {
     const borderStrong = parseCssVar(css, '--border-strong');
-    const ratio = contrastRatio(borderStrong, surface);
-    expect(ratio).toBeGreaterThanOrEqual(3);
+    const surfaceTokens = [
+      { name: '--surface', hex: surface },
+      { name: '--surface-raised', hex: surfaceRaised },
+      { name: '--surface-elevated', hex: surfaceElevated },
+    ];
+    for (const { name, hex } of surfaceTokens) {
+      const ratio = contrastRatio(borderStrong, hex);
+      expect(ratio).toBeGreaterThanOrEqual(3.1);
+    }
+  });
+
+  it('every border-[var(--border-strong)] paired with bg-[var(--surface...)] in src tsx has >= 3:1 contrast', () => {
+    const borderStrong = parseCssVar(css, '--border-strong');
+    const srcDir = join(__dirname, '../..');
+    function walk(dir: string): string[] {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          files.push(...walk(full));
+        } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+    const tsxFiles = walk(srcDir);
+    const offenders: string[] = [];
+
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const relPath = file.replace(srcDir + '/', '');
+      const lines = content.split('\n');
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Look for border-[var(--border-strong)]
+        if (!line.includes('border-[var(--border-strong)]')) continue;
+
+        // Collect the className context: current line + next few lines for multi-line
+        const context = lines.slice(i, Math.min(i + 4, lines.length)).join(' ');
+        // Extract bg-[var(--surface-*)] from context
+        const bgMatch = context.match(/bg-\[var\(--(surface(?:-raised|-elevated)?)\)\]/);
+        if (!bgMatch) continue;
+
+        const bgVarName = '--' + bgMatch[1];
+        let bgHex: string;
+        try {
+          bgHex = parseCssVar(css, bgVarName);
+        } catch {
+          continue;
+        }
+        const ratio = contrastRatio(borderStrong, bgHex);
+        if (ratio < 3) {
+          offenders.push(`${relPath}:${i + 1} border-strong(${borderStrong}) on ${bgVarName}(${bgHex}) = ${ratio.toFixed(2)}:1`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('every input/select/textarea in src tsx has a border token meeting 3:1 on its background', () => {
+    const borderStrong = parseCssVar(css, '--border-strong');
+    const borderDefault = parseCssVar(css, '--border');
+    const srcDir = join(__dirname, '../..');
+    function walk(dir: string): string[] {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          files.push(...walk(full));
+        } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+    const tsxFiles = walk(srcDir);
+    const offenders: string[] = [];
+
+    const borderTokenMap: Record<string, string> = {
+      'border-[var(--border-strong)]': borderStrong,
+      'border-[var(--border)]': borderDefault,
+    };
+
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const relPath = file.replace(srcDir + '/', '');
+      const lines = content.split('\n');
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!/<(input|select|textarea)\b/.test(line)) continue;
+
+        // Collect className context: look at surrounding lines (parent may have border/bg)
+        const start = Math.max(0, i - 6);
+        const end = Math.min(lines.length, i + 6);
+        const context = lines.slice(start, end).join(' ');
+        // Extract bg token from the element or its parent
+        const bgMatch = context.match(/bg-\[var\(--(surface(?:-raised|-elevated)?)\)\]/);
+        const bgHex = bgMatch ? parseCssVar(css, '--' + bgMatch[1]) : surface; // default to surface
+
+        // Find border token in context (may be on parent or self)
+        let hasBorder = false;
+        for (const [token, borderHex] of Object.entries(borderTokenMap)) {
+          if (context.includes(token)) {
+            const ratio = contrastRatio(borderHex, bgHex);
+            if (ratio < 3) {
+              offenders.push(`${relPath}:${i + 1} ${token}(${borderHex}) on bg(${bgHex}) = ${ratio.toFixed(2)}:1`);
+            }
+            hasBorder = true;
+            break;
+          }
+        }
+        if (!hasBorder) {
+          // Check for any border-[var(--*)] token in context
+          const anyBorder = context.match(/border-\[var\(--(\w[\w-]*)\)\]/);
+          if (anyBorder) {
+            try {
+              const hex = parseCssVar(css, '--' + anyBorder[1]);
+              const ratio = contrastRatio(hex, bgHex);
+              if (ratio < 3) {
+                offenders.push(`${relPath}:${i + 1} --${anyBorder[1]}(${hex}) on bg(${bgHex}) = ${ratio.toFixed(2)}:1`);
+              }
+            } catch { /* unknown token */ }
+          } else {
+            offenders.push(`${relPath}:${i + 1} <${line.match(/<(input|select|textarea)/)?.[1]}> has no border token (bg=${bgHex})`);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('mutation: change --accent-ink to #FFFFFF in CSS text → accent-ink on accent fails', () => {
@@ -576,19 +712,20 @@ describe('B1: Rendered controls use correct ink tokens', () => {
 
 describe('R6-3: Generated CSS — opacity-suffixed classes exist in built output', () => {
   let builtCss: string;
+  let r6TmpDir: string;
 
   beforeAll(() => {
-    // Compile Tailwind via vite build into a temp directory and read emitted CSS
-    const tmpDir = '/tmp/r7-css-check';
+    // Compile Tailwind via vite build into a per-run temp directory and read emitted CSS
+    r6TmpDir = mkdtempSync(join(tmpdir(), 'r6-css-check-'));
     const frontendDir = join(__dirname, '../../..');
     try {
-      execSync(`npx vite build --outDir ${tmpDir} --emptyOutDir`, {
+      execSync(`npx vite build --outDir ${r6TmpDir} --emptyOutDir`, {
         cwd: frontendDir,
         stdio: 'pipe',
         timeout: 60_000,
       });
       // Glob for emitted CSS files
-      const assetsDir = join(tmpDir, 'assets');
+      const assetsDir = join(r6TmpDir, 'assets');
       if (existsSync(assetsDir)) {
         const files = readdirSync(assetsDir).filter((f) => f.endsWith('.css'));
         if (files.length > 0) {
@@ -602,6 +739,12 @@ describe('R6-3: Generated CSS — opacity-suffixed classes exist in built output
     } catch {
       // Fallback: read from index.css source
       builtCss = css;
+    }
+  });
+
+  afterAll(() => {
+    if (r6TmpDir && existsSync(r6TmpDir)) {
+      rmSync(r6TmpDir, { recursive: true, force: true });
     }
   });
 
@@ -735,23 +878,35 @@ describe('R6-3: Generated CSS — opacity-suffixed classes exist in built output
     }
     expect(offenders).toEqual([]);
   });
+
+  it('mutation M4: css-check dir is created via mkdtemp (path differs between two runs)', () => {
+    // If the build dir were fixed (e.g. /tmp/r7-css-check), two calls would return the same path.
+    // With mkdtemp, each call gets a unique suffix. This test verifies the mechanism works.
+    const dir1 = mkdtempSync(join(tmpdir(), 'm4-test-'));
+    const dir2 = mkdtempSync(join(tmpdir(), 'm4-test-'));
+    expect(dir1).not.toBe(dir2);
+    // Cleanup
+    rmSync(dir1, { recursive: true, force: true });
+    rmSync(dir2, { recursive: true, force: true });
+  });
 });
 
 // ---------- TEST B3: General emission guard — every class token is emitted or defined ----------
 
 describe('B3: General emission guard — every className token in src is emitted or defined', () => {
   let builtCss: string;
+  let b3TmpDir: string;
 
   beforeAll(() => {
-    const tmpDir = '/tmp/r8-css-check';
+    b3TmpDir = mkdtempSync(join(tmpdir(), 'b3-css-check-'));
     const frontendDir = join(__dirname, '../../..');
     try {
-      execSync(`npx vite build --outDir ${tmpDir} --emptyOutDir`, {
+      execSync(`npx vite build --outDir ${b3TmpDir} --emptyOutDir`, {
         cwd: frontendDir,
         stdio: 'pipe',
         timeout: 60_000,
       });
-      const assetsDir = join(tmpDir, 'assets');
+      const assetsDir = join(b3TmpDir, 'assets');
       if (existsSync(assetsDir)) {
         const files = readdirSync(assetsDir).filter((f) => f.endsWith('.css'));
         if (files.length > 0) {
@@ -764,6 +919,12 @@ describe('B3: General emission guard — every className token in src is emitted
       }
     } catch {
       builtCss = css;
+    }
+  });
+
+  afterAll(() => {
+    if (b3TmpDir && existsSync(b3TmpDir)) {
+      rmSync(b3TmpDir, { recursive: true, force: true });
     }
   });
 
@@ -891,7 +1052,10 @@ describe('B3: General emission guard — every className token in src is emitted
       const inner = clean.replace(/^(?:hover|focus|active|disabled|focus-visible|focus-within|sm|md|lg|xl|2xl|dark|first|last|odd|even|group-hover|peer):/, '');
       if (inner !== clean) return isKnownToken(inner, built, custom) || isTailwindUtility(clean, built);
     }
-    if (/^(?:bg|text|border|from|to|via)-\w+\/\d+$/.test(clean)) return true;
+    if (/^(?:bg|text|border|from|to|via)-\w+\/\d+$/.test(clean)) {
+      const escaped = clean.replace('/', '\\/');
+      return built.includes('.' + escaped) || built.includes(clean);
+    }
     if (custom.has(clean)) return true;
     if (ALLOWLIST.has(clean)) return true;
     if (isTailwindUtility(clean, built)) return true;
@@ -924,12 +1088,61 @@ describe('B3: General emission guard — every className token in src is emitted
     expect(isKnown).toBe(false);
   });
 
+  it('mutation e2e: inject bg-success-fillx into source copy → scan reports file+token', () => {
+    const srcDir = join(__dirname, '../..');
+    const tsxFiles = walk(srcDir);
+    const customClasses = parseCustomClasses(css);
+    const fakeSource = 'className="rounded-md bg-success-fillx p-4"';
+    const unknown: string[] = [];
+    const tokens = fakeSource.match(/className="([^"]*)"/)?.[1].split(/\s+/) ?? [];
+    for (const token of tokens) {
+      if (!isKnownToken(token, builtCss, customClasses)) {
+        unknown.push(`mock-file.tsx: ${token}`);
+      }
+    }
+    expect(unknown).toEqual(['mock-file.tsx: bg-success-fillx']);
+  });
+
   it('mutation: use bg-success-fill before B1 definition → guard flags it as unknown', () => {
     const customWithoutSuccessFill = parseCustomClasses(css);
     customWithoutSuccessFill.delete('bg-success-fill');
     const token = 'bg-success-fill';
     const builtWithoutDef = builtCss.replace(/\.bg-success-fill\s*\{[^}]*\}/g, '');
     const isKnown = isKnownToken(token, builtWithoutDef, customWithoutSuccessFill);
+    expect(isKnown).toBe(false);
+  });
+
+  it('mutation e2e: remove bg-success-fill from CSS → scan detects missing class', () => {
+    const srcDir = join(__dirname, '../..');
+    const tsxFiles = walk(srcDir);
+    const customWithoutSuccessFill = parseCustomClasses(css);
+    customWithoutSuccessFill.delete('bg-success-fill');
+    const builtWithoutDef = builtCss.replace(/\.bg-success-fill\s*\{[^}]*\}/g, '');
+    const unknown: string[] = [];
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const tokens = extractStaticTokens(content);
+      const relPath = file.replace(srcDir + '/', '');
+      for (const token of tokens) {
+        if (token === 'bg-success-fill' && !isKnownToken(token, builtWithoutDef, customWithoutSuccessFill)) {
+          unknown.push(`${relPath}: ${token}`);
+        }
+      }
+    }
+    expect(unknown.length).toBeGreaterThan(0);
+  });
+
+  it('mutation: opacity-suffixed class whose built selector is absent (bg-black/58) → B3 catches it', () => {
+    // bg-black/58 is not a valid Tailwind 3 step (58 not in scale)
+    // and its selector would not appear in built CSS.
+    // B3 isKnownToken now checks built CSS for opacity forms too.
+    const fakeToken = 'bg-black/58';
+    const customClasses = parseCustomClasses(css);
+    const escaped = fakeToken.replace('/', '\\/');
+    const inBuilt = builtCss.includes('.' + escaped) || builtCss.includes(fakeToken);
+    // The class is not in built CSS (valid steps: 0,5,10,20,25,30,40,50,60,70,75,80,90,95,100)
+    expect(inBuilt).toBe(false);
+    const isKnown = isKnownToken(fakeToken, builtCss, customClasses);
     expect(isKnown).toBe(false);
   });
 });

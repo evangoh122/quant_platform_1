@@ -25,8 +25,8 @@
   /* Surface elevation: raised obsidian between surface and border */
   --surface-elevated: #1A1D23;
 
-  /* Strong border for interactive inputs (WCAG 1.4.11 >= 3:1 on surface) */
-  --border-strong: #5E636A;
+  /* Strong border for interactive inputs (WCAG 1.4.11 >= 3:1 on all surfaces) */
+  --border-strong: #656B73;
 
 /* Financial signals — status-chrome (UI) vs trade-direction (P&L) */
 /* --positive/--negative: UI status badges (success/danger chrome) */

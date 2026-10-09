@@ -25,7 +25,7 @@ export function SymbolSelect({
       aria-label="Company"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm bg-[var(--surface-raised)] text-[var(--text-primary)]"
+      className="rounded-md border border-[var(--border-strong)] px-3 py-1.5 text-sm bg-[var(--surface-raised)] text-[var(--text-primary)]"
     >
       {items.map((s) => (
         <option key={s} value={s}>
