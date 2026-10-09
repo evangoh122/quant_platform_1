@@ -2,7 +2,7 @@
 #
 # Databricks Apps installs THIS file.  Every top-level third-party import
 # reachable from api/ and agent/ MUST be declared here.  Non-app deps
-# (pyspark, mlflow, yfinance, ibapi, etc.) live in requirements-dev.txt
+# (pyspark, mlflow, ibapi, etc.) live in requirements-dev.txt
 # or requirements-pipelines.txt and are installed by CI, not by the app.
 fastapi>=0.142.2
 uvicorn[standard]>=0.54.0

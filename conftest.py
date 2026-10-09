@@ -74,7 +74,3 @@ def db_conn(tmp_db):
     yield conn
     conn.close()
 
-
-@pytest.fixture
-def sample_tickers():
-    return ["AAPL", "MSFT", "SPY"]

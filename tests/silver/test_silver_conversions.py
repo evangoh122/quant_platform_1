@@ -9,20 +9,21 @@ These tests verify that:
 
 Note: We test the conversion logic directly rather than importing from
 etl.extract_polygon to avoid polygon-api-client version issues in CI.
+The standalone helpers below mirror the original implementations.
 """
 import pytest
 from datetime import datetime, timezone
 
 
 def _ms_to_iso(ms):
-    """Convert millisecond timestamp to ISO-8601 string. Copied from extract_polygon."""
+    """Convert millisecond timestamp to ISO-8601 string."""
     if ms is None:
         return None
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(timespec="seconds")
 
 
 def _polygon_ticker(t_def):
-    """Convert IBKR ticker dict to polygon format. Copied from extract_polygon."""
+    """Convert IBKR ticker dict to polygon format."""
     if not isinstance(t_def, dict):
         return str(t_def).strip().replace(" ", ".")
 

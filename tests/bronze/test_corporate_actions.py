@@ -251,7 +251,7 @@ class TestBronzeIdempotency:
 class TestImportSafety:
 
     def test_import_makes_no_network_calls(self):
-        """Importing etl.corporate_actions must not call yfinance."""
+        """Importing etl.corporate_actions must not make network calls."""
         import importlib
         mod = importlib.import_module("etl.corporate_actions")
         assert hasattr(mod, "CorporateActionSplit")
