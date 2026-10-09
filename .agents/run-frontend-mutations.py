@@ -20,7 +20,7 @@ R3_MUTATIONS = [
     {
         "id": "r3-M1",
         "desc": "Restore combined-filter pricedPositions",
-        "test": "PaperPortfolio > shows em dash for Total P&L when all P&L values are null",
+        "test": "shows em dash for Total P&L when all P&L values are null",
         "old": (
             "  const positions = data?.positions.data ?? [];\n"
             "  const realized = positions.reduce((sum, p) => (p.realized_pnl != null ? sum + p.realized_pnl : sum), 0);\n"
@@ -46,14 +46,14 @@ R3_MUTATIONS = [
     {
         "id": "r3-M2",
         "desc": "Coerce null to 0",
-        "test": "PaperPortfolio > shows em dash for Total P&L when all P&L values are null",
+        "test": "shows em dash for Total P&L when all P&L values are null",
         "old": f"value={{totalPnlKnown ? totalPnl.toFixed(2) : '{EM_DASH}'}}",
         "new": "value={totalPnl.toFixed(2)}",
     },
     {
         "id": "r3-M3",
         "desc": "Drop unpriced note (remove hint)",
-        "test": "PaperPortfolio > sums realized and unrealized independently; shows unpriced note",
+        "test": "sums realized and unrealized independently; shows unpriced note",
         "old": (
             "              hint={\n"
             "                !totalPnlKnown\n"
@@ -68,7 +68,7 @@ R3_MUTATIONS = [
     {
         "id": "r3-M4",
         "desc": "Sum realized only with non-null unrealized",
-        "test": "PaperPortfolio > counts unpriced realized independently of unpriced unrealized",
+        "test": "counts unpriced realized independently of unpriced unrealized",
         "old": "  const realized = positions.reduce((sum, p) => (p.realized_pnl != null ? sum + p.realized_pnl : sum), 0);",
         "new": "  const realized = positions.filter((p) => p.unrealized_pnl != null).reduce((sum, p) => (p.realized_pnl != null ? sum + p.realized_pnl : sum), 0);",
     },
@@ -78,21 +78,21 @@ R4_MUTATIONS = [
     {
         "id": "r4-M1",
         "desc": "Drop the unpricedRealized clause from the hint",
-        "test": "PaperPortfolio > shows partial hint with both counts when both kinds of null present",
+        "test": "shows partial hint with both counts when both kinds of null present",
         "old": f"${{unpricedRealized > 0 ? ` {MIDDLE_DOT} ${{unpricedRealized}} realized unpriced` : ''}}`",
-        "new": "``",
+        "new": "`",
     },
     {
         "id": "r4-M2",
         "desc": "Drop the word partial from the hint",
-        "test": "PaperPortfolio > shows partial hint with realized unpriced when all unrealized present but one realized null",
+        "test": "shows partial hint with realized unpriced when all unrealized present but one realized null",
         "old": f"partial {MIDDLE_DOT} realized",
         "new": "realized",
     },
     {
         "id": "r4-M3",
         "desc": "Only show hint when unpricedUnrealized > 0",
-        "test": "PaperPortfolio > shows partial hint with realized unpriced when all unrealized present but one realized null",
+        "test": "shows partial hint with realized unpriced when all unrealized present but one realized null",
         "old": "unpricedUnrealized > 0 || unpricedRealized > 0",
         "new": "unpricedUnrealized > 0",
     },
@@ -100,13 +100,22 @@ R4_MUTATIONS = [
 
 
 def run_test(test_name):
+    """Run the full test file and check if any test fails.
+    We run the entire file because mutations may be caught by tests
+    other than the primary target.
+    """
     env = os.environ.copy()
     env["PATH"] = os.path.dirname(NODE) + ":" + env.get("PATH", "")
     result = subprocess.run(
-        [NODE, VITEST, "run", "-t", test_name, TEST],
+        [NODE, VITEST, "run", TEST],
         capture_output=True, text=True, cwd=FRONTEND, timeout=60, env=env,
     )
-    return result.returncode != 0, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    # Check if the specific test failed
+    if result.returncode != 0:
+        return True, output
+    # All tests passed — mutant survived
+    return False, output
 
 
 def apply_mutation(mutation):
