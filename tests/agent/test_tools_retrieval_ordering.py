@@ -1,11 +1,12 @@
 """tests/agent/test_tools_retrieval_ordering.py — Fix 1: Spark orderBy before limit.
 
-Verifies that the PySpark branch of ``get_options_features`` applies
-``orderBy(F.col("feature_ts").desc())`` BEFORE ``.limit()`` so that the
-newest rows are returned deterministically.
+Verifies that the PySpark branches of ``get_options_features`` and
+``get_cot_positioning`` apply ``orderBy(...desc())`` BEFORE ``.limit()`` so
+that the newest rows are returned deterministically.
 """
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -124,3 +125,52 @@ def test_shuffled_rows_returned_newest_first_when_ordered():
 
     assert result[0]["feature_ts"] == "2026-01-03"
     assert result[1]["feature_ts"] == "2026-01-02"
+
+
+# ——— r2: get_cot_positioning (single-row .limit(1) lookup) ————————————
+
+
+def test_cot_positioning_orders_report_date_desc_before_limit():
+    """get_cot_positioning PySpark branch: orderBy(report_date DESC) before limit(1).
+
+    A .limit(1) over a time series is nondeterministic without ordering; the
+    warehouse path (_build_cot_query) orders ``report_date DESC``, so the
+    Spark branch must return the same (newest) row.
+    """
+    rec = _RecordingDF()
+    stub_spark = MagicMock()
+    stub_spark.table.return_value = rec
+
+    with patch("db.delta_adapter._has_pyspark", True), \
+         patch("agent.tools_retrieval._spark", return_value=stub_spark):
+        from agent.tools_retrieval import get_cot_positioning
+        get_cot_positioning("equity_index")
+
+    assert "orderBy" in rec._calls, (
+        "get_cot_positioning Spark branch never applied orderBy before limit"
+    )
+    assert "limit" in rec._calls, "get_cot_positioning Spark branch never reached limit"
+    order_idx = rec._calls.index("orderBy")
+    limit_idx = rec._calls.index("limit")
+    assert order_idx < limit_idx, (
+        f"orderBy (index {order_idx}) must come before limit (index {limit_idx})"
+    )
+    assert rec._order_col is not None, "orderBy was called but no column was passed"
+    col_str = str(rec._order_col)
+    assert "report_date" in col_str, f"orderBy column should reference report_date, got: {col_str}"
+    assert re.search(r"\bDESC\b", col_str), (
+        f"orderBy must be descending (newest report first), got: {col_str}"
+    )
+
+
+def test_cot_query_orders_report_date_desc():
+    """The warehouse COT query must order report_date DESC (mirrors the Spark
+    branch and makes the single-row lookup deterministic on both backends)."""
+    from agent.tools_retrieval import _build_cot_query
+
+    sql, params = _build_cot_query("rate")
+    assert "ORDER BY" in sql, f"Missing ORDER BY in COT query: {sql}"
+    order_clause = sql.split("ORDER BY", 1)[1]
+    assert "report_date" in order_clause, f"ORDER BY must include report_date: {sql}"
+    assert "DESC" in order_clause.upper(), f"ORDER BY must be DESC: {sql}"
+    assert params == {"mapped_asset": "rate"}

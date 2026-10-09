@@ -59,7 +59,10 @@ def _build_cot_query(mapped_asset: str) -> tuple[str, dict]:
     """Build the COT positioning query. Returns (sql, params)."""
     from db.delta_adapter import _fqn
     cols_sql = ", ".join(_COT_COLS)
-    query = f"SELECT {cols_sql} FROM {_fqn('gold_cot_features')} WHERE mapped_asset = :mapped_asset"
+    query = (
+        f"SELECT {cols_sql} FROM {_fqn('gold_cot_features')} "
+        f"WHERE mapped_asset = :mapped_asset ORDER BY report_date DESC"
+    )
     return query, {"mapped_asset": mapped_asset}
 
 
@@ -439,7 +442,7 @@ def get_cot_positioning(mapped_asset: str) -> dict:
         cols = [F.col(c) for c in _COT_COLS]
         df = _spark().table(_fqn("gold_cot_features")).where(
             F.col("mapped_asset") == asset_class
-        ).select(*cols).limit(1)
+        ).select(*cols).orderBy(F.col("report_date").desc()).limit(1)
         rows = df.collect()
         return rows[0].asDict() if rows else {}
 

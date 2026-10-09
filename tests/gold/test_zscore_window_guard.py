@@ -36,40 +36,47 @@ def test_gold_sql_contains_count_guard():
 def _extract_zscore_expression(sql_text: str) -> str:
     """Extract the z-score SELECT expression from the production SQL.
 
-    Returns the expression used for volume_anomaly_zscore from the outer SELECT.
-    Handles multi-line CASE expressions.
+    Returns the outer-SELECT item aliased to ``volume_anomaly_zscore``.  The
+    item is located by scanning backwards from the alias to the nearest
+    top-level comma (paren-depth aware), so the extraction is exact whether the
+    item is a multi-line ``CASE`` guard or a bare arithmetic expression — it
+    never swallows unrelated earlier ``CASE`` expressions from other CTEs.
     """
     lines = sql_text.splitlines()
-    # Find the line with "AS volume_anomaly_zscore" (the alias line)
+    # Find the line with "AS volume_anomaly_zscore" (the alias line) and the
+    # column where the alias starts on that line.
     alias_idx = None
+    alias_col = None
     for i, line in enumerate(lines):
         if "AS volume_anomaly_zscore" in line and not line.strip().startswith("--"):
             alias_idx = i
+            alias_col = line.index("AS volume_anomaly_zscore")
             break
 
     if alias_idx is None:
         raise ValueError("Could not find volume_anomaly_zscore alias in SQL")
 
-    # Walk backwards to find the start of the expression (CASE WHEN or a single-line expr)
-    start_idx = alias_idx
-    for i in range(alias_idx, -1, -1):
-        stripped = lines[i].strip()
-        if stripped.startswith("CASE"):
-            start_idx = i
-            break
-        # Keep walking back for multi-line CASE/THEN/END
-        if "CASE" in stripped:
-            start_idx = i
-            break
+    # Text up to (not including) the alias.
+    head = "\n".join(lines[:alias_idx]) + "\n" + lines[alias_idx][:alias_col]
 
-    # Extract the expression lines, clean up
-    expr_lines = lines[start_idx:alias_idx + 1]
-    expr = " ".join(l.strip() for l in expr_lines)
-    # Remove trailing comma and the alias (we only need the expression)
+    # Walk backwards from the alias: track paren depth and stop at the first
+    # comma (or statement terminator) at depth 0 — the item boundary.
+    depth = 0
+    i = len(head) - 1
+    while i >= 0:
+        ch = head[i]
+        if ch == ")":
+            depth += 1
+        elif ch == "(":
+            depth -= 1
+        elif depth == 0 and ch in ",;":
+            break
+        i -= 1
+    start = i + 1
+
+    # Extract the expression, clean up whitespace/newlines.
+    expr = " ".join(head[start:].split())
     expr = expr.rstrip(",").strip()
-    # Remove "AS volume_anomaly_zscore" suffix if present
-    if expr.endswith("AS volume_anomaly_zscore"):
-        expr = expr[: -len("AS volume_anomaly_zscore")].strip()
     return expr
 
 

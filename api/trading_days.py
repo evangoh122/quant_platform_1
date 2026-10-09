@@ -16,9 +16,11 @@ from datetime import date, timedelta
 def start_for_trading_days(end: date, n: int) -> date:
     """Return the start date ``n`` trading days (weekdays) before ``end``.
 
-    A "trading day" is a Monday–Friday.  The count is inclusive of ``end``
-    if ``end`` is itself a weekday, so ``start_for_trading_days(Wed, 5)``
-    returns the preceding Wednesday (5 weekdays back, spanning a weekend).
+    A "trading day" is a Monday–Friday.  ``end`` itself is never counted:
+    the helper walks back over ``n`` weekdays strictly before ``end``, so
+    ``start_for_trading_days(Wed, 5)`` returns the preceding Wednesday
+    (5 weekdays back, spanning a weekend).  If ``end`` falls on a weekend it
+    is first rolled back to the preceding Friday without consuming a count.
 
     Parameters
     ----------
