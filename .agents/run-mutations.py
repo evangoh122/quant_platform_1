@@ -171,6 +171,14 @@ def apply_edits(copy_dir: str, mutation: dict) -> bool:
     return True
 
 
+def failure_excerpt(output: str) -> str:
+    """Assertion/error lines ('E ...') if any, else the tail of the output."""
+    err_lines = [l for l in output.strip().splitlines() if l.strip().startswith("E ")]
+    if err_lines:
+        return "\n  ".join(err_lines[-8:])
+    return "\n  ".join(output.strip().splitlines()[-8:])
+
+
 def main() -> int:
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=no"],
@@ -206,7 +214,7 @@ def main() -> int:
             failed, output = run_pytest(copy_dir, m["test"])
             if failed:
                 print("  BASELINE FAILED on unmutated copy — cannot claim a kill:")
-                print("  " + "\n  ".join(output.strip().splitlines()[-8:]))
+                print("  " + failure_excerpt(output))
                 results.append((m["id"], "ERROR", "baseline test failed on unmutated copy"))
                 continue
             print("  baseline: test PASSES on unmutated copy")
@@ -216,22 +224,20 @@ def main() -> int:
                 continue
 
             failed, output = run_pytest(copy_dir, m["test"])
-            tail = "\n".join(output.strip().splitlines()[-12:])
             if not failed:
                 print("  MUTANT SURVIVED — test PASSED on mutated code")
-                print("  " + "\n  ".join(tail.splitlines()))
                 results.append((m["id"], "FAIL", "test passed on mutated code"))
                 continue
 
             if m["expect_fail_text"].lower() not in output.lower():
                 print("  WRONG REASON — test failed but not via the expected kill signature:")
-                print("  " + "\n  ".join(tail.splitlines()))
+                print("  " + failure_excerpt(output))
                 results.append((m["id"], "FAIL", "killed for the wrong reason"))
                 continue
 
             print("  test FAILED (expected) via the expected kill signature")
-            print("  pytest tail:")
-            print("  " + "\n  ".join(tail.splitlines()))
+            print("  pytest failure excerpt:")
+            print("  " + failure_excerpt(output))
             results.append((m["id"], "PASS", m["test"]))
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
