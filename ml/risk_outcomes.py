@@ -51,6 +51,7 @@ def build_signal_outcomes(
     signals = signals.copy()
     signals = signals.rename(columns={"probability": "probability_up"})
     signals["direction"] = np.where(signals["probability_up"] >= 0.5, "UP", "DOWN")
+    signals.loc[signals["probability_up"].isna(), "direction"] = np.nan
 
     if "horizon" in signals.columns:
         unsupported = signals["horizon"].unique()
@@ -149,6 +150,15 @@ def build_signal_outcomes(
     # Mask ex-dividend rows
     ex_masked = result["ex_dividend_state"] == "masked"
     result.loc[ex_masked, "outcome_z"] = np.nan
+
+    # Blank outcome fields for pending rows (replay-leak prevention).
+    # Pending rows carry outcome_close, raw_forward_return, outcome_z,
+    # base_up_flag from a bar AFTER as_of — blank them.
+    pending = result["eligibility_state"] == "outcome_pending"
+    for col in ["outcome_close", "outcome_close_ts", "raw_forward_return",
+                "signed_raw_return", "outcome_z", "base_up_flag"]:
+        result.loc[pending, col] = np.nan
+    result.loc[pending, "outcome_date"] = None
 
     # Select and order output columns
     output_cols = [

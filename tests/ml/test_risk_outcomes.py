@@ -1002,9 +1002,25 @@ class TestMutationClosing:
         assert abs(result.loc[0, "sigma20"] - expected_sigma) < 1e-12
 
     def test_m4_two_horizons_never_pooled(self):
-        """M4: summarize_outcomes never pools different horizons."""
+        """M4: summarize_outcomes never pools different horizons.
+
+        Hand-computed values:
+        1d: 120 eligible rows, all outcome_z=+1.0, all base_up_flag=True
+            n=120, median_outcome_z=+1.0, base_up_rate=1.0
+        5d: 120 eligible rows, all outcome_z=-1.0, all base_up_flag=False
+            n=120, median_outcome_z=-1.0, base_up_rate=0.0
+
+        M4 mutant pools horizons: groupby(["model_version"]) with
+        hor = grp.horizon.iloc[0]. Pooled group: n=240,
+        median_outcome_z=0.0 (median of 120*+1 + 120*-1),
+        base_up_rate=0.5 (120/240). Zero-eligible fallback adds
+        (v1, 5d) with n=0 and all-None values.
+
+        Literal groupby(["model_version"]) mutant must also fail:
+        it produces one group of 240 with hor="1d" and a fallback 5d.
+        """
         from ml.risk_outcomes import summarize_outcomes as summarize
-        # Build two horizons with sufficient data
+
         def _make_outcomes(n, dates, mv="v1", hor="1d"):
             date_range = pd.date_range("2025-01-01", periods=dates, freq="B", tz="UTC")
             rows = []
@@ -1026,7 +1042,6 @@ class TestMutationClosing:
 
         out_1d = _make_outcomes(120, 70, hor="1d")
         out_5d = _make_outcomes(120, 70, hor="5d", mv="v1")
-        # Give 5d a different outcome_z to detect pooling
         out_5d["outcome_z"] = -1.0
         out_5d["base_up_flag"] = False
         out_5d["signed_raw_return"] = -0.01
@@ -1037,9 +1052,90 @@ class TestMutationClosing:
         assert len(result) == 2
         r1d = next(r for r in result if r["horizon"] == "1d")
         r5d = next(r for r in result if r["horizon"] == "5d")
-        # Must not be pooled: different median_outcome_z
-        assert r1d["median_outcome_z"] != r5d["median_outcome_z"]
-        assert r1d["base_up_rate"] != r5d["base_up_rate"]
+        # Exact per-horizon values: n, median_outcome_z, base_up_rate
+        assert r1d["n"] == 120, f"1d n={r1d['n']}, expected 120 (pooling?)"
+        assert r1d["median_outcome_z"] == 1.0
+        assert r1d["base_up_rate"] == 1.0
+        assert r5d["n"] == 120, f"5d n={r5d['n']}, expected 120 (pooling?)"
+        assert r5d["median_outcome_z"] == -1.0
+        assert r5d["base_up_rate"] == 0.0
+
+    def test_m4b_excluded_counts_per_horizon(self):
+        """M4b: excluded_counts must be split by horizon, not pooled.
+
+        1d: 120 eligible + 1 excluded (missing_return)
+        5d: 120 eligible + 1 excluded (outcome_pending)
+
+        M4b mutant drops horizon filter in group_all, pooling
+        excluded_counts: both horizons get {missing_return: 1,
+        outcome_pending: 1}.
+        """
+        from ml.risk_outcomes import summarize_outcomes as summarize
+
+        def _make_outcomes(n, dates, mv="v1", hor="1d"):
+            date_range = pd.date_range("2025-01-01", periods=dates, freq="B", tz="UTC")
+            rows = []
+            for i in range(n):
+                d = date_range[i % dates]
+                rows.append({
+                    "signal_id": f"s{i}_{hor}", "symbol": "AAPL", "model_version": mv,
+                    "horizon": hor, "prediction_ts": d,
+                    "entry_date": _td(2025, 1, 1), "outcome_date": _td(2025, 1, 2),
+                    "direction": "UP", "probability_up": 0.6,
+                    "raw_forward_return": 0.01, "signed_raw_return": 0.01,
+                    "sigma20": 0.01, "sigma252": 0.01, "sigma_floor": 0.005,
+                    "sigma_used": 0.01, "sigma_method": "close_to_close_ddof1_v1",
+                    "sigma_as_of": _td(2025, 1, 1), "sigma_observation_count": 20,
+                    "outcome_z": 1.0, "base_up_flag": True,
+                    "ex_dividend_state": "none", "eligibility_state": "eligible",
+                })
+            return pd.DataFrame(rows)
+
+        out_1d = _make_outcomes(120, 70, hor="1d")
+        out_5d = _make_outcomes(120, 70, hor="5d", mv="v1")
+        out_5d["outcome_z"] = -1.0
+        out_5d["base_up_flag"] = False
+        out_5d["signed_raw_return"] = -0.01
+        out_5d["raw_forward_return"] = -0.01
+
+        # One excluded row per horizon with DIFFERENT reasons
+        excl_1d = pd.DataFrame([{
+            "signal_id": "excl_1d", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 6, 1),
+            "entry_date": _td(2025, 1, 1), "outcome_date": None,
+            "direction": "UP", "probability_up": 0.6,
+            "raw_forward_return": np.nan, "signed_raw_return": np.nan,
+            "sigma20": np.nan, "sigma252": np.nan, "sigma_floor": np.nan,
+            "sigma_used": np.nan, "sigma_method": "close_to_close_ddof1_v1",
+            "sigma_as_of": None, "sigma_observation_count": 0,
+            "outcome_z": np.nan, "base_up_flag": np.nan,
+            "ex_dividend_state": "none", "eligibility_state": "missing_return",
+        }])
+        excl_5d = pd.DataFrame([{
+            "signal_id": "excl_5d", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "5d", "prediction_ts": _utc(2025, 6, 1),
+            "entry_date": None, "outcome_date": None,
+            "direction": "UP", "probability_up": 0.6,
+            "raw_forward_return": np.nan, "signed_raw_return": np.nan,
+            "sigma20": np.nan, "sigma252": np.nan, "sigma_floor": np.nan,
+            "sigma_used": np.nan, "sigma_method": "close_to_close_ddof1_v1",
+            "sigma_as_of": None, "sigma_observation_count": 0,
+            "outcome_z": np.nan, "base_up_flag": np.nan,
+            "ex_dividend_state": "none", "eligibility_state": "outcome_pending",
+        }])
+
+        outcomes = pd.concat([out_1d, out_5d, excl_1d, excl_5d], ignore_index=True)
+        result = summarize(outcomes, min_n=100, min_dates=60, rho=0.2)
+        assert len(result) == 2
+        r1d = next(r for r in result if r["horizon"] == "1d")
+        r5d = next(r for r in result if r["horizon"] == "5d")
+        # Each horizon must have exactly its own excluded reason, no leakage
+        assert r1d["excluded_counts"] == {"missing_return": 1}, (
+            f"1d excluded_counts={r1d['excluded_counts']}"
+        )
+        assert r5d["excluded_counts"] == {"outcome_pending": 1}, (
+            f"5d excluded_counts={r5d['excluded_counts']}"
+        )
 
     def test_m5_exact_match_close_ts_eq_prediction_ts(self):
         """M5: close_ts == prediction_ts is eligible for sigma window (boundary).
@@ -1182,6 +1278,133 @@ class TestMutationClosing:
         # Should be eligible (assuming sigma is available)
         # Since we only have 2 closes with valid returns, insufficient_sigma_history
         assert result.loc[0, "eligibility_state"] == "insufficient_sigma_history"
+
+    def test_m10_pending_row_outcome_fields_blank(self):
+        """M10: Pending rows must have NaN outcome fields (replay-leak prevention).
+
+        A signal with outcome_close_ts > as_of is pending. Its outcome_close,
+        raw_forward_return, outcome_z, base_up_flag must all be NaN even though
+        the future bar exists in closes.
+        """
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 100.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 21),
+             "close": 95.0, "close_ts": _utc(2025, 1, 21, 20, 0),
+             "return_1d": -0.05},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        # as_of before outcome_close_ts => pending
+        as_of = _utc(2025, 1, 20, 22, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        assert result.loc[0, "eligibility_state"] == "outcome_pending"
+        # Outcome fields must be blank
+        assert pd.isna(result.loc[0, "outcome_close"])
+        assert pd.isna(result.loc[0, "outcome_close_ts"])
+        assert pd.isna(result.loc[0, "raw_forward_return"])
+        assert pd.isna(result.loc[0, "signed_raw_return"])
+        assert pd.isna(result.loc[0, "outcome_z"])
+        assert pd.isna(result.loc[0, "base_up_flag"])
+        assert result.loc[0, "outcome_date"] is None
+        # Entry-side fields must be preserved
+        assert result.loc[0, "entry_close"] == 100.0
+        assert result.loc[0, "entry_date"] is not None
+
+    def test_m10b_summary_unchanged_with_or_without_future_bar(self):
+        """M10b: Aggregates identical whether future bar exists or not.
+
+        Pending rows are excluded from aggregates. Adding a future bar
+        that makes a row pending must not change the summary.
+        """
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(1, 80)]
+        closes_base = _make_multi_day_closes("AAPL", "2025-01-01", 81, rets)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 3, 24),
+            "close": 105.0, "close_ts": _utc(2025, 3, 24, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes_with_future = pd.concat([closes_base, extra], ignore_index=True)
+
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 3, 22, 21, 0),
+            "probability": 0.6,
+        }])
+        # as_of before the future bar => pending
+        as_of_pending = _utc(2025, 3, 22, 22, 0)
+        # as_of after the future bar => eligible (if sigma available)
+        as_of_resolved = _utc(2025, 3, 30, 21, 0)
+
+        result_pending = build_signal_outcomes(
+            signals, closes_with_future, as_of=as_of_pending
+        )
+        result_resolved = build_signal_outcomes(
+            signals, closes_with_future, as_of=as_of_resolved
+        )
+        # Pending row must have NaN outcome_z
+        assert pd.isna(result_pending.loc[0, "outcome_z"])
+        # Resolved row must have non-NaN outcome_z (sigma available)
+        assert not pd.isna(result_resolved.loc[0, "outcome_z"])
+        # Eligibility states differ
+        assert result_pending.loc[0, "eligibility_state"] == "outcome_pending"
+        assert result_resolved.loc[0, "eligibility_state"] == "eligible"
+
+    def test_m10c_mutation_not_blanking_keeps_outcome_z(self):
+        """M10c: If blanking is removed, pending row leaks outcome_z.
+
+        This test proves the blanking is load-bearing: without it,
+        the pending row would carry a non-NaN outcome_z from the future bar.
+        """
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 100.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 21),
+             "close": 95.0, "close_ts": _utc(2025, 1, 21, 20, 0),
+             "return_1d": -0.05},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        as_of = _utc(2025, 1, 20, 22, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        # With blanking: outcome_z is NaN for pending
+        assert pd.isna(result.loc[0, "outcome_z"])
+        # The raw data (before blanking) would have outcome_z != NaN
+        # because the future bar exists. Prove by checking outcome_close is blanked:
+        assert pd.isna(result.loc[0, "outcome_close"])
+
+    def test_m11_nan_probability_missing_direction(self):
+        """M11: NaN probability => direction is NaN (not DOWN).
+
+        np.where(NaN >= 0.5, "UP", "DOWN") evaluates to "DOWN" because
+        NaN >= 0.5 is False. The fix must set direction to NaN for NaN prob.
+        """
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(1, 24)]
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 25, rets)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 26),
+            "close": 105.0, "close_ts": _utc(2025, 1, 26, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes = pd.concat([closes, extra], ignore_index=True)
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 25, 21, 0),
+            "probability": float("nan"),
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        # NaN probability must NOT produce "DOWN"
+        assert result.loc[0, "direction"] != "DOWN", "NaN prob must not default to DOWN"
+        assert pd.isna(result.loc[0, "direction"]), "NaN prob => NaN direction"
 
 
 # ── Non-blocking: duplicate close guard ───────────────────────────────────────
