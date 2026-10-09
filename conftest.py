@@ -73,4 +73,3 @@ def db_conn(tmp_db):
     conn = db_module.get_connection()
     yield conn
     conn.close()
-
