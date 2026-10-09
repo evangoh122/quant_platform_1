@@ -44,8 +44,10 @@ is the default reviewer for commit pushes and routine PR iteration. Opus 5.5
 4. **The final merge is made directly into `main`/production.**
 
 This repository has no integration branch; every PR targets `main` directly.
-Opus gives one final review of the exact PR head SHA before each merge into
-`main`, while Codex Sol covers every push and iteration. If the owner later
+Opus is therefore required before EVERY merge into `main` (one review per
+head SHA, rerun after any later commit), unless the owner exempts a docs-only
+PR below; Codex Sol alone never suffices for a merge into `main`. Codex Sol
+covers every push and iteration. If the owner later
 adds an integration branch, routine feature→integration PRs use Codex Sol only.
 
 The owner may exempt docs-only PRs from the Opus review by saying so in the PR.
@@ -126,7 +128,8 @@ require pyspark. No hard-coded home-directory paths.
 
 ## Pull requests and authority
 
-After opening or updating every PR, run:
+After pushing commits that passed DeepSeek and Codex Sol to an existing PR
+(never at PR open — the workflow below already requests that review), run:
 
 ```bash
 gh pr comment <PR_NUMBER> --body "@coderabbitai review"
