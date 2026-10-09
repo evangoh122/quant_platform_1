@@ -28,9 +28,9 @@
   /* Strong border for interactive inputs (WCAG 1.4.11 >= 3:1 on surface) */
   --border-strong: #5E636A;
 
-  /* Financial signals — status-chrome (UI) vs trade-direction (P&L) */
-  /* --positive/--negative: UI status badges (success/danger chrome) */
-  /* --bullish/--bearish: trade-direction markers (up/down P&L) */
+/* Financial signals — status-chrome (UI) vs trade-direction (P&L) */
+/* --positive/--negative: UI status badges (success/danger chrome) */
+/* --bearish: trade-direction marker (down P&L); no --bullish defined */
   --positive: #43D19E;
   --bearish: #FF727F;
   --neutral: #A8B0BC;
@@ -56,13 +56,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-@theme {
-  --font-sans: "Geist", "Segoe UI Variable", "SF Pro Display", system-ui, -apple-system, sans-serif;
-  --font-serif: "Georgia", "Times New Roman", serif;
-  --font-mono: "JetBrains Mono", "SF Mono", "Geist Mono", "Fira Code", ui-monospace, monospace;
-}
-
-/* Font stacks as :root vars (fallback for Tailwind 3 which ignores @theme) */
+/* Font stacks as :root vars */
 :root {
   --font-sans: "Geist", "Segoe UI Variable", "SF Pro Display", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Geist Mono", "Fira Code", ui-monospace, monospace;
@@ -148,6 +142,11 @@ code,
 .border-warning-dim-20 { border-color: color-mix(in srgb, var(--warning) 20%, transparent); }
 .border-warning-dim-30 { border-color: color-mix(in srgb, var(--warning) 30%, transparent); }
 .border-info-dim-20 { border-color: color-mix(in srgb, var(--info) 20%, transparent); }
+
+/* Tinted text utilities — semantic warning/danger/success text */
+.text-warning-text { color: color-mix(in srgb, var(--warning) 90%, var(--text-primary)); }
+.text-danger-text { color: color-mix(in srgb, var(--on-danger) 90%, var(--text-primary)); }
+.text-success-text { color: color-mix(in srgb, var(--on-success) 90%, var(--text-primary)); }
 
 :where(button, a, input, select, textarea, summary, [role="button"]):focus-visible {
   outline: 2px solid var(--accent);

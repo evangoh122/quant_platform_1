@@ -45,7 +45,7 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
     }
     return {
       label: 'Save not confirmed',
-      cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+      cls: 'bg-warning-dim text-warning-text',
     };
   }
   if (tc.name === 'add_to_watchlist') {

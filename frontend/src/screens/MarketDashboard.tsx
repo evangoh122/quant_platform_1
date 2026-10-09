@@ -68,7 +68,7 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
         </button>
       ))}
       {missing > 0 && (
-        <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
+        <span className="ml-2 text-xs text-warning-text">
           {missing} missing point{missing !== 1 ? 's' : ''}
         </span>
       )}

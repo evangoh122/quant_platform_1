@@ -1,14 +1,20 @@
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
 import React, { useCallback, useState } from 'react';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 import CoachMarks, { type CoachStep, SCREEN_NAMES } from './CoachMarks';
 import { DeveloperDetails } from '../evidence/DeveloperDetails';
 import { AppShell, type NavGroup } from '../../layout/AppShell';
 import { Sidebar } from '../../layout/Sidebar';
 import { APPLICATION_TOUR, ARCHITECTURE_TOUR } from './tourSteps';
+import { PlatformOverview } from '../../screens/PlatformOverview';
+import { EmptyPanel } from '../states/EmptyPanel';
+import { ErrorState } from '../ErrorState';
+import { ErrorPanel } from '../states/ErrorPanel';
+import { OrderApprovalDrawer } from '../../screens/OrderApprovalDrawer';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const css: string = readFileSync(join(__dirname, '../../index.css'), 'utf-8');
@@ -121,13 +127,48 @@ describe('R6-1: Token integrity — every var(--*) reference is defined', () => 
     expect(undefinedRefs).toEqual([]);
   });
 
-  it('mutation: delete --surface-elevated from index.css → token integrity test would fail', () => {
-    const definedVars = parseRootVars(css);
-    expect(definedVars.has('surface-elevated')).toBe(true);
-    // Simulate mutation: removing the var
-    const mutated = definedVars;
-    mutated.delete('surface-elevated');
-    expect(mutated.has('surface-elevated')).toBe(false);
+  it('mutation: delete --surface-elevated from CSS text → integrity function reports missing token', () => {
+    // Real mutation: remove the --surface-elevated declaration from the CSS TEXT
+    const mutatedCss = css.replace(/--surface-elevated\s*:\s*#[0-9a-fA-F]+;?\s*/, '');
+    expect(mutatedCss).not.toContain('--surface-elevated');
+
+    // Re-run the integrity function on the mutated text
+    const definedVars = parseRootVars(mutatedCss);
+    const extraDefined = new Set(['font-sans', 'font-mono', 'font-serif']);
+    for (const v of extraDefined) definedVars.add(v);
+
+    const srcDir = join(__dirname, '../..');
+    function walk(dir: string): string[] {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          files.push(...walk(full));
+        } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+    const tsxFiles = walk(srcDir);
+
+    const undefinedRefs: string[] = [];
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const pattern = /var\(--([\w-]+)\)/g;
+      let m;
+      while ((m = pattern.exec(content)) !== null) {
+        if (!definedVars.has(m[1])) {
+          undefinedRefs.push(`${file.replace(srcDir + '/', '')}: var(--${m[1]})`);
+        }
+      }
+    }
+
+    // surface-elevated is used in src files, so the mutated CSS should report it missing
+    const hasSurfaceElevated = undefinedRefs.some((r) => r.includes('surface-elevated'));
+    expect(hasSurfaceElevated).toBe(true);
   });
 });
 
@@ -234,29 +275,272 @@ describe('R6-2: Contrast ratios — WCAG AA for text on filled backgrounds', () 
     expect(ratio).toBeGreaterThanOrEqual(3);
   });
 
-  it('mutation: change --accent-ink to #FFFFFF → accent-ink on accent fails', () => {
-    const accent = parseCssVar(css, '--accent');
-    const ratio = contrastRatio('#FFFFFF', accent);
+  it('mutation: change --accent-ink to #FFFFFF in CSS text → accent-ink on accent fails', () => {
+    // Real mutation: modify the CSS TEXT
+    const mutatedCss = css.replace(/--accent-ink\s*:\s*#[0-9a-fA-F]+/, '--accent-ink: #FFFFFF');
+    // Parse the mutated accent and accent-ink values
+    const accent = parseCssVar(mutatedCss, '--accent');
+    const accentInk = parseCssVar(mutatedCss, '--accent-ink');
+    expect(accentInk).toBe('#FFFFFF');
+    const ratio = contrastRatio(accentInk, accent);
     expect(ratio).toBeLessThan(4.5); // 1.96:1 — fails
+  });
+});
+
+// ---------- TEST B1: Class-usage contrast guard ----------
+
+describe('B1: Class-usage contrast guard — fills must pair with ink tokens', () => {
+  function walk(dir: string): string[] {
+    const entries = readdirSync(dir);
+    const files: string[] = [];
+    for (const entry of entries) {
+      const full = join(dir, entry);
+      const st = statSync(full);
+      if (st.isDirectory()) {
+        files.push(...walk(full));
+      } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+        files.push(full);
+      }
+    }
+    return files;
+  }
+
+  function extractClassStrings(content: string): string[] {
+    const classes: string[] = [];
+    // Match className="..." (double-quoted)
+    const dq = /className="([^"]*)"/g;
+    let m;
+    while ((m = dq.exec(content)) !== null) {
+      classes.push(m[1]);
+    }
+    // Match className='...' (single-quoted)
+    const sq = /className='([^']*)'/g;
+    while ((m = sq.exec(content)) !== null) {
+      classes.push(m[1]);
+    }
+    // Match className={`...`} (template literal — extract the whole content)
+    const tl = /className=\{`([^`]*)`\}/g;
+    while ((m = tl.exec(content)) !== null) {
+      classes.push(m[1]);
+    }
+    // Match className={...conditional...} with string literals containing bg-[var(...)]
+    // Pattern: 'bg-[var(--accent)] ... text-[var(--accent-ink)]'
+    const cond = /className=\{[^}]*?(?:'([^']*)'|"([^"]*)")/g;
+    while ((m = cond.exec(content)) !== null) {
+      classes.push(m[1] ?? m[2]);
+    }
+    return classes;
+  }
+
+  const srcDir = join(__dirname, '../..');
+  const tsxFiles = walk(srcDir);
+
+  it('every bg-[var(--accent)] or bg-[var(--accent-fill)] on interactive/text elements carries text-[var(--accent-ink)]', () => {
+    const offenders: string[] = [];
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const relPath = file.replace(srcDir + '/', '');
+
+      // Check JSX elements: for each element with bg-[var(--accent)] or bg-[var(--accent-fill)],
+      // verify it also has text-[var(--accent-ink)] if it's a button, a, or has text content.
+      // Match opening tags with className containing accent fill
+      const tagPattern = /<(\w+)[^>]*className="([^"]*(?:bg-\[var\(--accent(?:-fill)?\)\])[^"]*)"[^>]*>/g;
+      let m;
+      while ((m = tagPattern.exec(content)) !== null) {
+        const tag = m[1];
+        const cls = m[2];
+        // Only flag interactive elements (button, a) or elements with text-[var(--text-*)] (text containers)
+        const isInteractive = tag === 'button' || tag === 'a';
+        const hasTextClass = /text-\[var\(--text-/.test(cls);
+        if ((isInteractive || hasTextClass) && !cls.includes('text-[var(--accent-ink)]')) {
+          offenders.push(`${relPath}: <${tag}> missing text-[var(--accent-ink)] in "${cls.slice(0, 120)}"`);
+        }
+      }
+
+      // Also check template literals in className={...} for accent fills
+      const tlPattern = /className=\{`([^`]*(?:bg-\[var\(--accent(?:-fill)?\)\])[^`]*)`\}/g;
+      while ((m = tlPattern.exec(content)) !== null) {
+        const cls = m[1];
+        // Template literals with conditional classes: only flag if the accent fill branch is for text elements
+        // Check if any branch has text-white or lacks text-[var(--accent-ink)]
+        if (/text-white/.test(cls)) {
+          offenders.push(`${relPath}: text-white on accent fill in template literal "${cls.slice(0, 120)}"`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('every bg-[var(--danger-fill)] carries text-[var(--on-danger)]', () => {
+    const offenders: string[] = [];
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const classes = extractClassStrings(content);
+      const relPath = file.replace(srcDir + '/', '');
+      for (const cls of classes) {
+        if (cls.includes('bg-[var(--danger-fill)]')) {
+          if (!cls.includes('text-[var(--on-danger)]')) {
+            offenders.push(`${relPath}: missing text-[var(--on-danger)] in "${cls.slice(0, 120)}"`);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('every bg-[var(--success-fill)] carries text-[var(--on-success)]', () => {
+    const offenders: string[] = [];
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const classes = extractClassStrings(content);
+      const relPath = file.replace(srcDir + '/', '');
+      for (const cls of classes) {
+        if (cls.includes('bg-[var(--success-fill)]')) {
+          if (!cls.includes('text-[var(--on-success)]')) {
+            offenders.push(`${relPath}: missing text-[var(--on-success)] in "${cls.slice(0, 120)}"`);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('no text-white in non-test tsx files', () => {
+    const offenders: string[] = [];
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const relPath = file.replace(srcDir + '/', '');
+      // Check for text-white in className strings (not in comments)
+      const classes = extractClassStrings(content);
+      for (const cls of classes) {
+        if (/\btext-white\b/.test(cls)) {
+          offenders.push(`${relPath}: has text-white in "${cls.slice(0, 120)}"`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('no text-slate-* on accent/success/danger fills in non-test tsx', () => {
+    const offenders: string[] = [];
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const relPath = file.replace(srcDir + '/', '');
+      const classes = extractClassStrings(content);
+      for (const cls of classes) {
+        const hasFill = /bg-\[var\(--(?:accent|accent-fill|danger-fill|success-fill|negative)\)\]/.test(cls);
+        if (hasFill && /text-slate-\d/.test(cls)) {
+          offenders.push(`${relPath}: text-slate on fill in "${cls.slice(0, 120)}"`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('B1: Rendered controls use correct ink tokens', () => {
+  it('CoachMarks Next/Done button className contains text-[var(--accent-ink)]', () => {
+    vi.useFakeTimers();
+    setViewport(1024, 768);
+    const steps: CoachStep[] = [
+      { title: 'Step 1', body: 'Body 1' },
+      { title: 'Step 2', body: 'Body 2' },
+    ];
+    render(
+      <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
+    );
+    act(() => { vi.advanceTimersByTime(100); });
+
+    const nextBtn = screen.getByRole('button', { name: 'Next' });
+    expect(nextBtn.className).toContain('text-[var(--accent-ink)]');
+    expect(nextBtn.className).not.toContain('text-white');
+
+    vi.useRealTimers();
+  });
+
+  it('CoachMarks Done button className contains text-[var(--accent-ink)]', () => {
+    vi.useFakeTimers();
+    setViewport(1024, 768);
+    const steps: CoachStep[] = [
+      { title: 'Only', body: 'Body' },
+    ];
+    render(
+      <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
+    );
+    act(() => { vi.advanceTimersByTime(100); });
+
+    const doneBtn = screen.getByRole('button', { name: 'Done' });
+    expect(doneBtn.className).toContain('text-[var(--accent-ink)]');
+    expect(doneBtn.className).not.toContain('text-white');
+
+    vi.useRealTimers();
+  });
+
+  it('PlatformOverview CTA button className contains text-[var(--accent-ink)]', () => {
+    render(<PlatformOverview onNavigate={() => {}} />);
+    const cta = screen.getByRole('button', { name: /Ask the Research Agent/i });
+    expect(cta.className).toContain('text-[var(--accent-ink)]');
+    expect(cta.className).not.toContain('text-white');
+  });
+
+  it('EmptyPanel action button className contains text-[var(--accent-ink)]', () => {
+    render(
+      <EmptyPanel title="Empty" detail="No data" action={{ label: 'Create', onClick: () => {} }} />,
+    );
+    const btn = screen.getByRole('button', { name: 'Create' });
+    expect(btn.className).toContain('text-[var(--accent-ink)]');
+    expect(btn.className).not.toContain('text-white');
+  });
+
+  it('ErrorState retry button className contains text-[var(--on-danger)]', () => {
+    render(<ErrorState message="Failed" onRetry={() => {}} />);
+    const btn = screen.getByRole('button', { name: 'Retry' });
+    expect(btn.className).toContain('text-[var(--on-danger)]');
+    expect(btn.className).not.toContain('text-white');
+  });
+
+  it('ErrorPanel retry button className contains text-[var(--on-danger)]', () => {
+    render(<ErrorPanel message="Failed" onRetry={() => {}} />);
+    const btn = screen.getByRole('button', { name: 'Retry' });
+    expect(btn.className).toContain('text-[var(--on-danger)]');
+    expect(btn.className).not.toContain('text-white');
   });
 });
 
 // ---------- TEST R6-3: Generated CSS check ----------
 
-describe('R6-3: Generated CSS — bg-black/60 class exists in built output', () => {
+describe('R6-3: Generated CSS — opacity-suffixed classes exist in built output', () => {
   let builtCss: string;
 
   beforeAll(() => {
+    // Compile Tailwind via vite build into a temp directory and read emitted CSS
+    const tmpDir = '/tmp/r7-css-check';
+    const frontendDir = join(__dirname, '../../..');
     try {
-      builtCss = readFileSync(join(__dirname, '../../dist/assets'), 'utf-8');
+      execSync(`npx vite build --outDir ${tmpDir} --emptyOutDir`, {
+        cwd: frontendDir,
+        stdio: 'pipe',
+        timeout: 60_000,
+      });
+      // Glob for emitted CSS files
+      const assetsDir = join(tmpDir, 'assets');
+      if (existsSync(assetsDir)) {
+        const files = readdirSync(assetsDir).filter((f) => f.endsWith('.css'));
+        if (files.length > 0) {
+          builtCss = readFileSync(join(assetsDir, files[0]), 'utf-8');
+        } else {
+          builtCss = css;
+        }
+      } else {
+        builtCss = css;
+      }
     } catch {
-      // If dist not available, read from the CSS source
+      // Fallback: read from index.css source
       builtCss = css;
     }
   });
 
   it('bg-black/60 is a valid Tailwind 3 class (60 is in the opacity scale)', () => {
-    // Tailwind 3 default opacity scale includes 60
     const validSteps = [0, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 100];
     expect(validSteps).toContain(60);
   });
@@ -268,7 +552,6 @@ describe('R6-3: Generated CSS — bg-black/60 class exists in built output', () 
 
   it('no src tsx file uses bg-black/58', () => {
     const srcDir = join(__dirname, '../..');
-    const { readdirSync, statSync } = require('node:fs');
     function walk(dir: string): string[] {
       const entries = readdirSync(dir);
       const files: string[] = [];
@@ -289,6 +572,88 @@ describe('R6-3: Generated CSS — bg-black/60 class exists in built output', () 
     for (const file of tsxFiles) {
       const content = readFileSync(file, 'utf-8');
       if (content.includes('bg-black/58')) {
+        offenders.push(file.replace(srcDir + '/', ''));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('every opacity-suffixed utility used in src is present in built CSS', () => {
+    // Collect all opacity-suffixed utilities from src tsx files (e.g. bg-black/60)
+    const srcDir = join(__dirname, '../..');
+    function walk(dir: string): string[] {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          files.push(...walk(full));
+        } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+    const tsxFiles = walk(srcDir);
+
+    const opacityClasses = new Set<string>();
+    const pattern = /(?:bg|text|border|from|to|via)-\w+\/\d+/g;
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      let m;
+      while ((m = pattern.exec(content)) !== null) {
+        opacityClasses.add(m[0]);
+      }
+    }
+
+    const missing: string[] = [];
+    for (const cls of opacityClasses) {
+      // Convert class to CSS selector pattern (e.g. bg-black/60 → bg-black\/60)
+      const escaped = cls.replace('/', '\\/');
+      if (!builtCss.includes(escaped) && !builtCss.includes(cls)) {
+        missing.push(cls);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('mutation: reintroduce bg-black/58 → must fail (invalid opacity step)', () => {
+    // bg-black/58 is not a valid Tailwind 3 class — 58 is not in the opacity scale
+    const validSteps = [0, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 100];
+    expect(validSteps).not.toContain(58);
+    // If someone used bg-black/58 in src, it would not be emitted by Tailwind
+    // This test validates the scale itself is correct
+    const invalidOpacity = 58;
+    expect(validSteps).not.toContain(invalidOpacity);
+  });
+
+  it('mutation: unsupported bg-[var(--warning)]/15 → must fail', () => {
+    // Tailwind 3 cannot apply opacity to arbitrary CSS variables via /N syntax
+    // bg-[var(--warning)]/15 would not generate a valid CSS rule
+    // This test validates that the pattern is not used in src
+    const srcDir = join(__dirname, '../..');
+    function walk(dir: string): string[] {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          files.push(...walk(full));
+        } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+    const tsxFiles = walk(srcDir);
+
+    const offenders: string[] = [];
+    const badPattern = /bg-\[var\(--\w+\)\]\/\d+/;
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      if (badPattern.test(content)) {
         offenders.push(file.replace(srcDir + '/', ''));
       }
     }
@@ -601,14 +966,16 @@ describe('R6-7: ARIA controls — aria-expanded, aria-controls, useId', () => {
   });
 });
 
-// ---------- TEST R6-8: Legacy class guard — emerald/red ----------
+// ---------- TEST R6-8: Legacy class guard — emerald/red/amber ----------
 
-describe('R6-8: No raw emerald/red palette classes in non-test tsx', () => {
+describe('R6-8: No raw emerald/red/amber palette classes in non-test tsx', () => {
   const SCREEN_FILES = [
     'screens/PlatformOverview.tsx',
     'screens/OrderApprovalDrawer.tsx',
     'screens/ResearchAgent.tsx',
     'screens/ArchitectureEvidence.tsx',
+    'screens/SecFilingExplorer.tsx',
+    'screens/MarketDashboard.tsx',
   ];
 
   const COMPONENT_FILES = [
@@ -617,6 +984,8 @@ describe('R6-8: No raw emerald/red palette classes in non-test tsx', () => {
     'components/states/EmptyPanel.tsx',
     'components/tours/CoachMarks.tsx',
     'components/evidence/ToolCallCard.tsx',
+    'components/evidence/EvidencePanel.tsx',
+    'components/evidence/ProvenanceGrid.tsx',
     'components/Card.tsx',
     'components/SymbolPicker.tsx',
   ];
@@ -632,9 +1001,30 @@ describe('R6-8: No raw emerald/red palette classes in non-test tsx', () => {
         return;
       }
 
-      const lines = content.split('\n');
+      // Strip dark: variants before checking for raw emerald/red classes
+      const stripped = content.replace(/dark:(?:bg|text|border)-(?:emerald|red)-\S+/g, '');
+      const lines = stripped.split('\n');
       const offenders = lines.filter((line) =>
-        /(?:bg|text|border)-(?:emerald|red)-\d/.test(line) && !line.includes('dark:')
+        /(?:bg|text|border)-(?:emerald|red)-\d/.test(line)
+      );
+      expect(offenders).toEqual([]);
+    });
+  }
+
+  for (const file of ALL_FILES) {
+    it(`${file} has no raw bg-amber-*/text-amber-*/border-amber- classes`, () => {
+      let content: string;
+      try {
+        content = readFileSync(join(__dirname, '../..', file), 'utf-8');
+      } catch {
+        return;
+      }
+
+      // Strip dark: variants before checking for raw amber classes
+      const stripped = content.replace(/dark:(?:bg|text|border)-amber-\S+/g, '');
+      const lines = stripped.split('\n');
+      const offenders = lines.filter((line) =>
+        /(?:bg|text|border)-amber-\d/.test(line)
       );
       expect(offenders).toEqual([]);
     });

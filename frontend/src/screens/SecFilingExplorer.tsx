@@ -134,7 +134,7 @@ export function SecFilingExplorer() {
       {coverageStatus === 'loading' && <LoadingState label="Loading equities…" />}
 
       {useFallback && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+        <div className="rounded-md border border-warning-dim-30 bg-warning-dim px-3 py-2 text-sm text-warning-text">
           Equity coverage data is unavailable. Enter a ticker manually.
         </div>
       )}
