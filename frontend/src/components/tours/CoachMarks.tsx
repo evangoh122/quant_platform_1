@@ -30,6 +30,9 @@ interface CoachMarksProps {
 
 const PAD = 8;
 const CARD_W = 320;
+const CARD_H_FALLBACK = 180;
+const GAP = 12;
+const VIEWPORT_MARGIN = 12;
 
 export default function CoachMarks({ steps, run, onClose, onNavigate, currentScreen }: CoachMarksProps) {
   const [index, setIndex] = useState(0);
@@ -37,6 +40,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
   const [waitingForTarget, setWaitingForTarget] = useState(false);
   const [targetTimedOut, setTargetTimedOut] = useState(false);
   const [screenAnnouncement, setScreenAnnouncement] = useState('');
+  const [cardHeight, setCardHeight] = useState(CARD_H_FALLBACK);
   const cardRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const observerRef = useRef<MutationObserver | null>(null);
@@ -206,6 +210,13 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
     return () => card.removeEventListener('keydown', onKeyDown);
   }, [run, index]);
 
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const measured = card.getBoundingClientRect().height || card.offsetHeight;
+    if (measured > 0) setCardHeight(measured);
+  }, [run, index, step, rect, waitingForTarget, targetTimedOut]);
+
   const handleClose = useCallback(() => {
     if (initialScreenRef.current !== undefined && onNavigate) {
       onNavigate(initialScreenRef.current);
@@ -321,21 +332,28 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
     };
   } else {
     const effectivePlacement = step?.placement ?? 'auto';
-    const below = rect.bottom + 12;
-    const above = vh - rect.top + 12;
-    let wantAbove: boolean;
-    if (effectivePlacement === 'top') {
-      wantAbove = true;
-    } else if (effectivePlacement === 'bottom') {
-      wantAbove = false;
+    const h = cardHeight;
+    const fitsBelow = rect.bottom + GAP + h <= vh - VIEWPORT_MARGIN;
+    const fitsAbove = rect.top - GAP - h >= VIEWPORT_MARGIN;
+    const belowRoom = vh - VIEWPORT_MARGIN - (rect.bottom + GAP);
+    const aboveRoom = rect.top - GAP - VIEWPORT_MARGIN;
+    let placeAbove: boolean;
+    if (effectivePlacement === 'bottom') {
+      placeAbove = !fitsBelow && (fitsAbove || aboveRoom > belowRoom);
+    } else if (effectivePlacement === 'top') {
+      placeAbove = fitsAbove || (!fitsBelow && aboveRoom > belowRoom);
     } else {
-      wantAbove = below + 180 > vh && rect.top > 200;
+      placeAbove = !fitsBelow && aboveRoom > belowRoom;
     }
-    const top = wantAbove ? undefined : below;
-    const bottom = wantAbove ? above : undefined;
+    const minTop = VIEWPORT_MARGIN;
+    const maxTop = Math.max(minTop, vh - VIEWPORT_MARGIN - h);
+    const desiredTop = placeAbove ? rect.top - GAP - h : rect.bottom + GAP;
+    const cardTop = Math.min(Math.max(minTop, desiredTop), maxTop);
     let left = rect.left + rect.width / 2 - CARD_W / 2;
-    left = Math.min(Math.max(12, left), vw - CARD_W - 12);
-    cardStyle = { left, top, bottom, width: CARD_W };
+    left = Math.min(Math.max(VIEWPORT_MARGIN, left), vw - CARD_W - VIEWPORT_MARGIN);
+    cardStyle = placeAbove
+      ? { left, bottom: vh - cardTop - h, width: CARD_W }
+      : { left, top: cardTop, width: CARD_W };
   }
 
   return (

@@ -1009,3 +1009,218 @@ describe('Test 17: Mobile drawer background is inert while open', () => {
     expect(document.querySelector('[inert]')).toBeNull();
   });
 });
+
+// ---------- TEST 18: Measured-height viewport collision placement ----------
+
+describe('Test 18: Measured-height viewport collision placement', () => {
+  const VIEWPORT_H = 800;
+  const VIEWPORT_W = 1024;
+  const VIEWPORT_MARGIN = 12;
+  const cleanupEls: HTMLElement[] = [];
+  let protoSpy: ReturnType<typeof vi.spyOn>;
+
+  function stubCardHeight(h: number) {
+    protoSpy?.mockRestore();
+    protoSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
+    protoSpy.mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('tabindex') === '-1' && this.closest('[role="dialog"]')) {
+        return fakeRect({ top: 0, left: 0, width: 320, height: h, bottom: h, right: 320 });
+      }
+      return fakeRect({ top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 });
+    });
+  }
+
+  function installTarget(name: string, rect: Partial<DOMRect>) {
+    const el = document.createElement('div');
+    el.setAttribute('data-tour', name);
+    el.getBoundingClientRect = () => fakeRect(rect);
+    document.body.appendChild(el);
+    cleanupEls.push(el);
+    return el;
+  }
+
+  function renderWithHeight(
+    cardH: number,
+    targetName: string,
+    targetRect: Partial<DOMRect>,
+    placement?: 'top' | 'bottom' | 'auto',
+  ) {
+    stubCardHeight(cardH);
+    installTarget(targetName, targetRect);
+    const steps: CoachStep[] = [
+      { selector: `[data-tour="${targetName}"]`, title: 'Test', body: 'Body', placement },
+    ];
+    const { container } = render(
+      <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
+    );
+    act(() => { vi.advanceTimersByTime(280); });
+    const dialog = container.querySelector('[role="dialog"]')!;
+    const card = dialog.querySelector('[tabindex="-1"]') as HTMLElement;
+    return { dialog, card, container };
+  }
+
+  function getCardEdges(card: HTMLElement, h: number) {
+    if (card.style.top && card.style.top !== '') {
+      const top = parseFloat(card.style.top);
+      const bottom = top + h;
+      return { top, bottom, side: 'below' as const };
+    } else if (card.style.bottom && card.style.bottom !== '') {
+      const bottomOffset = parseFloat(card.style.bottom);
+      const bottomEdge = VIEWPORT_H - bottomOffset;
+      const topEdge = bottomEdge - h;
+      return { top: topEdge, bottom: bottomEdge, side: 'above' as const };
+    }
+    throw new Error('Card has neither top nor bottom set');
+  }
+
+  function assertInsideViewport(edges: { top: number; bottom: number }) {
+    expect(edges.top).toBeGreaterThanOrEqual(VIEWPORT_MARGIN);
+    expect(edges.bottom).toBeLessThanOrEqual(VIEWPORT_H - VIEWPORT_MARGIN);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    setViewport(VIEWPORT_W, VIEWPORT_H);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    protoSpy?.mockRestore();
+    cleanupEls.forEach((el) => { if (el.parentNode) el.parentNode.removeChild(el); });
+    cleanupEls.length = 0;
+  });
+
+  describe('auto placement', () => {
+    const nearTop = { top: 20, left: 200, width: 200, height: 40, bottom: 60, right: 400 };
+    const middle = { top: 450, left: 200, width: 200, height: 50, bottom: 500, right: 400 };
+    const nearBottom = { top: 740, left: 200, width: 200, height: 40, bottom: 780, right: 400 };
+
+    it('near top, h=120 → stays below', () => {
+      const { card } = renderWithHeight(120, 'target-at-120', nearTop, 'auto');
+      const edges = getCardEdges(card, 120);
+      expect(edges.side).toBe('below');
+      assertInsideViewport(edges);
+    });
+
+    it('near top, h=320 → stays below', () => {
+      const { card } = renderWithHeight(320, 'target-at-320', nearTop, 'auto');
+      const edges = getCardEdges(card, 320);
+      expect(edges.side).toBe('below');
+      assertInsideViewport(edges);
+    });
+
+    it('middle, h=120 → stays below', () => {
+      const { card } = renderWithHeight(120, 'target-mid-120', middle, 'auto');
+      const edges = getCardEdges(card, 120);
+      expect(edges.side).toBe('below');
+      assertInsideViewport(edges);
+    });
+
+    it('middle, h=320 → flips above', () => {
+      const { card } = renderWithHeight(320, 'target-mid-320', middle, 'auto');
+      const edges = getCardEdges(card, 320);
+      expect(edges.side).toBe('above');
+      assertInsideViewport(edges);
+    });
+
+    it('near bottom, h=120 → flips above', () => {
+      const { card } = renderWithHeight(120, 'target-nb-120', nearBottom, 'auto');
+      const edges = getCardEdges(card, 120);
+      expect(edges.side).toBe('above');
+      assertInsideViewport(edges);
+    });
+
+    it('near bottom, h=320 → flips above', () => {
+      const { card } = renderWithHeight(320, 'target-nb-320', nearBottom, 'auto');
+      const edges = getCardEdges(card, 320);
+      expect(edges.side).toBe('above');
+      assertInsideViewport(edges);
+    });
+
+    it('decision changes with measured height (same target)', () => {
+      stubCardHeight(120);
+      installTarget('target-decision', middle);
+      const steps120: CoachStep[] = [
+        { selector: '[data-tour="target-decision"]', title: 'T', body: 'B', placement: 'auto' },
+      ];
+      const { container: c1, unmount: u1 } = render(
+        <div><CoachMarks steps={steps120} run={true} onClose={() => {}} /></div>,
+      );
+      act(() => { vi.advanceTimersByTime(280); });
+      const card120 = c1.querySelector('[role="dialog"] [tabindex="-1"]') as HTMLElement;
+      expect(getCardEdges(card120, 120).side).toBe('below');
+      u1();
+
+      stubCardHeight(320);
+      installTarget('target-decision-320', middle);
+      const steps320: CoachStep[] = [
+        { selector: '[data-tour="target-decision-320"]', title: 'T', body: 'B', placement: 'auto' },
+      ];
+      const { container: c2 } = render(
+        <div><CoachMarks steps={steps320} run={true} onClose={() => {}} /></div>,
+      );
+      act(() => { vi.advanceTimersByTime(280); });
+      const card320 = c2.querySelector('[role="dialog"] [tabindex="-1"]') as HTMLElement;
+      expect(getCardEdges(card320, 320).side).toBe('above');
+    });
+  });
+
+  describe('bottom and top placement', () => {
+    const middle = { top: 450, left: 200, width: 200, height: 50, bottom: 500, right: 400 };
+    const nearBottom = { top: 740, left: 200, width: 200, height: 40, bottom: 780, right: 400 };
+    const nearTop = { top: 20, left: 200, width: 200, height: 40, bottom: 60, right: 400 };
+
+    it('bottom honors when both sides fit (middle, h=120) → below', () => {
+      const { card } = renderWithHeight(120, 'target-bot-honor', middle, 'bottom');
+      const edges = getCardEdges(card, 120);
+      expect(edges.side).toBe('below');
+      assertInsideViewport(edges);
+    });
+
+    it("bottom flips when below doesn't fit (near bottom, h=320) → above", () => {
+      const { card } = renderWithHeight(320, 'target-bot-flip', nearBottom, 'bottom');
+      const edges = getCardEdges(card, 320);
+      expect(edges.side).toBe('above');
+      assertInsideViewport(edges);
+    });
+
+    it('top honors when both sides fit (middle, h=120) → above', () => {
+      const { card } = renderWithHeight(120, 'target-top-honor', middle, 'top');
+      const edges = getCardEdges(card, 120);
+      expect(edges.side).toBe('above');
+      assertInsideViewport(edges);
+    });
+
+    it("top flips when above doesn't fit (near top, h=120) → below", () => {
+      const { card } = renderWithHeight(120, 'target-top-flip', nearTop, 'top');
+      const edges = getCardEdges(card, 120);
+      expect(edges.side).toBe('below');
+      assertInsideViewport(edges);
+    });
+  });
+
+  describe('viewport clamping', () => {
+    it('card stays inside viewport when neither side fits (above has more room, h=320)', () => {
+      const target = { top: 340, left: 200, width: 200, height: 130, bottom: 470, right: 400 };
+      const { card } = renderWithHeight(320, 'target-clamp-above', target, 'bottom');
+      const edges = getCardEdges(card, 320);
+      assertInsideViewport(edges);
+      expect(edges.side).toBe('above');
+    });
+
+    it('card stays inside viewport when below has more room (spanning target, h=320)', () => {
+      const spanning = { top: 300, left: 200, width: 200, height: 170, bottom: 470, right: 400 };
+      const { card } = renderWithHeight(320, 'target-clamp-below', spanning, 'bottom');
+      const edges = getCardEdges(card, 320);
+      assertInsideViewport(edges);
+      expect(edges.side).toBe('below');
+    });
+
+    it('card stays inside viewport with extreme card height (near bottom, h=720)', () => {
+      const nearBottom = { top: 740, left: 200, width: 200, height: 40, bottom: 780, right: 400 };
+      const { card } = renderWithHeight(720, 'target-clamp-extreme', nearBottom, 'auto');
+      const edges = getCardEdges(card, 720);
+      assertInsideViewport(edges);
+    });
+  });
+});
