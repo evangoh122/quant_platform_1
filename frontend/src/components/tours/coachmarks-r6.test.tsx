@@ -422,6 +422,109 @@ describe('R6-2: Contrast ratios — WCAG AA for text on filled backgrounds', () 
     const ratio = contrastRatio(accentInk, accent);
     expect(ratio).toBeLessThan(4.5); // 1.96:1 — fails
   });
+
+  it('--negative on every surface >= 4.5:1 (WCAG AA small text)', () => {
+    const negative = parseCssVar(css, '--negative');
+    const surfaces = [
+      { name: '--canvas', hex: '#090A0C' },
+      { name: '--surface', hex: surface },
+      { name: '--surface-raised', hex: surfaceRaised },
+      { name: '--surface-elevated', hex: surfaceElevated },
+    ];
+    for (const { name, hex } of surfaces) {
+      const ratio = contrastRatio(negative, hex);
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('--negative on negative tint backgrounds >= 4.5:1', () => {
+    const negative = parseCssVar(css, '--negative');
+    // bg-negative-dim = color-mix(in srgb, --negative 10%, transparent)
+    // Approximate: 10% of #F87171 over #000000 ≈ #191212 (very dark, close to canvas)
+    // The effective background is dominated by the underlying surface.
+    // Test the token against all surface variants used in the app.
+    const tintBgs = [
+      { name: 'canvas (base)', hex: '#090A0C' },
+      { name: 'surface (Card bg)', hex: surface },
+      { name: 'surface-raised', hex: surfaceRaised },
+    ];
+    for (const { name, hex } of tintBgs) {
+      const ratio = contrastRatio(negative, hex);
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('mutation: --negative -> #DC2626 must fail on surface-elevated (< 4.5:1)', () => {
+    const mutatedCss = css.replace(/--negative\s*:\s*#[0-9a-fA-F]+/, '--negative: #DC2626');
+    const mutatedNegative = parseCssVar(mutatedCss, '--negative');
+    expect(mutatedNegative).toBe('#DC2626');
+    const ratio = contrastRatio(mutatedNegative, surfaceElevated);
+    expect(ratio).toBeLessThan(4.5);
+  });
+
+  it('every text-[var(--negative)] in src tsx has >= 4.5:1 on its paired background', () => {
+    const negative = parseCssVar(css, '--negative');
+    const srcDir = join(__dirname, '../..');
+    function walk(dir: string): string[] {
+      const entries = readdirSync(dir);
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          files.push(...walk(full));
+        } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+    const tsxFiles = walk(srcDir);
+    const offenders: string[] = [];
+
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const relPath = file.replace(srcDir + '/', '');
+      const lines = content.split('\n');
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.includes('text-[var(--negative)]')) continue;
+
+        const context = lines.slice(Math.max(0, i - 4), Math.min(i + 4, lines.length)).join(' ');
+
+        let bgHex = surface;
+        if (context.includes('bg-[var(--surface-elevated)]')) bgHex = surfaceElevated;
+        else if (context.includes('bg-[var(--surface-raised)]')) bgHex = surfaceRaised;
+        else if (context.includes('bg-[var(--surface)]')) bgHex = surface;
+        // bg-negative-dim is transparent-tinted, underlying surface dominates
+
+        const ratio = contrastRatio(negative, bgHex);
+        if (ratio < 4.5) {
+          offenders.push(`${relPath}:${i + 1} negative(${negative}) on bg(${bgHex}) = ${ratio.toFixed(2)}:1`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// ---------- TEST R6-2b: Reduced-motion @media block ----------
+
+describe('R6-2b: Reduced-motion @media block in CSS', () => {
+  it('index.css contains a @media (prefers-reduced-motion: reduce) block', () => {
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+  });
+
+  it('the reduced-motion block disables animations and transitions', () => {
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*animation-duration:\s*0\.01ms/);
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*transition-duration:\s*0\.01ms/);
+  });
+
+  it('mutation: deleting the reduced-motion block → test fails', () => {
+    const mutatedCss = css.replace(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\}\s*\}/, '');
+    expect(mutatedCss).not.toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+  });
 });
 
 // ---------- TEST B1: Class-usage contrast guard ----------

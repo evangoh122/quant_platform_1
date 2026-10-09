@@ -336,7 +336,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
               }}
               className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] bg-transparent border-0 p-0 cursor-pointer"
             >
-              {targetTimedOut ? 'Skip step' : 'Skip step'}
+              {targetTimedOut ? 'Next step' : 'Skip step'}
             </button>
           </div>
         </div>

@@ -659,4 +659,63 @@ describe('tourSeen / markTourSeen', () => {
     });
     expect(tourSeen('test_key_ts3')).toBe(true);
   });
+
+  it('markTourSeen handles localStorage.setItem errors without throwing', () => {
+    Object.defineProperty(window, 'localStorage', {
+      value: {
+        getItem: () => { throw new Error('blocked'); },
+        setItem: () => { throw new Error('blocked'); },
+      },
+      writable: true,
+    });
+    expect(() => markTourSeen('test_key_ms1')).not.toThrow();
+  });
+});
+
+describe('CoachMarks scroll respects prefers-reduced-motion', () => {
+  it('scrollIntoView uses behavior "auto" when prefers-reduced-motion is reduce', () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, 'innerWidth', { value: 1024, writable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 768, writable: true });
+
+    const scrollIntoViewSpy = vi.fn();
+    const targetEl = document.createElement('div');
+    targetEl.setAttribute('data-tour', 'scroll-motion-target');
+    targetEl.getBoundingClientRect = () => ({
+      top: 100, left: 100, width: 200, height: 50, bottom: 150, right: 300,
+      x: 100, y: 100, toJSON: () => {},
+    } as DOMRect);
+    targetEl.scrollIntoView = scrollIntoViewSpy;
+    document.body.appendChild(targetEl);
+
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="scroll-motion-target"]', title: 'Motion', body: 'Test' },
+    ];
+
+    render(
+      <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
+    );
+
+    act(() => { vi.advanceTimersByTime(300); });
+
+    expect(scrollIntoViewSpy).toHaveBeenCalled();
+    const callArg = scrollIntoViewSpy.mock.calls[0][0];
+    expect(callArg.behavior).toBe('auto');
+
+    window.matchMedia = originalMatchMedia;
+    vi.useRealTimers();
+    document.body.removeChild(targetEl);
+  });
 });

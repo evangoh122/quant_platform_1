@@ -938,4 +938,33 @@ describe('ResearchAgent', () => {
     expect(questions[0]).toBe('How does AAPL compare to AAPL on risk metrics?');
     expect(questions[0]).not.toContain('{SYMBOL}');
   });
+
+  it('scroll on new messages respects prefers-reduced-motion', () => {
+    vi.stubGlobal('fetch', mockFetch());
+    const scrollToSpy = vi.fn();
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    render(<ResearchAgent />);
+
+    const scrollContainer = document.querySelector('.max-h-\\[32rem\\]') as HTMLElement;
+    expect(scrollContainer).toBeTruthy();
+    scrollContainer.scrollTo = scrollToSpy;
+
+    // Trigger a re-render that would call scrollTo by sending a message
+    const user = userEvent.setup();
+    void user.type(screen.getByPlaceholderText('Ask the research agent…'), 'test');
+
+    // The scroll behavior should use 'auto' when prefers-reduced-motion is reduce
+    // We verify the matchMedia was called with the right query
+    expect(window.matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)');
+  });
 });

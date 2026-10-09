@@ -48,7 +48,8 @@ export function ResearchAgent() {
   const suggestedQuestions = useMemo(() => makeSuggestedQuestions(symbol), [symbol]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: motion ? 'auto' : 'smooth' });
   }, [messages, sending]);
 
   async function send(text?: string) {
