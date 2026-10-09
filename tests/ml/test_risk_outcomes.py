@@ -1233,42 +1233,67 @@ class TestHorizonValidation:
 # ── Non-blocking: distinct dates by US/Eastern ────────────────────────────────
 
 class TestDistinctDatesEastern:
-    def test_utc_crossing_midnight_eastern(self):
-        """UTC timestamps crossing midnight ET count as same trading date.
-
-        A prediction at 23:30 ET (03:30 UTC next day) and 00:30 ET (04:30 UTC)
-        on the same ET date should count as 1 distinct date.
-        """
-        # 120 eligible rows on 60 distinct US/Eastern dates
+    def _make_outcomes(self, timestamps):
         rows = []
-        for i in range(120):
-            # Each pair (i, i+1) shares the same ET date
-            day_offset = i // 2
-            base = pd.Timestamp("2025-01-02") + pd.DateOffset(days=day_offset)
-            if i % 2 == 0:
-                # 23:30 ET on base date = 03:30 UTC next day
-                ts = pd.Timestamp(base.strftime("%Y-%m-%d") + " 03:30", tz="UTC") + pd.Timedelta(days=1)
-            else:
-                # 00:30 ET on next calendar day (same ET trading date as 23:30)
-                # 00:30 ET = 04:30 UTC on the next day
-                ts = pd.Timestamp(base.strftime("%Y-%m-%d") + " 04:30", tz="UTC") + pd.Timedelta(days=1)
+        for i, ts in enumerate(timestamps):
             rows.append({
                 "signal_id": f"s{i}", "symbol": "AAPL", "model_version": "v1",
                 "horizon": "1d", "prediction_ts": ts,
-                "entry_date": _td(2025, 1, 1), "outcome_date": _td(2025, 1, 2),
+                "entry_date": _td(2026, 3, 1), "outcome_date": _td(2026, 3, 2),
                 "direction": "UP", "probability_up": 0.6,
                 "raw_forward_return": 0.01, "signed_raw_return": 0.01,
                 "sigma20": 0.01, "sigma252": 0.01, "sigma_floor": 0.005,
                 "sigma_used": 0.01, "sigma_method": "close_to_close_ddof1_v1",
-                "sigma_as_of": _td(2025, 1, 1), "sigma_observation_count": 20,
+                "sigma_as_of": _td(2026, 3, 1), "sigma_observation_count": 20,
                 "outcome_z": 1.0, "base_up_flag": True,
                 "ex_dividend_state": "none", "eligibility_state": "eligible",
             })
-        outcomes = pd.DataFrame(rows)
-        result = summarize_outcomes(outcomes, min_n=100, min_dates=60, rho=0.2)
+        return pd.DataFrame(rows)
+
+    def test_same_utc_date_different_et_date_edt(self):
+        """Same UTC date but different ET dates (EDT, UTC-4): must yield more distinct dates.
+
+        2026-03-11 03:30 UTC = 2026-03-10 23:30 ET (EDT after Mar 8)
+        2026-03-11 05:00 UTC = 2026-03-11 01:00 ET
+
+        Same UTC date (Mar 11), but different ET dates (Mar 10 vs Mar 11).
+        Old UTC .dt.date code counts 100 distinct dates; correct ET code counts 101
+        (extra date from first ts_a's ET date having no matching ts_b).
+        200 rows: 100 pairs, each pair spanning the UTC-midnight-not-ET boundary.
+        """
+        ts_a = pd.Timestamp("2026-03-11 03:30", tz="UTC")  # 23:30 ET Mar 10
+        ts_b = pd.Timestamp("2026-03-11 05:00", tz="UTC")  # 01:00 ET Mar 11
+        timestamps = []
+        for i in range(100):
+            timestamps.append(ts_a + pd.Timedelta(days=i))
+            timestamps.append(ts_b + pd.Timedelta(days=i))
+        outcomes = self._make_outcomes(timestamps)
+        result = summarize_outcomes(outcomes, min_n=100, min_dates=50, rho=0.2)
         assert len(result) == 1
-        # 60 distinct ET dates (each pair of 23:30/00:30 is same ET date)
-        assert result[0]["distinct_prediction_dates"] == 60
+        # ET dates span Mar 10 to Jun 18 = 101 distinct; old UTC code would give 100
+        assert result[0]["distinct_prediction_dates"] == 101
+
+    def test_different_utc_date_same_et_date_est(self):
+        """Different UTC dates but same ET date (EST, UTC-5): must collapse to fewer dates.
+
+        2026-01-14 23:00 UTC = 2026-01-14 18:00 EST (Jan 14)
+        2026-01-15 04:00 UTC = 2026-01-14 23:00 EST (same ET date, Jan 14)
+
+        Different UTC dates (Jan 14 vs Jan 15), but same ET date (Jan 14).
+        Old UTC .dt.date code counts 51 distinct dates; correct ET code counts 50.
+        All pairs stay within EST (before Mar 8 2026 DST transition).
+        """
+        ts_a = pd.Timestamp("2026-01-14 23:00", tz="UTC")  # 18:00 EST Jan 14
+        ts_b = pd.Timestamp("2026-01-15 04:00", tz="UTC")  # 23:00 EST Jan 14
+        timestamps = []
+        for i in range(50):
+            timestamps.append(ts_a + pd.Timedelta(days=i))
+            timestamps.append(ts_b + pd.Timedelta(days=i))
+        outcomes = self._make_outcomes(timestamps)
+        result = summarize_outcomes(outcomes, min_n=100, min_dates=50, rho=0.2)
+        assert len(result) == 1
+        # ET dates: each pair collapses to 1 date → 50 distinct; old UTC code gives 51
+        assert result[0]["distinct_prediction_dates"] == 50
 
 
 # ── Non-blocking: hardened probability*sigma AST guard ────────────────────────
