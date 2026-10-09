@@ -15,6 +15,7 @@ import { EmptyPanel } from '../states/EmptyPanel';
 import { ErrorState } from '../ErrorState';
 import { ErrorPanel } from '../states/ErrorPanel';
 import { OrderApprovalDrawer } from '../../screens/OrderApprovalDrawer';
+import { ResearchAgent } from '../../screens/ResearchAgent';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const css: string = readFileSync(join(__dirname, '../../index.css'), 'utf-8');
@@ -505,6 +506,70 @@ describe('B1: Rendered controls use correct ink tokens', () => {
     expect(btn.className).toContain('text-[var(--on-danger)]');
     expect(btn.className).not.toContain('text-white');
   });
+
+  it('OrderApprovalDrawer Approve button carries text-[var(--on-success)] and bg-[var(--success-fill)]', async () => {
+    const mockPortfolio = {
+      orders: {
+        data: [
+          {
+            order_id: 'ord-1', symbol: 'AAPL', side: 'BUY', quantity: 10,
+            order_type: 'MARKET', limit_price: null, notional: 1500,
+            status: 'PENDING_APPROVAL', created_at: new Date().toISOString(),
+            signal_id: 'sig-1',
+          },
+        ],
+        freshness: { state: 'fresh' as const, table: 'orders', detail: '' },
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/portfolio') return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPortfolio) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    }));
+    render(<OrderApprovalDrawer />);
+    await waitFor(() => { screen.getByRole('button', { name: /Approve/i }); });
+    const approveBtn = screen.getByRole('button', { name: /Approve/i });
+    expect(approveBtn.className).toContain('text-[var(--on-success)]');
+    expect(approveBtn.className).toContain('bg-[var(--success-fill)]');
+    expect(approveBtn.className).not.toContain('text-white');
+    vi.unstubAllGlobals();
+  });
+
+  it('OrderApprovalDrawer Reject button carries text-[var(--on-danger)] and bg-[var(--danger-fill)]', async () => {
+    const mockPortfolio = {
+      orders: {
+        data: [
+          {
+            order_id: 'ord-2', symbol: 'TSLA', side: 'SELL', quantity: 5,
+            order_type: 'LIMIT', limit_price: 250, notional: 1250,
+            status: 'PENDING_APPROVAL', created_at: new Date().toISOString(),
+            signal_id: null,
+          },
+        ],
+        freshness: { state: 'fresh' as const, table: 'orders', detail: '' },
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/portfolio') return Promise.resolve({ ok: true, json: () => Promise.resolve(mockPortfolio) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    }));
+    render(<OrderApprovalDrawer />);
+    await waitFor(() => { screen.getByRole('button', { name: /Reject/i }); });
+    const rejectBtn = screen.getByRole('button', { name: /Reject/i });
+    expect(rejectBtn.className).toContain('text-[var(--on-danger)]');
+    expect(rejectBtn.className).toContain('bg-[var(--danger-fill)]');
+    expect(rejectBtn.className).not.toContain('text-white');
+    vi.unstubAllGlobals();
+  });
+
+  it('ResearchAgent Send button carries text-[var(--accent-ink)] and bg-[var(--accent-fill)]', () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }));
+    render(<ResearchAgent />);
+    const sendBtn = screen.getByRole('button', { name: 'Send' });
+    expect(sendBtn.className).toContain('text-[var(--accent-ink)]');
+    expect(sendBtn.className).toContain('bg-[var(--accent-fill)]');
+    expect(sendBtn.className).not.toContain('text-white');
+    vi.unstubAllGlobals();
+  });
 });
 
 // ---------- TEST R6-3: Generated CSS check ----------
@@ -618,14 +683,25 @@ describe('R6-3: Generated CSS — opacity-suffixed classes exist in built output
     expect(missing).toEqual([]);
   });
 
-  it('mutation: reintroduce bg-black/58 → must fail (invalid opacity step)', () => {
-    // bg-black/58 is not a valid Tailwind 3 class — 58 is not in the opacity scale
+  it('mutation: reintroduce bg-black/58 in source text → scan detects invalid opacity class', () => {
+    const mockSource = `
+      export function Foo() {
+        return <div className="rounded-md bg-black/58 p-4 text-sm">content</div>;
+      }
+    `;
+    const opacityPattern = /(?:bg|text|border|from|to|via)-\w+\/\d+/g;
+    const found: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = opacityPattern.exec(mockSource)) !== null) {
+      found.push(m[0]);
+    }
+    expect(found).toContain('bg-black/58');
     const validSteps = [0, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 100];
-    expect(validSteps).not.toContain(58);
-    // If someone used bg-black/58 in src, it would not be emitted by Tailwind
-    // This test validates the scale itself is correct
-    const invalidOpacity = 58;
-    expect(validSteps).not.toContain(invalidOpacity);
+    const invalid = found.filter((cls) => {
+      const step = parseInt(cls.split('/').pop()!, 10);
+      return !validSteps.includes(step);
+    });
+    expect(invalid).toEqual(['bg-black/58']);
   });
 
   it('mutation: unsupported bg-[var(--warning)]/15 → must fail', () => {
@@ -658,6 +734,193 @@ describe('R6-3: Generated CSS — opacity-suffixed classes exist in built output
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// ---------- TEST B3: General emission guard — every class token is emitted or defined ----------
+
+describe('B3: General emission guard — every className token in src is emitted or defined', () => {
+  let builtCss: string;
+
+  beforeAll(() => {
+    const tmpDir = '/tmp/r8-css-check';
+    const frontendDir = join(__dirname, '../../..');
+    try {
+      execSync(`npx vite build --outDir ${tmpDir} --emptyOutDir`, {
+        cwd: frontendDir,
+        stdio: 'pipe',
+        timeout: 60_000,
+      });
+      const assetsDir = join(tmpDir, 'assets');
+      if (existsSync(assetsDir)) {
+        const files = readdirSync(assetsDir).filter((f) => f.endsWith('.css'));
+        if (files.length > 0) {
+          builtCss = readFileSync(join(assetsDir, files[0]), 'utf-8');
+        } else {
+          builtCss = css;
+        }
+      } else {
+        builtCss = css;
+      }
+    } catch {
+      builtCss = css;
+    }
+  });
+
+  function walk(dir: string): string[] {
+    const entries = readdirSync(dir);
+    const files: string[] = [];
+    for (const entry of entries) {
+      const full = join(dir, entry);
+      const st = statSync(full);
+      if (st.isDirectory()) {
+        files.push(...walk(full));
+      } else if (entry.endsWith('.tsx') && !entry.includes('.test.')) {
+        files.push(full);
+      }
+    }
+    return files;
+  }
+
+  function extractStaticTokens(content: string): string[] {
+    const allTokens: string[] = [];
+    let m: RegExpExecArray | null;
+    const dq = /className="([^"]*)"/g;
+    while ((m = dq.exec(content)) !== null) {
+      allTokens.push(...m[1].split(/\s+/).filter(Boolean));
+    }
+    const sq = /className='([^']*)'/g;
+    while ((m = sq.exec(content)) !== null) {
+      allTokens.push(...m[1].split(/\s+/).filter(Boolean));
+    }
+    const tl = /className=\{`([^`]*)`\}/g;
+    while ((m = tl.exec(content)) !== null) {
+      const cleaned = m[1].replace(/\$\{[^}]*\}/g, ' ');
+      for (const part of cleaned.split(/\s+/)) {
+        const trimmed = part.replace(/^['"]|['"};,]+$/g, '');
+        if (trimmed && isLikelyCssClass(trimmed)) {
+          allTokens.push(trimmed);
+        }
+      }
+    }
+    const cond = /className=\{[^}`]*?'([a-z][\w-\[\]().,:\/# ]*)'/g;
+    while ((m = cond.exec(content)) !== null) {
+      for (const part of m[1].split(/\s+/)) {
+        const trimmed = part.replace(/^['"]|['"};,]+$/g, '');
+        if (trimmed && isLikelyCssClass(trimmed)) {
+          allTokens.push(trimmed);
+        }
+      }
+    }
+    return allTokens;
+  }
+
+  function isLikelyCssClass(token: string): boolean {
+    const stripped = token.replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '');
+    if (/[.()=>'"!;`]/.test(stripped)) return false;
+    if (!/^[a-zA-Z@_:-]/.test(token)) return false;
+    return true;
+  }
+
+  function stripVariant(token: string): string {
+    const prefixes = /^(?:hover|focus|active|disabled|focus-visible|focus-within|sm|md|lg|xl|2xl|dark|first|last|odd|even|group-hover|peer):/;
+    let stripped = token;
+    while (prefixes.test(stripped)) {
+      stripped = stripped.replace(prefixes, '');
+    }
+    return stripped;
+  }
+
+  function isTailwindUtility(token: string, built: string): boolean {
+    const escaped = token
+      .replace(/\\/g, '\\\\')
+      .replace(/\./g, '\\.')
+      .replace(/\[/g, '\\[')
+      .replace(/\]/g, '\\]')
+      .replace(/\(/g, '\\(')
+      .replace(/\)/g, '\\)')
+      .replace(/:/g, '\\:')
+      .replace(/\//g, '\\/')
+      .replace(/,/g, '\\,');
+    const dot = '.' + escaped;
+    return built.includes(dot + ' ') || built.includes(dot + '{')
+      || built.includes(dot + ',') || built.includes(dot + '\n')
+      || built.includes(dot + '}') || built.includes(dot + '>')
+      || built.includes(dot + '~') || built.includes(dot + ':');
+  }
+
+  function parseCustomClasses(raw: string): Set<string> {
+    const classes = new Set<string>();
+    const classPattern = /\.([\w\-\[\]\\()=\/]+)(?::[^{]*)?\s*\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = classPattern.exec(raw)) !== null) {
+      const name = m[1];
+      if (name.startsWith('where(') || name.startsWith('selection') || name.startsWith('-webkit-') || name.startsWith('-moz-')) continue;
+      classes.add(name);
+    }
+    return classes;
+  }
+
+  const ALLOWLIST = new Set([
+    'data-table', 'data-table-wrap', 'data-table-th',
+    'msg-user', 'msg-assistant',
+    'stat-card', 'badge-green', 'badge', 'badge-muted',
+  ]);
+
+  const VARIANT_PREFIXES = ['hover:', 'focus:', 'active:', 'disabled:', 'focus-visible:', 'focus-within:',
+    'sm:', 'md:', 'lg:', 'xl:', '2xl:', 'dark:', 'first:', 'last:', 'odd:', 'even:',
+    'group-hover:', 'peer:'];
+
+  function isKnownToken(rawToken: string, built: string, custom: Set<string>): boolean {
+    const clean = rawToken.replace(/^['"]|['"};,]+$/g, '');
+    if (!clean || clean.length < 2) return true;
+    if (clean.startsWith('$') || clean.startsWith('{') || clean.startsWith('}')
+      || clean.startsWith('?') || clean.startsWith(':') || clean.startsWith('(')
+      || clean.startsWith(')') || clean === '&&' || clean === '||') return true;
+    if (VARIANT_PREFIXES.some((p) => clean.startsWith(p))) {
+      const inner = clean.replace(/^(?:hover|focus|active|disabled|focus-visible|focus-within|sm|md|lg|xl|2xl|dark|first|last|odd|even|group-hover|peer):/, '');
+      if (inner !== clean) return isKnownToken(inner, built, custom) || isTailwindUtility(clean, built);
+    }
+    if (/^(?:bg|text|border|from|to|via)-\w+\/\d+$/.test(clean)) return true;
+    if (custom.has(clean)) return true;
+    if (ALLOWLIST.has(clean)) return true;
+    if (isTailwindUtility(clean, built)) return true;
+    return false;
+  }
+
+  it('every class token in non-test src tsx is emitted by Tailwind, defined in index.css, or allowlisted', () => {
+    const srcDir = join(__dirname, '../..');
+    const tsxFiles = walk(srcDir);
+    const customClasses = parseCustomClasses(css);
+    const unknown: string[] = [];
+
+    for (const file of tsxFiles) {
+      const content = readFileSync(file, 'utf-8');
+      const tokens = extractStaticTokens(content);
+      const relPath = file.replace(srcDir + '/', '');
+      for (const token of tokens) {
+        if (!isKnownToken(token, builtCss, customClasses)) {
+          unknown.push(`${relPath}: ${token}`);
+        }
+      }
+    }
+    expect(unknown).toEqual([]);
+  });
+
+  it('mutation: introduce a never-defined class bg-success-fillx → guard fails', () => {
+    const fakeToken = 'bg-success-fillx';
+    const customClasses = parseCustomClasses(css);
+    const isKnown = isKnownToken(fakeToken, builtCss, customClasses);
+    expect(isKnown).toBe(false);
+  });
+
+  it('mutation: use bg-success-fill before B1 definition → guard flags it as unknown', () => {
+    const customWithoutSuccessFill = parseCustomClasses(css);
+    customWithoutSuccessFill.delete('bg-success-fill');
+    const token = 'bg-success-fill';
+    const builtWithoutDef = builtCss.replace(/\.bg-success-fill\s*\{[^}]*\}/g, '');
+    const isKnown = isKnownToken(token, builtWithoutDef, customWithoutSuccessFill);
+    expect(isKnown).toBe(false);
   });
 });
 

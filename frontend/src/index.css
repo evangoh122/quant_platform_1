@@ -132,6 +132,8 @@ code,
 .bg-negative-dim { background-color: color-mix(in srgb, var(--negative) 10%, transparent); }
 .bg-negative-dim-5 { background-color: color-mix(in srgb, var(--negative) 5%, transparent); }
 .bg-negative-dim-20 { background-color: color-mix(in srgb, var(--negative) 20%, transparent); }
+.bg-success-fill { background-color: var(--success-fill); }
+.bg-danger-fill { background-color: var(--danger-fill); }
 .bg-info-dim { background-color: color-mix(in srgb, var(--info) 15%, transparent); }
 .bg-info-dim-8 { background-color: color-mix(in srgb, var(--info) 8%, transparent); }
 .bg-info-dim-20 { background-color: color-mix(in srgb, var(--info) 20%, transparent); }
@@ -143,10 +145,8 @@ code,
 .border-warning-dim-30 { border-color: color-mix(in srgb, var(--warning) 30%, transparent); }
 .border-info-dim-20 { border-color: color-mix(in srgb, var(--info) 20%, transparent); }
 
-/* Tinted text utilities — semantic warning/danger/success text */
+/* Tinted text utilities — semantic warning text */
 .text-warning-text { color: color-mix(in srgb, var(--warning) 90%, var(--text-primary)); }
-.text-danger-text { color: color-mix(in srgb, var(--on-danger) 90%, var(--text-primary)); }
-.text-success-text { color: color-mix(in srgb, var(--on-success) 90%, var(--text-primary)); }
 
 :where(button, a, input, select, textarea, summary, [role="button"]):focus-visible {
   outline: 2px solid var(--accent);
