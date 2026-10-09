@@ -187,9 +187,11 @@ report. No script in these rounds may auto-start Lakebase.
 
 ## Definition of ready
 
-The submission is ready only after DeepSeek approves all four exact commits and
-Codex independently passes each offline acceptance/mutation gate. Required live
-evidence must prove:
+The submission is ready only after DeepSeek approves and Codex independently
+validates one final exact committed SHA: the submission HEAD that contains
+rounds 1-4, with the offline acceptance and mutation gates re-run at that
+exact SHA. Per-round approvals of earlier commits are interim and are not
+carried forward across later commits. Required live evidence must prove:
 
 1. outbox changes reach all four Delta analytics tables without duplicates;
 2. the deployed app is non-degraded under its service principal;
