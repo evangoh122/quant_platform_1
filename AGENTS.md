@@ -111,9 +111,9 @@ seconds; the outer guard is 7500 seconds so evidence can flush.
 
 ## Validation requirements
 
-DeepSeek and Codex must identify and validate the exact SHA, inspect the diff,
+DeepSeek and the selected final gate (Codex Sol or Opus 5.5) must identify and validate the exact SHA, inspect the diff,
 run the relevant tests independently, and reproduce the important old-behavior
-and mutation proofs. Codex may start only after a readable DeepSeek `APPROVED` report
+and mutation proofs. The final gate may start only after a readable DeepSeek `APPROVED` report
 for the current SHA. Findings must include file:line and concrete test evidence.
 
 ### CI parity (standing rule)
@@ -128,7 +128,7 @@ require pyspark. No hard-coded home-directory paths.
 
 ## Pull requests and authority
 
-After pushing commits that passed DeepSeek and Codex Sol to an existing PR
+After pushing commits that passed DeepSeek and the selected final gate to an existing PR
 (never at PR open — the workflow below already requests that review), run:
 
 ```bash
@@ -138,7 +138,7 @@ gh pr comment <PR_NUMBER> --body "@coderabbitai review"
 The workflow `.github/workflows/coderabbit-trigger.yml` already posts
 `@coderabbitai review` when a PR is opened, reopened, or marked ready — do NOT
 also comment manually at open. Comment `@coderabbitai review` manually only
-after pushing commits that have passed DeepSeek and Codex Sol, and only if no
+after pushing commits that have passed DeepSeek and the selected final gate, and only if no
 automatic request (open, reopen, ready-for-review) already covers the current
 head SHA. Use
 `@coderabbitai full review` only when needed (e.g. after merging main/rebasing,
