@@ -7,7 +7,9 @@ Runs in CI without pyspark. Validates:
 (c) Ontology has no yfinance key and massive == "implemented".
 (d) requirements*.txt have no yfinance line.
 (e) Nothing outside allowlist imports db.database (the retired module).
+(f) No pytest fixture named tmp_db or db_conn under conftest.py/tests/.
 """
+import ast
 import os
 import subprocess
 from pathlib import Path
@@ -44,6 +46,18 @@ def _in_allowlist(rel: str, allowlist: set[str]) -> bool:
     for prefix in allowlist:
         if norm_rel == prefix or norm_rel.startswith(prefix + "/"):
             return True
+    return False
+
+
+def _is_pytest_fixture(deco: ast.expr) -> bool:
+    """Return True if *deco* is ``pytest.fixture`` or ``@pytest.fixture(...)``."""
+    if isinstance(deco, ast.Attribute) and deco.attr == "fixture":
+        if isinstance(deco.value, ast.Name) and deco.value.id == "pytest":
+            return True
+    if isinstance(deco, ast.Name) and deco.id == "fixture":
+        return True
+    if isinstance(deco, ast.Call):
+        return _is_pytest_fixture(deco.func)
     return False
 
 
@@ -188,3 +202,40 @@ class TestNoRetiredSources:
             files = result.stdout.splitlines()
             assert "tracked.py" in files, "tracked.py must be listed"
             assert "untracked.py" not in files, "untracked.py must NOT be listed"
+
+    def test_no_retired_fixture_definitions(self):
+        """(f) No pytest fixture named tmp_db or db_conn under conftest.py/tests/.
+
+        Uses AST parsing — comments and docs do not trigger false positives.
+        """
+        RETIRED_NAMES = {"tmp_db", "db_conn"}
+        violations = []
+
+        for rel in _py_files():
+            # Only scan conftest.py (any level) and files under tests/
+            basename = os.path.basename(rel)
+            is_conftest = basename == "conftest.py"
+            is_tests = rel.startswith("tests" + os.sep)
+            if not (is_conftest or is_tests):
+                continue
+            try:
+                text = (REPO / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            try:
+                tree = ast.parse(text, filename=rel)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef):
+                    continue
+                if node.name not in RETIRED_NAMES:
+                    continue
+                for deco in node.decorator_list:
+                    if _is_pytest_fixture(deco):
+                        violations.append(f"{rel}:{node.lineno}: @pytest.fixture def {node.name}")
+                        break
+        assert not violations, (
+            "Retired fixture definitions found (must not exist):\n"
+            + "\n".join(violations)
+        )
