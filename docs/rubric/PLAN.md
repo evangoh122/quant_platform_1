@@ -89,11 +89,16 @@ Relevant current product references:
    and establishes the feed that later captures agent actions.
 2. Build/check/review round 2 (`BUILD-llm-agent.md`). Its migration is `005` and
    extends the audit/idempotency contract after the outbox trigger exists.
-3. Define and review a round-3 deployment-hardening build request. It wires the
-   final analytics job, SQL warehouse, Lakebase instance, and model endpoint to
-   the app identity and is therefore downstream of rounds 1-2.
-4. Define and review a round-4 submission-evidence build request, then have an owner-authorized operator run
-   its exact live evidence commands after rounds 1-3 pass.
+3. Define and review a round-3 deployment-hardening build request, then build
+   it (MiMo), check it (DeepSeek), and final-validate it (Codex, then Opus) in
+   that order before its commit/evidence is required. It wires the final
+   analytics job, SQL warehouse, Lakebase instance, and model endpoint to the
+   app identity and is therefore downstream of rounds 1-2.
+4. Define and review a round-4 submission-evidence build request, then build
+   it (MiMo), check it (DeepSeek), and final-validate it (Codex, then Opus) in
+   that order before its commit/evidence is required, then have an
+   owner-authorized operator run its exact live evidence commands after rounds
+   1-3 pass.
 
 Rounds 1 and 2 are not safe to implement concurrently: both change the API
 contract and migrations, and round 2's audit events must be captured by round
