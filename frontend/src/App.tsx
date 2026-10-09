@@ -136,7 +136,7 @@ export default function App() {
       >
         {renderScreen()}
       </AppShell>
-      <CoachMarks steps={steps} run={!!activeTour} onClose={closeTour} onNavigate={handleTourNavigate} />
+      <CoachMarks steps={steps} run={!!activeTour} onClose={closeTour} onNavigate={handleTourNavigate} currentScreen={screen} />
     </>
   );
 }

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import App from './App';
 import { markTourSeen } from './components/tours/TourHost';
-import { APPLICATION_TOUR_KEY } from './components/tours/tourSteps';
+import { APPLICATION_TOUR_KEY, AGENT_TOUR_KEY, ARCHITECTURE_TOUR_KEY } from './components/tours/tourSteps';
 
 const healthyResponse = {
   status: 'ok',
@@ -150,9 +150,9 @@ describe('App shell and navigation', () => {
 
   it('opens the tour dialog when Take a tour is clicked', async () => {
     vi.stubGlobal('fetch', mockFetch(healthyResponse));
-    markTourSeen('qp_tour_application_v1');
-    markTourSeen('qp_tour_agent_v1');
-    markTourSeen('qp_tour_architecture_v1');
+    markTourSeen(APPLICATION_TOUR_KEY);
+    markTourSeen(AGENT_TOUR_KEY);
+    markTourSeen(ARCHITECTURE_TOUR_KEY);
     const user = userEvent.setup();
 
     render(<App />);
@@ -173,7 +173,7 @@ describe('App shell and navigation', () => {
 
   it('opens the tour dialog when Take a tour is clicked even if already seen', async () => {
     vi.stubGlobal('fetch', mockFetch(healthyResponse));
-    markTourSeen('qp_tour_application_v1');
+    markTourSeen(APPLICATION_TOUR_KEY);
     const user = userEvent.setup();
 
     render(<App />);

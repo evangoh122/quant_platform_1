@@ -64,7 +64,7 @@ export function ArchitectureEvidence() {
           Architecture &amp; Tests
         </h1>
         <p className="mt-2 text-sm text-[var(--text-secondary)]">
-          Verified architecture, safety model, and test evidence for the quant research platform.
+          Architecture overview, safety model, and test evidence for the quant research platform.
         </p>
       </section>
 
@@ -154,27 +154,36 @@ export function ArchitectureEvidence() {
 
       <section>
         <h2 className="mb-3 text-lg font-semibold text-[var(--text-primary)]">
-          Verified Test Groups
+          Expected Test Groups
         </h2>
         <div className="space-y-3">
-          {TEST_GROUPS.map((group) => (
-            <div
-              key={group.name}
-              className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
-            >
-              <p className="text-sm font-semibold text-[var(--text-primary)]">
-                {group.name}
-              </p>
-              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                {group.description}
-              </p>
-              <p className="mt-2 text-xs text-[var(--text-muted)]">
-                Commit: {group.commit} &middot; Date: {group.date}
-              </p>
-            </div>
-          ))}
-          <p className="text-xs text-[var(--text-muted)]">
-            Commit SHAs and dates are placeholders &mdash; to be filled after test runs on the build branch.
+          {TEST_GROUPS.map((group) => {
+            const isPlaceholder = group.commit === '<pending>' || group.date === '<pending>';
+            return (
+              <div
+                key={group.name}
+                className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+              >
+                <p className="text-sm font-semibold text-[var(--text-primary)]">
+                  {group.name}
+                </p>
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                  {group.description}
+                </p>
+                <p className="mt-2 text-xs text-[var(--text-muted)]">
+                  {isPlaceholder ? (
+                    <span>Test coverage — pending build branch run</span>
+                  ) : (
+                    <>
+                      Commit: {group.commit} &middot; Date: {group.date}
+                    </>
+                  )}
+                </p>
+              </div>
+            );
+          })}
+          <p className="text-xs text-[var(--text-muted)]" role="status">
+            Test coverage data will be populated after test runs on the build branch.
           </p>
         </div>
       </section>

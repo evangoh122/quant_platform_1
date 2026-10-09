@@ -78,6 +78,7 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
             className="absolute inset-0 bg-black/40"
             onClick={onClose}
             aria-hidden="true"
+            {...{ inert: '' }}
           />
           <div
             ref={drawerRef}

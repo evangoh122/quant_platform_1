@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import CoachMarks, { tourSeen, markTourSeen, type CoachStep } from './CoachMarks';
 import { useTourHost } from './TourHost';
 import { EvidencePanel } from '../evidence/EvidencePanel';
+import { AppShell, type NavGroup } from '../../layout/AppShell';
 import {
   APPLICATION_TOUR,
   AGENT_TOUR,
@@ -63,6 +64,46 @@ function installTargetElement(name: string, rect?: Partial<DOMRect>) {
   return el;
 }
 
+const TEST_GROUPS: NavGroup[] = [
+  {
+    label: 'Overview',
+    items: [{ id: 'platform-overview', label: 'Platform Overview' }],
+  },
+  {
+    label: 'Research',
+    items: [
+      { id: 'market', label: 'Market Explorer' },
+      { id: 'agent', label: 'AI Research Agent' },
+      { id: 'architecture', label: 'Architecture & Tests' },
+    ],
+  },
+];
+
+const healthyHealth = {
+  status: 'ok' as const, version: '1.0.0',
+  dependencies: [{ name: 'lakebase', ok: true, detail: 'connected', latency_ms: 5, last_error: null, last_ok_at: Date.now(), circuit_breaker_state: null }],
+  freshness: { state: 'fresh' as const, table: '', detail: '' },
+  role_cache_size: 0, startup: [],
+};
+
+/** Render real AppShell with a given currentId */
+function renderRealAppShell(currentId: string) {
+  const onNavigate = vi.fn();
+  return {
+    onNavigate,
+    ...render(
+      <AppShell
+        groups={TEST_GROUPS}
+        currentId={currentId}
+        onNavigate={onNavigate}
+        health={healthyHealth}
+      >
+        <div />
+      </AppShell>,
+    ),
+  };
+}
+
 /** Enumerate all rendered screens from App.tsx renderScreen switch */
 const ALL_SCREENS = [
   'platform-overview', 'market', 'options', 'sec', 'agent', 'signals',
@@ -114,19 +155,18 @@ function mockFetch(body: unknown) {
   });
 }
 
-// ---------- TEST 1: Route-aware header tour ----------
+// ---------- TEST 1: Route-aware header tour (uses real AppShell) ----------
 
 describe('Test 1: Header manual-tour requests are route-aware', () => {
   beforeEach(() => { installMockLocalStorage(); vi.restoreAllMocks(); });
   afterEach(() => { restoreLocalStorage(); });
 
-  it('dispatches agent tour on Agent screen', () => {
+  it('dispatches agent tour on Agent screen via real AppShell', () => {
     const dispatched: string[] = [];
     const handler = (e: Event) => { dispatched.push((e as CustomEvent).detail.tour); };
     window.addEventListener('qp-tour-request', handler);
 
-    // Simulate AppShell with currentId='agent'
-    const { unmount } = render(<AppShellTourTest currentId="agent" />);
+    const { unmount } = renderRealAppShell('agent');
 
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
     expect(dispatched).toEqual(['agent']);
@@ -135,12 +175,12 @@ describe('Test 1: Header manual-tour requests are route-aware', () => {
     unmount();
   });
 
-  it('dispatches architecture tour on Architecture screen', () => {
+  it('dispatches architecture tour on Architecture screen via real AppShell', () => {
     const dispatched: string[] = [];
     const handler = (e: Event) => { dispatched.push((e as CustomEvent).detail.tour); };
     window.addEventListener('qp-tour-request', handler);
 
-    const { unmount } = render(<AppShellTourTest currentId="architecture" />);
+    const { unmount } = renderRealAppShell('architecture');
 
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
     expect(dispatched).toEqual(['architecture']);
@@ -149,12 +189,12 @@ describe('Test 1: Header manual-tour requests are route-aware', () => {
     unmount();
   });
 
-  it('dispatches application tour on default screen', () => {
+  it('dispatches application tour on default screen via real AppShell', () => {
     const dispatched: string[] = [];
     const handler = (e: Event) => { dispatched.push((e as CustomEvent).detail.tour); };
     window.addEventListener('qp-tour-request', handler);
 
-    const { unmount } = render(<AppShellTourTest currentId="platform-overview" />);
+    const { unmount } = renderRealAppShell('platform-overview');
 
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
     expect(dispatched).toEqual(['application']);
@@ -164,32 +204,16 @@ describe('Test 1: Header manual-tour requests are route-aware', () => {
   });
 });
 
-/** Minimal harness that mimics AppShell's tour button with route awareness */
-function AppShellTourTest({ currentId }: { currentId: string }) {
-  const handleTour = () => {
-    const tour = currentId === 'agent' ? 'agent' : currentId === 'architecture' ? 'architecture' : 'application';
-    window.dispatchEvent(new CustomEvent('qp-tour-request', { detail: { tour } }));
-  };
-  return (
-    <div>
-      <button data-tour="tour-action" onClick={handleTour}>Take a tour</button>
-    </div>
-  );
-}
-
 // ---------- TEST 2: Application tour cross-screen navigation ----------
 
 describe('Test 2: Application tour navigates to real screens and finds targets', () => {
   it('APPLICATION_TOUR steps navigate to market, agent, and health screens', () => {
-    // The Analytics step should navigate to 'health' (not 'analytics')
     const analyticsStep = APPLICATION_TOUR.find((s) => s.selector === '[data-tour="analytics-evidence"]');
     expect(analyticsStep?.navigateTo).toBe('health');
 
-    // Market step navigates to market
     const marketStep = APPLICATION_TOUR.find((s) => s.selector === '[data-tour="market-research"]');
     expect(marketStep?.navigateTo).toBe('market');
 
-    // Agent step navigates to agent
     const agentStep = APPLICATION_TOUR.find((s) => s.selector === '[data-tour="agent"]');
     expect(agentStep?.navigateTo).toBe('agent');
   });
@@ -269,23 +293,28 @@ describe('Test 5: 375px mobile viewport', () => {
     const dialog = container.querySelector('[role="dialog"]');
     expect(dialog).toBeTruthy();
 
-    // Card should be rendered
+    // (a) Nav target is within viewport using real measured rects
+    const navRect = navTarget.getBoundingClientRect();
+    expect(navRect.top).toBeGreaterThanOrEqual(0);
+    expect(navRect.top).toBeLessThan(667);
+    expect(navRect.left).toBeGreaterThanOrEqual(0);
+    expect(navRect.right).toBeLessThanOrEqual(375);
+
+    // (b) Card is inside the viewport
     const card = dialog!.querySelector('[tabindex="-1"]') as HTMLElement;
     expect(card).toBeTruthy();
-
-    // At mobile viewport (< 640), card uses bottom: 20 positioning
-    // Card width should be <= viewport width - 24
     const cardWidth = parseInt(card.style.width, 10);
     expect(cardWidth).toBeLessThanOrEqual(375 - 24);
     expect(cardWidth).toBeGreaterThan(0);
+    // Card uses bottom: 20 on mobile, so it's anchored at bottom
+    expect(card.style.bottom).toBeTruthy();
 
-    // Controls should be at least 44x44 on mobile (enforced by CSS @media rule)
+    // (c) Every tour control has min width/height >= 44px enforced by CSS
+    // Verify the CSS @media rule exists (jsdom does not apply @media)
+    expect(css).toMatch(/@media\s*\(max-width:\s*767px\)[\s\S]*min-height:\s*44px/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*767px\)[\s\S]*min-width:\s*44px/);
     const buttons = card.querySelectorAll('button');
-    buttons.forEach((btn) => {
-      // The CSS enforces min-height: 44px and min-width: 44px on mobile
-      // We verify the rule exists in CSS, not computed style (jsdom limitation)
-      expect(btn).toBeTruthy();
-    });
+    expect(buttons.length).toBeGreaterThan(0);
 
     vi.useRealTimers();
   });
@@ -320,7 +349,6 @@ describe('Test 6: top, bottom, and auto placement behavior', () => {
     const dialog = container.querySelector('[role="dialog"]')!;
     const card = dialog.querySelector('[tabindex="-1"]') as HTMLElement;
 
-    // With placement: top, card should have bottom set (above target)
     expect(card.style.bottom).toBeTruthy();
     expect(card.style.top === '' || card.style.top === undefined).toBe(true);
 
@@ -347,7 +375,6 @@ describe('Test 6: top, bottom, and auto placement behavior', () => {
     const dialog = container.querySelector('[role="dialog"]')!;
     const card = dialog.querySelector('[tabindex="-1"]') as HTMLElement;
 
-    // With placement: bottom, card should have top set (below target)
     expect(card.style.top).toBeTruthy();
 
     vi.useRealTimers();
@@ -357,7 +384,6 @@ describe('Test 6: top, bottom, and auto placement behavior', () => {
     vi.useFakeTimers();
     setViewport(1024, 768);
 
-    // Target near bottom → auto should place above
     const target = installTargetElement('placement-target-auto', { top: 600, left: 200, width: 200, height: 50, bottom: 650, right: 400 });
     cleanupEls.push(target);
 
@@ -374,7 +400,6 @@ describe('Test 6: top, bottom, and auto placement behavior', () => {
     const dialog = container.querySelector('[role="dialog"]')!;
     const card = dialog.querySelector('[tabindex="-1"]') as HTMLElement;
 
-    // Target at y=600, vh=768, below+180=830 > 768 and rect.top(600) > 200 → should be above
     expect(card.style.bottom).toBeTruthy();
 
     vi.useRealTimers();
@@ -396,7 +421,6 @@ describe('Test 7: Missing targets use bounded skip/defer policy', () => {
       <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
     );
 
-    // Should show waiting state
     expect(screen.getByText('Waiting for screen to load...')).toBeInTheDocument();
     expect(screen.getByText('Skip step')).toBeInTheDocument();
     expect(screen.getByText('Missing Target')).toBeInTheDocument();
@@ -416,35 +440,62 @@ describe('Test 7: Missing targets use bounded skip/defer policy', () => {
       <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
     );
 
-    // Should show waiting state with "Waiting for screen to load..."
     expect(screen.getByText('Waiting for screen to load...')).toBeInTheDocument();
 
-    // Should NOT render a spotlight (no rect means waiting state)
     const dialog = container.querySelector('[role="dialog"]')!;
-    // The waiting state card is rendered, not a centered untargeted card
     expect(dialog.querySelector('[tabindex="-1"]')).toBeTruthy();
+
+    vi.useRealTimers();
+  });
+
+  it('shows timeout state after bounded wait expires', () => {
+    vi.useFakeTimers();
+    setViewport(1024, 768);
+
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="never-appears"]', title: 'Timeout Step', body: 'Will not appear', waitForTargetTimeout: 500 },
+    ];
+
+    render(
+      <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
+    );
+
+    // Initially shows waiting
+    expect(screen.getByText('Waiting for screen to load...')).toBeInTheDocument();
+
+    // Advance past the timeout
+    act(() => { vi.advanceTimersByTime(600); });
+
+    // Should show timeout message with live region
+    expect(screen.getByText("This step's target could not be shown.")).toBeInTheDocument();
+    const timeoutMsg = screen.getByText("This step's target could not be shown.");
+    expect(timeoutMsg).toHaveAttribute('aria-live', 'polite');
+    expect(timeoutMsg).toHaveAttribute('role', 'status');
 
     vi.useRealTimers();
   });
 });
 
-// ---------- TEST 8: Manual replay route-aware with seen key 1 ----------
+// ---------- TEST 8: Manual replay route-aware with seen key 1 (real component) ----------
 
 describe('Test 8: Manual replay remains route-aware when seen key is 1', () => {
   beforeEach(() => { installMockLocalStorage(); });
   afterEach(() => { restoreLocalStorage(); });
 
-  it('dispatches correct tour on agent screen even when all seen keys are 1', () => {
-    // Mark all tours as seen with value '1'
-    mockStore[APPLICATION_TOUR_KEY] = '1';
-    mockStore[AGENT_TOUR_KEY] = '1';
-    mockStore[ARCHITECTURE_TOUR_KEY] = '1';
+  it('manual Take a tour opens agent tour on agent screen even when all seen', () => {
+    // Seed seen keys using real production constants
+    markTourSeen(APPLICATION_TOUR_KEY);
+    markTourSeen(AGENT_TOUR_KEY);
+    markTourSeen(ARCHITECTURE_TOUR_KEY);
+    expect(tourSeen(APPLICATION_TOUR_KEY)).toBe(true);
+    expect(tourSeen(AGENT_TOUR_KEY)).toBe(true);
+    expect(tourSeen(ARCHITECTURE_TOUR_KEY)).toBe(true);
 
     const dispatched: string[] = [];
     const handler = (e: Event) => { dispatched.push((e as CustomEvent).detail.tour); };
     window.addEventListener('qp-tour-request', handler);
 
-    const { unmount } = render(<AppShellTourTest currentId="agent" />);
+    const { unmount } = renderRealAppShell('agent');
 
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
     expect(dispatched).toEqual(['agent']);
@@ -453,16 +504,16 @@ describe('Test 8: Manual replay remains route-aware when seen key is 1', () => {
     unmount();
   });
 
-  it('dispatches architecture tour on architecture screen even when all seen', () => {
-    mockStore[APPLICATION_TOUR_KEY] = '1';
-    mockStore[AGENT_TOUR_KEY] = '1';
-    mockStore[ARCHITECTURE_TOUR_KEY] = '1';
+  it('manual Take a tour opens architecture tour on architecture screen even when all seen', () => {
+    markTourSeen(APPLICATION_TOUR_KEY);
+    markTourSeen(AGENT_TOUR_KEY);
+    markTourSeen(ARCHITECTURE_TOUR_KEY);
 
     const dispatched: string[] = [];
     const handler = (e: Event) => { dispatched.push((e as CustomEvent).detail.tour); };
     window.addEventListener('qp-tour-request', handler);
 
-    const { unmount } = render(<AppShellTourTest currentId="architecture" />);
+    const { unmount } = renderRealAppShell('architecture');
 
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
     expect(dispatched).toEqual(['architecture']);
@@ -538,7 +589,6 @@ describe('Test 9: Canonical obsidian/silver/gold token values', () => {
   });
 
   it('.nav-item.active uses accent-dim wash, not hardcoded blue', () => {
-    // The active nav should use var(--accent-dim), not a hardcoded #2563eb
     expect(css).toContain('.nav-item.active');
     expect(css).toContain('background: var(--accent-dim)');
     expect(css).not.toMatch(/\.nav-item\.active[\s\S]*background:\s*#2563eb/);
@@ -624,4 +674,153 @@ describe('Test 10: No old light surface/Blue CTA/Slate classes in rendered compo
       }
     });
   }
+});
+
+// ---------- TEST 11: Part B1 - ArchitectureEvidence honesty ----------
+
+describe('Test 11: ArchitectureEvidence removes false Verified wording', () => {
+  it('no "Verified" claim appears with placeholder data', () => {
+    const content = readFileSync(join(__dirname, '../../screens/ArchitectureEvidence.tsx'), 'utf-8');
+    // The component should not contain "Verified" in its rendered text
+    // (it was removed because commit/date are placeholders)
+    expect(content).not.toMatch(/Verified Test Groups/);
+    expect(content).not.toMatch(/Verified architecture/);
+    expect(content).toContain('Expected Test Groups');
+    expect(content).toContain('Test coverage');
+    // Status text conveyed to screen readers
+    expect(content).toMatch(/role="status"/);
+  });
+});
+
+// ---------- TEST 12: Part B2 - Skip link ----------
+
+describe('Test 12: Skip link is first focusable in AppShell', () => {
+  it('skip link targets #main-content and main has tabIndex=-1', () => {
+    const content = readFileSync(join(__dirname, '../../layout/AppShell.tsx'), 'utf-8');
+    // Skip link must be present
+    expect(content).toContain('Skip to main content');
+    expect(content).toContain('href="#main-content"');
+    // main element must have id and tabIndex
+    expect(content).toMatch(/id="main-content"/);
+    expect(content).toMatch(/tabIndex=\{-1\}/);
+    // Skip link must come before Sidebar in the JSX
+    const skipIdx = content.indexOf('Skip to main content');
+    const sidebarIdx = content.indexOf('<Sidebar');
+    expect(skipIdx).toBeLessThan(sidebarIdx);
+  });
+
+  it('skip link is the first focusable element in the rendered shell', () => {
+    const onNavigate = vi.fn();
+    render(
+      <AppShell
+        groups={TEST_GROUPS}
+        currentId="platform-overview"
+        onNavigate={onNavigate}
+        health={healthyHealth}
+      >
+        <div />
+      </AppShell>,
+    );
+    // The skip link should be in the document
+    const skipLink = screen.getByText('Skip to main content');
+    expect(skipLink).toBeInTheDocument();
+    expect(skipLink).toHaveAttribute('href', '#main-content');
+    // main element should have id="main-content"
+    const main = document.getElementById('main-content');
+    expect(main).toBeInTheDocument();
+    expect(main).toHaveAttribute('tabindex', '-1');
+  });
+});
+
+// ---------- TEST 13: Part B3 - Research Agent accessible label ----------
+
+describe('Test 13: Research Agent input has accessible label', () => {
+  it('input has a visible label element or aria-label', () => {
+    const content = readFileSync(join(__dirname, '../../screens/ResearchAgent.tsx'), 'utf-8');
+    // Either a <label> or aria-label must be present
+    const hasLabel = content.includes('<label') || content.includes('aria-label');
+    expect(hasLabel).toBe(true);
+    // If using htmlFor, the input must have matching id
+    if (content.includes('htmlFor')) {
+      expect(content).toMatch(/id="research-agent-input"/);
+    }
+  });
+});
+
+// ---------- TEST 14: Part B5 - Collapsible aria-expanded/aria-controls ----------
+
+describe('Test 14: DeveloperDetails collapsible has aria-expanded and aria-controls', () => {
+  it('summary has aria-expanded and aria-controls referencing a real id', () => {
+    const content = readFileSync(join(__dirname, '../../components/evidence/DeveloperDetails.tsx'), 'utf-8');
+    expect(content).toContain('aria-expanded');
+    expect(content).toContain('aria-controls');
+    // id is set via a variable: id={contentId}
+    expect(content).toMatch(/id=\{contentId\}/);
+    expect(content).toContain("contentId = 'developer-details-content'");
+    expect(content).toContain('aria-controls={contentId}');
+  });
+});
+
+// ---------- TEST 15: Part B6 - Tour target timeout live region ----------
+
+describe('Test 15: Tour target timeout shows explicit state with live region', () => {
+  it('timeout message has aria-live="polite" and role="status"', () => {
+    vi.useFakeTimers();
+    setViewport(1024, 768);
+
+    const steps: CoachStep[] = [
+      { selector: '[data-tour="never-appears-2"]', title: 'Timeout', body: 'Gone', waitForTargetTimeout: 300 },
+    ];
+
+    render(
+      <div><CoachMarks steps={steps} run={true} onClose={() => {}} /></div>,
+    );
+
+    // Advance past timeout
+    act(() => { vi.advanceTimersByTime(400); });
+
+    const msg = screen.getByText("This step's target could not be shown.");
+    expect(msg).toHaveAttribute('aria-live', 'polite');
+    expect(msg).toHaveAttribute('role', 'status');
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------- TEST 16: Part B7 - Tour exit restores screen ----------
+
+describe('Test 16: Tour exit restores the screen the user started from', () => {
+  it('onNavigate restores initial screen when Escape closes the tour', () => {
+    const onNavigate = vi.fn();
+    const onClose = vi.fn();
+
+    // Step 0 has no navigateTo (intro), Step 1 navigates away.
+    // currentScreen='platform-overview' simulates the user's starting screen.
+    const steps: CoachStep[] = [
+      { title: 'Intro', body: 'Hello' },
+      { selector: '[data-tour="agent"]', title: 'Agent', body: 'Agent step', navigateTo: 'agent' },
+    ];
+
+    render(
+      <div>
+        <CoachMarks
+          steps={steps}
+          run={true}
+          onClose={onClose}
+          onNavigate={onNavigate}
+          currentScreen="platform-overview"
+        />
+      </div>,
+    );
+
+    onNavigate.mockClear();
+
+    // Press Escape to close the tour
+    act(() => { fireEvent.keyDown(window, { key: 'Escape' }); });
+
+    // onClose was called
+    expect(onClose).toHaveBeenCalled();
+    // onNavigate was called to restore the initial screen
+    expect(onNavigate).toHaveBeenCalledWith('platform-overview');
+  });
 });

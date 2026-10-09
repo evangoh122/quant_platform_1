@@ -77,7 +77,7 @@ export const ARCHITECTURE_TOUR: CoachStep[] = [
   {
     selector: '[data-tour="provenance"]',
     title: 'Provenance & lineage',
-    body: 'Track data from source through transformation to consumption. Every table and metric has a verified lineage.',
+    body: 'Track data from source through transformation to consumption. Every table and metric has a documented lineage.',
     navigateTo: 'architecture',
     waitForTargetTimeout: 3000,
   },

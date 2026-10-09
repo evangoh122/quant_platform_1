@@ -160,7 +160,11 @@ export function ResearchAgent() {
           )}
 
           <form data-tour="agent-input" className="mt-3 flex gap-2" onSubmit={handleSubmit}>
+            <label htmlFor="research-agent-input" className="sr-only">
+              Research question
+            </label>
             <input
+              id="research-agent-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               className="flex-1 rounded-md border border-[var(--border)] px-3 py-2 text-sm bg-[var(--surface-raised)] text-[var(--text-primary)]"

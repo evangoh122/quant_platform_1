@@ -33,7 +33,7 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
   if (tc.name === 'get_latest_signal') {
     return {
       label: 'Signal',
-      cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+      cls: 'bg-[var(--accent-dim)] text-[var(--accent-bright)]',
     };
   }
   if (tc.name === 'save_research_note') {

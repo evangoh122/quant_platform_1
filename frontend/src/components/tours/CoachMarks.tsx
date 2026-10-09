@@ -24,18 +24,23 @@ interface CoachMarksProps {
   onClose: () => void;
   /** Called when a step requests navigation to a different screen */
   onNavigate?: (screenId: string) => void;
+  /** Current screen ID, used to restore the screen on tour close */
+  currentScreen?: string;
 }
 
 const PAD = 8;
 const CARD_W = 320;
 
-export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMarksProps) {
+export default function CoachMarks({ steps, run, onClose, onNavigate, currentScreen }: CoachMarksProps) {
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [waitingForTarget, setWaitingForTarget] = useState(false);
+  const [targetTimedOut, setTargetTimedOut] = useState(false);
+  const [screenAnnouncement, setScreenAnnouncement] = useState('');
   const cardRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const observerRef = useRef<MutationObserver | null>(null);
+  const initialScreenRef = useRef<string | undefined>(undefined);
 
   const step = steps[index];
 
@@ -63,17 +68,21 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
   useEffect(() => {
     if (run) {
       openerRef.current = document.activeElement as HTMLElement;
+      initialScreenRef.current = currentScreen;
       setIndex(0);
+      setTargetTimedOut(false);
     }
-  }, [run]);
+  }, [run, currentScreen]);
 
   // Handle navigation and target waiting for cross-screen steps
   useLayoutEffect(() => {
     if (!run || !step) return;
+    setTargetTimedOut(false);
 
     // If step requires navigation, trigger it first
     if (step.navigateTo && onNavigate) {
       onNavigate(step.navigateTo);
+      setScreenAnnouncement(`Navigated to ${step.navigateTo} screen`);
     }
 
     const timeout = step.waitForTargetTimeout ?? 3000;
@@ -92,6 +101,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
       } else {
         // Target not found - wait with bounded observer/timeout
         setWaitingForTarget(true);
+        setTargetTimedOut(false);
         let resolved = false;
 
         const resolveTarget = () => {
@@ -100,9 +110,12 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
           setWaitingForTarget(false);
           const foundEl = document.querySelector(step.selector!) as HTMLElement | null;
           if (foundEl) {
+            setTargetTimedOut(false);
             const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             foundEl.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
             setTimeout(measure, 280);
+          } else {
+            setTargetTimedOut(true);
           }
         };
 
@@ -192,9 +205,12 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
   }, [run, index]);
 
   const handleClose = useCallback(() => {
+    if (initialScreenRef.current !== undefined && onNavigate) {
+      onNavigate(initialScreenRef.current);
+    }
     onClose();
     setTimeout(() => openerRef.current?.focus(), 0);
-  }, [onClose]);
+  }, [onClose, onNavigate]);
 
   const next = useCallback(() => {
     if (index >= steps.length - 1) {
@@ -238,7 +254,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
   const isMobile = vw < 640;
 
   // Show waiting state if we're waiting for a target
-  if (waitingForTarget) {
+  if (waitingForTarget || targetTimedOut) {
     return (
       <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true" aria-label="Guided tour">
         <div className="absolute inset-0 bg-black/58" />
@@ -266,9 +282,15 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
           <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed m-0">
             {step.body}
           </p>
-          <p className="mt-2 text-[12px] text-[var(--text-muted)] italic">
-            Waiting for screen to load...
-          </p>
+          {targetTimedOut ? (
+            <p className="mt-2 text-[12px] text-[var(--warning)] italic" role="status" aria-live="polite">
+              This step's target could not be shown.
+            </p>
+          ) : (
+            <p className="mt-2 text-[12px] text-[var(--text-muted)] italic">
+              Waiting for screen to load...
+            </p>
+          )}
           <div className="flex items-center justify-end gap-2 mt-4">
             <button
               onClick={() => {
@@ -280,7 +302,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
               }}
               className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] bg-transparent border-0 p-0 cursor-pointer"
             >
-              Skip step
+              {targetTimedOut ? 'Skip step' : 'Skip step'}
             </button>
           </div>
         </div>
@@ -412,6 +434,11 @@ export default function CoachMarks({ steps, run, onClose, onNavigate }: CoachMar
             </button>
           </div>
         </div>
+        {screenAnnouncement && (
+          <div aria-live="polite" className="sr-only" role="status">
+            {screenAnnouncement}
+          </div>
+        )}
       </div>
     </div>
   );
