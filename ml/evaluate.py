@@ -23,6 +23,7 @@ from sklearn import metrics as skm
 from scipy.stats import norm
 
 from strategies.cost_model import CostParams, cost_per_trade
+from strategies.report import performance_metrics
 
 
 # ── Predictive ───────────────────────────────────────────────────────────────
@@ -158,15 +159,21 @@ def build_backtest(
             "hit_rate": float("nan"),
             "turnover": float("nan"),
             "avg_holding_period": float("nan"),
+            "profit_factor": float("nan"),
+            "sortino_ratio": float("nan"),
+            "calmar_ratio": float("nan"),
+            "win_rate": float("nan"),
         }
 
-    mean = float(net.mean())
-    std = float(net.std(ddof=0)) if len(net) > 1 else 0.0
-    sharpe = (mean / std * np.sqrt(periods_per_year)) if std > 0 else float("nan")
-
-    equity = (1.0 + net).cumprod()
-    running_max = equity.cummax()
-    max_dd = float(((equity - running_max) / running_max).min())
+    # Aggregate simultaneous symbols into one equal-weight portfolio return per
+    # decision timestamp before computing time-series ratios. Treating every
+    # symbol row as a consecutive portfolio period would inflate sample size.
+    portfolio_net = df.groupby("prediction_ts", sort=True)["net_return"].mean()
+    report = performance_metrics(
+        portfolio_net,
+        periods_per_year=periods_per_year,
+        trade_pnls=net,
+    )
 
     hit = float(np.mean(np.sign(df["forward_return"]) == np.sign(df["position"])))
 
@@ -189,9 +196,18 @@ def build_backtest(
     avg_holding = float(np.mean(runs)) if runs else float("nan")
 
     return {
-        "net_return": mean,
-        "sharpe": sharpe,
-        "max_drawdown": max_dd,
+        # Preserve legacy keys while publishing explicit ratio names.
+        "net_return": float(net.mean()),
+        "sharpe": report["sharpe_ratio"],
+        "sharpe_ratio": report["sharpe_ratio"],
+        "sortino_ratio": report["sortino_ratio"],
+        "calmar_ratio": report["calmar_ratio"],
+        "profit_factor": report["profit_factor"],
+        "win_rate": report["win_rate"],
+        "total_return": report["total_return"],
+        "cagr": report["cagr"],
+        "annualized_volatility": report["annualized_volatility"],
+        "max_drawdown": report["max_drawdown"],
         "hit_rate": hit,
         "turnover": avg_turnover,
         "avg_holding_period": avg_holding,

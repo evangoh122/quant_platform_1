@@ -42,6 +42,9 @@ def test_build_backtest_applies_costs():
     # A perfectly-directional strategy: hit rate is 1.0 before costs.
     assert gross["hit_rate"] == 1.0
     assert "sharpe" in gross and "max_drawdown" in gross
+    assert gross["win_rate"] == 1.0
+    assert gross["profit_factor"] > 1.5
+    assert "sortino_ratio" in gross and "calmar_ratio" in gross
 
 
 def test_operational_metrics_percentiles():

@@ -94,6 +94,12 @@ backtest:
   warmup_bars: 1260                        # skip first N bars for indicator warmup
   report_metrics:
     - sharpe_ratio
+    - sortino_ratio
+    - calmar_ratio
+    - profit_factor
+    - win_rate
+    - payoff_ratio
+    - cagr
     - max_drawdown
     - hit_rate
     - avg_holding_time
