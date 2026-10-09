@@ -4,13 +4,17 @@ Loaded via ``pytest.ini`` ``addopts = -p tests.hermetic``.  Provides two
 autouse fixtures that make every test hermetic by construction:
 
 1. **Session-scoped env scrub** — removes ambient credentials so tests
-   cannot accidentally reach live services through SDK auto-auth.
+   cannot accidentally reach live services through SDK auto-auth.  Applies
+   to **all** tests, including those with opt-out markers, because it
+   protects credentials from leaking.
 2. **Function-scoped network guard** — patches ``socket.socket.connect``,
-   ``socket.socket.connect_ex``, ``socket.create_connection``, and
-   ``socket.getaddrinfo`` so any destination other than loopback
+   ``socket.socket.connect_ex``, ``socket.create_connection``,
+   ``socket.getaddrinfo``, ``socket.socket.sendto``, and
+   ``socket.socket.sendmsg`` so any destination other than loopback
    (``127.0.0.0/8``, ``::1``, ``localhost``) and Unix sockets raises
    ``HermeticViolation`` immediately.  Also patches ``databricks.sdk.WorkspaceClient``
    and ``databricks.sql.connect`` when those packages are importable.
+   Skipped for tests with an opt-out marker.
 
 **Opt-out markers** (registered in ``pytest.ini``):
 - ``databricks`` — tests that need a live Databricks workspace
@@ -18,8 +22,8 @@ autouse fixtures that make every test hermetic by construction:
 - ``lakebase`` — tests that need a live Lakebase instance
 - ``network`` — tests that need real outbound network access
 
-Tests marked with any of these skip both guards.  In CI, the marker
-expression ``-m "not spark and not lakebase and not databricks and not network"``
+Tests marked with any of these skip the network guard only.  In CI, the
+marker expression ``-m "not spark and not lakebase and not databricks and not network"``
 deselects them so guards are never bypassed on CI runners.
 """
 
@@ -96,6 +100,8 @@ def _hermetic_env_scrub():
     cannot locate a profile.  Original values are restored at session end.
     """
     saved: dict[str, str] = {}
+    _had_config_file = "DATABRICKS_CONFIG_FILE" in os.environ
+    _orig_config_file = os.environ.get("DATABRICKS_CONFIG_FILE")
     for key, value in os.environ.items():
         upper = key.upper()
         if any(upper.startswith(p) for p in _SCRUB_PREFIXES):
@@ -112,7 +118,10 @@ def _hermetic_env_scrub():
 
     for key in saved:
         os.environ[key] = saved[key]
-    os.environ.pop("DATABRICKS_CONFIG_FILE", None)
+    if _had_config_file:
+        os.environ["DATABRICKS_CONFIG_FILE"] = _orig_config_file
+    else:
+        os.environ.pop("DATABRICKS_CONFIG_FILE", None)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +133,8 @@ def _hermetic_network_guard(request):
     """Block non-loopback outbound connections for each test function.
 
     Patches ``socket.socket.connect``, ``socket.socket.connect_ex``,
-    ``socket.create_connection``, and ``socket.getaddrinfo`` so that any
+    ``socket.create_connection``, ``socket.getaddrinfo``,
+    ``socket.socket.sendto``, and ``socket.socket.sendmsg`` so that any
     destination other than loopback (``127.0.0.0/8``, ``::1``, ``localhost``)
     and Unix sockets raises ``HermeticViolation`` immediately.  Also patches
     ``databricks.sdk.WorkspaceClient`` and ``databricks.sql.connect`` when
@@ -139,6 +149,8 @@ def _hermetic_network_guard(request):
     _real_socket_connect = socket.socket.connect
     _real_socket_connect_ex = socket.socket.connect_ex
     _real_getaddrinfo = socket.getaddrinfo
+    _real_socket_sendto = socket.socket.sendto
+    _real_socket_sendmsg = getattr(socket.socket, "sendmsg", None)
     _has_af_unix = hasattr(socket, "AF_UNIX")
 
     def _extract_host_port(address, sock_family):
@@ -187,10 +199,46 @@ def _hermetic_network_guard(request):
             f"{request.node.nodeid!r}. Mock the call or mark @pytest.mark.network."
         )
 
+    def _fail_socket_sendto(self_sock, data, *args, **kwargs):
+        # sendto(bytes, address) or sendto(bytes, flags, address)
+        if _has_af_unix and self_sock.family == socket.AF_UNIX:
+            return _real_socket_sendto(self_sock, data, *args, **kwargs)
+        address = args[-1] if args else kwargs.get("address")
+        if address is not None:
+            host, port = _extract_host_port(address, self_sock.family)
+            if _is_loopback(host):
+                return _real_socket_sendto(self_sock, data, *args, **kwargs)
+        raise HermeticViolation(
+            f"Blocked UDP sendto to non-loopback in test "
+            f"{request.node.nodeid!r}. Mock the call or mark @pytest.mark.network."
+        )
+
+    def _fail_socket_sendmsg(self_sock, buffers, *args, **kwargs):
+        # sendmsg(buffers[, ancdata[, flags[, address]]])
+        if _has_af_unix and self_sock.family == socket.AF_UNIX:
+            return _real_socket_sendmsg(self_sock, buffers, *args, **kwargs)
+        # self_sock, buffers already extracted; *args = (ancdata, flags, address)
+        address = None
+        if len(args) >= 3:
+            address = args[2]
+        elif "address" in kwargs:
+            address = kwargs["address"]
+        if address is not None:
+            host, port = _extract_host_port(address, self_sock.family)
+            if _is_loopback(host):
+                return _real_socket_sendmsg(self_sock, buffers, *args, **kwargs)
+        raise HermeticViolation(
+            f"Blocked UDP sendmsg to non-loopback in test "
+            f"{request.node.nodeid!r}. Mock the call or mark @pytest.mark.network."
+        )
+
     socket.create_connection = _fail_create_connection
     socket.socket.connect = _fail_socket_connect
     socket.socket.connect_ex = _fail_socket_connect_ex
     socket.getaddrinfo = _fail_getaddrinfo
+    socket.socket.sendto = _fail_socket_sendto
+    if _real_socket_sendmsg is not None:
+        socket.socket.sendmsg = _fail_socket_sendmsg
 
     # ── direct SDK / SQL-connector blockers ───────────────────────────────
     _patched_modules: list[tuple[object, str, object]] = []
@@ -247,6 +295,9 @@ def _hermetic_network_guard(request):
     socket.socket.connect = _real_socket_connect
     socket.socket.connect_ex = _real_socket_connect_ex
     socket.getaddrinfo = _real_getaddrinfo
+    socket.socket.sendto = _real_socket_sendto
+    if _real_socket_sendmsg is not None:
+        socket.socket.sendmsg = _real_socket_sendmsg
 
     for module, attr, orig in _patched_modules:
         setattr(module, attr, orig)
