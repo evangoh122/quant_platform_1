@@ -295,8 +295,8 @@ class TestInformationTime:
         }])
         as_of = _utc(2026, 6, 10, 21, 0)
         result = build_signal_outcomes(signals, closes, as_of=as_of)
-        assert result.loc[0, "entry_date"] == pd.Timestamp("2026-06-04")
-        assert result.loc[0, "outcome_date"] == pd.Timestamp("2026-06-05")
+        assert result.loc[0, "entry_date"] == _td(2026, 6, 4)
+        assert result.loc[0, "outcome_date"] == _td(2026, 6, 5)
 
     def test_append_future_rows_stability(self):
         """Frozen sigma identical before/after appending later bars."""
@@ -726,11 +726,17 @@ class TestGuards:
 
 
 def _get_name(node):
-    """Extract name from AST node if it's a Name."""
+    """Extract name from AST node if it's a Name, Attribute, or Subscript with string slice."""
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
         return node.attr
+    if isinstance(node, ast.Subscript):
+        # Resolve Subscript with string-constant slice: result["col"]
+        if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+            return node.slice.value
+        if isinstance(node.slice, ast.Index) and isinstance(node.slice.value, ast.Constant):
+            return node.slice.value.value
     return None
 
 
@@ -760,3 +766,580 @@ class TestPairsMatchLabels:
         for i in range(len(features)):
             expected = 1.0 if pairs.loc[i, "outcome_close"] > pairs.loc[i, "entry_close"] else 0.0
             assert labels.loc[i, "label"] == expected
+
+
+# ── Fix1: Deduplication tests ────────────────────────────────────────────────
+
+class TestDeduplication:
+    def test_three_model_versions_one_symbol_one_ts(self):
+        """3 model versions x 1 symbol x 1 timestamp => exactly 3 output rows.
+
+        Pairs and sigma must be computed once, not 3 times. The merge must
+        not fan out.
+        """
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(1, 24)]
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 25, rets)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 26),
+            "close": 105.0, "close_ts": _utc(2025, 1, 26, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes = pd.concat([closes, extra], ignore_index=True)
+
+        pred_ts = _utc(2025, 1, 25, 21, 0)
+        signals = _make_signals([
+            {"signal_id": f"s{i}", "symbol": "AAPL", "model_version": f"v{i+1}",
+             "horizon": "1d", "prediction_ts": pred_ts, "probability": 0.6}
+            for i in range(3)
+        ])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        assert len(result) == 3
+        assert result["signal_id"].tolist() == ["s0", "s1", "s2"]
+        # All 3 rows have the same sigma (computed once)
+        assert result["sigma20"].nunique() == 1
+        # n/hit_count/distinct dates unchanged by duplication
+        for col in ["entry_close", "outcome_close", "sigma20", "sigma_used"]:
+            assert result[col].nunique() == 1, f"{col} differs across rows"
+
+    def test_two_symbols_two_ts_no_fan_out(self):
+        """2 symbols x 2 timestamps x 2 versions => 8 output rows, not 16."""
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(1, 24)]
+        closes_a = _make_multi_day_closes("AAPL", "2025-01-01", 25, rets)
+        closes_b = _make_multi_day_closes("MSFT", "2025-01-01", 25, rets)
+        closes = pd.concat([closes_a, closes_b], ignore_index=True)
+        for sym in ["AAPL", "MSFT"]:
+            closes = pd.concat([closes, _make_closes([{
+                "symbol": sym, "trade_date": _td(2025, 1, 26),
+                "close": 105.0, "close_ts": _utc(2025, 1, 26, 20, 0),
+                "return_1d": 0.05,
+            }])], ignore_index=True)
+
+        signals = _make_signals([
+            {"signal_id": f"s{sym}_{ts}_{v}", "symbol": sym,
+             "model_version": v, "horizon": "1d",
+             "prediction_ts": _utc(2025, 1, 25 if ts == 0 else 24, 21, 0),
+             "probability": 0.6}
+            for sym in ["AAPL", "MSFT"]
+            for ts in range(2)
+            for v in ["v1", "v2"]
+        ])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        assert len(result) == 8
+
+
+# ── Fix2: NaN close eligibility tests ────────────────────────────────────────
+
+class TestNaNClosesIneligible:
+    def test_nan_entry_close_missing_return(self):
+        """NaN entry_close => missing_return (not eligible)."""
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": float("nan"), "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 21),
+             "close": 105.0, "close_ts": _utc(2025, 1, 21, 20, 0),
+             "return_1d": float("nan")},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        assert result.loc[0, "eligibility_state"] == "missing_return"
+        assert pd.isna(result.loc[0, "raw_forward_return"])
+        assert pd.isna(result.loc[0, "outcome_z"])
+
+    def test_nan_outcome_close_missing_return(self):
+        """NaN outcome_close => missing_return (not eligible)."""
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 100.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 21),
+             "close": float("nan"), "close_ts": _utc(2025, 1, 21, 20, 0),
+             "return_1d": float("nan")},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        assert result.loc[0, "eligibility_state"] == "missing_return"
+        assert pd.isna(result.loc[0, "raw_forward_return"])
+        assert pd.isna(result.loc[0, "outcome_z"])
+
+    def test_both_nan_closes_missing_return(self):
+        """Both entry and outcome close NaN => missing_return."""
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": float("nan"), "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 21),
+             "close": float("nan"), "close_ts": _utc(2025, 1, 21, 20, 0),
+             "return_1d": float("nan")},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        assert result.loc[0, "eligibility_state"] == "missing_return"
+
+
+# ── Fix3: excluded_counts per group ──────────────────────────────────────────
+
+class TestExcludedCountsPerGroup:
+    def test_excluded_counts_per_group(self):
+        """excluded_counts is a per-(model_version, horizon) dict, not shared."""
+        dates = pd.date_range("2025-01-01", periods=60, freq="B", tz="UTC")
+        eligible1 = pd.DataFrame([
+            {
+                "signal_id": f"s{i}", "symbol": "AAPL", "model_version": "v1",
+                "horizon": "1d", "prediction_ts": dates[i],
+                "entry_date": _td(2025, 1, 1), "outcome_date": _td(2025, 1, 2),
+                "direction": "UP", "probability_up": 0.6,
+                "raw_forward_return": 0.01, "signed_raw_return": 0.01,
+                "sigma20": 0.01, "sigma252": 0.01, "sigma_floor": 0.005,
+                "sigma_used": 0.01, "sigma_method": "close_to_close_ddof1_v1",
+                "sigma_as_of": _td(2025, 1, 1), "sigma_observation_count": 20,
+                "outcome_z": 1.0, "base_up_flag": True,
+                "ex_dividend_state": "none", "eligibility_state": "eligible",
+            }
+            for i in range(60)
+        ])
+        # v2 group: all pending (zero eligible)
+        pending2 = pd.DataFrame([{
+            "signal_id": "sp1", "symbol": "AAPL", "model_version": "v2",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 1),
+            "entry_date": None, "outcome_date": None,
+            "direction": "UP", "probability_up": 0.6,
+            "raw_forward_return": np.nan, "signed_raw_return": np.nan,
+            "sigma20": np.nan, "sigma252": np.nan, "sigma_floor": np.nan,
+            "sigma_used": np.nan, "sigma_method": "close_to_close_ddof1_v1",
+            "sigma_as_of": None, "sigma_observation_count": 0,
+            "outcome_z": np.nan, "base_up_flag": np.nan,
+            "ex_dividend_state": "none", "eligibility_state": "outcome_pending",
+        }])
+        outcomes = pd.concat([eligible1, pending2], ignore_index=True)
+        result = summarize_outcomes(outcomes, min_n=60, min_dates=30, rho=0.2)
+        assert len(result) == 2
+        r1 = next(r for r in result if r["model_version"] == "v1")
+        r2 = next(r for r in result if r["model_version"] == "v2")
+        # Dict identity must differ (not shared objects)
+        assert r1["excluded_counts"] is not r2["excluded_counts"]
+        # v2 has zero eligible rows but must still appear
+        assert r2["n"] == 0
+        assert r2["state"] == "insufficient_sample"
+        # v1 excluded_counts must not include 'eligible'
+        assert "eligible" not in r1["excluded_counts"]
+        assert "eligible" not in r2["excluded_counts"]
+        # v2 has one outcome_pending
+        assert r2["excluded_counts"].get("outcome_pending", 0) == 1
+
+    def test_zero_eligible_group_appears(self):
+        """A group with zero eligible rows must still appear in results."""
+        outcomes = pd.DataFrame([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v2",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 1),
+            "entry_date": None, "outcome_date": None,
+            "direction": "UP", "probability_up": 0.6,
+            "raw_forward_return": np.nan, "signed_raw_return": np.nan,
+            "sigma20": np.nan, "sigma252": np.nan, "sigma_floor": np.nan,
+            "sigma_used": np.nan, "sigma_method": "close_to_close_ddof1_v1",
+            "sigma_as_of": None, "sigma_observation_count": 0,
+            "outcome_z": np.nan, "base_up_flag": np.nan,
+            "ex_dividend_state": "none", "eligibility_state": "outcome_pending",
+        }])
+        result = summarize_outcomes(outcomes, min_n=100, min_dates=60, rho=0.2)
+        assert len(result) == 1
+        assert result[0]["model_version"] == "v2"
+        assert result[0]["n"] == 0
+
+
+# ── Fix5: Mutation-closing tests ─────────────────────────────────────────────
+
+class TestMutationClosing:
+    def test_m1_sigma_window_close_ts_not_trade_date(self):
+        """M1: Same-day close published AFTER prediction_ts must NOT be in sigma window.
+
+        A close on trade_date 2025-01-22 with close_ts = 20:00 UTC.
+        prediction_ts = 2025-01-22 14:00 UTC (before close).
+        The close has close_ts > prediction_ts, so it must NOT affect sigma.
+        If sigma window used trade_date <= prediction date, it WOULD be included.
+        """
+        # 25 closes: day 0 NaN, days 1-24 valid. Use alternating returns.
+        rets = [float("nan")] + [0.02 if i % 2 == 0 else 0.005 for i in range(24)]
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 25, rets)
+        # prediction_ts on Jan 22 at 14:00 UTC (before close_ts 20:00 UTC)
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 22, 14, 0),
+            "probability": 0.6,
+        }])
+        # Add outcome close on Jan 26 (beyond _make_multi_day_closes range)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 26),
+            "close": 105.0, "close_ts": _utc(2025, 1, 26, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes_full = pd.concat([closes, extra], ignore_index=True)
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes_full, as_of=as_of)
+        # sigma_as_of must be Jan 21 (last bar with close_ts <= Jan 22 14:00)
+        # Jan 22 close_ts = 20:00 > 14:00 => excluded from window
+        assert result.loc[0, "sigma_as_of"] == _td(2025, 1, 21)
+        # Verify: valid returns = days 1-21 (21 returns with alternating pattern)
+        expected_rets = [0.02 if i % 2 == 0 else 0.005 for i in range(21)]
+        expected_sigma = pd.Series(expected_rets).tail(20).std(ddof=1)
+        assert abs(result.loc[0, "sigma20"] - expected_sigma) < 1e-12
+
+    def test_m4_two_horizons_never_pooled(self):
+        """M4: summarize_outcomes never pools different horizons."""
+        from ml.risk_outcomes import summarize_outcomes as summarize
+        # Build two horizons with sufficient data
+        def _make_outcomes(n, dates, mv="v1", hor="1d"):
+            date_range = pd.date_range("2025-01-01", periods=dates, freq="B", tz="UTC")
+            rows = []
+            for i in range(n):
+                d = date_range[i % dates]
+                rows.append({
+                    "signal_id": f"s{i}_{hor}", "symbol": "AAPL", "model_version": mv,
+                    "horizon": hor, "prediction_ts": d,
+                    "entry_date": _td(2025, 1, 1), "outcome_date": _td(2025, 1, 2),
+                    "direction": "UP", "probability_up": 0.6,
+                    "raw_forward_return": 0.01, "signed_raw_return": 0.01,
+                    "sigma20": 0.01, "sigma252": 0.01, "sigma_floor": 0.005,
+                    "sigma_used": 0.01, "sigma_method": "close_to_close_ddof1_v1",
+                    "sigma_as_of": _td(2025, 1, 1), "sigma_observation_count": 20,
+                    "outcome_z": 1.0, "base_up_flag": True,
+                    "ex_dividend_state": "none", "eligibility_state": "eligible",
+                })
+            return pd.DataFrame(rows)
+
+        out_1d = _make_outcomes(120, 70, hor="1d")
+        out_5d = _make_outcomes(120, 70, hor="5d", mv="v1")
+        # Give 5d a different outcome_z to detect pooling
+        out_5d["outcome_z"] = -1.0
+        out_5d["base_up_flag"] = False
+        out_5d["signed_raw_return"] = -0.01
+        out_5d["raw_forward_return"] = -0.01
+
+        outcomes = pd.concat([out_1d, out_5d], ignore_index=True)
+        result = summarize(outcomes, min_n=100, min_dates=60, rho=0.2)
+        assert len(result) == 2
+        r1d = next(r for r in result if r["horizon"] == "1d")
+        r5d = next(r for r in result if r["horizon"] == "5d")
+        # Must not be pooled: different median_outcome_z
+        assert r1d["median_outcome_z"] != r5d["median_outcome_z"]
+        assert r1d["base_up_rate"] != r5d["base_up_rate"]
+
+    def test_m5_exact_match_close_ts_eq_prediction_ts(self):
+        """M5: close_ts == prediction_ts is eligible for sigma window (boundary).
+
+        merge_asof with direction='backward' and allow_matches (default True)
+        includes exact matches. close_ts <= prediction_ts must include equality.
+        """
+        # 51 closes starting Dec 1 so we have 20+ valid bars before Jan 20.
+        # Dec 1 + 50 = Jan 20.
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(50)]
+        closes = _make_multi_day_closes("AAPL", "2024-12-01", 51, rets)
+        # Override Jan 20 close_ts to be 14:00 UTC (same as prediction_ts)
+        closes.loc[closes["trade_date"] == _td(2025, 1, 20), "close_ts"] = _utc(2025, 1, 20, 14, 0)
+        # prediction_ts = Jan 20 14:00 UTC = exact match with Jan 20 close_ts
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 14, 0),
+            "probability": 0.6,
+        }])
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 23),
+            "close": 130.0, "close_ts": _utc(2025, 1, 23, 20, 0),
+            "return_1d": 0.01,
+        }])
+        closes_full = pd.concat([closes, extra], ignore_index=True)
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes_full, as_of=as_of)
+        # Jan 20 close_ts = 14:00 <= prediction_ts 14:00 => included
+        # So sigma_as_of should be Jan 20
+        assert result.loc[0, "sigma_as_of"] == _td(2025, 1, 20)
+
+    def test_m7_sigma_as_of_from_newest_bar_even_if_nan_return(self):
+        """M7: sigma_as_of comes from the last VALID return, not the newest bar.
+
+        If the newest bar has NaN return_1d, sigma_as_of must still be from
+        the last bar with a valid return in the sigma window.
+        """
+        # 22 closes. Bar 21 (last) has NaN return_1d.
+        rets = [float("nan")] + [0.01] * 20 + [float("nan")]
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 22, rets)
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 23, 21, 0),
+            "probability": 0.6,
+        }])
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 24),
+            "close": 105.0, "close_ts": _utc(2025, 1, 24, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes_full = pd.concat([closes, extra], ignore_index=True)
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes_full, as_of=as_of)
+        # Bar 21 (Jan 22) has NaN return, so it's excluded from valid_returns.
+        # valid_returns = bars 1-20 (Jan 2 - Jan 21). last20 = bars 1-20.
+        # sigma_as_of = last valid return's trade_date = Jan 21.
+        # If mutant took sigma_as_of from newest bar (Jan 22), test fails.
+        assert result.loc[0, "sigma_as_of"] == _td(2025, 1, 21)
+
+    def test_m8_base_up_rate_eligible_only(self):
+        """M8: base_up_rate is computed over eligible rows only.
+
+        If ineligible rows (e.g. missing_return) have base_up_flag=True,
+        including them would change the rate. The test fixture must have
+        enough ineligible rows to change the rate if they were included.
+        """
+        # 120 eligible rows: 72 up, 48 down => base_up_rate = 0.6
+        # 120 rows / 60 dates = m=2, n_eff = 120/(1+0.2) = 100 => sufficient
+        # Use timestamps at 21:00 UTC (16:00 ET) to ensure correct ET dates
+        dates = pd.date_range("2025-01-01", periods=60, freq="B", tz="UTC") + pd.Timedelta(hours=21)
+        eligible = pd.DataFrame([
+            {
+                "signal_id": f"s{i}", "symbol": "AAPL", "model_version": "v1",
+                "horizon": "1d",
+                "prediction_ts": dates[i % 60],
+                "entry_date": _td(2025, 1, 1), "outcome_date": _td(2025, 1, 2),
+                "direction": "UP", "probability_up": 0.6,
+                "raw_forward_return": 0.01 if i < 72 else -0.01,
+                "signed_raw_return": 0.01 if i < 72 else -0.01,
+                "sigma20": 0.01, "sigma252": 0.01, "sigma_floor": 0.005,
+                "sigma_used": 0.01, "sigma_method": "close_to_close_ddof1_v1",
+                "sigma_as_of": _td(2025, 1, 1), "sigma_observation_count": 20,
+                "outcome_z": 1.0 if i < 72 else -1.0,
+                "base_up_flag": True if i < 72 else False,
+                "ex_dividend_state": "none", "eligibility_state": "eligible",
+            }
+            for i in range(120)
+        ])
+        # 50 ineligible rows with base_up_flag=True
+        # If included, base_up_rate would be (60+50)/150 = 0.733 instead of 0.6
+        inel_dates = pd.date_range("2025-02-01", periods=50, freq="B", tz="UTC")
+        ineligible = pd.DataFrame([
+            {
+                "signal_id": f"bad{i}", "symbol": "AAPL", "model_version": "v1",
+                "horizon": "1d",
+                "prediction_ts": inel_dates[i],
+                "entry_date": _td(2025, 2, 1), "outcome_date": None,
+                "direction": "UP", "probability_up": 0.6,
+                "raw_forward_return": np.nan, "signed_raw_return": np.nan,
+                "sigma20": np.nan, "sigma252": np.nan, "sigma_floor": np.nan,
+                "sigma_used": np.nan, "sigma_method": "close_to_close_ddof1_v1",
+                "sigma_as_of": None, "sigma_observation_count": 0,
+                "outcome_z": np.nan, "base_up_flag": True,
+                "ex_dividend_state": "none", "eligibility_state": "missing_return",
+            }
+            for i in range(50)
+        ])
+        outcomes = pd.concat([eligible, ineligible], ignore_index=True)
+        result = summarize_outcomes(outcomes, min_n=100, min_dates=60, rho=0.2)
+        assert len(result) == 1
+        r = result[0]
+        assert r["state"] == "sufficient"
+        # base_up_rate must be 0.6 (72/120 eligible), NOT 0.718 (122/170 all)
+        assert abs(r["base_up_rate"] - 0.6) < 1e-10
+
+    def test_m9_pending_boundary_as_of(self):
+        """M9: outcome_close_ts == as_of => NOT pending (must be > as_of).
+
+        Boundary: outcome_close_ts exactly equals as_of. Since pending
+        requires outcome_close_ts > as_of, equality means NOT pending.
+        """
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 100.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 21),
+             "close": 105.0, "close_ts": _utc(2025, 1, 21, 20, 0),
+             "return_1d": 0.05},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        # as_of exactly == outcome_close_ts (Jan 21 20:00 UTC)
+        as_of = _utc(2025, 1, 21, 20, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        # outcome_close_ts == as_of => NOT pending (must be strictly > as_of)
+        assert result.loc[0, "eligibility_state"] != "outcome_pending"
+        # Should be eligible (assuming sigma is available)
+        # Since we only have 2 closes with valid returns, insufficient_sigma_history
+        assert result.loc[0, "eligibility_state"] == "insufficient_sigma_history"
+
+
+# ── Non-blocking: duplicate close guard ───────────────────────────────────────
+
+class TestDuplicateCloseGuard:
+    def test_duplicate_symbol_trade_date_raises(self):
+        """Duplicate (symbol, trade_date) in closes => ValueError."""
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 100.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 101.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": 0.01},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        with pytest.raises(ValueError, match="duplicate"):
+            build_signal_outcomes(signals, closes, as_of=as_of)
+
+
+# ── Non-blocking: horizon validation ──────────────────────────────────────────
+
+class TestHorizonValidation:
+    def test_unsupported_horizon_raises(self):
+        """horizon != '1d' => ValueError."""
+        rets = [float("nan")] + [0.01] * 24
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 25, rets)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 26),
+            "close": 105.0, "close_ts": _utc(2025, 1, 26, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes = pd.concat([closes, extra], ignore_index=True)
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "5d", "prediction_ts": _utc(2025, 1, 25, 21, 0),
+            "probability": 0.6,
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        with pytest.raises(ValueError, match="horizon"):
+            build_signal_outcomes(signals, closes, as_of=as_of)
+
+
+# ── Non-blocking: distinct dates by US/Eastern ────────────────────────────────
+
+class TestDistinctDatesEastern:
+    def test_utc_crossing_midnight_eastern(self):
+        """UTC timestamps crossing midnight ET count as same trading date.
+
+        A prediction at 23:30 ET (03:30 UTC next day) and 00:30 ET (04:30 UTC)
+        on the same ET date should count as 1 distinct date.
+        """
+        # 120 eligible rows on 60 distinct US/Eastern dates
+        rows = []
+        for i in range(120):
+            # Each pair (i, i+1) shares the same ET date
+            day_offset = i // 2
+            base = pd.Timestamp("2025-01-02") + pd.DateOffset(days=day_offset)
+            if i % 2 == 0:
+                # 23:30 ET on base date = 03:30 UTC next day
+                ts = pd.Timestamp(base.strftime("%Y-%m-%d") + " 03:30", tz="UTC") + pd.Timedelta(days=1)
+            else:
+                # 00:30 ET on next calendar day (same ET trading date as 23:30)
+                # 00:30 ET = 04:30 UTC on the next day
+                ts = pd.Timestamp(base.strftime("%Y-%m-%d") + " 04:30", tz="UTC") + pd.Timedelta(days=1)
+            rows.append({
+                "signal_id": f"s{i}", "symbol": "AAPL", "model_version": "v1",
+                "horizon": "1d", "prediction_ts": ts,
+                "entry_date": _td(2025, 1, 1), "outcome_date": _td(2025, 1, 2),
+                "direction": "UP", "probability_up": 0.6,
+                "raw_forward_return": 0.01, "signed_raw_return": 0.01,
+                "sigma20": 0.01, "sigma252": 0.01, "sigma_floor": 0.005,
+                "sigma_used": 0.01, "sigma_method": "close_to_close_ddof1_v1",
+                "sigma_as_of": _td(2025, 1, 1), "sigma_observation_count": 20,
+                "outcome_z": 1.0, "base_up_flag": True,
+                "ex_dividend_state": "none", "eligibility_state": "eligible",
+            })
+        outcomes = pd.DataFrame(rows)
+        result = summarize_outcomes(outcomes, min_n=100, min_dates=60, rho=0.2)
+        assert len(result) == 1
+        # 60 distinct ET dates (each pair of 23:30/00:30 is same ET date)
+        assert result[0]["distinct_prediction_dates"] == 60
+
+
+# ── Non-blocking: hardened probability*sigma AST guard ────────────────────────
+
+class TestHardenedASTGuard:
+    def test_self_test_prob_sigma_caught(self):
+        """Self-test: the guard pattern `result["probability_up"] * result["sigma_used"]`
+        must be detected by the AST walker."""
+        code = 'result["probability_up"] * result["sigma_used"]'
+        tree = ast.parse(code, mode="eval")
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+                left_name = _get_name(node.left)
+                right_name = _get_name(node.right)
+                if left_name and right_name:
+                    left_prob = "prob" in left_name.lower()
+                    right_sigma = "sigma" in right_name.lower()
+                    left_sigma = "sigma" in left_name.lower()
+                    right_prob = "prob" in right_name.lower()
+                    if (left_prob and right_sigma) or (left_sigma and right_prob):
+                        found = True
+        assert found, "AST guard must catch prob*sigma pattern"
+
+    def test_subscript_string_constant_not_missed(self):
+        """Subscript Access (e.g. result['col']) resolves to the column name."""
+        code = 'result["probability_up"] * result["sigma_used"]'
+        tree = ast.parse(code, mode="eval")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+                # Both sides are Subscript with string constants
+                left_val = _get_subscript_name(node.left)
+                right_val = _get_subscript_name(node.right)
+                assert left_val is not None
+                assert right_val is not None
+                assert "prob" in left_val.lower()
+                assert "sigma" in right_val.lower()
+
+
+def _get_subscript_name(node):
+    """Extract column name from Subscript node like result['col']."""
+    if isinstance(node, ast.Subscript):
+        if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+            return node.slice.value
+        if isinstance(node.slice, ast.Index) and isinstance(node.slice.value, ast.Constant):
+            return node.slice.value.value
+    return None
+
+
+# ── entry_date and sigma_as_of type consistency ──────────────────────────────
+
+class TestDateTypeConsistency:
+    def test_entry_date_sigma_as_of_same_type(self):
+        """entry_date and sigma_as_of must be the same type (date)."""
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(1, 24)]
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 25, rets)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 26),
+            "close": 105.0, "close_ts": _utc(2025, 1, 26, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes = pd.concat([closes, extra], ignore_index=True)
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 25, 21, 0),
+            "probability": 0.6,
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        entry_d = result.loc[0, "entry_date"]
+        sigma_d = result.loc[0, "sigma_as_of"]
+        assert type(entry_d) == type(sigma_d), (
+            f"entry_date type {type(entry_d)} != sigma_as_of type {type(sigma_d)}"
+        )

@@ -214,18 +214,21 @@ def daily_close_labels(
     Returns
     -------
     DataFrame
-        Copy of *features* with ``label`` and ``label_ts`` columns added.
+        Copy of *features* with ``label`` and ``label_ts`` columns added,
+        plus 6 intermediate columns from :func:`daily_close_pairs`:
+        ``entry_trade_date``, ``entry_close``, ``entry_close_ts``,
+        ``outcome_trade_date``, ``outcome_close``, ``outcome_close_ts``.
     """
     pairs = daily_close_pairs(features, closes, max_gap_days=max_gap_days)
     pairs["label"] = float("nan")
     pairs["label_ts"] = pairs["outcome_close_ts"]
-    has_outcome = pairs["outcome_close"].notna()
-    has_entry = pairs["entry_close"].notna()
-    both = has_outcome & has_entry
-    pairs.loc[both, "label"] = (
-        pairs.loc[both, "outcome_close"] > pairs.loc[both, "entry_close"]
+    # valid: outcome was found (N exists, gap OK) — equivalent to old
+    # valid = merged["N_date"].notna() & (gap > 0) & (gap <= max_gap_days)
+    valid = pairs["outcome_close_ts"].notna()
+    pairs.loc[valid, "label"] = (
+        pairs.loc[valid, "outcome_close"].values > pairs.loc[valid, "entry_close"].values
     ).astype(float)
-    pairs.loc[~has_outcome, "label_ts"] = pd.NaT
+    pairs.loc[~valid, "label_ts"] = pd.NaT
     return pairs
 
 

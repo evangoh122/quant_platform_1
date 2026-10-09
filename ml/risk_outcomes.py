@@ -14,7 +14,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from ml.baseline_labels import daily_close_pairs
+from ml.baseline_labels import _eastern_date, daily_close_pairs
 
 
 def build_signal_outcomes(
@@ -52,12 +52,28 @@ def build_signal_outcomes(
     signals = signals.rename(columns={"probability": "probability_up"})
     signals["direction"] = np.where(signals["probability_up"] >= 0.5, "UP", "DOWN")
 
-    # Get entry/outcome pairs
-    pair_cols = ["symbol", "prediction_ts"]
-    features = signals[pair_cols].copy()
-    pairs = daily_close_pairs(features, closes, max_gap_days=max_gap_days)
+    if "horizon" in signals.columns:
+        unsupported = signals["horizon"].unique()
+        unsupported = [h for h in unsupported if h != "1d"]
+        if unsupported:
+            raise ValueError(f"Only horizon='1d' is supported, got: {unsupported}")
 
-    # Merge pairs back onto signals
+    if closes.empty:
+        raise ValueError("closes DataFrame must not be empty")
+
+    dup_close = closes.duplicated(subset=["symbol", "trade_date"], keep=False)
+    if dup_close.any():
+        raise ValueError(
+            "closes contains duplicate (symbol, trade_date) rows: "
+            + str(closes.loc[dup_close, ["symbol", "trade_date"]].head(5).to_dict("records"))
+        )
+
+    # Deduplicate: compute pairs and sigma once per unique (symbol, prediction_ts)
+    pair_cols = ["symbol", "prediction_ts"]
+    unique_pairs = signals[pair_cols].drop_duplicates().reset_index(drop=True)
+    pairs = daily_close_pairs(unique_pairs, closes, max_gap_days=max_gap_days)
+
+    # Merge pairs back onto signals (one row per signal, no fan-out)
     result = signals.merge(
         pairs[["symbol", "prediction_ts", "entry_trade_date", "entry_close",
                "entry_close_ts", "outcome_trade_date", "outcome_close",
@@ -84,8 +100,8 @@ def build_signal_outcomes(
         np.nan,
     )
 
-    # Frozen sigma: compute from closes with close_ts <= prediction_ts
-    sigma_results = _compute_frozen_sigma(signals, closes)
+    # Frozen sigma: compute from unique pairs, then join back
+    sigma_results = _compute_frozen_sigma(unique_pairs, closes)
     result = result.merge(sigma_results, on=["symbol", "prediction_ts"], how="left")
 
     # Sigma method and floor logic
@@ -114,6 +130,12 @@ def build_signal_outcomes(
         "entry_trade_date": "entry_date",
         "outcome_trade_date": "outcome_date",
     })
+
+    # Normalize date columns to date objects for consistency
+    for col in ["entry_date", "outcome_date"]:
+        result[col] = result[col].apply(
+            lambda x: x.date() if isinstance(x, pd.Timestamp) and not pd.isna(x) else x
+        )
 
     # Ex-dividend state
     if dividends is None or dividends.empty:
@@ -264,6 +286,10 @@ def _compute_eligibility(
     d_exists_no_n = result["entry_date"].notna() & result["outcome_close_ts"].isna() & (elig == "eligible")
     elig[d_exists_no_n] = "missing_return"
 
+    # 2b. NaN entry_close or outcome_close => missing_return
+    nan_close = (result["entry_close"].isna() | result["outcome_close"].isna()) & (elig == "eligible")
+    elig[nan_close] = "missing_return"
+
     # 3. ex_dividend_masked
     ex_masked = (result["ex_dividend_state"] == "masked") & (elig == "eligible")
     elig[ex_masked] = "ex_dividend_masked"
@@ -305,13 +331,13 @@ def summarize_outcomes(
         One dict per (model_version, horizon).
     """
     results = []
-    excluded = outcomes["eligibility_state"].value_counts().to_dict()
 
     eligible = outcomes[outcomes["eligibility_state"] == "eligible"]
 
     for (mv, hor), grp in eligible.groupby(["model_version", "horizon"]):
         n = len(grp)
-        distinct_dates = grp["prediction_ts"].dt.date.nunique()
+        # Distinct prediction dates by US/Eastern trading date
+        distinct_dates = _eastern_date(grp["prediction_ts"]).nunique()
 
         if distinct_dates == 0:
             m = 0.0
@@ -323,6 +349,13 @@ def summarize_outcomes(
         hit_count = int((grp["signed_raw_return"] > 0).sum())
 
         sufficient = n >= min_n and distinct_dates >= min_dates and n_eff >= min_n
+
+        # Per-group excluded_counts (does NOT include eligible count)
+        group_all = outcomes[
+            (outcomes["model_version"] == mv) & (outcomes["horizon"] == hor)
+        ]
+        excluded = group_all["eligibility_state"].value_counts().to_dict()
+        excluded.pop("eligible", None)
 
         entry: dict = {
             "model_version": mv,
@@ -358,5 +391,33 @@ def summarize_outcomes(
 
         entry["excluded_counts"] = excluded
         results.append(entry)
+
+    # Include groups with zero eligible rows
+    all_groups = outcomes[["model_version", "horizon"]].drop_duplicates()
+    existing = {(r["model_version"], r["horizon"]) for r in results}
+    for _, row in all_groups.iterrows():
+        mv, hor = row["model_version"], row["horizon"]
+        if (mv, hor) not in existing:
+            group_all = outcomes[
+                (outcomes["model_version"] == mv) & (outcomes["horizon"] == hor)
+            ]
+            excluded = group_all["eligibility_state"].value_counts().to_dict()
+            excluded.pop("eligible", None)
+            results.append({
+                "model_version": mv,
+                "horizon": hor,
+                "state": "insufficient_sample",
+                "n": 0,
+                "distinct_prediction_dates": 0,
+                "n_eff": 0.0,
+                "rho_assumption": rho,
+                "hit_count": 0,
+                "hit_rate": None,
+                "hit_rate_interval": None,
+                "median_outcome_z": None,
+                "mean_outcome_z": None,
+                "base_up_rate": None,
+                "excluded_counts": excluded,
+            })
 
     return results
