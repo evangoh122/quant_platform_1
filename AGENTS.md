@@ -138,7 +138,9 @@ gh pr comment <PR_NUMBER> --body "@coderabbitai review"
 The workflow `.github/workflows/coderabbit-trigger.yml` already posts
 `@coderabbitai review` when a PR is opened, reopened, or marked ready — do NOT
 also comment manually at open. Comment `@coderabbitai review` manually only
-after pushing commits that have passed DeepSeek and Codex Sol. Use
+after pushing commits that have passed DeepSeek and Codex Sol, and only if no
+automatic request (open, reopen, ready-for-review) already covers the current
+head SHA. Use
 `@coderabbitai full review` only when needed (e.g. after merging main/rebasing,
 or when the incremental review answers "already reviewed" although the
 changeset effectively changed).
