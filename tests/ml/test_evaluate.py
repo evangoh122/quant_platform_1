@@ -146,13 +146,21 @@ def test_no_api_or_frontend_imports_ml_evaluate_or_deflated_sharpe():
                 continue
             rel = path.relative_to(root)
             text = path.read_text(encoding="utf-8", errors="replace")
+            is_content_file = path == (root / "frontend" / "src" / "data" / "businessCase.ts")
             for lineno, line in enumerate(text.splitlines(), 1):
-                # File-pointer citations such as "ml/evaluate.py:97-131" (for
-                # example the owner-locked content file
-                # frontend/src/data/businessCase.ts) name the quarantined
-                # module as a reference, not as an import or dynamic
-                # reference; strip citation paths before the text scan.
-                scan_line = re.sub(r"ml/evaluate\.py(?::[\d,\-]+)?", "", line)
+                # File-pointer citations such as "ml/evaluate.py:97-131" in
+                # the owner-locked content file name the quarantined module
+                # as a documentary reference, not as an import or dynamic
+                # reference; strip only genuine line-number citations
+                # (colon + numeric line syntax) in that single file.
+                if is_content_file:
+                    scan_line = re.sub(
+                        r"(?<![\w/])ml/evaluate\.py:\d+(?:[-,]\d+)*\b",
+                        "",
+                        line,
+                    )
+                else:
+                    scan_line = line
                 if (
                     "deflated_sharpe_ratio" in scan_line
                     or "ml.evaluate" in scan_line
@@ -263,3 +271,65 @@ def test_periods_per_year_negative_raises_valueerror_nonempty():
     )
     with pytest.raises(ValueError, match="periods_per_year"):
         build_backtest(signals, periods_per_year=-1)
+
+
+# ── R3: guard narrowing regression tests ─────────────────────────────────────
+
+
+def _scan_guard_on_text(text: str, is_content_file: bool) -> list[str]:
+    """Run the guard's text-scan logic on a single line of text.
+
+    Returns a list of violation strings (empty if clean).
+    """
+    violations = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if is_content_file:
+            scan_line = re.sub(
+                r"(?<![\w/])ml/evaluate\.py:\d+(?:[-,]\d+)*\b",
+                "",
+                line,
+            )
+        else:
+            scan_line = line
+        if (
+            "deflated_sharpe_ratio" in scan_line
+            or "ml.evaluate" in scan_line
+            or "ml/evaluate" in scan_line
+        ):
+            violations.append(f"line {lineno}: {line.strip()}")
+    return violations
+
+
+def test_guard_catches_runpy_path_in_api_file():
+    """runpy.run_path('ml/evaluate.py') in an api/ file must be caught."""
+    text = 'import runpy\nx = runpy.run_path("ml/evaluate.py")\n'
+    violations = _scan_guard_on_text(text, is_content_file=False)
+    assert len(violations) == 1, f"expected 1 violation, got {violations}"
+
+
+def test_guard_catches_line_citation_in_api_file():
+    """'ml/evaluate.py:97-131' in an api/ file must be caught."""
+    text = 'ref = "ml/evaluate.py:97-131"\n'
+    violations = _scan_guard_on_text(text, is_content_file=False)
+    assert len(violations) == 1, f"expected 1 violation, got {violations}"
+
+
+def test_guard_catches_line_citation_in_other_frontend_file():
+    """'ml/evaluate.py:97-131' in a non-content frontend file must be caught."""
+    text = 'const ref = "ml/evaluate.py:97-131";\n'
+    violations = _scan_guard_on_text(text, is_content_file=False)
+    assert len(violations) == 1, f"expected 1 violation, got {violations}"
+
+
+def test_guard_content_file_allows_line_citation_but_flags_bare_forms():
+    """In the content file, line-number citations pass; bare forms are caught."""
+    text = (
+        'const cite = "ml/evaluate.py:97-131";\n'
+        'const bare = "ml/evaluate.py";\n'
+        'const dot = "ml.evaluate";\n'
+        'const dsr = "deflated_sharpe_ratio";\n'
+    )
+    violations = _scan_guard_on_text(text, is_content_file=True)
+    # line 1 (citation) should pass; lines 2-4 should be caught
+    assert len(violations) == 3, f"expected 3 violations, got {violations}"
+    assert all("line 1" not in v for v in violations), f"citation should pass: {violations}"

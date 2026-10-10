@@ -1,7 +1,14 @@
 import type { ReactNode } from 'react';
-import { NAV_LINKS, SNAPSHOT, type RoadmapStatus } from '../data/businessCase';
+import {
+  NAV_LINKS,
+  SNAPSHOT,
+  type RoadmapStatus,
+  type RubricDeliveryStatus,
+  type RubricImprovementStatus,
+  type FunnelStage,
+} from '../data/businessCase';
 
-export type BusinessCasePageKey = 'overview' | 'data' | 'features' | 'controls';
+export type BusinessCasePageKey = 'overview' | 'data' | 'infrastructure' | 'features' | 'controls' | 'rubric';
 
 export interface BusinessCaseScreenProps {
   onNavigate: (id: string) => void;
@@ -10,8 +17,10 @@ export interface BusinessCaseScreenProps {
 export const SCREEN_IDS: Record<BusinessCasePageKey, string> = {
   overview: 'business-case-overview',
   data: 'business-case-data',
+  infrastructure: 'business-case-infrastructure',
   features: 'business-case-features',
   controls: 'business-case-controls',
+  rubric: 'business-case-rubric',
 };
 
 export function screenIdForPage(page: BusinessCasePageKey): string {
@@ -21,11 +30,13 @@ export function screenIdForPage(page: BusinessCasePageKey): string {
 export const PAGE_LABELS: Record<BusinessCasePageKey, string> = {
   overview: NAV_LINKS.overview,
   data: NAV_LINKS.data,
+  infrastructure: NAV_LINKS.infrastructure,
   features: NAV_LINKS.features,
   controls: NAV_LINKS.controls,
+  rubric: NAV_LINKS.rubric,
 };
 
-export const PAGE_KEYS: BusinessCasePageKey[] = ['overview', 'data', 'features', 'controls'];
+export const PAGE_KEYS: BusinessCasePageKey[] = ['overview', 'data', 'infrastructure', 'features', 'controls', 'rubric'];
 
 export const DATA_STATUS_LABELS: Record<'loaded' | 'partial' | 'planned', string> = {
   loaded: 'Loaded',
@@ -42,6 +53,32 @@ export const PLANNED_STATUS_LABELS: Record<'planned' | 'built-not-deployed' | 'b
 export const ROADMAP_STATUS_LABELS: Record<RoadmapStatus, string> = {
   'not-started': 'Not started',
   'partly-built': 'Partly built',
+};
+
+export const RUBRIC_DELIVERY_STATUS_LABELS: Record<RubricDeliveryStatus, string> = {
+  built: 'Built',
+  'partly-built': 'Partly built',
+  planned: 'Planned',
+  'needs-live-proof': 'Needs live proof',
+};
+
+export const RUBRIC_IMPROVEMENT_STATUS_LABELS: Record<RubricImprovementStatus, string> = {
+  planned: 'Planned',
+  'not-started': 'Not started',
+  'blocked-on-owner': 'Blocked on owner',
+};
+
+export const FUNNEL_STAGE_LABELS: Record<FunnelStage, string> = {
+  bronze: 'Bronze',
+  filter: 'Filter',
+  silver: 'Silver',
+  gold: 'Gold',
+};
+
+export const EVIDENCE_GAP_STATUS_LABELS: Record<'verified-present' | 'unverified' | 'absent', string> = {
+  'verified-present': 'Verified present',
+  unverified: 'Unverified',
+  absent: 'Absent',
 };
 
 export function PageIntro({ eyebrow, title, thought }: { eyebrow: string; title: string; thought: string }) {

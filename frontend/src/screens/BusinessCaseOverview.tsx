@@ -92,6 +92,11 @@ export function BusinessCaseOverview({ onNavigate }: BusinessCaseScreenProps) {
               >
                 <span className="block text-sm font-semibold text-[var(--text-primary)]">{arg.claim}</span>
                 <span className="block text-xs leading-relaxed text-[var(--text-secondary)]">{arg.proof}</span>
+                {arg.detailPages.length > 0 && (
+                  <span className="block text-xs text-[var(--text-muted)]">
+                    {arg.detailPages.map((dp) => PAGE_LABELS[dp]).join(', ')}
+                  </span>
+                )}
                 <span className="mt-auto block pt-2 text-xs font-medium text-[var(--accent)]">
                   View {PAGE_LABELS[arg.page]} &rarr;
                 </span>
@@ -99,6 +104,21 @@ export function BusinessCaseOverview({ onNavigate }: BusinessCaseScreenProps) {
             </li>
           ))}
         </ul>
+
+        <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--accent-dim)] p-4">
+          <button
+            type="button"
+            data-assessment-link={KEY_LINE.assessment.page}
+            onClick={() => onNavigate(screenIdForPage(KEY_LINE.assessment.page))}
+            className="w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+          >
+            <span className="block text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">{KEY_LINE.assessment.label}</span>
+            <span className="mt-1 block text-sm leading-relaxed text-[var(--text-primary)]">{KEY_LINE.assessment.text}</span>
+            <span className="mt-2 block text-xs font-medium text-[var(--accent)]">
+              View {PAGE_LABELS[KEY_LINE.assessment.page]} &rarr;
+            </span>
+          </button>
+        </div>
       </section>
 
       <section aria-labelledby="bc-users" className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5">

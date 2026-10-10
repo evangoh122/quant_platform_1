@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import App from './App';
-import { CONTROLS, DATA, FEATURES, NAV_LINKS, OVERVIEW } from './data/businessCase';
+import { CONTROLS, DATA, FEATURES, INFRASTRUCTURE, NAV_LINKS, OVERVIEW, RUBRIC_AI } from './data/businessCase';
 import { markTourSeen } from './components/tours/TourHost';
 import { APPLICATION_TOUR_KEY, AGENT_TOUR_KEY, ARCHITECTURE_TOUR_KEY } from './components/tours/tourSteps';
 
@@ -250,7 +250,7 @@ describe('App - Business Case navigation group', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders the Business Case group with four items that each navigate to their page', async () => {
+  it('renders the Business Case group with six items that each navigate to their page', async () => {
     vi.stubGlobal('fetch', mockFetch(healthyResponse));
     const user = userEvent.setup();
 
@@ -265,8 +265,10 @@ describe('App - Business Case navigation group', () => {
     const destinations = [
       { label: NAV_LINKS.overview, title: OVERVIEW.title },
       { label: NAV_LINKS.data, title: DATA.title },
+      { label: NAV_LINKS.infrastructure, title: INFRASTRUCTURE.title },
       { label: NAV_LINKS.features, title: FEATURES.title },
       { label: NAV_LINKS.controls, title: CONTROLS.title },
+      { label: NAV_LINKS.rubric, title: RUBRIC_AI.title },
     ];
 
     for (const destination of destinations) {

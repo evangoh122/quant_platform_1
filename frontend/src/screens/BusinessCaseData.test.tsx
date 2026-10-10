@@ -8,8 +8,10 @@ import { expectStringsInDom, expectHeadingOrder } from '../test/contentStrings';
 const EXPECTED_SCREEN_IDS: Record<string, string> = {
   overview: 'business-case-overview',
   data: 'business-case-data',
+  infrastructure: 'business-case-infrastructure',
   features: 'business-case-features',
   controls: 'business-case-controls',
+  rubric: 'business-case-rubric',
 };
 
 const STATUS_TEXT: Record<'loaded' | 'partial' | 'planned', string> = {
@@ -81,6 +83,17 @@ describe('BusinessCaseData rendering', () => {
       });
     });
   });
+  it('renders an infrastructure link that navigates to the infrastructure page', async () => {
+    const onNavigate = vi.fn();
+    const user = userEvent.setup();
+    render(<BusinessCaseData onNavigate={onNavigate} />);
+
+    const infraLink = document.querySelector('[data-infrastructure-link]')!;
+    expect(infraLink).not.toBeNull();
+    expect(infraLink.textContent).toContain('Infrastructure');
+    await user.click(infraLink as HTMLElement);
+    expect(onNavigate).toHaveBeenLastCalledWith('business-case-infrastructure');
+  });
 });
 
 describe('BusinessCaseData navigation and accessibility', () => {
@@ -92,8 +105,8 @@ describe('BusinessCaseData navigation and accessibility', () => {
     const nav = screen.getByRole('navigation', { name: 'Business case pages' });
     expect(within(nav).getByText('Data').closest('[aria-current="page"]')).not.toBeNull();
 
-    for (const page of ['overview', 'features', 'controls']) {
-      const label = { overview: 'Overview', features: 'Features', controls: 'Controls' }[page]!;
+    for (const page of ['overview', 'infrastructure', 'features', 'controls', 'rubric']) {
+      const label = { overview: 'Overview', infrastructure: 'Infrastructure', features: 'Features', controls: 'Controls', rubric: 'Rubric plan' }[page]!;
       await user.click(within(nav).getByRole('button', { name: label }));
       expect(onNavigate).toHaveBeenLastCalledWith(EXPECTED_SCREEN_IDS[page]);
     }

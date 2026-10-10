@@ -8,8 +8,10 @@ import { expectStringsInDom, expectHeadingOrder } from '../test/contentStrings';
 const EXPECTED_SCREEN_IDS: Record<string, string> = {
   overview: 'business-case-overview',
   data: 'business-case-data',
+  infrastructure: 'business-case-infrastructure',
   features: 'business-case-features',
   controls: 'business-case-controls',
+  rubric: 'business-case-rubric',
 };
 
 const PLANNED_STATUS_TEXT: Record<'planned' | 'built-not-deployed' | 'blocked-on-owner', string> = {
@@ -169,8 +171,8 @@ describe('BusinessCaseFeatures navigation and accessibility', () => {
     const nav = screen.getByRole('navigation', { name: 'Business case pages' });
     expect(within(nav).getByText('Features').closest('[aria-current="page"]')).not.toBeNull();
 
-    for (const page of ['overview', 'data', 'controls']) {
-      const label = { overview: 'Overview', data: 'Data', controls: 'Controls' }[page]!;
+    for (const page of ['overview', 'data', 'infrastructure', 'controls', 'rubric']) {
+      const label = { overview: 'Overview', data: 'Data', infrastructure: 'Infrastructure', controls: 'Controls', rubric: 'Rubric plan' }[page]!;
       await user.click(within(nav).getByRole('button', { name: label }));
       expect(onNavigate).toHaveBeenLastCalledWith(EXPECTED_SCREEN_IDS[page]);
     }

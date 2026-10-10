@@ -8,8 +8,10 @@ import { expectStringsInDom, expectHeadingOrder } from '../test/contentStrings';
 const EXPECTED_SCREEN_IDS: Record<string, string> = {
   overview: 'business-case-overview',
   data: 'business-case-data',
+  infrastructure: 'business-case-infrastructure',
   features: 'business-case-features',
   controls: 'business-case-controls',
+  rubric: 'business-case-rubric',
 };
 
 describe('BusinessCaseOverview rendering', () => {
@@ -79,6 +81,19 @@ describe('BusinessCaseOverview rendering', () => {
     expect(text.indexOf(OVERVIEW.governingThought)).toBeLessThan(text.indexOf(OVERVIEW.users.items[0].who));
   });
 
+  it('renders an assessment link that navigates to the rubric page', async () => {
+    const onNavigate = vi.fn();
+    const user = userEvent.setup();
+    render(<BusinessCaseOverview onNavigate={onNavigate} />);
+
+    const assessmentLink = document.querySelector('[data-assessment-link="rubric"]')!;
+    expect(assessmentLink).not.toBeNull();
+    expect(assessmentLink.textContent).toContain(KEY_LINE.assessment.label);
+    expect(assessmentLink.textContent).toContain(KEY_LINE.assessment.text);
+    await user.click(assessmentLink as HTMLElement);
+    expect(onNavigate).toHaveBeenLastCalledWith('business-case-rubric');
+  });
+
   it('renders what it does as numbered steps in data order', () => {
     const { container } = render(<BusinessCaseOverview onNavigate={vi.fn()} />);
     const list = container.querySelectorAll('ol');
@@ -111,8 +126,9 @@ describe('BusinessCaseOverview navigation and accessibility', () => {
     expect(nav).toBeInTheDocument();
     expect(within(nav).getByText('Overview').closest('[aria-current="page"]')).not.toBeNull();
 
-    for (const page of ['data', 'features', 'controls']) {
-      await user.click(within(nav).getByRole('button', { name: { data: 'Data', features: 'Features', controls: 'Controls' }[page]! }));
+    for (const page of ['data', 'infrastructure', 'features', 'controls', 'rubric']) {
+      const label = { data: 'Data', infrastructure: 'Infrastructure', features: 'Features', controls: 'Controls', rubric: 'Rubric plan' }[page]!;
+      await user.click(within(nav).getByRole('button', { name: label }));
       expect(onNavigate).toHaveBeenLastCalledWith(EXPECTED_SCREEN_IDS[page]);
     }
   });

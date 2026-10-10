@@ -7,6 +7,7 @@ import {
   PageIntro,
   SnapshotStrip,
   StatusBadge,
+  screenIdForPage,
   type BusinessCaseScreenProps,
 } from './businessCaseShared';
 
@@ -67,6 +68,26 @@ export function BusinessCaseData({ onNavigate }: BusinessCaseScreenProps) {
           </ul>
         </section>
       ))}
+
+      <section
+        aria-labelledby="bc-infrastructure-link"
+        className="rounded-[var(--radius-md)] border border-[var(--accent)] bg-[var(--accent-dim)] p-4"
+      >
+        <button
+          type="button"
+          data-infrastructure-link
+          onClick={() => onNavigate(screenIdForPage('infrastructure'))}
+          className="w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        >
+          <span className="block text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">How the inputs got there</span>
+          <span className="mt-1 block text-sm leading-relaxed text-[var(--text-primary)]">
+            The Infrastructure page shows how each source reaches Bronze, Silver and Gold.
+          </span>
+          <span className="mt-2 block text-xs font-medium text-[var(--accent)]">
+            View Infrastructure &rarr;
+          </span>
+        </button>
+      </section>
 
       <CrossLinks current="data" onNavigate={onNavigate} />
     </div>
