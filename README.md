@@ -5,7 +5,7 @@ with PySpark into a Delta medallion lakehouse, serves it through a FastAPI + Rea
 agent research a company and save a note through validated tools, and records user and agent activity in Lakebase
 (Postgres) for an analytics pipeline back into Delta.
 
-**Live app:** https://quant-platform-dev-1352785079224954.aws.databricksapps.com (Databricks workspace login required)
+**Deployment (verified 2026-10-05; current availability not asserted here):** https://quant-platform-dev-1352785079224954.aws.databricksapps.com (Databricks workspace login required)
 
 ![Architecture](docs/proposal/architecture.png)
 
@@ -18,14 +18,14 @@ Diagram source: [`docs/proposal/architecture.dot`](docs/proposal/architecture.do
 
 | Requirement | How it is met | Status |
 |---|---|---|
-| Spark data pipeline | PySpark bronze ingestion + silver/gold transforms on Databricks serverless jobs (`notebooks/`, `pipelines/`, `silver/`, `gold/`) | Implemented, run |
-| Third-party APIs | Massive/Polygon (OHLCV, options, splits), SEC EDGAR, CFTC COT, Federal Reserve/FRED | Implemented, run |
+| Spark data pipeline | PySpark bronze ingestion + silver/gold transforms on Databricks serverless jobs (`notebooks/`, `pipelines/`, `silver/`, `gold/`) | Implemented; run on 2026-10-05 |
+| Third-party APIs | Massive/Polygon (OHLCV, options, splits), SEC EDGAR, CFTC COT, Federal Reserve/FRED | Implemented; run on 2026-10-05 |
 | Two Big Data Vs | **Volume:** 287.1M rows (239.1M bronze) · **Variety:** structured prices/options/COT/macro + unstructured SEC filing text | Measured 2026-10-05 |
 | Lakebase data model | 8+ relational tables (`db/migrations/`): users, watchlists, research notes, orders, executions, positions, agent actions, approvals | Implemented |
-| Action-taking AI agent | Workspace model proposes a tool call → deterministic validator (allowlist, roles, write scope, idempotency) → read tools + `save_research_note` | Implemented, demonstrated live |
-| Analytics pipeline | Lakebase transactional outbox → watermarked, idempotent Delta MERGE job → 4 analytics tables → analytics API | Implemented, run live |
+| Action-taking AI agent | Workspace model proposes a tool call → deterministic validator (allowlist, roles, write scope, idempotency) → read tools + two write tools (`add_to_watchlist`, `save_research_note`); agent writes are authorised per request via `write_authorization`; the web chat UI does not currently send it, so in-app agent writes are not yet reachable from the chat UI (a fix is planned and not started) | Implemented; demonstrated on 2026-10-05 |
+| Analytics pipeline | Lakebase transactional outbox → watermarked, idempotent Delta MERGE job → 4 analytics tables → analytics API | Implemented; run on 2026-10-05 |
 | Frontend | React + Vite + Tailwind: market, signals, analytics, agent, system health | Implemented |
-| Deployed application | Databricks App with SQL-warehouse data path, Lakebase resilience and health diagnostics | Deployed, healthy |
+| Deployed application | Databricks App with SQL-warehouse data path, Lakebase resilience and health diagnostics | Deployed and verified 2026-10-05 |
 
 Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 [`docs/proposal/row_counts_2026-10-05.tsv`](docs/proposal/row_counts_2026-10-05.tsv)
@@ -35,18 +35,20 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 
 | Capability | Code | Tested | Deployed / run |
 |---|---|---|---|
-| Batch Spark ingestion + medallion | Yes | Yes | Run (287M rows) |
-| Split-adjusted daily prices (Massive corporate actions) | Yes | Yes | Run |
-| SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run — universe-wide rollout in this PR |
+| Batch Spark ingestion + medallion | Yes | Yes | Run on 2026-10-05 (287M rows) |
+| Split-adjusted daily prices (Massive corporate actions) | Yes | Yes | Run on 2026-10-05 |
+| SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run on 2026-10-05 — universe-wide rollout in this PR |
 | SEC knowledge graph + governed NL analytics contracts | Yes | Yes | Merged |
 | Databricks App (FastAPI + React), warehouse data path, health/trace | Yes | Yes | **Deployed and verified 2026-10-05** — `/api/health`: Lakebase ok, SQL warehouse ok |
-| Lakebase writes from the app | Yes | Yes | **Live** — app service principal has `CAN_USE` + a least-privilege Postgres role |
-| LLM-directed agent (research → save note) | Yes (minimal) | Offline + live | **Live run 2026-10-05**: `search_sec_filings(NVDA)` → `save_research_note` written to Lakebase, logged in `agent_actions` |
-| Lakebase → Delta analytics (outbox CDC) | Yes (minimal) | Offline + real Postgres + live | **Live run 2026-10-05**: outbox → `lakebase_change_events` (9) → all four analytics tables populated |
-| Trading signals (`gold_trading_signals` → Signals page) | Yes | Yes | **35 baseline signals published 2026-10-05** by `scripts/publish_baseline_signals.py` (logistic regression on `gold_model_features`; hold-out AUC 0.47 — pipeline demonstration, no predictive edge claimed) |
+| Lakebase writes from the app | Yes | Yes | **Verified 2026-10-05** — app service principal has `CAN_USE` + a least-privilege Postgres role |
+| LLM-directed agent (research → save note) | Yes (minimal) | Offline + live | **Live run on 2026-10-05**: `search_sec_filings(NVDA)` → `save_research_note` written to Lakebase, logged in `agent_actions` |
+| Lakebase → Delta analytics (outbox CDC) | Yes (minimal) | Offline + real Postgres + live | **Live run on 2026-10-05**: outbox → `lakebase_change_events` (9) → all four analytics tables populated |
+| Trading signals (`gold_trading_signals` → Signals page) | Yes | Yes | **35 baseline signals published 2026-10-05** by `scripts/publish_baseline_signals.py` (untuned logistic-regression baseline; hold-out metrics are not reported here; pipeline demonstration, no predictive edge claimed) |
 | Streaming DLT pipeline | Yes | Local validation | Not deployed or run |
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
 | IBKR paper execution | Scaffold | Partial | Not live |
+
+Dates are the last recorded verification; this repository does not assert the current state of the app, Lakebase, or the warehouse.
 
 ## Core workflow
 
@@ -109,4 +111,4 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 - Macro (Fed) series are revised values, not first-release vintages.
 - Strategy research reports are descriptive; several are marked `BLOCKED_DATA` (fewer than two complete out-of-sample years).
 - The streaming DLT pipeline is built but not deployed.
-- Published signals come from an untuned baseline model (hold-out AUC 0.47, all directions UP); they demonstrate the features → model → `gold_trading_signals` → app path, not a trading edge.
+- Published signals come from an untuned logistic-regression baseline; hold-out metrics are not reported here; they demonstrate the features → model → `gold_trading_signals` → app path, not a trading edge. All directions UP.
