@@ -1,6 +1,8 @@
 // Business Case content (Overview, Data, Features, Controls).
-// Static snapshot measured 2026-10-06; every figure is copied from docs/BUSINESS_CASE.md.
-// Edited final: interfaces and constant names match the first draft; no imports, no JSX.
+// Static snapshot measured 2026-10-06; platform figures are copied from docs/BUSINESS_CASE.md.
+// Study years in NEXT_APPROACH are copied from docs/QUANT_STRATEGIES.md; no strategy-result figure is quoted.
+// Edited final v2: earlier interfaces and constants are unchanged; NextApproach and NEXT_APPROACH are added.
+// No imports, no JSX.
 
 export interface Snapshot {
   asOf: string;
@@ -80,6 +82,48 @@ export interface ControlsPage {
   limitations: { heading: string; intro: string; items: { limit: string; impact: string }[] };
 }
 
+export type RoadmapStatus = 'not-started' | 'partly-built';
+
+export interface NextApproach {
+  eyebrow: string;
+  title: string;
+  governingThought: string;
+  statusLabel: string;
+  statusNote: string;
+  insteadOf: { from: string; to: string };
+  whatExistsToday: {
+    heading: string;
+    intro: string;
+    items: { title: string; text: string; evidence: string }[];
+  };
+  whatWeIntendToDo: {
+    heading: string;
+    intro: string;
+    orderingLogic: string;
+    steps: {
+      id: string;
+      order: number;
+      title: string;
+      text: string;
+      whyItMatters: string;
+      proposedArtifact: string;
+      acceptance: string;
+      dependsOn: string[];
+      status: RoadmapStatus;
+      existsToday: string;
+      stillToDo: string;
+      evidence: string;
+    }[];
+  };
+  studies: {
+    heading: string;
+    intro: string;
+    items: { name: string; usedFor: string; inCodeToday: string; citedIn: string }[];
+  };
+  howWeWillJudgeIt: { heading: string; intro: string; items: string[] };
+  honestOutlook: { heading: string; text: string };
+}
+
 export interface NavigationLinks {
   overview: string;
   data: string;
@@ -107,7 +151,7 @@ export const EXECUTIVE_SUMMARY: ExecutiveSummary = {
   question:
     'How can a research team combine these sources at scale while proving what was knowable when, and keeping every AI-initiated action controlled and auditable?',
   answer:
-    'Quant Platform is a Databricks-native research platform that lands every source in one governed lakehouse, tags data with the time it became available, and lets an AI agent change state only through deterministic, audited gates. The snapshot shows real inputs at scale, a workflow built end to end, and controls enforced in code; no validated trading edge is claimed.',
+    'Quant Platform is a Databricks-native research platform that lands every source in one governed lakehouse, tags data with the time it became available, and lets an AI agent change state only through deterministic, audited gates. The snapshot shows real inputs at scale, a workflow built end to end, and controls enforced in code; no validated trading edge is claimed, and the intended trading strategy is not yet built.',
 };
 
 // ── Key line: three MECE arguments in process order ─────────────────────────
@@ -127,9 +171,9 @@ export const KEY_LINE: KeyLine = {
     },
     {
       id: 'features',
-      claim: 'The research workflow is built end to end, and every unbuilt part is named.',
+      claim: 'The workflow is built end to end; the intended strategy is not yet built.',
       proof:
-        'Ingestion, cleaning, features, retrieval, the agent, baseline signals and audit exist in code; scheduled ingestion, streaming deployment and placeholder screens do not.',
+        'Ingestion, cleaning, features, retrieval, the agent, baseline signals and audit exist in code; scheduled ingestion, streaming deployment, placeholder screens and the intended ranking strategy do not, and a research roadmap names what is still to do.',
       page: 'features',
     },
     {
@@ -221,11 +265,11 @@ export const OVERVIEW: Overview = {
     ],
   },
   notClaimed: {
-    heading: 'The case claims a governed platform, not profits, live operation or customers.',
+    heading: 'The case claims a governed platform, not a strategy, profits, live operation or customers.',
     intro:
       'These boundaries are part of the answer. They are stated up front so the evidence on the following pages is read at its true weight.',
     items: [
-      'No validated trading edge: the 35 baseline signals come from an untuned one-trading-day logistic regression and exist to prove the pipeline end to end.',
+      'No validated trading edge and no implemented strategy: the 35 baseline signals come from an untuned one-trading-day logistic regression that proves the pipeline; the intended ranking strategy on the Features page is not yet built.',
       'No live data: every figure is a snapshot measured on 2026-10-06, and market data was last ingested around 2026-09-02.',
       'No running service: these pages describe code and a dated measurement, not a deployed or monitored application.',
       'No live trading: the IBKR integration is a paper-broker scaffold, and no order reaches a real market.',
@@ -350,9 +394,9 @@ export const DATA: DataPage = {
 
 export const FEATURES: FeaturesPage = {
   eyebrow: 'Business case · Features',
-  title: 'The research workflow is built end to end, and every unbuilt part is named.',
+  title: 'The workflow is built end to end; the intended strategy is not yet built.',
   governingThought:
-    'Every stage from ingestion to audited action exists in code today; what is planned, built but not deployed, or still a placeholder is listed separately below.',
+    'Every stage from ingestion to audited action exists in code today. The baseline model proves that workflow and is not the strategy. Planned, undeployed and placeholder items are listed below, followed by the research roadmap for the strategy, which is not yet built.',
   available: [
     {
       id: 'medallion',
@@ -477,6 +521,13 @@ export const FEATURES: FeaturesPage = {
       text: 'The outbox-to-Delta job runs on demand today; scheduled runs and additional metrics are planned.',
       status: 'planned',
       why: 'Analytics reflect the last manual run, not a continuous feed.',
+    },
+    {
+      id: 'next-approach',
+      heading: 'The intended ranking strategy is not yet built; a research roadmap sets it out.',
+      text: 'The research roadmap below states what exists today, what is still to do in dependency order, the studies it draws on, and how results would be judged.',
+      status: 'planned',
+      why: 'The baseline proves the pipeline, not an edge; no strategy beyond research baselines is implemented.',
     },
   ],
 };
@@ -674,6 +725,275 @@ export const CONTROLS: ControlsPage = {
         impact: 'The baseline has no validated trading edge, and the IBKR bridge is a paper scaffold returning placeholder broker responses; nothing reaches a live market.',
       },
     ],
+  },
+};
+
+// ── Features page section: research roadmap (key-line argument 2, not built) ─
+
+export const NEXT_APPROACH: NextApproach = {
+  eyebrow: 'Business case · Features · Research roadmap',
+  title: 'The baseline is not the strategy; the intended ranking strategy is not yet built.',
+  governingThought:
+    'The published logistic baseline proves the pipeline end to end; it is not the strategy. The intended approach ranks stocks against each other on point-in-time, factor-neutral inputs and judges them after costs on data reserved in advance. None of that strategy is implemented yet.',
+  statusLabel: 'Not yet implemented',
+  statusNote:
+    'Some building blocks exist in code and tests, mostly exercised on synthetic data or in research runners. The integrated strategy, its models and its untouched evaluation are not started. Nothing in this section is a performance claim.',
+  insteadOf: {
+    from: 'An untuned one-trading-day up-or-down classifier, used only to prove that features flow through a model into published signals.',
+    to: 'A model that ranks stocks against each other each day, plus a separate residual-momentum test, both judged after costs on an untouched out-of-sample period.',
+  },
+  whatExistsToday: {
+    heading: 'Building blocks exist in code, but none establishes a trading edge.',
+    intro:
+      'Each item states what is built and where it is used today. Most are tested library functions that the published baseline does not use.',
+    items: [
+      {
+        title: 'Purged, embargoed walk-forward validation is built and tested.',
+        text: 'It drops training rows whose label window overlaps validation and embargoes the days after it. The synthetic ablation and the reversion research runner use it; the published baseline uses a single purged time split instead.',
+        evidence: 'ml/train.py:68-120,236-239; strategies/run_residual_reversion.py:437-445; tests/ml/test_walk_forward.py:42-72; scripts/publish_baseline_signals.py:16-19',
+      },
+      {
+        title: 'Label, weighting and neutralisation code is built but has run only on synthetic data.',
+        text: 'Triple-barrier labels, average-uniqueness weights and beta/industry feature neutralisation are unit-tested. Only the ablation training path uses them, with triple-barrier labels as an option and fixed labels as the default; the published baseline uses none.',
+        evidence: 'ml/features.py:330-414,498-543; ml/train.py:229-297; ml/run_ablation.py:82,98-115; tests/ml/test_hardening.py:17-69',
+      },
+      {
+        title: 'Rank-IC, outcome and performance reporting functions exist but are not yet wired in.',
+        text: 'Daily rank information coefficient is computed only inside the synthetic ablation. A risk-outcome ledger with volatility frozen at prediction time, and a report that withholds Sharpe, Sortino and Calmar on short samples, are called only by their tests.',
+        evidence: 'ml/evaluate.py:71-94,306-307; ml/risk_outcomes.py:1-6,20-42; strategies/report.py:21-55; tests/ml/test_risk_outcomes.py; tests/strategies/test_report.py',
+      },
+      {
+        title: 'Residual mean-reversion research on real data finds no evidence of a tradable edge.',
+        text: 'Its backtest neutralises beta and industry exposure, caps participation in daily volume and charges costs plus an assumed borrow fee. The latest report is roughly flat after costs, has no untouched holdout and understates its trial count.',
+        evidence: 'strategies/residual_reversion.py:1-15; strategies/backtest.py:131-153,340-352; strategies/cost_model.py:1-40; strategies/results/residual_reversion_r10.md:64-79',
+      },
+      {
+        title: 'The recorded A/B/C/D feature comparison is a synthetic pipeline check, not a finding.',
+        text: 'It ran on generated data because the gold tables were empty when it was built. Its deflated Sharpe helper, also used by the reversion report, is marked research-only and known to be biased optimistic.',
+        evidence: 'ml/results/ablation_abcd.md:1-10; ml/evaluate.py:97-131; strategies/run_residual_reversion.py:152-154',
+      },
+    ],
+  },
+  whatWeIntendToDo: {
+    heading: 'Eight steps are still to do, in dependency order; none is finished.',
+    intro:
+      'Each step names a proposed artifact, which does not exist yet, and the evidence that would show it works. Partly built means supporting code exists; it does not mean the step is done.',
+    orderingLogic:
+      'Evaluation rules come first, so no later result can shape them; then the research inputs; then the models that use those inputs; then the portfolio that trades their output. The reserved period is opened once, last.',
+    steps: [
+      {
+        id: 'protocol',
+        order: 1,
+        title: 'Reserve an untouched evaluation period and register every trial.',
+        text: 'Fix the research questions, cost assumptions and a reserved out-of-sample period before any tuning, and log every configuration tried, including abandoned ones.',
+        whyItMatters: 'Results seen during development cannot double as an independent test, and an incomplete trial count makes overfitting look like skill.',
+        proposedArtifact: 'Proposed, not created: ml/holdout.py (reserved-period guard) and ml/results/trial_register.md (log of every configuration tried).',
+        acceptance: 'Reserved dates are recorded before any experiment, a test fails if training or tuning code reads them, and every reported result cites its register entry.',
+        dependsOn: [],
+        status: 'not-started',
+        existsToday: 'No period is reserved. The latest reversion report states that all of its data was seen during development.',
+        stillToDo: 'The reserved period, the guard that enforces it and the trial register.',
+        evidence: 'strategies/results/residual_reversion_r10.md:73-76',
+      },
+      {
+        id: 'validation',
+        order: 2,
+        title: 'Add combinatorial purged validation and a corrected overfitting check.',
+        text: 'Extend the purged splitter to combinatorial paths, giving a distribution of out-of-sample results, and replace the deflated Sharpe helper with a corrected implementation plus the probability of backtest overfitting.',
+        whyItMatters: 'A single walk-forward path gives one number; many paths and a multiple-testing penalty show how fragile that number is.',
+        proposedArtifact: 'Proposed, not created: ml/cpcv.py (combinatorial purged splits) and ml/overfitting.py (deflated Sharpe ratio and probability of backtest overfitting).',
+        acceptance: 'Leakage tests like the existing walk-forward tests pass on every combinatorial split; new tests pin per-period Sharpe inputs, and the deflated Sharpe falls as the registered trial count rises.',
+        dependsOn: ['protocol'],
+        status: 'partly-built',
+        existsToday: 'Purged, embargoed walk-forward splits exist and are tested. A deflated Sharpe helper exists but is quarantined as research-only because it mixes annualised and per-period terms.',
+        stillToDo: 'Combinatorial splits, a corrected deflated Sharpe and the probability of backtest overfitting.',
+        evidence: 'ml/train.py:68-120; ml/evaluate.py:97-131; tests/ml/test_walk_forward.py:42-72; tests/ml/test_hardening.py:124-128',
+      },
+      {
+        id: 'dataset',
+        order: 3,
+        title: 'Build a point-in-time, factor-neutral ranking dataset from market data.',
+        text: 'Assemble a daily cross-section from the gold model features with point-in-time close pairs, triple-barrier labels for the holding period, uniqueness weights and beta/industry-neutralised features.',
+        whyItMatters: 'A ranking should not pass off a known market or industry exposure as skill, or learn from information that was not yet public.',
+        proposedArtifact: 'Proposed, not created: ml/ranking_dataset.py (builder for the real-data daily cross-section).',
+        acceptance: 'The existing look-ahead guard passes on the real matrix, daily coverage is reported, and neutralised features show no remaining beta or industry loading on real data.',
+        dependsOn: ['protocol'],
+        status: 'partly-built',
+        existsToday: 'Close pairing, triple-barrier labels, uniqueness weights, neutralisation and a look-ahead guard exist; the ablation feeds them generated data only.',
+        stillToDo: 'A real-data builder that joins these pieces, with coverage checks on the actual cross-section.',
+        evidence: 'ml/baseline_labels.py:85-116; ml/features.py:265-414,498-543; ml/run_ablation.py:98-115',
+      },
+      {
+        id: 'ranking',
+        order: 4,
+        title: 'Train models that rank stocks, not classifiers that call direction.',
+        text: 'Start with a regularised linear comparator on neutralised features, then train a rank objective such as LambdaRank and a LightGBM challenger with equal tuning budgets, comparing market-only features with added options and filing features.',
+        whyItMatters: 'A long/short book earns from relative ordering, which rank-IC measures more directly than accuracy on up-or-down calls.',
+        proposedArtifact: 'Proposed, not created: ml/rank_model.py (rank-objective trainer and LightGBM challenger) and a real-data comparison report under ml/results/.',
+        acceptance: 'Daily rank-IC with its uncertainty is reported per purged fold for every feature set and model, against the linear comparator, with every run logged in the trial register.',
+        dependsOn: ['validation', 'dataset'],
+        status: 'not-started',
+        existsToday: 'Only logistic-regression and XGBoost classifiers exist. LightGBM appears solely as a configuration value; no code trains it.',
+        stillToDo: 'The rank-objective trainer, the LightGBM challenger and the real-data feature comparison.',
+        evidence: 'ml/train.py:125-152; strategies/config.yaml:70-72',
+      },
+      {
+        id: 'meta-label',
+        order: 5,
+        title: 'Add a meta-labelling model that decides whether to act and how large.',
+        text: 'Train a secondary model on the ranking model’s proposed trades, predicting which to take and at what size, with triple-barrier outcomes as its targets.',
+        whyItMatters: 'Position sizing becomes something learned and tested rather than tuned by hand.',
+        proposedArtifact: 'Proposed, not created: ml/meta_label.py (secondary take-or-skip and sizing model).',
+        acceptance: 'On purged validation, the trades it keeps earn more after costs per unit of risk than the primary model alone; otherwise it is dropped and the result recorded.',
+        dependsOn: ['ranking'],
+        status: 'not-started',
+        existsToday: 'Nothing: training collapses triple-barrier labels into a single up-or-not target, and no secondary model exists.',
+        stillToDo: 'The secondary model, its targets and its comparison with the primary model.',
+        evidence: 'ml/train.py:229-232',
+      },
+      {
+        id: 'momentum',
+        order: 6,
+        title: 'Test residual momentum as a hypothesis separate from residual reversion.',
+        text: 'Use the existing market and industry residuals to test whether residual moves continue rather than reverse, with its own rules, costs and validation, so it does not inherit the reversion baseline’s tuning.',
+        whyItMatters: 'The strategy document titles reversion rules as momentum; the two imply opposite trades and need separate evidence.',
+        proposedArtifact: 'Proposed, not created: strategies/residual_momentum.py (continuation signal) and a results file under strategies/results/.',
+        acceptance: 'It runs through the same backtest, costs and purged walk-forward as the reversion baseline, and its report is published whatever the outcome.',
+        dependsOn: ['protocol', 'validation'],
+        status: 'partly-built',
+        existsToday: 'Market and industry residual computation and a residual mean-reversion backtest exist; no continuation rule exists.',
+        stillToDo: 'Continuation rules, their evaluation and a single, consistent strategy definition in the documentation.',
+        evidence: 'strategies/residual_reversion.py:1-15,61-90; docs/QUANT_STRATEGIES.md:32-47',
+      },
+      {
+        id: 'portfolio',
+        order: 7,
+        title: 'Construct constrained portfolios and stress them for costs.',
+        text: 'Turn rankings into weights with beta and industry neutrality, position caps and a turnover penalty, using shrunk covariance or hierarchical risk parity, then stress slippage, market impact and borrow assumptions.',
+        whyItMatters: 'Predictive ordering has no economic value if an implementable portfolio loses it to costs.',
+        proposedArtifact: 'Proposed, not created: strategies/portfolio.py (constrained optimiser with covariance shrinkage and a risk-parity alternative).',
+        acceptance: 'Realised beta and industry exposures stay near zero, and results are reported gross, net and with doubled costs, including the borrow assumption and a market-impact estimate.',
+        dependsOn: ['ranking', 'meta-label', 'momentum'],
+        status: 'partly-built',
+        existsToday: 'The backtest neutralises the book, caps volume participation and charges linear costs and borrow. A square-root market-impact function exists, but the backtest does not call it.',
+        stillToDo: 'The optimiser, covariance shrinkage, the risk-parity alternative, the turnover penalty and impact-based cost stress.',
+        evidence: 'strategies/backtest.py:131-153,340-352; strategies/cost_model.py:173-196; strategies/neutralize.py:55-65',
+      },
+      {
+        id: 'final-evaluation',
+        order: 8,
+        title: 'Evaluate the frozen design once on the reserved period, then decide.',
+        text: 'Freeze models, rules and costs, run once on the reserved period, and report rank-IC, cost-adjusted returns and the corrected deflated Sharpe alongside every registered trial, including failures.',
+        whyItMatters: 'Only a single pass on unseen data can support or reject an edge; repeated looks would use up that independence.',
+        proposedArtifact: 'Proposed, not created: a final evaluation report under strategies/results/ that cites the trial register.',
+        acceptance: 'One recorded run on the reserved period, published whatever the result; new signals are published only if that evidence supports them and the owner approves.',
+        dependsOn: ['protocol', 'validation', 'portfolio'],
+        status: 'not-started',
+        existsToday: 'Nothing: no period is reserved, and only the 35 baseline signals are published.',
+        stillToDo: 'The frozen design, the single reserved-period run and the publish-or-stop decision.',
+        evidence: 'docs/BUSINESS_CASE.md:4,28; strategies/results/residual_reversion_r10.md:76-79',
+      },
+    ],
+  },
+  studies: {
+    heading: 'The roadmap draws on studies and methods the repository already cites.',
+    intro:
+      'Authors and years appear only where the repository states them. No study has been reproduced here, and citing one is not evidence that its method works on this data.',
+    items: [
+      {
+        name: 'Avellaneda–Lee eigenportfolios',
+        usedFor: 'Statistical factors from principal components of return correlations, as an alternative to market and industry regressions when computing residuals.',
+        inCodeToday: 'Not built; the reversion baseline uses market and industry factors.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:64-70',
+      },
+      {
+        name: 'Ledoit–Wolf covariance shrinkage',
+        usedFor: 'Stabilising a covariance matrix estimated from many stocks over comparatively few days, before factor extraction and portfolio optimisation.',
+        inCodeToday: 'Not built.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:68-70,276-277',
+      },
+      {
+        name: 'Hierarchical risk parity',
+        usedFor: 'A shrinkage-free alternative to constrained mean-variance portfolio construction.',
+        inCodeToday: 'Not built.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:278-279',
+      },
+      {
+        name: 'Foster (1977); Bernard & Thomas (1989): seasonal-random-walk earnings surprise',
+        usedFor: 'Measuring post-earnings drift from reported earnings history alone, because no analyst estimates exist in the data.',
+        inCodeToday: 'Not built and outside the eight roadmap steps; it needs quarterly earnings from XBRL, which remains a five-ticker pilot.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:191-202',
+      },
+      {
+        name: 'Bailey and Lopez de Prado deflated Sharpe ratio',
+        usedFor: 'Penalising a Sharpe ratio for the number of configurations tried.',
+        inCodeToday: 'A helper exists and feeds the research reports, but is marked known-unreliable; a corrected version is roadmap step two.',
+        citedIn: 'ml/evaluate.py:97-131; strategies/backtest.py:298-300; strategies/run_residual_reversion.py:569; docs/QUANT_STRATEGIES.md:261-262',
+      },
+      {
+        name: 'Probability of backtest overfitting',
+        usedFor: 'Penalising the multiple testing implicit in comparing several feature sets.',
+        inCodeToday: 'Not built.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:261-262',
+      },
+      {
+        name: 'Almgren-Chriss temporary market impact',
+        usedFor: 'Estimating the price impact of an order from its size relative to daily volume and from volatility.',
+        inCodeToday: 'A square-root impact function exists; the reversion backtest does not use it.',
+        citedIn: 'strategies/cost_model.py:173-196',
+      },
+      {
+        name: 'Purged and embargoed walk-forward validation',
+        usedFor: 'Removing training rows whose label windows overlap validation, plus a buffer after it.',
+        inCodeToday: 'Built and tested; used by the synthetic ablation and the reversion runner.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:228-237; ml/train.py:68-120',
+      },
+      {
+        name: 'Triple-barrier labelling and meta-labelling',
+        usedFor: 'Path-dependent labels from a profit target, stop loss and time limit; a secondary model that decides whether to take a signal and at what size.',
+        inCodeToday: 'Triple-barrier labels built, run on synthetic data only; meta-labelling not built.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:239-244; ml/features.py:330-386',
+      },
+      {
+        name: 'Average-uniqueness weighting and sequential bootstrap',
+        usedFor: 'Down-weighting overlapping labels, and resampling that respects that overlap when bagging.',
+        inCodeToday: 'Uniqueness weights built, run on synthetic data only; sequential bootstrap not built.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:246-249; ml/features.py:389-414',
+      },
+      {
+        name: 'Factor-neutralised features',
+        usedFor: 'Residualising each feature against beta and industry so a model cannot win by loading on a known factor.',
+        inCodeToday: 'Built and tested; run on synthetic data only.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:258-260; ml/features.py:498-543',
+      },
+      {
+        name: 'Rank information coefficient and LambdaRank',
+        usedFor: 'Measuring, and training for, the daily relative ordering of stocks rather than per-name direction.',
+        inCodeToday: 'A daily rank-IC evaluator exists; no LambdaRank or other rank-objective model exists.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:251-256; ml/evaluate.py:71-94',
+      },
+      {
+        name: 'Combinatorial purged cross-validation',
+        usedFor: 'A distribution of out-of-sample paths rather than a single estimate.',
+        inCodeToday: 'Not built.',
+        citedIn: 'docs/QUANT_STRATEGIES.md:263-264',
+      },
+    ],
+  },
+  howWeWillJudgeIt: {
+    heading: 'No edge will be claimed without predictive and economic evidence on unseen data.',
+    intro: 'These are intended standards, not results. None has yet been applied to the intended strategy.',
+    items: [
+      'Predictive: daily rank information coefficient per purged fold, with its stability and uncertainty, compared with a simple comparator.',
+      'Economic: returns after costs, turnover and drawdown, reported gross, net and with doubled costs, with borrow stated as an explicit assumption.',
+      'Overfitting: a corrected deflated Sharpe ratio and the probability of backtest overfitting, computed from the complete trial register.',
+      'Independence: one run of the frozen design on an out-of-sample period that no development step has touched.',
+      'Disclosure: no performance claim and no new published signals before that run, and failed results reported as fully as successes.',
+    ],
+  },
+  honestOutlook: {
+    heading: 'The research may find no edge; the platform’s value does not depend on one.',
+    text: 'The latest reversion research already found no tradable edge, and the intended approach may find none either. The business case rests on governed inputs, traceable research and audited actions, which hold whether or not a strategy succeeds.',
   },
 };
 
