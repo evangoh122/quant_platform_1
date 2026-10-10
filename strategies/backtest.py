@@ -236,9 +236,29 @@ def compute_costs(
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
+def one_way_turnover(weights: pd.DataFrame, target_gross: float = 1.0) -> pd.Series:
+    """One-way turnover per period: ``sum_s |w_t - w_{t-1}| / (2 * target_gross)``.
+
+    Convention (also documented at the computation site in
+    ``ml/evaluate.py::build_backtest`` and in ``strategies/config.yaml``):
+    ``sum_s |Δw|`` is the **two-way** traded notional (buys and sells both
+    count); dividing by 2 keeps a single side — the one-way turnover used by
+    this backtester and by the WorldQuant default.  The first period counts
+    entering the initial book as a trade (``|w_0| / 2``).
+
+    Hand example — unit weights long → flat → short over 3 periods with
+    ``target_gross = 1``: each period trades 1.0 notional two-way, so the
+    per-period turnover is ``[0.5, 0.5, 0.5]``.
+    """
+    one_way = (weights.diff().abs().sum(axis=1) / 2.0)
+    one_way.iloc[0] = (weights.iloc[0].abs().sum() / 2.0)
+    return one_way / max(target_gross, 1e-9)
+
+
 def _max_drawdown(returns: pd.Series) -> float:
     equity = (1.0 + returns).cumprod()
-    return float((equity / equity.cummax() - 1.0).min())
+    peak = np.maximum(equity.cummax(), 1.0)
+    return float((equity / peak - 1.0).min())
 
 
 def _sharpe(returns: pd.Series, periods: int = 252) -> float:
@@ -359,9 +379,8 @@ def run_backtest(
     net = gross - costs["total"]
     net_2x = gross - costs_2x["total"]
 
-    one_way = (weights.diff().abs().sum(axis=1) / 2.0)
-    one_way.iloc[0] = (weights.iloc[0].abs().sum() / 2.0)
-    turnover = one_way / max(target_gross, 1e-9)
+    # One-way turnover = sum|Δw| / 2 / target_gross (see one_way_turnover).
+    turnover = one_way_turnover(weights, target_gross)
 
     metrics = portfolio_metrics(
         gross, net, net_2x, turnover, positions=weights,
