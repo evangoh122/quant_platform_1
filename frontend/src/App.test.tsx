@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import App from './App';
+import { CONTROLS, DATA, FEATURES, INFRASTRUCTURE, NAV_LINKS, OVERVIEW, RUBRIC_AI } from './data/businessCase';
 import { markTourSeen } from './components/tours/TourHost';
 import { APPLICATION_TOUR_KEY, AGENT_TOUR_KEY, ARCHITECTURE_TOUR_KEY } from './components/tours/tourSteps';
 
@@ -60,7 +61,7 @@ describe('App shell and navigation', () => {
     });
 
     expect(screen.getByRole('button', { name: 'Platform Overview' })).toBeInTheDocument();
-    expect(screen.getByText('Overview')).toBeInTheDocument();
+    expect(screen.getByText('Overview', { selector: 'div' })).toBeInTheDocument();
     expect(screen.getByText('Research')).toBeInTheDocument();
     expect(screen.getByText('Strategy')).toBeInTheDocument();
     expect(screen.getByText('Operations')).toBeInTheDocument();
@@ -241,5 +242,63 @@ describe('App — agent tour auto-start guard', () => {
 
     expect(screen.queryByText('Research Agent tour')).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument();
+  });
+});
+
+describe('App - Business Case navigation group', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders the Business Case group with six items that each navigate to their page', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Business Case', { selector: 'div' })).toBeInTheDocument();
+
+    const destinations = [
+      { label: NAV_LINKS.overview, title: OVERVIEW.title },
+      { label: NAV_LINKS.data, title: DATA.title },
+      { label: NAV_LINKS.infrastructure, title: INFRASTRUCTURE.title },
+      { label: NAV_LINKS.features, title: FEATURES.title },
+      { label: NAV_LINKS.controls, title: CONTROLS.title },
+      { label: NAV_LINKS.rubric, title: RUBRIC_AI.title },
+    ];
+
+    for (const destination of destinations) {
+      const button = within(screen.getByRole('complementary')).getByRole('button', {
+        name: destination.label,
+      });
+      await user.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: destination.title })).toBeInTheDocument();
+      });
+    }
+  });
+
+  it('marks each Business Case destination with aria-current when active', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const sidebar = screen.getByRole('complementary');
+    const dataButton = within(sidebar).getByRole('button', { name: NAV_LINKS.data });
+    await user.click(dataButton);
+
+    await waitFor(() => {
+      expect(dataButton).toHaveAttribute('aria-current', 'page');
+    });
   });
 });

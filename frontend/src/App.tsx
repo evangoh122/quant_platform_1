@@ -12,6 +12,13 @@ import { OrderApprovalDrawer } from './screens/OrderApprovalDrawer';
 import { SystemHealth } from './screens/SystemHealth';
 import { PlatformOverview } from './screens/PlatformOverview';
 import { ArchitectureEvidence } from './screens/ArchitectureEvidence';
+import { BusinessCaseOverview } from './screens/BusinessCaseOverview';
+import { BusinessCaseData } from './screens/BusinessCaseData';
+import { BusinessCaseInfrastructure } from './screens/BusinessCaseInfrastructure';
+import { BusinessCaseFeatures } from './screens/BusinessCaseFeatures';
+import { BusinessCaseControls } from './screens/BusinessCaseControls';
+import { BusinessCaseRubric } from './screens/BusinessCaseRubric';
+import { NAV_LINKS } from './data/businessCase';
 import { useTourHost, CoachMarks } from './components/tours/TourHost';
 
 type ScreenId =
@@ -26,7 +33,13 @@ type ScreenId =
   | 'orders'
   | 'analytics'
   | 'health'
-  | 'architecture';
+  | 'architecture'
+  | 'business-case-overview'
+  | 'business-case-data'
+  | 'business-case-infrastructure'
+  | 'business-case-features'
+  | 'business-case-controls'
+  | 'business-case-rubric';
 
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -62,6 +75,17 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'analytics', label: 'Activity Analytics' },
       { id: 'health', label: 'System Health' },
       { id: 'architecture', label: 'Architecture & Tests' },
+    ],
+  },
+  {
+    label: 'Business Case',
+    items: [
+      { id: 'business-case-overview', label: NAV_LINKS.overview },
+      { id: 'business-case-data', label: NAV_LINKS.data },
+      { id: 'business-case-infrastructure', label: NAV_LINKS.infrastructure },
+      { id: 'business-case-features', label: NAV_LINKS.features },
+      { id: 'business-case-controls', label: NAV_LINKS.controls },
+      { id: 'business-case-rubric', label: NAV_LINKS.rubric },
     ],
   },
 ];
@@ -121,6 +145,18 @@ export default function App() {
         return <SystemHealth />;
       case 'architecture':
         return <ArchitectureEvidence />;
+      case 'business-case-overview':
+        return <BusinessCaseOverview onNavigate={(id) => setScreen(id as ScreenId)} />;
+      case 'business-case-data':
+        return <BusinessCaseData onNavigate={(id) => setScreen(id as ScreenId)} />;
+      case 'business-case-infrastructure':
+        return <BusinessCaseInfrastructure onNavigate={(id) => setScreen(id as ScreenId)} />;
+      case 'business-case-features':
+        return <BusinessCaseFeatures onNavigate={(id) => setScreen(id as ScreenId)} />;
+      case 'business-case-controls':
+        return <BusinessCaseControls onNavigate={(id) => setScreen(id as ScreenId)} />;
+      case 'business-case-rubric':
+        return <BusinessCaseRubric onNavigate={(id) => setScreen(id as ScreenId)} />;
       default:
         return <PlaceholderScreen title="Platform Overview" />;
     }
