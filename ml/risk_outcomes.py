@@ -90,10 +90,10 @@ def build_signal_outcomes(
     result["raw_forward_return"] = np.where(
         both, result["outcome_close"] / result["entry_close"] - 1, np.nan
     )
-    result["signed_raw_return"] = np.where(
-        result["direction"] == "UP",
-        result["raw_forward_return"],
-        -result["raw_forward_return"],
+    result["signed_raw_return"] = np.select(
+        [result["direction"] == "UP", result["direction"] == "DOWN"],
+        [result["raw_forward_return"], -result["raw_forward_return"]],
+        default=np.nan,
     )
     result["base_up_flag"] = np.where(
         has_outcome & has_entry,
@@ -146,6 +146,14 @@ def build_signal_outcomes(
 
     # Eligibility state (precedence order)
     result["eligibility_state"] = _compute_eligibility(result, as_of, both)
+
+    # Pending rows: ex_dividend_state unknown (can't determine without outcome_date)
+    pending_mask = result["eligibility_state"] == "outcome_pending"
+    result.loc[pending_mask, "ex_dividend_state"] = "unknown"
+
+    # Blank base_up_flag for missing_direction rows
+    missing_dir = result["eligibility_state"] == "missing_direction"
+    result.loc[missing_dir, "base_up_flag"] = np.nan
 
     # Mask ex-dividend rows
     ex_masked = result["ex_dividend_state"] == "masked"
@@ -280,7 +288,7 @@ def _compute_eligibility(
 
     Precedence (first match):
     outcome_pending -> missing_return -> ex_dividend_masked ->
-    insufficient_sigma_history -> missing_sigma -> eligible
+    insufficient_sigma_history -> missing_sigma -> missing_direction -> eligible
     """
     elig = pd.Series("eligible", index=result.index)
 
@@ -311,6 +319,10 @@ def _compute_eligibility(
     # 5. missing_sigma: sigma_used == 0
     zero_sigma = (result["sigma_used"] == 0) & (elig == "eligible")
     elig[zero_sigma] = "missing_sigma"
+
+    # 6. missing_direction: NaN direction (NaN probability_up)
+    no_direction = result["direction"].isna() & (elig == "eligible")
+    elig[no_direction] = "missing_direction"
 
     return elig
 

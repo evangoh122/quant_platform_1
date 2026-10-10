@@ -894,6 +894,208 @@ class TestNaNClosesIneligible:
         assert result.loc[0, "eligibility_state"] == "missing_return"
 
 
+# ── R6: NaN direction → missing_direction + aggregates ───────────────────────
+
+class TestNaNDirectionAggregates:
+    """NaN probability_up => direction=NaN => missing_direction, excluded from aggregates."""
+
+    def _build_fixture(self):
+        """Hand-computed fixture: 10 UP (z=+R/sigma), 1 NaN-prob row.
+
+        All rows share (symbol, prediction_ts) so same entry/outcome close.
+        UP rows: prob=0.6, signed=raw_ret, z=raw_ret/sigma
+        NaN row: prob=NaN, direction=NaN, eligibility=missing_direction
+
+        With 26 closes (Jan 1-25) + outcome on Jan 27 (close=105):
+        D = Jan 25, N = Jan 27, entry_close ≈ 100, raw_ret ≈ +0.05
+        All UP rows: signed_raw_return = raw_ret > 0 => all hits.
+        """
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(1, 25)]
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 26, rets)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 27),
+            "close": 110.0, "close_ts": _utc(2025, 1, 27, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes = pd.concat([closes, extra], ignore_index=True)
+
+        pred_ts = _utc(2025, 1, 26, 21, 0)
+        signals_rows = []
+        # 10 UP rows
+        for i in range(10):
+            signals_rows.append({
+                "signal_id": f"up_{i}", "symbol": "AAPL", "model_version": "v1",
+                "horizon": "1d", "prediction_ts": pred_ts, "probability": 0.6,
+            })
+        # 1 NaN-probability row
+        signals_rows.append({
+            "signal_id": "nan_prob", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": pred_ts, "probability": float("nan"),
+        })
+        signals = _make_signals(signals_rows)
+        as_of = _utc(2025, 1, 30, 21, 0)
+        return signals, closes, as_of
+
+    def test_nan_direction_missing_direction_eligibility(self):
+        """NaN-probability row gets eligibility_state=missing_direction."""
+        signals, closes, as_of = self._build_fixture()
+        result = build_signal_outcomes(signals, closes, as_of=as_of)
+        nan_row = result[result["signal_id"] == "nan_prob"].iloc[0]
+        assert nan_row["eligibility_state"] == "missing_direction"
+        assert pd.isna(nan_row["signed_raw_return"])
+        assert pd.isna(nan_row["outcome_z"])
+        assert pd.isna(nan_row["base_up_flag"])
+
+    def test_nan_direction_excluded_from_aggregates(self):
+        """missing_direction rows excluded from n, hit_count, medians.
+
+        Hand-computed (10 eligible UP rows, all same entry/outcome):
+        n=10, hit_count=10 (all signed_raw_return > 0)
+        median_outcome_z = outcome_z (all identical)
+        excluded_counts = {"missing_direction": 1}
+        """
+        signals, closes, as_of = self._build_fixture()
+        outcomes = build_signal_outcomes(signals, closes, as_of=as_of)
+        # Get the eligible outcome_z for hand-computation
+        eligible = outcomes[outcomes["eligibility_state"] == "eligible"]
+        expected_z = eligible["outcome_z"].iloc[0]
+
+        result = summarize_outcomes(outcomes, min_n=5, min_dates=1, rho=0.0)
+        assert len(result) == 1
+        r = result[0]
+        assert r["n"] == 10, f"n={r['n']}, expected 10 (NaN row excluded)"
+        assert r["hit_count"] == 10, f"hit_count={r['hit_count']}, expected 10"
+        assert abs(r["median_outcome_z"] - expected_z) < 1e-10
+        assert r["excluded_counts"].get("missing_direction", 0) == 1
+
+    def test_mutation_nan_as_down_changes_aggregates(self):
+        """Mutation proof: revert signed_raw_return to np.where (NaN→DOWN) changes aggregates.
+
+        With mutant (NaN treated as DOWN):
+        n=11, hit_count=10 (NaN row gets signed=-raw_ret < 0, not a hit)
+        excluded_counts={}
+        With fix:
+        n=10, hit_count=10, excluded_counts={"missing_direction":1}
+        """
+        signals, closes, as_of = self._build_fixture()
+        outcomes = build_signal_outcomes(signals, closes, as_of=as_of)
+        result = summarize_outcomes(outcomes, min_n=5, min_dates=1, rho=0.0)
+        r = result[0]
+        # These values are ONLY correct with the fix; mutant changes them:
+        assert r["n"] == 10, (
+            f"n={r['n']} — mutant treats NaN as DOWN giving n=11"
+        )
+        assert "missing_direction" in r["excluded_counts"], (
+            "mutant drops missing_direction from excluded_counts"
+        )
+
+
+# ── R6: Pending rows ex_dividend_state ───────────────────────────────────────
+
+class TestPendingExDividendState:
+    def test_pending_row_ex_dividend_state_unknown(self):
+        """Pending rows must have ex_dividend_state='unknown' (not 'none').
+
+        Cannot determine ex-dividend state without knowing the outcome date.
+        """
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 100.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        dividends = _make_dividends([{
+            "symbol": "AAPL", "ex_date": _td(2025, 1, 21),
+        }])
+        as_of = _utc(2025, 1, 20, 22, 0)
+        result = build_signal_outcomes(signals, closes, dividends=dividends, as_of=as_of)
+        assert result.loc[0, "eligibility_state"] == "outcome_pending"
+        assert result.loc[0, "ex_dividend_state"] == "unknown"
+
+    def test_mutation_pending_ex_dividend_not_none(self):
+        """Mutation proof: pending rows must NOT have ex_dividend_state='none'.
+
+        Without the fix, pending rows get 'none' (skipped in _apply_ex_dividend_mask).
+        With the fix, they get 'unknown'.
+        """
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2025, 1, 20),
+             "close": 100.0, "close_ts": _utc(2025, 1, 20, 20, 0),
+             "return_1d": float("nan")},
+        ])
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 20, 21, 0),
+            "probability": 0.6,
+        }])
+        dividends = _make_dividends([{
+            "symbol": "AAPL", "ex_date": _td(2025, 1, 21),
+        }])
+        as_of = _utc(2025, 1, 20, 22, 0)
+        result = build_signal_outcomes(signals, closes, dividends=dividends, as_of=as_of)
+        assert result.loc[0, "ex_dividend_state"] != "none", (
+            "Pending rows must not have ex_dividend_state='none'"
+        )
+
+    def test_non_pending_ex_dividend_unchanged(self):
+        """Non-pending rows keep existing ex_dividend behavior (masked or none)."""
+        rets = [float("nan")] + [0.01 if i % 2 == 0 else -0.01 for i in range(1, 24)]
+        closes = _make_multi_day_closes("AAPL", "2025-01-01", 25, rets)
+        extra = _make_closes([{
+            "symbol": "AAPL", "trade_date": _td(2025, 1, 26),
+            "close": 105.0, "close_ts": _utc(2025, 1, 26, 20, 0),
+            "return_1d": 0.05,
+        }])
+        closes = pd.concat([closes, extra], ignore_index=True)
+        signals = _make_signals([{
+            "signal_id": "s1", "symbol": "AAPL", "model_version": "v1",
+            "horizon": "1d", "prediction_ts": _utc(2025, 1, 25, 21, 0),
+            "probability": 0.6,
+        }])
+        dividends = _make_dividends([{
+            "symbol": "AAPL", "ex_date": _td(2025, 1, 26),
+        }])
+        as_of = _utc(2025, 1, 30, 21, 0)
+        result = build_signal_outcomes(signals, closes, dividends=dividends, as_of=as_of)
+        # Non-pending, ex-dividend in (entry, outcome] => masked
+        assert result.loc[0, "ex_dividend_state"] == "masked"
+
+
+# ── R6: merge_asof exact-match boundary ──────────────────────────────────────
+
+class TestMergeAsofExactMatch:
+    def test_close_ts_eq_prediction_ts_is_entry_d(self):
+        """close_ts == prediction_ts must be entry D (exact match boundary).
+
+        merge_asof with direction='backward' includes exact matches by default.
+        Mutation: allow_exact_matches=False must fail this test.
+        """
+        closes = _make_closes([
+            {"symbol": "AAPL", "trade_date": _td(2026, 6, 5),
+             "close": 100.0, "close_ts": _utc(2026, 6, 5, 20, 0)},
+            {"symbol": "AAPL", "trade_date": _td(2026, 6, 8),
+             "close": 102.0, "close_ts": _utc(2026, 6, 8, 20, 0)},
+        ])
+        # prediction_ts == close_ts of Jun 5 (exact match)
+        features = pd.DataFrame([
+            {"symbol": "AAPL", "prediction_ts": _utc(2026, 6, 5, 20, 0)},
+        ])
+        pairs = daily_close_pairs(features, closes)
+        # D = Jun 5 (exact match), N = Jun 8
+        entry_td = pairs.loc[0, "entry_trade_date"]
+        entry_td = entry_td.date() if isinstance(entry_td, pd.Timestamp) else entry_td
+        assert entry_td == _td(2026, 6, 5)
+        assert pairs.loc[0, "entry_close"] == 100.0
+        outcome_td = pairs.loc[0, "outcome_trade_date"]
+        outcome_td = outcome_td.date() if isinstance(outcome_td, pd.Timestamp) else outcome_td
+        assert outcome_td == _td(2026, 6, 8)
+        assert pairs.loc[0, "outcome_close"] == 102.0
+
+
 # ── Fix3: excluded_counts per group ──────────────────────────────────────────
 
 class TestExcludedCountsPerGroup:
@@ -1405,6 +1607,11 @@ class TestMutationClosing:
         # NaN probability must NOT produce "DOWN"
         assert result.loc[0, "direction"] != "DOWN", "NaN prob must not default to DOWN"
         assert pd.isna(result.loc[0, "direction"]), "NaN prob => NaN direction"
+        # NaN direction => missing_direction eligibility, NaN signed/returned/base_up_flag
+        assert result.loc[0, "eligibility_state"] == "missing_direction"
+        assert pd.isna(result.loc[0, "signed_raw_return"])
+        assert pd.isna(result.loc[0, "outcome_z"])
+        assert pd.isna(result.loc[0, "base_up_flag"])
 
 
 # ── Non-blocking: duplicate close guard ───────────────────────────────────────

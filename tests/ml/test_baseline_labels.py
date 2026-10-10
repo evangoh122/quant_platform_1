@@ -539,6 +539,33 @@ def test_daily_purged_split_refit_no_lookahead():
     )
 
 
+# ── R6: merge_asof exact-match boundary ──────────────────────────────────────
+
+def test_merge_asof_exact_match_close_ts_eq_prediction_ts():
+    """close_ts == prediction_ts must be entry D (exact match boundary).
+
+    merge_asof with direction='backward' includes exact matches by default.
+    Mutation: allow_exact_matches=False must fail this test (label becomes NaN).
+    """
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 102.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    # prediction_ts == close_ts of Jun 5 (exact match)
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    # D = Jun 5 (exact match), N = Jun 8, label = 1.0 (102 > 100)
+    assert not pd.isna(out.loc[0, "label"]), (
+        "label must NOT be NaN — exact match close_ts==prediction_ts must be D"
+    )
+    assert out.loc[0, "label"] == 1.0
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-08 20:00", tz="UTC")
+
+
 # ── D6: named mutation tests ────────────────────────────────────────────────
 
 def test_mutation_lookahead_guard_trade_date_vs_close_ts():
