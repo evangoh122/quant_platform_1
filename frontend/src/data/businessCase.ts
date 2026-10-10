@@ -2,8 +2,8 @@
 // Static snapshot measured 2026-10-06; platform figures are copied from docs/BUSINESS_CASE.md.
 // Study years in NEXT_APPROACH are copied from docs/QUANT_STRATEGIES.md; no strategy-result figure is quoted.
 // INFRASTRUCTURE also copies counts from docs/proposal/row_counts_2026-10-05.tsv, each labelled with its own as-of time.
-// RUBRIC_AI is a self-assessment against the owner-supplied official rubric; its point ranges are judgements, not data.
-// Edited final v3: earlier exports keep their names and shapes; fields and exports are only added.
+// RUBRIC_AI explains how each criterion of the owner-supplied official rubric was planned and delivered; it awards no points.
+// Edited final v4: earlier exports keep their names and shapes; only RUBRIC_AI, KEY_LINE.assessment and NAV_LINKS.rubric change.
 // No imports, no JSX.
 
 export interface Snapshot {
@@ -25,7 +25,7 @@ export type EvidencePage = 'data' | 'features' | 'controls';
 // Supporting page that deepens one key-line argument (Infrastructure deepens Data).
 export type DetailPage = 'infrastructure';
 
-// Cross-cutting page that judges the whole case; it is not a key-line argument.
+// Cross-cutting page that maps the whole case to the rubric; it is not a key-line argument.
 export type AssessmentPage = 'rubric';
 
 // Every Business Case page, in navigation order.
@@ -208,8 +208,8 @@ export const KEY_LINE: KeyLine = {
     },
   ],
   assessment: {
-    label: 'How the case would be judged',
-    text: 'The Rubric page scores all three arguments against the official capstone rubric as a conservative range, naming every item that cannot be verified offline. It is a self-assessment, not a grade.',
+    label: 'How the project addresses the rubric',
+    text: 'The Rubric page shows, criterion by criterion, how the project was planned against the official capstone rubric, what is built, what is still open and how to check it offline. The grader decides.',
     page: 'rubric',
   },
 };
@@ -1031,7 +1031,7 @@ export const NAV_LINKS: NavigationLinks = {
   infrastructure: 'Infrastructure',
   features: 'Features',
   controls: 'Controls',
-  rubric: 'Rubric self-assessment',
+  rubric: 'Rubric plan',
 };
 
 // ── Data page section: infrastructure (key-line argument 1, how the inputs got there) ─
@@ -1230,7 +1230,7 @@ export const INFRASTRUCTURE: Infrastructure = {
           what: 'Typed, UTC-stamped bars deduplicated by hash; only bars with non-null prices, consistent ranges and non-negative volume enter.',
           rowsLabel: '23,420,557 rows',
           asOf: '2026-10-06 ~09:30 SGT',
-          evidence: 'docs/BUSINESS_CASE.md:4,38; silver/01_silver_ohlcv.sql:1-19,60-79',
+          evidence: 'docs/BUSINESS_CASE.md:4,38; silver/01_silver_ohlcv.sql:1-19,60-78',
         },
         {
           name: 'Quarantine',
@@ -1478,17 +1478,27 @@ export const INFRASTRUCTURE: Infrastructure = {
   },
 };
 
-// ── Rubric page: self-assessment against the official rubric (cross-cutting) ─
+// ── Rubric page: how each criterion was planned and delivered (cross-cutting) ─
 
-export type RubricEvidenceStrength =
-  | 'demonstrated-in-repo'
-  | 'partly-demonstrated'
-  | 'not-demonstrated'
-  | 'unverified-needs-live-proof';
+export type RubricCriterionId =
+  | 'spark'
+  | 'api'
+  | 'lakebase'
+  | 'agent-read'
+  | 'agent-write'
+  | 'agent-quality'
+  | 'analytics'
+  | 'frontend'
+  | 'deployment'
+  | 'volume'
+  | 'velocity'
+  | 'variety';
+
+export type RubricDeliveryStatus = 'built' | 'partly-built' | 'planned' | 'needs-live-proof';
 
 export type EvidenceGapStatus = 'verified-present' | 'unverified' | 'absent';
 
-export type RubricGapStatus = 'planned' | 'not-started';
+export type RubricImprovementStatus = 'planned' | 'not-started' | 'blocked-on-owner';
 
 export interface RubricAI {
   eyebrow: string;
@@ -1498,360 +1508,400 @@ export interface RubricAI {
     heading: string;
     text: string;
     officialRubricInRepo: boolean;
-    scoringRule: string;
     evidence: string;
+    deliveryStatusNote: string;
   };
-  scorecard: {
+  planAndDelivery: {
     heading: string;
     intro: string;
     rows: {
-      id: string;
+      id: RubricCriterionId;
       category: string;
-      component: string;
       pointsPossible: number;
       whatTheGraderLooksFor: string;
+      ourPlan: string;
+      whatWeBuilt: string;
       evidence: string;
-      evidenceStrength: RubricEvidenceStrength;
-      selfAssessedBand: { low: number; high: number };
-      bandReasoning: string;
-      gap: string;
-      unverifiedItems: string[];
-    }[];
-    byCategory: {
-      id: string;
-      category: string;
-      pointsPossible: number;
-      low: number;
-      high: number;
-      note: string;
+      deliveryStatus: RubricDeliveryStatus;
+      stillOpen: string;
+      howToVerify: string;
     }[];
   };
-  totals: {
+  designDecisions: {
     heading: string;
-    possible: number;
-    selfAssessedLow: number;
-    selfAssessedHigh: number;
-    capApplies: boolean;
-    capNote: string;
-    caveat: string;
-    swingFactors: string[];
+    intro: string;
+    items: {
+      id: string;
+      rubricRule: string;
+      decision: string;
+      why: string;
+      tradeoff: string;
+      status: RubricDeliveryStatus;
+      evidence: string;
+    }[];
   };
   agent: {
     heading: string;
     intro: string;
-    capabilities: { title: string; text: string; evidence: string }[];
+    capabilities: {
+      title: string;
+      text: string;
+      evidence: string;
+    }[];
     safetyModel: {
       heading: string;
-      steps: { title: string; text: string; enforcedIn: string }[];
+      steps: {
+        title: string;
+        text: string;
+        enforcedIn: string;
+      }[];
       caveats: string[];
     };
   };
   demoScript: {
     heading: string;
     intro: string;
-    steps: { order: number; category: string; show: string; proves: string; how: string }[];
+    steps: {
+      order: number;
+      category: string;
+      show: string;
+      proves: string;
+      how: string;
+      rubricCriterionIds: RubricCriterionId[];
+    }[];
   };
-  gaps: {
+  plannedImprovements: {
     heading: string;
     intro: string;
     items: {
       id: string;
-      category: string;
-      currentBand: string;
-      nextBand: string;
-      gap: string;
-      concreteAction: string;
-      status: RubricGapStatus;
+      rubricCriterionId: RubricCriterionId;
+      action: string;
+      status: RubricImprovementStatus;
+      why: string;
     }[];
   };
-  strengths: { heading: string; items: { title: string; text: string; evidence: string }[] };
+  strengths: {
+    heading: string;
+    items: {
+      title: string;
+      text: string;
+      evidence: string;
+    }[];
+  };
   evidenceGaps: {
     heading: string;
     intro: string;
-    items: { item: string; status: EvidenceGapStatus; evidence: string; note: string }[];
+    items: {
+      item: string;
+      status: EvidenceGapStatus;
+      evidence: string;
+      note: string;
+    }[];
   };
 }
 
 export const RUBRIC_AI: RubricAI = {
-  eyebrow: 'Business case · Rubric self-assessment',
-  title: 'Against the official rubric, the evidence supports a range, not a grade.',
+  eyebrow: 'Business case · Rubric plan and delivery',
+  title: 'Each rubric criterion has a planned approach, a delivery status and an offline check.',
   governingThought:
-    'Scored conservatively against the official Databricks AI Capstone Rubric, repository evidence supports 44 to 71 of 100 points. The spread reflects evidence a grader cannot re-check offline: deployment, Change Data Feed or DLT, measured latency and the live agent write.',
+    'The project was planned criterion by criterion against the official rubric. Each row states the approach, what is built and what remains; the open items are deployment proof, the analytics mechanism, in-chat write confirmation and measured latency.',
   basis: {
-    heading: 'This is a self-assessment against the official rubric; the grader decides.',
-    text: 'The official Databricks AI Capstone Rubric, eight categories worth 100 points, was supplied by the owner and is not in the repository. Each row maps repository evidence to its band descriptions; nothing here is a grade or a promised score.',
+    heading: 'This page explains the plan against the rubric; the grader decides.',
+    text: 'The owner supplied the official Databricks AI Capstone Rubric; its text is not committed in this repository. This page records how each criterion was planned and delivered. Points available are the rubric’s published weights; the page awards none.',
     officialRubricInRepo: false,
-    scoringRule:
-      'Low end: credit only what a grader can re-check from the repository today. High end: also accept the dated live runs the README records. Neither end goes beyond what the code supports.',
-    evidence: 'README.md:17-49; docs/rubric/PLAN.md:23-38',
+    evidence: 'Owner-supplied rubric, not committed; docs/rubric/PLAN.md:8-14,23-38,55-75',
+    deliveryStatusNote:
+      'Built: implemented in the repository, not verified live. Partly built: some delivery is unfinished. Planned: approach chosen, not implemented. Needs live proof: code exists, but the rubric asks for operational evidence the repository cannot show.',
   },
-  scorecard: {
-    heading: 'Twelve rubric rows, each scored as a conservative range with its evidence.',
-    intro: 'The rubric splits the agent into three sub-scores and Big Data into three Vs, giving twelve rows. Evidence pointers are files a grader can open.',
+  planAndDelivery: {
+    heading: 'Each criterion pairs the planned approach with what is built and still open.',
+    intro:
+      'Twelve rows follow the rubric: eight categories, with the agent split into retrieval, writes and quality, and Big Data into volume, velocity and variety. Delivery status describes the work, not a grade.',
     rows: [
       {
         id: 'spark',
         category: 'Spark Data Pipeline',
-        component: 'Whole category',
         pointsPossible: 15,
         whatTheGraderLooksFor:
-          'Spark, not only pandas, that ingests, cleans, enriches and validates data; re-runnable and idempotent; handles schema, nulls, duplicates and malformed records; output tables that serve the application.',
-        evidence: 'pipelines/run_silver_gold.py:42-60,177-284; silver/01_silver_ohlcv.sql:1-19; silver/02_silver_ohlcv_quarantine.sql:1-10; gold/05_gold_model_features.sql:1-23; docs/proposal/row_counts_2026-10-05.tsv',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 9, high: 12 },
-        bandReasoning:
-          'Code meets most top-band descriptors: MERGE on stable keys, quarantine, null and range rules, and point-in-time checks that fail the build. Dated counts show it ran. No run logs are committed, and a clean rebuild depends on step order.',
-        gap: 'Commit dated run logs, fix the rebuild order and show that a re-run leaves counts unchanged.',
-        unverifiedItems: ['Spark execution logs'],
+          'Spark, not only pandas, that ingests, cleans, enriches and validates data; re-runnable and reasonably idempotent; handles schema, nulls, duplicates and malformed records; writes output tables the application uses.',
+        ourPlan:
+          'A medallion design: Bronze keeps raw lineage, Silver cleans and validates, Gold builds point-in-time features. The readiness plan judged Spark already in place and limited later rounds to regression checks.',
+        whatWeBuilt:
+          'Silver MERGEs on stable keys, quarantines invalid bars and filters to a 39-symbol research universe; Gold enforces point-in-time joins and fails the build on violations. Targets are truncated only with --truncate.',
+        evidence:
+          'pipelines/run_silver_gold.py:42-60,87-99,177-284,384-386; silver/01_silver_ohlcv.sql:1-19; silver/02_silver_ohlcv_quarantine.sql:1-10; gold/05_gold_model_features.sql:1-23; config/universe.yaml; docs/rubric/PLAN.md:27',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'With --truncate, two Silver steps read the tradable universe before it is rebuilt, so a clean rebuild needs a second run. No execution logs or rerun-count evidence are committed.',
+        howToVerify:
+          'Open pipelines/run_silver_gold.py; run pytest -q tests/silver/test_silver_conversions.py tests/gold/test_pit_leakage.py',
       },
       {
         id: 'api',
         category: 'Third-Party API Integration',
-        component: 'Whole category',
         pointsPossible: 10,
         whatTheGraderLooksFor:
-          'Real external data stored and used downstream, with secrets management, rate-limit handling, retries, malformed-response handling and validation. Simulated or hardcoded data loses credit.',
-        evidence: 'etl/corporate_actions.py:208-290; pipelines/sec_rag_ingest.py:86-95,700-712,839-871; notebooks/refresh_bronze_options.py:385-399,662-681; notebooks/refresh_bronze_fed.py:194-215',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 6, high: 8 },
-        bandReasoning:
-          'Five providers feed stored, dated tables that features and retrieval use; no production path serves simulated or hardcoded data. Secrets, retries and rate limiting are strongest for SEC and corporate actions. No request logs are committed.',
-        gap: 'Apply one retry and validation policy to every provider and commit redacted request and failure logs.',
-        unverifiedItems: ['API request and error logs'],
+          'Real external data, reliably integrated and used downstream, with secrets management, rate-limit handling, retries, malformed-response handling and validation. The rubric calls out simulated, hardcoded or fabricated API data.',
+        ourPlan:
+          'Load real vendor and public-source data into stored tables and use it downstream; keep fixtures in tests. The readiness plan judged integration in place and assigned its write-up to round four.',
+        whatWeBuilt:
+          'Production clients load real data from Massive, Polygon, SEC EDGAR, CFTC and FRED, reading vendor keys from Databricks secrets. SEC and corporate-actions clients add rate limiting, backoff and authorisation-error handling.',
+        evidence:
+          'etl/corporate_actions.py:208-290; pipelines/sec_rag_ingest.py:86-95,700-712,839-871; notebooks/refresh_bronze_options.py:385-399,662-681; notebooks/refresh_bronze_equities.py:293-294; notebooks/refresh_bronze_fed.py:194-215; docs/rubric/PLAN.md:28',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'Retry, rate-limit and malformed-response handling is not uniform across providers, and no redacted request or error logs are committed. FRED data lands in Bronze without a downstream consumer.',
+        howToVerify:
+          'Open etl/corporate_actions.py and pipelines/sec_rag_ingest.py; run pytest -q tests/bronze/test_corporate_actions.py',
       },
       {
         id: 'lakebase',
         category: 'Lakebase Data Model',
-        component: 'Whole category',
         pointsPossible: 15,
         whatTheGraderLooksFor:
-          'Clear core entities with primary keys and relationships; constraints that block duplicates and invalid writes; indexes, timestamps and audit fields; an application that actually reads and writes Lakebase.',
-        evidence: 'db/migrations/001_operational_schema.sql:18-145; db/migrations/002_approvals_accounts.sql:23-45; db/migrations/005_agent_runtime.sql:15-38; db/lakebase.py:1-10; agent/tools_write.py:188-280',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 9, high: 12 },
-        bandReasoning:
-          'Versioned migrations define users, watchlists, notes, orders, approvals, executions, positions and agent actions with keys, foreign keys, unique and check constraints, indexes and timestamps. Applied state and live reads and writes cannot be re-checked offline.',
-        gap: 'Document the model on one schema page and record applied migration versions with a write-then-read check.',
-        unverifiedItems: ['Applied migrations', 'Live Lakebase connection'],
+          'Clear core entities with primary keys and relationships; constraints that prevent duplicates and invalid writes; indexes, created and updated timestamps and audit fields; an application that actually reads from and writes to Lakebase.',
+        ourPlan:
+          'Hold transactional state in versioned Lakebase migrations. Round one added the analytics outbox and round two agent idempotency; round three was to prove app identity and grants in a live window.',
+        whatWeBuilt:
+          'Versioned migrations define users, watchlists, notes, orders, approvals and agent actions with primary and foreign keys, unique and check constraints, indexes and timestamps. Agent writes use parameterised transactions through an OAuth connection layer.',
+        evidence:
+          'db/migrations/001_operational_schema.sql:18-145; db/migrations/002_approvals_accounts.sql:23-45; db/migrations/005_agent_runtime.sql:15-38; db/lakebase.py:1-10; agent/tools_write.py:188-280; docs/rubric/PLAN.md:29,88-91',
+        deliveryStatus: 'needs-live-proof',
+        stillOpen:
+          'Applied migration versions, app-role grants and write-then-read behaviour cannot be shown offline. README records live Lakebase writes on 2026-10-05; that record is not re-checkable from the repository.',
+        howToVerify:
+          'Open db/migrations/001_operational_schema.sql, 002_approvals_accounts.sql and 005_agent_runtime.sql; inspect agent/tools_write.py',
       },
       {
         id: 'agent-read',
-        category: 'Action-Taking AI Agent',
-        component: 'Retrieval and read tools',
+        category: 'Action-Taking AI Agent · Retrieval and read tools',
         pointsPossible: 6,
         whatTheGraderLooksFor:
           'Tools that retrieve relevant structured and unstructured data accurately and within scope, combining sources such as Lakebase, Delta tables, APIs and vector search.',
-        evidence: 'agent/contracts.py:203-209; agent/runtime.py:92-140; agent/tools_retrieval.py:127-168; api/services/hybrid_retriever.py:15-20; tests/rag/test_hybrid_retriever.py',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 3, high: 5 },
-        bandReasoning:
-          'Four bounded read tools combine Delta signals and features with hybrid vector and BM25 search over SEC text, filtered by acceptance time. Offline tests use fixtures; the one live retrieval is recorded only as README text.',
-        gap: 'Record dated multi-source sessions with cited sources and add golden retrieval cases for the agent route.',
-        unverifiedItems: ['Agent demo transcript'],
+        ourPlan:
+          'Give the model bounded read tools over Delta features and filing text. Round two replaced keyword dispatch with model-directed tool selection behind a closed action contract.',
+        whatWeBuilt:
+          'Four read tools return the latest signal, market features, options features and hybrid BM25 and vector SEC passages filtered by acceptance time. The chat route is model-directed; keyword dispatch is removed.',
+        evidence:
+          'agent/contracts.py:203-209; agent/runtime.py:92-140; agent/tools_retrieval.py:82-168,456-505; api/services/hybrid_retriever.py:15-20; api/routes/agent_chat.py:1-6; docs/rubric/PLAN.md:11,30',
+        deliveryStatus: 'built',
+        stillOpen:
+          'Model-facing read tools query Delta tables only; Lakebase readers exist but are not exposed to the model. Offline tests use fixtures, and no live-session retrieval evaluation is committed.',
+        howToVerify: 'Run pytest -q tests/rag/test_hybrid_retriever.py; open agent/contracts.py',
       },
       {
         id: 'agent-write',
-        category: 'Action-Taking AI Agent',
-        component: 'Write and action tools',
+        category: 'Action-Taking AI Agent · Write and action tools',
         pointsPossible: 8,
         whatTheGraderLooksFor:
-          'Several reliable actions that save, update or delete Lakebase data, with validation, authorisation or confirmation, error handling and clear user feedback. A read-only chatbot does not qualify.',
-        evidence: 'agent/runtime.py:141-156,487-598; agent/tools_write.py:188-280; api/schemas.py:131-148; frontend/src/api/client.ts:59-60',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 4, high: 6 },
-        bandReasoning:
-          'Two write tools save notes and add watchlist symbols, idempotently, behind request-scoped authorisation, role and demo checks, each with an audit row. The chat screen sends no write authorisation, so the UI cannot trigger them.',
-        gap: 'Add an in-chat confirmation that sends write authorisation, show the saved record, and add an update or delete action.',
-        unverifiedItems: ['Live write and read-back'],
+          'Several reliable actions that save, update or delete Lakebase data, with validation, authorisation or confirmation safeguards, error handling and clear user feedback. A read-only chatbot does not meet the requirement.',
+        ourPlan:
+          'Meet the action-taking requirement with real note and watchlist writes in Lakebase. Round two set the safeguards: typed proposals, request-scoped authorisation, idempotency keys, deterministic execution and transactional audit.',
+        whatWeBuilt:
+          'Two tools save research notes and add watchlist entries in parameterised transactions with an audit row; note replays return the original. The API accepts write authorisation, but the chat UI sends only the message.',
+        evidence:
+          'agent/runtime.py:141-156,538-598; agent/tools_write.py:188-280; api/schemas.py:131-148; frontend/src/api/client.ts:59-60; docs/rubric/BUILD-llm-agent.md:19; docs/rubric/PLAN.md:149-165',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'No in-chat confirmation sends write authorisation, so agent writes run through the API only. Update and delete tools are absent. README records one live note write on 2026-10-05.',
+        howToVerify:
+          'Run pytest -q tests/agent/test_contracts.py tests/agent/test_runtime.py; open frontend/src/api/client.ts',
       },
       {
         id: 'agent-quality',
-        category: 'Action-Taking AI Agent',
-        component: 'Quality and reasoning',
+        category: 'Action-Taking AI Agent · Quality and reasoning',
         pointsPossible: 6,
         whatTheGraderLooksFor:
-          'Appropriate tool selection, answers grounded in retrieved data, explained actions, ambiguity handling, input validation, no unsupported claims, clear failure messages and accurate summaries of completed actions.',
-        evidence: 'api/routes/agent_chat.py:1-19,41-101; agent/runtime.py:418-447,487-536; agent/contracts.py:147-201; tests/agent/test_runtime.py',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 2, high: 4 },
-        bandReasoning:
-          'The model chooses tools; code validates every proposal, refuses out-of-order or unbound writes, and returns named failure codes after one corrective retry. No transcript or evaluation of real-model reasoning is committed.',
-        gap: 'Score a golden set of agent conversations, including ambiguous and adversarial prompts, and commit the transcripts.',
-        unverifiedItems: ['Real-model transcripts'],
+          'Appropriate tool selection, answers grounded in retrieved data, explained actions, handling of ambiguity, input validation, no unsupported claims, clear failure messages and accurate summaries of completed actions.',
+        ourPlan:
+          'Let the model choose each next step while deterministic code validates it. Round two required retrieved SEC text to be treated as untrusted evidence, bounded steps and distinguishable failure reasons.',
+        whatWeBuilt:
+          'The runtime validates closed action objects, refuses writes that come first or drift to an unresearched symbol, allows one corrective retry and returns named failure reasons. Tests cover malformed and injected actions.',
+        evidence:
+          'api/routes/agent_chat.py:1-19; agent/runtime.py:418-447,487-536; agent/contracts.py:147-201; tests/agent/test_runtime.py; docs/rubric/PLAN.md:149-162',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'No real-model transcripts covering ambiguity, grounding or adversarial prompts are committed. The audit, write-budget and evidence-binding caveats in the safety model below still apply.',
+        howToVerify: 'Run pytest -q tests/agent/test_runtime.py; open api/routes/agent_chat.py',
       },
       {
         id: 'analytics',
         category: 'Analytics Pipeline',
-        component: 'Whole category',
         pointsPossible: 10,
         whatTheGraderLooksFor:
-          'Demonstrated Lakebase Change Data Feed or Delta Live Tables feeding incremental, re-runnable analytics with useful metrics, monitoring and documented logic. A dashboard or summary table alone earns little.',
-        evidence: 'db/migrations/004_analytics_outbox.sql:610-652; pipelines/lakebase_analytics.py:1-12,598-652; db/migrations/CDC.md; docs/rubric/PLAN.md:55-75',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 1, high: 4 },
-        bandReasoning:
-          'A transactional outbox and an idempotent Delta job compute agent-activity, watchlist, order-funnel and usage tables. The rubric names Change Data Feed or DLT; this design deliberately uses neither, so a strict grader may hold it in the lowest band.',
-        gap: 'Ask the grader to rule on outbox equivalence, or adopt native Lakebase CDF once the instance supports it.',
-        unverifiedItems: ['Change Data Feed or DLT configuration', 'Analytics run log'],
+          'Demonstrated use of Lakebase Change Data Feed or Delta Live Tables feeding an incremental, re-runnable pipeline with useful metrics, aggregation, monitoring and documented logic. A dashboard or summary table alone is not enough.',
+        ourPlan:
+          'Recorded decision: a transactional Postgres outbox plus a scheduled incremental Delta job. Logical replication and Lakeflow Connect lacked prerequisites on the Provisioned instance; native CDF was deferred to an Autoscaling-project upgrade.',
+        whatWeBuilt:
+          'Triggers on eight tables write allowlisted events to an outbox in the same transaction; a Spark job MERGEs them by event_id into Delta and recomputes four daily analytics tables. Its schedule is paused.',
+        evidence:
+          'db/migrations/004_analytics_outbox.sql:610-652; pipelines/lakebase_analytics.py:1-17,384-438,598-650; resources/jobs.yml:130-136; db/migrations/CDC.md; docs/rubric/PLAN.md:55-75',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'The design uses neither Change Data Feed nor Delta Live Tables, which the rubric names. The job marks events delivered before its Delta writes, so a process crash could drop them, contrary to the planned order.',
+        howToVerify:
+          'Run pytest -q tests/rubric/test_outbox_sql.py tests/rubric/test_lakebase_analytics.py; open docs/rubric/PLAN.md and resources/jobs.yml',
       },
       {
         id: 'frontend',
         category: 'Frontend and Core Workflow',
-        component: 'Whole category',
         pointsPossible: 10,
         whatTheGraderLooksFor:
-          'A clear interface to submit queries, view results and trigger agent actions, with writes reflected in the UI, loading, empty and error states, and confirmation for consequential actions.',
-        evidence: 'frontend/src/App.tsx:116-152; frontend/src/screens/ResearchAgent.tsx; frontend/src/screens/OrderApprovalDrawer.tsx; frontend/src/screens/ResearchAgent.test.tsx',
-        evidenceStrength: 'partly-demonstrated',
-        selfAssessedBand: { low: 4, high: 7 },
-        bandReasoning:
-          'Market, options, filing, signal, agent, order-approval and health screens exist, with screen tests that include error states. Agent writes cannot start from the UI, and Activity Analytics and Strategy Lab are placeholders.',
-        gap: 'Wire agent write confirmation and the analytics screen, then capture the flow in screenshots or the video.',
-        unverifiedItems: ['Screenshots or demo transcript'],
+          'A clear interface to submit queries, view retrieved results and trigger agent actions, with successful writes reflected in the UI, loading, empty and error states, and confirmation for consequential actions.',
+        ourPlan:
+          'Keep the React research workflow served same-origin by FastAPI and connect the new agent to it. The readiness plan judged the frontend in place and kept rubric rounds off the screens.',
+        whatWeBuilt:
+          'Market, options, filing, signal, agent, paper-portfolio, order-approval and health screens exist, with tests covering responses and error states. Activity Analytics and Strategy Lab are placeholders; chat cannot start an authorised write.',
+        evidence:
+          'frontend/src/App.tsx:116-152; frontend/src/screens/ResearchAgent.tsx; frontend/src/screens/OrderApprovalDrawer.tsx; frontend/src/screens/ResearchAgent.test.tsx; frontend/src/api/client.ts:59-60; docs/rubric/PLAN.md:32,121',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'In-chat write confirmation with saved-record feedback and the Activity Analytics screen are not built; the full query, confirm, write and read-back flow has not been shown in the UI.',
+        howToVerify:
+          'In frontend/, run npx vitest run src/screens/ResearchAgent.test.tsx; open frontend/src/App.tsx',
       },
       {
         id: 'deployment',
         category: 'Deployed Application',
-        component: 'Whole category',
         pointsPossible: 5,
         whatTheGraderLooksFor:
-          'A stable, accessible deployment on Databricks Apps or Render with documented setup, environment configuration, secrets handling and reliable access. A local-only application does not earn full credit.',
-        evidence: 'README.md:8,42-43; docs/DEPLOYMENT.md; resources/app.yml; render.yaml; docs/rubric/PLAN.md:33',
-        evidenceStrength: 'unverified-needs-live-proof',
-        selfAssessedBand: { low: 0, high: 3 },
-        bandReasoning:
-          'The README records a Databricks App verified healthy on 2026-10-05, and setup is documented. This snapshot claims no running service; if the app cannot be reached when graded, the rubric’s cannot-be-verified band of zero applies.',
-        gap: 'Keep the app reachable through the grading window and commit a dated smoke-test result.',
-        unverifiedItems: ['Deployment URL access'],
+          'A stable deployment on Databricks Apps or Render that supports the core workflow, with documented setup, environment configuration, secrets handling and reliable access. A local-only application falls short.',
+        ourPlan:
+          'Deploy as a Databricks App after the analytics and agent rounds. Round three covered portable configuration, service-principal grants and a deployed-URL smoke test, each live step in an owner-approved window.',
+        whatWeBuilt:
+          'Databricks Apps configuration, setup documentation and a smoke-test script are committed. README records a deployment verified on 2026-10-05; the planning file records the app and Lakebase as stopped.',
+        evidence:
+          'resources/app.yml; docs/DEPLOYMENT.md; scripts/smoke_app.py; README.md:8,42-43; docs/rubric/PLAN.md:12-13,20-21,33,131-142',
+        deliveryStatus: 'needs-live-proof',
+        stillOpen:
+          'Current reachability cannot be established from the repository. A grader needs the app and Lakebase running, smoke-tested at the deployed URL, during grading.',
+        howToVerify:
+          'Open resources/app.yml, docs/DEPLOYMENT.md and scripts/smoke_app.py; no service is contacted.',
       },
       {
         id: 'volume',
-        category: 'Big Data: Two of Three Vs',
-        component: 'Volume',
+        category: 'Big Data · Volume',
         pointsPossible: 5,
         whatTheGraderLooksFor:
-          'More than one million rows ingested and processed with a distributed workflow; full credit needs documented scale, partitioning, performance considerations and downstream use.',
-        evidence: 'docs/BUSINESS_CASE.md:4,38-39; docs/proposal/row_counts_2026-10-05.tsv',
-        evidenceStrength: 'demonstrated-in-repo',
-        selfAssessedBand: { low: 3, high: 4 },
-        bandReasoning:
-          'Dated counts show 152,104,694 daily option rows and 23,420,557 Silver minute bars processed with Spark. Partitioning and performance are not documented, so the top band is not claimed.',
-        gap: 'Document partitioning and run times from a dated Spark run.',
-        unverifiedItems: ['Reproducible count query'],
+          'More than one million rows ingested and processed in a distributed workflow, ideally with documented scale, partitioning, performance considerations and meaningful downstream use.',
+        ourPlan:
+          'Rest the volume claim on market and options data processed in Spark. Round four planned public, dated counts from a committed collection script, refreshed after the other rounds.',
+        whatWeBuilt:
+          'Dated snapshots record 152,104,694 daily option rows and 23,420,557 Silver minute bars, both processed in Spark and used by Gold features. The counts are recorded measurements, not re-queried offline.',
+        evidence:
+          'docs/BUSINESS_CASE.md:4,38-39; docs/proposal/row_counts_2026-10-05.tsv:11,32; gold/02_gold_options_features.sql:1-12; docs/rubric/PLAN.md:14,34,98-102,125',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'The planned count-collection script is not committed, and partitioning and performance considerations are not documented.',
+        howToVerify:
+          'Open docs/BUSINESS_CASE.md and docs/proposal/row_counts_2026-10-05.tsv and compare the two dated snapshots.',
       },
       {
         id: 'velocity',
-        category: 'Big Data: Two of Three Vs',
-        component: 'Velocity',
+        category: 'Big Data · Velocity',
         pointsPossible: 5,
         whatTheGraderLooksFor:
-          'Events processed in under one minute by a working incremental or streaming pipeline; full credit needs monitoring, checkpointing, recovery and measured latency.',
-        evidence: 'bundles/streaming/README.md:1-10,26,58; README.md:47',
-        evidenceStrength: 'not-demonstrated',
-        selfAssessedBand: { low: 0, high: 1 },
-        bandReasoning:
-          'A continuous DLT bundle with a latency-metrics table exists, but it has never run, so no latency has been measured. All production ingestion is batch.',
-        gap: 'Run the streaming bundle in an approved window and commit measured end-to-end latency with recovery evidence.',
-        unverifiedItems: ['Measured processing latency'],
+          'Events processed in under one minute by a working incremental or streaming pipeline, ideally with monitoring, checkpointing, recovery and measured latency. A near-real-time claim without measurement is not enough.',
+        ourPlan:
+          'The readiness plan names volume and variety as the two Vs and has no velocity row. A separate, isolated DLT bundle explores continuous processing without touching production tables.',
+        whatWeBuilt:
+          'A continuous DLT bundle with a latency-metrics table is built and validated locally but has never run. Production ingestion is batch, both refresh schedules are paused, and no latency is measured.',
+        evidence:
+          'bundles/streaming/README.md:1-10,28,77-79; README.md:47; resources/jobs.yml:5-8,133-136; docs/rubric/PLAN.md:34-35',
+        deliveryStatus: 'partly-built',
+        stillOpen:
+          'No streaming run, checkpoint, recovery or end-to-end latency evidence exists. Velocity is not demonstrated and is not one of the two Vs the plan relies on.',
+        howToVerify:
+          'Open bundles/streaming/README.md and resources/jobs.yml; confirm the bundle is marked not yet run and both schedules are paused.',
       },
       {
         id: 'variety',
-        category: 'Big Data: Two of Three Vs',
-        component: 'Variety',
+        category: 'Big Data · Variety',
         pointsPossible: 5,
         whatTheGraderLooksFor:
-          'Unstructured data such as documents or text that is meaningfully transformed, embedded, indexed, searched or surfaced in the application workflow.',
-        evidence: 'docs/BUSINESS_CASE.md:45; pipelines/build_sec_embeddings.py:4-5; api/services/hybrid_retriever.py:15-20; agent/tools_retrieval.py:127-168; frontend/src/screens/SecFilingExplorer.tsx',
-        evidenceStrength: 'demonstrated-in-repo',
-        selfAssessedBand: { low: 3, high: 5 },
-        bandReasoning:
-          'SEC filing text is chunked into 133,886 passages, embedded with BAAI/bge-small-en-v1.5, indexed for hybrid search and surfaced through the agent and the filing explorer. Retrieval quality rests on offline fixtures.',
-        gap: 'Commit a dated retrieval evaluation on the real corpus and show cited passages in the demo.',
-        unverifiedItems: ['Retrieval evaluation on the real corpus'],
-      },
-    ],
-    byCategory: [
-      {
-        id: 'spark',
-        category: 'Spark Data Pipeline',
-        pointsPossible: 15,
-        low: 9,
-        high: 12,
-        note: 'Functional band, reaching toward robust.',
-      },
-      {
-        id: 'api',
-        category: 'Third-Party API Integration',
-        pointsPossible: 10,
-        low: 6,
-        high: 8,
-        note: 'Working to reliably integrated.',
-      },
-      {
-        id: 'lakebase',
-        category: 'Lakebase Data Model',
-        pointsPossible: 15,
-        low: 9,
-        high: 12,
-        note: 'Appropriate relational schema; live use unverified.',
-      },
-      {
-        id: 'agent',
-        category: 'Action-Taking AI Agent',
-        pointsPossible: 20,
-        low: 9,
-        high: 15,
-        note: 'Sum of the three agent sub-scores; the required-agent cap is assessed separately below.',
-      },
-      {
-        id: 'analytics',
-        category: 'Analytics Pipeline',
-        pointsPossible: 10,
-        low: 1,
-        high: 4,
-        note: 'Outbox, not Change Data Feed or DLT.',
-      },
-      {
-        id: 'frontend',
-        category: 'Frontend and Core Workflow',
-        pointsPossible: 10,
-        low: 4,
-        high: 7,
-        note: 'Usable read workflow; agent writes not in the UI.',
-      },
-      {
-        id: 'deployment',
-        category: 'Deployed Application',
-        pointsPossible: 5,
-        low: 0,
-        high: 3,
-        note: 'Zero if unreachable when graded.',
-      },
-      {
-        id: 'big-data',
-        category: 'Big Data: Two of Three Vs',
-        pointsPossible: 15,
-        low: 6,
-        high: 10,
-        note: 'Volume and variety at a basic-to-partial level fall in the rubric’s 6–10 band; with velocity unmeasured, losing either V would cap the category at 5.',
+          'Relevant unstructured data, such as documents or text, meaningfully transformed, embedded, indexed, searched or surfaced in the application workflow.',
+        ourPlan:
+          'Use SEC filing text as the unstructured source: section it, embed it and search it point in time, so the agent and the filing explorer can cite passages.',
+        whatWeBuilt:
+          'The dated snapshot records 133,886 SEC chunks with embeddings. Hybrid BM25 and vector search excludes filings accepted after the as-of time and surfaces passages in the agent and the filing explorer.',
+        evidence:
+          'docs/BUSINESS_CASE.md:4,45; pipelines/build_sec_embeddings.py:4-5; api/services/hybrid_retriever.py:15-20,858-870; agent/tools_retrieval.py:127-168; frontend/src/screens/SecFilingExplorer.tsx:80-118; docs/rubric/PLAN.md:35',
+        deliveryStatus: 'built',
+        stillOpen:
+          'No retrieval-quality evaluation on the real corpus is committed; fixture tests show behaviour, not quality at scale.',
+        howToVerify:
+          'Run pytest -q tests/rag/test_hybrid_retriever.py; open frontend/src/screens/SecFilingExplorer.tsx',
       },
     ],
   },
-  totals: {
-    heading: 'The self-assessed range is 44 to 71 of 100, before any grader judgement.',
-    possible: 100,
-    selfAssessedLow: 44,
-    selfAssessedHigh: 71,
-    capApplies: false,
-    capNote:
-      'The 60-point cap applies only when the agent is missing or strictly read-only. Code gives the agent two authorised Lakebase write tools, and the README records a live note write, so the cap should not apply.',
-    caveat:
-      'A self-assessment against the rubric’s band descriptions, not a grade or a promised score. The ranges are judgements; unverified items can pull a grader’s score toward, or below, the low end.',
-    swingFactors: [
-      'Deployment: zero if the app cannot be reached when graded; up to 3 on the recorded deployment.',
-      'Required-agent cap: if a grader can verify no agent write, for example by testing only the UI, the total is capped at 60.',
-      'Analytics: the rubric names Change Data Feed or DLT; a strict reading holds the outbox design in the lowest band.',
-      'Velocity: no latency has been measured, so the Big Data score rests on volume and variety alone.',
+  designDecisions: {
+    heading: 'Six design decisions answer specific rubric rules, each with a stated tradeoff.',
+    intro: 'A decision log: the rule, what was decided, why, what the choice costs, and its delivery status.',
+    items: [
+      {
+        id: 'required-agent',
+        rubricRule: 'The agent must write application data; a read-only chatbot does not meet the requirement.',
+        decision:
+          'Expose two real Lakebase writes, a research note and a watchlist entry, behind a closed schema, an allowlist, request-scoped authorisation, role and demo guards, and audited execution.',
+        why: 'Real writes meet the requirement, and separating model proposals from execution authority means model output alone never changes data.',
+        tradeoff:
+          'The chat screen does not yet send write authorisation, so writes run through the API only; update and delete actions are not offered.',
+        status: 'partly-built',
+        evidence: 'agent/contracts.py:203-225; agent/runtime.py:538-598; frontend/src/api/client.ts:59-60',
+      },
+      {
+        id: 'analytics-mechanism',
+        rubricRule: 'Analytics should be fed by demonstrated Lakebase Change Data Feed or Delta Live Tables, not only a summary table.',
+        decision:
+          'Use a transactional Postgres outbox and a scheduled incremental Delta job; defer native Lakebase CDF until an Autoscaling-project upgrade.',
+        why: 'Publications are disabled on the Provisioned instance and Lakeflow Connect prerequisites were unproven; ordinary triggers are testable offline and give an explicit retry and idempotency contract.',
+        tradeoff:
+          'A grader reading the rubric literally may not accept the outbox, and the market DLT bundle does not cover it. The job also marks events delivered before writing them.',
+        status: 'partly-built',
+        evidence: 'docs/rubric/PLAN.md:55-75; pipelines/lakebase_analytics.py:384-438',
+      },
+      {
+        id: 'two-vs',
+        rubricRule: 'Big Data needs at least two of volume, velocity and variety, convincingly demonstrated.',
+        decision: 'Rely on volume and variety; keep velocity outside the plan.',
+        why: 'Dated market counts and embedded SEC text already exist as repository evidence; sub-minute processing would need a continuously running, billed pipeline.',
+        tradeoff: 'Both chosen Vs must convince the grader; with no latency measured, velocity offers no fallback.',
+        status: 'partly-built',
+        evidence: 'docs/rubric/PLAN.md:34-35; bundles/streaming/README.md:8-10',
+      },
+      {
+        id: 'deployment',
+        rubricRule: 'The application must be deployed and reachable, with documented setup, configuration and secrets handling.',
+        decision:
+          'Deploy as a Databricks App under its own service principal and verify it with a smoke test, starting services only in owner-approved live windows.',
+        why: 'One app identity can be granted the warehouse, Lakebase and model endpoint, and short live windows bound running cost.',
+        tradeoff:
+          'Reachability depends on the services running when graded; the repository shows configuration and a dated check, not current access.',
+        status: 'needs-live-proof',
+        evidence: 'docs/rubric/PLAN.md:12-13,92-97,131-142,171-175; README.md:8,42',
+      },
+      {
+        id: 'api-authenticity',
+        rubricRule: 'API integration must use real data with secrets, retries, rate limits and validation; simulated data is called out.',
+        decision:
+          'Load production data only from vendor files and public-source clients, with vendor keys in Databricks secrets; confine synthetic responses to tests.',
+        why: 'Real sources give traceable lineage into Bronze and genuine research inputs, which fabricated examples cannot.',
+        tradeoff: 'Resilience depth differs by provider, and offline review cannot confirm current entitlements or every stored record.',
+        status: 'partly-built',
+        evidence:
+          'notebooks/refresh_bronze_options.py:385-399; etl/corporate_actions.py:208-290; pipelines/sec_rag_ingest.py:700-712,839-871',
+      },
+      {
+        id: 'spark-validation',
+        rubricRule: 'The Spark pipeline should be re-runnable and idempotent and should handle nulls, duplicates and malformed records.',
+        decision:
+          'MERGE on stable keys, quarantine invalid bars, fail the build on point-in-time violations, and truncate only on explicit request.',
+        why: 'Keyed MERGEs make reruns safe, and build-failing invariants keep malformed or not-yet-public data out of features.',
+        tradeoff: 'A clean rebuild with --truncate runs two Silver steps before the universe they read; no run logs are committed.',
+        status: 'partly-built',
+        evidence: 'pipelines/run_silver_gold.py:42-60,99,177-284,384-386; silver/01_silver_ohlcv.sql:1-19',
+      },
     ],
   },
   agent: {
@@ -1919,7 +1969,7 @@ export const RUBRIC_AI: RubricAI = {
   },
   demoScript: {
     heading: 'Seven offline steps let a grader check the evidence without a live service.',
-    intro: 'Each step names what to open or run and what it proves. The tests use fixtures: they show behaviour in code, not live operation.',
+    intro: 'Each step names what to open or run and what it shows. The tests use fixtures: they show behaviour in code, not live operation.',
     steps: [
       {
         order: 1,
@@ -1927,6 +1977,9 @@ export const RUBRIC_AI: RubricAI = {
         show: 'The Silver/Gold orchestrator and its leakage tests.',
         proves: 'MERGE-based transforms with quarantine and point-in-time invariants that fail the build.',
         how: 'Open pipelines/run_silver_gold.py; run pytest -q tests/silver/test_silver_conversions.py tests/gold/test_pit_leakage.py',
+        rubricCriterionIds: [
+          'spark',
+        ],
       },
       {
         order: 2,
@@ -1934,6 +1987,9 @@ export const RUBRIC_AI: RubricAI = {
         show: 'Provider clients and their failure tests.',
         proves: 'Retries, rate limiting, authorisation errors and malformed-row rejection in production code paths.',
         how: 'Open etl/corporate_actions.py and pipelines/sec_rag_ingest.py; run pytest -q tests/bronze/test_corporate_actions.py',
+        rubricCriterionIds: [
+          'api',
+        ],
       },
       {
         order: 3,
@@ -1941,6 +1997,9 @@ export const RUBRIC_AI: RubricAI = {
         show: 'The versioned migrations.',
         proves: 'Keys, foreign keys, unique and check constraints, indexes, timestamps and idempotency keys.',
         how: 'Open db/migrations/001_operational_schema.sql, 002_approvals_accounts.sql and 005_agent_runtime.sql',
+        rubricCriterionIds: [
+          'lakebase',
+        ],
       },
       {
         order: 4,
@@ -1948,13 +2007,21 @@ export const RUBRIC_AI: RubricAI = {
         show: 'The action contract and runtime tests.',
         proves: 'Proposals are validated; unauthorised, out-of-order and injected actions are refused; authorised writes execute.',
         how: 'Run pytest -q tests/agent/test_contracts.py tests/agent/test_runtime.py',
+        rubricCriterionIds: [
+          'agent-read',
+          'agent-write',
+          'agent-quality',
+        ],
       },
       {
         order: 5,
         category: 'Analytics Pipeline',
         show: 'Outbox triggers and the Delta consumer tests.',
-        proves: 'Same-transaction capture and replay-safe merging; it does not show Change Data Feed or DLT.',
+        proves: 'Same-transaction capture and duplicate-safe merging; it does not show Change Data Feed, DLT or crash-safe delivery.',
         how: 'Run pytest -q tests/rubric/test_outbox_sql.py tests/rubric/test_lakebase_analytics.py',
+        rubricCriterionIds: [
+          'analytics',
+        ],
       },
       {
         order: 6,
@@ -1962,91 +2029,98 @@ export const RUBRIC_AI: RubricAI = {
         show: 'The Research Agent screen tests.',
         proves: 'Tool calls, sources, saved-note confirmation and error states render correctly from fixture responses.',
         how: 'In frontend/, run npx vitest run src/screens/ResearchAgent.test.tsx',
+        rubricCriterionIds: [
+          'frontend',
+        ],
       },
       {
         order: 7,
         category: 'Big Data and Deployed Application',
         show: 'Dated counts, retrieval tests, the architecture diagram and the README status table.',
-        proves: 'Volume and variety evidence; deployment and latency remain claims that need live proof.',
+        proves: 'Volume and variety evidence. Deployment needs live proof, and no latency has been measured.',
         how: 'Run pytest -q tests/rag/test_hybrid_retriever.py; open docs/proposal/row_counts_2026-10-05.tsv, docs/proposal/architecture.png and README.md',
+        rubricCriterionIds: [
+          'volume',
+          'variety',
+          'velocity',
+          'deployment',
+        ],
       },
     ],
   },
-  gaps: {
-    heading: 'Eight concrete actions would raise the score; none is done yet.',
-    intro: 'Framed like the rubric’s suggestions for improvement. These are not promises, and no dates are attached.',
+  plannedImprovements: {
+    heading: 'Ten next steps close the open items; none is done yet.',
+    intro: 'Framed like the rubric’s suggestions for improvement. These are not promises, and no dates are attached; live steps need owner approval.',
     items: [
       {
         id: 'deployment',
-        category: 'Deployed Application',
-        currentBand: '0–3',
-        nextBand: '4',
-        gap: 'No reachable deployment can be shown while the services are stopped.',
-        concreteAction: 'With owner approval, keep the app and Lakebase running through the grading window and commit a dated smoke-test result.',
-        status: 'planned',
+        rubricCriterionId: 'deployment',
+        action: 'Keep the app and Lakebase reachable through the grading window and commit a dated smoke-test result.',
+        status: 'blocked-on-owner',
+        why: 'Current reachability cannot be shown from the repository.',
       },
       {
         id: 'agent-write-ui',
-        category: 'Action-Taking AI Agent',
-        currentBand: '4–6 (write tools)',
-        nextBand: '7–8',
-        gap: 'Agent writes cannot be triggered or confirmed from the UI, and no update or delete action exists.',
-        concreteAction: 'Add a confirm-before-write step in chat that sends write authorisation, show the saved record, and add a remove-from-watchlist tool.',
+        rubricCriterionId: 'agent-write',
+        action: 'Add an in-chat confirmation that sends write authorisation, show the saved record, and add an update or delete action.',
         status: 'not-started',
+        why: 'Agent writes cannot be triggered or confirmed from the UI, and no update or delete action exists.',
+      },
+      {
+        id: 'analytics-ack-order',
+        rubricCriterionId: 'analytics',
+        action: 'Mark outbox events delivered only after the Delta writes commit, as the plan specifies.',
+        status: 'not-started',
+        why: 'Events are marked delivered when claimed, so a process crash mid-run could drop them.',
       },
       {
         id: 'analytics-mechanism',
-        category: 'Analytics Pipeline',
-        currentBand: '1–4',
-        nextBand: '4–6',
-        gap: 'The rubric credits Change Data Feed or DLT; the outbox is neither.',
-        concreteAction: 'Seek a ruling on outbox equivalence, or adopt native Lakebase CDF once the instance supports it; never relabel the outbox as CDF.',
-        status: 'planned',
+        rubricCriterionId: 'analytics',
+        action: 'Seek a ruling on outbox equivalence, or adopt native Lakebase CDF after an Autoscaling-project upgrade; never relabel the outbox as CDF.',
+        status: 'blocked-on-owner',
+        why: 'The rubric names Change Data Feed or DLT; the outbox is neither.',
       },
       {
         id: 'velocity',
-        category: 'Big Data: Velocity',
-        currentBand: '0–1',
-        nextBand: '3–4',
-        gap: 'No streaming run and no latency measurement exist.',
-        concreteAction: 'Run the streaming bundle in an approved window and commit end-to-end latency, checkpoint and recovery evidence.',
-        status: 'planned',
+        rubricCriterionId: 'velocity',
+        action: 'Run the streaming bundle in an approved window and commit measured end-to-end latency with checkpoint and recovery evidence.',
+        status: 'blocked-on-owner',
+        why: 'The bundle has never run, and no latency has been measured.',
       },
       {
         id: 'agent-quality',
-        category: 'Action-Taking AI Agent',
-        currentBand: '2–4 (quality)',
-        nextBand: '4–5',
-        gap: 'No evaluation of live model sessions is committed.',
-        concreteAction: 'Score a golden set of agent conversations, including ambiguous and adversarial prompts, and commit the transcripts.',
+        rubricCriterionId: 'agent-quality',
+        action: 'Evaluate a golden set of agent conversations, including ambiguous and adversarial prompts, and commit the transcripts.',
         status: 'not-started',
+        why: 'No evaluation of live model sessions is committed.',
       },
       {
         id: 'spark-evidence',
-        category: 'Spark Data Pipeline',
-        currentBand: '9–12',
-        nextBand: '13–15',
-        gap: 'No committed run logs, and a clean rebuild depends on step order.',
-        concreteAction: 'Build the tradable universe before the Silver steps that read it, and commit logs showing a re-run leaves counts unchanged.',
+        rubricCriterionId: 'spark',
+        action: 'Build the tradable universe before the Silver steps that read it, and commit logs showing a re-run leaves counts unchanged.',
         status: 'not-started',
+        why: 'A clean rebuild depends on step order, and no run logs are committed.',
+      },
+      {
+        id: 'volume-evidence',
+        rubricCriterionId: 'volume',
+        action: 'Commit the round-four count-collection script and document partitioning and performance considerations.',
+        status: 'planned',
+        why: 'Counts are recorded in documents, not reproducible from a committed script.',
       },
       {
         id: 'api-consistency',
-        category: 'Third-Party API Integration',
-        currentBand: '6–8',
-        nextBand: '9–10',
-        gap: 'Retry and validation depth varies by provider, and no request logs are committed.',
-        concreteAction: 'Share one retry, rate-limit and validation wrapper across providers and commit redacted run logs.',
+        rubricCriterionId: 'api',
+        action: 'Apply one retry, rate-limit and validation policy to every provider and commit redacted request and failure logs.',
         status: 'not-started',
+        why: 'Resilience depth varies by provider, and no request logs are committed.',
       },
       {
         id: 'frontend-workflow',
-        category: 'Frontend and Core Workflow',
-        currentBand: '4–7',
-        nextBand: '8–9',
-        gap: 'Two placeholder screens, and no agent write from the UI.',
-        concreteAction: 'Build the Activity Analytics screen on the existing analytics API, alongside the agent write confirmation above.',
+        rubricCriterionId: 'frontend',
+        action: 'Build the Activity Analytics screen on the existing analytics API, alongside the in-chat write confirmation above.',
         status: 'not-started',
+        why: 'Two screens are placeholders, and no agent write starts from the UI.',
       },
     ],
   },
@@ -2070,8 +2144,8 @@ export const RUBRIC_AI: RubricAI = {
       },
       {
         title: 'Operational changes reach Delta without dual writes.',
-        text: 'Same-transaction outbox triggers on eight tables and a replay-safe Delta job turn Lakebase activity into analytics tables.',
-        evidence: 'db/migrations/004_analytics_outbox.sql:610-652; pipelines/lakebase_analytics.py:598-652',
+        text: 'Same-transaction triggers on eight tables capture Lakebase activity, and Delta MERGEs by event_id make replays safe. Marking events delivered before the Delta writes leaves a process-crash gap.',
+        evidence: 'db/migrations/004_analytics_outbox.sql:610-652; pipelines/lakebase_analytics.py:384-438,598-650',
       },
     ],
   },
@@ -2098,10 +2172,10 @@ export const RUBRIC_AI: RubricAI = {
         note: 'Migrations and an OAuth connection layer are committed; applied state is not.',
       },
       {
-        item: 'Change Data Feed configuration',
+        item: 'Change Data Feed or DLT configuration',
         status: 'absent',
-        evidence: 'docs/rubric/PLAN.md:55-65',
-        note: 'The design chose a transactional outbox; native CDF is deferred until the instance supports it.',
+        evidence: 'docs/rubric/PLAN.md:55-65; bundles/streaming/README.md:8-10',
+        note: 'Analytics use a transactional outbox; native CDF is deferred to an Autoscaling-project upgrade, and the separate market DLT bundle has never run.',
       },
       {
         item: 'Dataset size',
@@ -2112,7 +2186,7 @@ export const RUBRIC_AI: RubricAI = {
       {
         item: 'Measured processing latency',
         status: 'absent',
-        evidence: 'bundles/streaming/README.md:8-10,58',
+        evidence: 'bundles/streaming/README.md:8-10,77-79',
         note: 'The streaming bundle defines latency metrics but has never run.',
       },
       {
