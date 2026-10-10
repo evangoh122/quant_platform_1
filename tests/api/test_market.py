@@ -172,3 +172,55 @@ def test_ohlcv_uses_event_date_and_price_basis(client, mock_delta_reads):
     assert "feature_ts" not in bar
     assert bar["price_basis"] == "split_adjusted"
     assert bar["vwap"] == 152.0
+
+
+def test_ohlcv_detail_has_calendar_limited(client, mock_delta_reads):
+    """CodeRabbit finding (b): OHLCV freshness detail must include calendar_limited
+    because it uses a bounded date window (start_time)."""
+    with patch("agent.tools_retrieval.get_market_features", return_value=[]), \
+         patch("agent.tools_retrieval.get_options_features", return_value=[]):
+        resp = client.get("/api/market/AAPL", headers={"x-forwarded-email": "u@test.com"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "calendar_limited" in data["ohlcv"]["freshness"]["detail"]
+
+
+def test_options_detail_has_no_calendar_limited(client, mock_delta_reads):
+    """CodeRabbit finding (b): OPTIONS freshness detail must NOT include
+    calendar_limited because _read_options() uses only a row limit, no date window."""
+    with patch("agent.tools_retrieval.get_market_features", return_value=[]), \
+         patch("agent.tools_retrieval.get_options_features", return_value=[]):
+        resp = client.get("/api/market/AAPL", headers={"x-forwarded-email": "u@test.com"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "calendar_limited" not in data["options"]["freshness"]["detail"]
+
+
+def test_detail_has_no_leading_separator(client, mock_delta_reads):
+    """CodeRabbit finding (c): freshness detail must never start with '; '.
+
+    When read_delta returns an empty detail string, joining must not produce
+    a leading '; '.
+    """
+    def _read_delta_empty_detail(fn, snapshot_key=None):
+        try:
+            rows = fn()
+        except Exception:
+            rows = []
+        return rows, "empty", ""
+
+    with patch("api.routes.market.read_delta", side_effect=_read_delta_empty_detail), \
+         patch("agent.tools_retrieval.get_market_features", return_value=[]), \
+         patch("agent.tools_retrieval.get_options_features", return_value=[]):
+        resp = client.get("/api/market/AAPL", headers={"x-forwarded-email": "u@test.com"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    ohlcv_detail = data["ohlcv"]["freshness"]["detail"]
+    opt_detail = data["options"]["freshness"]["detail"]
+    assert not ohlcv_detail.startswith("; "), f"OHLCV detail starts with '; ': {ohlcv_detail!r}"
+    assert not opt_detail.startswith("; "), f"OPTIONS detail starts with '; ': {opt_detail!r}"
+    # OHLCV should still have calendar_limited
+    assert "calendar_limited" in ohlcv_detail
