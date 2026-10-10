@@ -7,7 +7,12 @@ Runs in CI without pyspark. Validates:
 (c) Ontology has no yfinance key and massive == "implemented".
 (d) requirements*.txt have no yfinance line.
 (e) Nothing outside allowlist imports db.database (the retired module).
-(f) No pytest fixture named tmp_db or db_conn under conftest.py/tests/.
+(f) No pytest fixture named tmp_db or db_conn under conftest.py/tests/, also
+    when the name is claimed via the decorator ``name=`` keyword
+    (``@pytest.fixture(name="tmp_db")``).
+(g) pytz is declared in requirements*.txt whenever duckdb is declared (duckdb's
+    Python client converts timezone-aware results via pytz) and whenever a
+    tracked .py imports it.
 """
 import ast
 import os
@@ -31,6 +36,8 @@ ALLOWLIST_IMPORT_DB_DATABASE = {
     "notebooks/archive",
     "tests/test_no_retired_sources.py",
 }
+
+RETIRED_NAMES = {"tmp_db", "db_conn"}
 
 DEAD_ETL_MODULES = [
     "etl/extract_yfinance.py",
@@ -83,6 +90,119 @@ def _is_pytest_fixture(deco: ast.expr) -> bool:
     return False
 
 
+def _import_hits(text: str, module: str) -> list[tuple[int, str]]:
+    """Return ``(lineno, source line)`` for imports of *module* or ``module.*``.
+
+    AST-based (``ast.Import``/``ast.ImportFrom`` name lists) so comma-separated
+    imports such as ``import os, yfinance`` and ``import os, pytz`` are
+    detected, while comments and string literals are not.  Falls back to
+    line-text matching when *text* cannot be parsed so unparseable files are
+    still scanned.
+    """
+    lines = text.splitlines()
+    hits: list[tuple[int, str]] = []
+
+    def _hit(node: ast.AST) -> None:
+        lineno = getattr(node, "lineno", 0)
+        line = lines[lineno - 1].strip() if 0 < lineno <= len(lines) else ""
+        hits.append((lineno, line))
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        pattern = re.compile(
+            rf"(^|[^\w.])(import\s+{re.escape(module)}\b|from\s+{re.escape(module)}\b)"
+        )
+        for i, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            if pattern.search(line):
+                hits.append((i, line.strip()))
+        return hits
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(
+                a.name == module or a.name.startswith(module + ".")
+                for a in node.names
+            ):
+                _hit(node)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module and (
+                node.module == module or node.module.startswith(module + ".")
+            ):
+                _hit(node)
+    return hits
+
+
+def _retired_fixture_hits(text: str, retired: set[str] | frozenset[str] = RETIRED_NAMES) -> list[str]:
+    """Return violations for pytest fixtures whose effective name is retired.
+
+    The effective name is the decorator's ``name=`` keyword when given
+    (``@pytest.fixture(name="tmp_db")`` on a differently named function is a
+    violation), otherwise the function name.
+    """
+    tree = ast.parse(text)
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        fixture_names: list[str] = []
+        is_fixture = False
+        for deco in node.decorator_list:
+            if not _is_pytest_fixture(deco):
+                continue
+            is_fixture = True
+            if isinstance(deco, ast.Call):
+                for kw in deco.keywords:
+                    if (
+                        kw.arg == "name"
+                        and isinstance(kw.value, ast.Constant)
+                        and isinstance(kw.value.value, str)
+                    ):
+                        fixture_names.append(kw.value.value)
+        if not is_fixture:
+            continue
+        if node.name in retired:
+            hits.append(f"{node.lineno}: @pytest.fixture def {node.name}")
+            continue
+        for name in fixture_names:
+            if name in retired:
+                hits.append(
+                    f"{node.lineno}: @pytest.fixture(name={name!r}) def {node.name}"
+                )
+                break
+    return hits
+
+
+def _requirements_declared(path: Path, seen: set[Path] | None = None) -> set[str]:
+    """Return lowercased distribution names declared by a requirements file.
+
+    Resolves ``-r``/``--requirement`` includes so a file that pulls in another
+    requirements file inherits its declarations.
+    """
+    if seen is None:
+        seen = set()
+    path = path.resolve()
+    if path in seen or not path.exists():
+        return set()
+    seen.add(path)
+    names: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        inc = re.match(r"^(?:-r|--requirement)\s+(.+)$", line)
+        if inc:
+            names |= _requirements_declared(path.parent / inc.group(1).strip(), seen)
+            continue
+        name = re.split(r"[><=\[;~! ]", line)[0].strip().lower()
+        if name:
+            names.add(name)
+    return names
+
+
 def _py_files():
     """Yield all tracked .py files relative to repo root.
 
@@ -112,7 +232,11 @@ def _py_files():
 class TestNoRetiredSources:
 
     def test_no_yfinance_import_in_production_code(self):
-        """(a) No tracked .py outside allowlist imports yfinance."""
+        """(a) No tracked .py outside allowlist imports yfinance.
+
+        AST-based via ``_import_hits`` so comma-separated imports like
+        ``import os, yfinance`` are caught (line-text checks miss them).
+        """
         violations = []
         for rel in _py_files():
             if _in_allowlist(rel, ALLOWLIST_IMPORT_YFINANCE):
@@ -121,12 +245,8 @@ class TestNoRetiredSources:
                 text = (REPO / rel).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            for i, line in enumerate(text.splitlines(), 1):
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                if "import yfinance" in line or "from yfinance" in line:
-                    violations.append(f"{rel}:{i}: {line.strip()}")
+            for lineno, line in _import_hits(text, "yfinance"):
+                violations.append(f"{rel}:{lineno}: {line}")
         assert not violations, "yfinance imports found:\n" + "\n".join(violations)
 
     def test_dead_etl_modules_do_not_exist(self):
@@ -250,8 +370,10 @@ class TestNoRetiredSources:
         """(f) No pytest fixture named tmp_db or db_conn under conftest.py/tests/.
 
         Uses AST parsing — comments and docs do not trigger false positives.
+        The decorator's ``name=`` keyword is checked too, so
+        ``@pytest.fixture(name="tmp_db")`` on a differently named function is
+        flagged.
         """
-        RETIRED_NAMES = {"tmp_db", "db_conn"}
         violations = []
 
         for rel in _py_files():
@@ -266,34 +388,41 @@ class TestNoRetiredSources:
             except OSError:
                 continue
             try:
-                tree = ast.parse(text, filename=rel)
+                hits = _retired_fixture_hits(text, RETIRED_NAMES)
             except SyntaxError:
                 continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.FunctionDef):
-                    continue
-                if node.name not in RETIRED_NAMES:
-                    continue
-                for deco in node.decorator_list:
-                    if _is_pytest_fixture(deco):
-                        violations.append(f"{rel}:{node.lineno}: @pytest.fixture def {node.name}")
-                        break
+            for hit in hits:
+                violations.append(f"{rel}:{hit}")
         assert not violations, (
             "Retired fixture definitions found (must not exist):\n"
             + "\n".join(violations)
         )
 
     def test_no_pytz_import_without_declaration(self):
-        """No tracked .py imports pytz unless declared in requirements*.txt."""
-        declared = set()
-        for req in REPO.glob("requirements*.txt"):
-            for line in req.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if stripped.startswith("#") or not stripped:
-                    continue
-                if re.match(r"pytz\b", stripped, re.IGNORECASE):
-                    declared.add(req.name)
-        if declared:
+        """(g) pytz must be declared in requirements*.txt whenever duckdb is,
+        and whenever a tracked .py imports it.
+
+        duckdb's Python client converts timezone-aware TIMESTAMP results via
+        pytz: without it tz-aware fetches raise InvalidInputException
+        ("Required module 'pytz' failed to import").  Declarations are parsed
+        per requirements file (``-r`` includes resolved), so a file that pulls
+        duckdb — directly or via include — must also provide pytz.
+        """
+        req_files = sorted(REPO.glob("requirements*.txt"))
+        declared_by_file = {
+            req.name: _requirements_declared(req) for req in req_files
+        }
+        for fname, declared in declared_by_file.items():
+            assert not ("duckdb" in declared and "pytz" not in declared), (
+                f"{fname} declares duckdb but not pytz: duckdb's Python client "
+                "converts timezone-aware timestamps via pytz and raises "
+                "InvalidInputException without it"
+            )
+
+        all_declared: set[str] = set()
+        for declared in declared_by_file.values():
+            all_declared |= declared
+        if "pytz" in all_declared:
             return  # pytz is declared; nothing to guard
 
         violations = []
@@ -304,13 +433,61 @@ class TestNoRetiredSources:
                 text = (REPO / rel).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            for i, line in enumerate(text.splitlines(), 1):
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                if re.match(r"(import\s+pytz|from\s+pytz\s+import)", stripped):
-                    violations.append(f"{rel}:{i}: {line.strip()}")
+            for lineno, line in _import_hits(text, "pytz"):
+                violations.append(f"{rel}:{lineno}: {line}")
         assert not violations, (
             "pytz imports found without declaration in requirements*.txt:\n"
             + "\n".join(violations)
+        )
+
+
+class TestGuardDetectionLogic:
+    """Unit tests for the guard helpers themselves (CodeRabbit r5 findings)."""
+
+    def test_import_hits_detects_comma_separated_imports(self):
+        """Line-text import checks miss ``import os, yfinance`` /
+        ``import os, pytz``; the AST name-list parse must catch them."""
+        assert _import_hits("import os, yfinance\n", "yfinance"), (
+            "comma-separated 'import os, yfinance' not detected"
+        )
+        assert _import_hits("import os, pytz\n", "pytz"), (
+            "comma-separated 'import os, pytz' not detected"
+        )
+        # plain and from-forms still detected
+        assert _import_hits("import yfinance as yf\n", "yfinance")
+        assert _import_hits("from pytz import timezone\n", "pytz")
+        assert _import_hits("from yfinance.tools import history\n", "yfinance")
+        # near-miss packages must NOT be flagged
+        assert not _import_hits("import yfinance_lite\n", "yfinance")
+        assert not _import_hits("from yfinancetools import history\n", "yfinance")
+
+    def test_import_hits_ignores_comments_and_strings(self):
+        src = (
+            "# import os, yfinance\n"
+            'x = "import os, pytz"\n'
+            "y = 'from yfinance import history'\n"
+        )
+        assert not _import_hits(src, "yfinance"), "comment/string flagged as yfinance import"
+        assert not _import_hits(src, "pytz"), "comment/string flagged as pytz import"
+
+    def test_fixture_name_keyword_is_flagged(self):
+        """``@pytest.fixture(name="tmp_db")`` on a differently named function
+        must be flagged: the decorator ``name=`` keyword is the effective
+        fixture name."""
+        src = (
+            "import pytest\n\n"
+            '@pytest.fixture(name="tmp_db")\n'
+            "def helper_db():\n    return 1\n"
+        )
+        hits = _retired_fixture_hits(src)
+        assert any('name="tmp_db"' in h or "name='tmp_db'" in h for h in hits), (
+            f"@pytest.fixture(name='tmp_db') on def helper_db not flagged: {hits}"
+        )
+        # non-retired name= must not be flagged
+        assert not _retired_fixture_hits(
+            "import pytest\n\n@pytest.fixture(name=\"helper_db\")\ndef foo():\n    return 1\n"
+        )
+        # function-name form still flagged
+        assert _retired_fixture_hits(
+            "import pytest\n\n@pytest.fixture\ndef db_conn():\n    return 1\n"
         )
