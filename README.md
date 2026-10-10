@@ -37,7 +37,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 |---|---|---|---|
 | Batch Spark ingestion + medallion | Yes | Yes | Run on 2026-10-05 (287M rows) |
 | Split-adjusted daily prices (Massive corporate actions) | Yes | Yes | Run on 2026-10-05 |
-| SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run on 2026-10-05 — universe-wide rollout in this PR |
+| SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run on 2026-10-05; SEC chunk coverage was incomplete at that date (230 of 558 tickers had chunks; see docs/BUSINESS_CASE.md) |
 | SEC knowledge graph + governed NL analytics contracts | Yes | Yes | Merged |
 | Databricks App (FastAPI + React), warehouse data path, health/trace | Yes | Yes | **Deployed and verified 2026-10-05** — `/api/health`: Lakebase ok, SQL warehouse ok |
 | Lakebase writes from the app | Yes | Yes | **Verified 2026-10-05** — app service principal has `CAN_USE` + a least-privilege Postgres role |
@@ -99,9 +99,9 @@ python scripts/smoke_app.py --base-url <app-url>
 
 ## Engineering process
 
-Changes were built by a coding agent, independently checked by a second model (with mutation tests that must fail on
-the old code), reviewed by a third, and validated live against the Databricks workspace before merge; every PR also
-received a CodeRabbit review. Security: dependency audit (`pip-audit`, `npm audit`) and secret scanning run in CI —
+Changes were implemented by MiMo, independently validated by DeepSeek, then gated by either Codex Sol (routine work)
+or Claude Opus (complex or critical changes) before PR review by CodeRabbit (see root `AGENTS.md` for the full chain).
+Security: dependency audit (`pip-audit`, `npm audit`) and secret scanning run in CI —
 see [`docs/SECURITY.md`](docs/SECURITY.md).
 
 ## Known limitations
