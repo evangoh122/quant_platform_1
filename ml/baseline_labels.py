@@ -82,6 +82,114 @@ def forward_labels(
     return out
 
 
+def daily_close_pairs(
+    features: pd.DataFrame,
+    closes: pd.DataFrame,
+    max_gap_days: int = 5,
+) -> pd.DataFrame:
+    """PIT-safe entry/outcome close pairs for daily horizons.
+
+    For each feature row (symbol, prediction_ts):
+
+    * **D** = the latest trade_date of that symbol with ``close_ts <= prediction_ts``.
+    * **N** = the next trade_date after D for that symbol.
+
+    A close with ``close_ts > prediction_ts`` is **never** used as D.
+
+    Parameters
+    ----------
+    features : DataFrame
+        Must contain ``symbol`` and ``prediction_ts``.
+    closes : DataFrame
+        One row per (symbol, trade_date) with ``close`` (float) and
+        ``close_ts`` (tz-aware UTC timestamp of the last regular-session
+        minute bar of that US/Eastern date).
+    max_gap_days : int
+        Maximum calendar-day gap between D and N (default 5).
+
+    Returns
+    -------
+    DataFrame
+        Copy of *features* with columns added:
+        ``entry_trade_date``, ``entry_close``, ``entry_close_ts``,
+        ``outcome_trade_date``, ``outcome_close``, ``outcome_close_ts``.
+        NaN/NaT when D or N is missing or N − D > max_gap_days.
+    """
+    out = features.copy()
+    na_ts = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, UTC]")
+    out["entry_trade_date"] = pd.NaT
+    out["entry_close"] = float("nan")
+    out["entry_close_ts"] = na_ts.copy()
+    out["outcome_trade_date"] = pd.NaT
+    out["outcome_close"] = float("nan")
+    out["outcome_close_ts"] = na_ts.copy()
+
+    if closes.empty:
+        return out
+
+    closes = closes.sort_values(["symbol", "trade_date"]).reset_index(drop=True)
+
+    next_lookup = closes[["symbol", "trade_date"]].copy()
+    next_lookup["N_date"] = closes.groupby("symbol")["trade_date"].shift(-1)
+    next_lookup["N_close"] = closes.groupby("symbol")["close"].shift(-1)
+    next_lookup["N_close_ts"] = closes.groupby("symbol")["close_ts"].shift(-1)
+
+    feat = (
+        out[["symbol", "prediction_ts"]]
+        .reset_index()
+        .rename(columns={"index": "orig_idx"})
+    )
+    feat = feat.sort_values("prediction_ts").reset_index(drop=True)
+
+    closes_for_merge = closes[["symbol", "close_ts", "trade_date", "close"]].sort_values(
+        "close_ts"
+    )
+
+    merged = pd.merge_asof(
+        feat,
+        closes_for_merge.rename(
+            columns={"close_ts": "_cts", "trade_date": "D_date", "close": "D_close"}
+        ),
+        left_on="prediction_ts",
+        right_on="_cts",
+        by="symbol",
+        direction="backward",
+    )
+
+    merged = merged.merge(
+        next_lookup.rename(columns={"trade_date": "D_date"}),
+        on=["symbol", "D_date"],
+        how="left",
+    )
+
+    d_dt = pd.to_datetime(merged["D_date"])
+    n_dt = pd.to_datetime(merged["N_date"])
+    gap = (n_dt - d_dt).dt.days
+
+    has_d = merged["D_date"].notna()
+    has_n = merged["N_date"].notna()
+    d_with_n = has_d & has_n
+    valid = has_n & (gap > 0) & (gap <= max_gap_days)
+
+    # Set entry columns where D was found AND N exists (even if gap too large)
+    d_rows = merged.loc[d_with_n]
+    out.loc[d_rows["orig_idx"].values, "entry_trade_date"] = d_rows["D_date"].values
+    out.loc[d_rows["orig_idx"].values, "entry_close"] = d_rows["D_close"].values
+    out.loc[d_rows["orig_idx"].values, "entry_close_ts"] = pd.array(
+        d_rows["_cts"].values, dtype="datetime64[ns, UTC]"
+    )
+
+    # Set outcome columns only when N exists and gap <= max_gap_days
+    vr = merged.loc[valid]
+    out.loc[vr["orig_idx"].values, "outcome_trade_date"] = vr["N_date"].values
+    out.loc[vr["orig_idx"].values, "outcome_close"] = vr["N_close"].values
+    out.loc[vr["orig_idx"].values, "outcome_close_ts"] = pd.array(
+        vr["N_close_ts"].values, dtype="datetime64[ns, UTC]"
+    )
+
+    return out
+
+
 def daily_close_labels(
     features: pd.DataFrame,
     closes: pd.DataFrame,
@@ -89,15 +197,7 @@ def daily_close_labels(
 ) -> pd.DataFrame:
     """Add PIT-safe 1-day-horizon ``label`` and ``label_ts`` columns.
 
-    For each feature row (symbol, prediction_ts):
-
-    * **D** = the latest trade_date of that symbol with ``close_ts <= prediction_ts``.
-    * **N** = the next trade_date after D for that symbol.
-    * ``label`` = 1.0 if ``close_N > close_D`` else 0.0;
-      ``label_ts = close_ts_N``.
-    * NaN label (and NaT label_ts) when D or N is missing or
-      N − D > *max_gap_days* calendar days.
-    * A close with ``close_ts > prediction_ts`` is **never** used as close_D.
+    Thin wrapper over :func:`daily_close_pairs`.
 
     Parameters
     ----------
@@ -114,75 +214,22 @@ def daily_close_labels(
     Returns
     -------
     DataFrame
-        Copy of *features* with ``label`` and ``label_ts`` columns added.
+        Copy of *features* with ``label`` and ``label_ts`` columns added,
+        plus 6 intermediate columns from :func:`daily_close_pairs`:
+        ``entry_trade_date``, ``entry_close``, ``entry_close_ts``,
+        ``outcome_trade_date``, ``outcome_close``, ``outcome_close_ts``.
     """
-    out = features.copy()
-    out["label"] = float("nan")
-    out["label_ts"] = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, UTC]")
-
-    if closes.empty:
-        return out
-
-    # Sort closes by symbol, trade_date for deterministic shift.
-    closes = closes.sort_values(["symbol", "trade_date"]).reset_index(drop=True)
-
-    # Next-day lookup: for each (symbol, trade_date) row, the *following*
-    # trade_date's close and close_ts.
-    next_lookup = closes[["symbol", "trade_date"]].copy()
-    next_lookup["N_date"] = closes.groupby("symbol")["trade_date"].shift(-1)
-    next_lookup["N_close"] = closes.groupby("symbol")["close"].shift(-1)
-    next_lookup["N_close_ts"] = closes.groupby("symbol")["close_ts"].shift(-1)
-
-    # Prepare features for merge_asof (preserves original index).
-    feat = (
-        out[["symbol", "prediction_ts"]]
-        .reset_index()
-        .rename(columns={"index": "orig_idx"})
-    )
-    # merge_asof requires the join key sorted globally (not just per group).
-    feat = feat.sort_values("prediction_ts").reset_index(drop=True)
-
-    # merge_asof: for each prediction_ts, find the latest close_ts <= it.
-    closes_for_merge = closes[["symbol", "close_ts", "trade_date", "close"]].sort_values(
-        "close_ts"
-    )
-
-    merged = pd.merge_asof(
-        feat,
-        closes_for_merge.rename(
-            columns={"close_ts": "_cts", "trade_date": "D_date", "close": "D_close"}
-        ),
-        left_on="prediction_ts",
-        right_on="_cts",
-        by="symbol",
-        direction="backward",
-    )
-
-    # Join next-day info.  next_lookup key is "trade_date"; merged has "D_date".
-    merged = merged.merge(
-        next_lookup.rename(columns={"trade_date": "D_date"}),
-        on=["symbol", "D_date"],
-        how="left",
-    )
-
-    # Gap in calendar days.
-    d_dt = pd.to_datetime(merged["D_date"])
-    n_dt = pd.to_datetime(merged["N_date"])
-    gap = (n_dt - d_dt).dt.days
-
-    # Valid: N exists, gap > 0, gap <= max_gap_days.
-    valid = merged["N_date"].notna() & (gap > 0) & (gap <= max_gap_days)
-
-    # Assign labels only to valid rows.
-    vr = merged.loc[valid]
-    out.loc[vr["orig_idx"].values, "label"] = (
-        vr["N_close"].values > vr["D_close"].values
+    pairs = daily_close_pairs(features, closes, max_gap_days=max_gap_days)
+    pairs["label"] = float("nan")
+    pairs["label_ts"] = pairs["outcome_close_ts"]
+    # valid: outcome was found (N exists, gap OK) — equivalent to old
+    # valid = merged["N_date"].notna() & (gap > 0) & (gap <= max_gap_days)
+    valid = pairs["outcome_close_ts"].notna()
+    pairs.loc[valid, "label"] = (
+        pairs.loc[valid, "outcome_close"].values > pairs.loc[valid, "entry_close"].values
     ).astype(float)
-    # Preserve timezone from close_ts when assigning label_ts.
-    label_ts_vals = pd.array(vr["N_close_ts"].values, dtype="datetime64[ns, UTC]")
-    out.loc[vr["orig_idx"].values, "label_ts"] = label_ts_vals
-
-    return out
+    pairs.loc[~valid, "label_ts"] = pd.NaT
+    return pairs
 
 
 def purged_split(

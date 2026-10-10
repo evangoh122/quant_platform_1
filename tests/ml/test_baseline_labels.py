@@ -539,6 +539,33 @@ def test_daily_purged_split_refit_no_lookahead():
     )
 
 
+# ── R6: merge_asof exact-match boundary ──────────────────────────────────────
+
+def test_merge_asof_exact_match_close_ts_eq_prediction_ts():
+    """close_ts == prediction_ts must be entry D (exact match boundary).
+
+    merge_asof with direction='backward' includes exact matches by default.
+    Mutation: allow_exact_matches=False must fail this test (label becomes NaN).
+    """
+    closes = _make_closes([
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 5),
+         "close": 100.0, "close_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+        {"symbol": "AAPL", "trade_date": date(2026, 6, 8),
+         "close": 102.0, "close_ts": pd.Timestamp("2026-06-08 20:00", tz="UTC")},
+    ])
+    # prediction_ts == close_ts of Jun 5 (exact match)
+    features = pd.DataFrame([
+        {"symbol": "AAPL", "prediction_ts": pd.Timestamp("2026-06-05 20:00", tz="UTC")},
+    ])
+    out = daily_close_labels(features, closes)
+    # D = Jun 5 (exact match), N = Jun 8, label = 1.0 (102 > 100)
+    assert not pd.isna(out.loc[0, "label"]), (
+        "label must NOT be NaN — exact match close_ts==prediction_ts must be D"
+    )
+    assert out.loc[0, "label"] == 1.0
+    assert out.loc[0, "label_ts"] == pd.Timestamp("2026-06-08 20:00", tz="UTC")
+
+
 # ── D6: named mutation tests ────────────────────────────────────────────────
 
 def test_mutation_lookahead_guard_trade_date_vs_close_ts():
@@ -624,3 +651,114 @@ def test_mutation_label_from_n_plus_1():
         "label should be 0.0 (N=Mon close 98 < Fri close 100), "
         "not 1.0 (N+1=Tue close 105)"
     )
+
+
+# ── D7: Fix4 differential test — old 816e54b behavior preserved ──────────────
+
+def _old_daily_close_labels(features, closes, max_gap_days=5):
+    """Reference implementation from commit 816e54b (verbatim).
+
+    Used to verify the wrapper preserves old behavior including NaN-close
+    semantics (label=0.0 for NaN comparisons) and label_ts=NaT for invalid rows.
+    """
+    out = features.copy()
+    out["label"] = float("nan")
+    out["label_ts"] = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, UTC]")
+
+    if closes.empty:
+        return out
+
+    closes = closes.sort_values(["symbol", "trade_date"]).reset_index(drop=True)
+
+    next_lookup = closes[["symbol", "trade_date"]].copy()
+    next_lookup["N_date"] = closes.groupby("symbol")["trade_date"].shift(-1)
+    next_lookup["N_close"] = closes.groupby("symbol")["close"].shift(-1)
+    next_lookup["N_close_ts"] = closes.groupby("symbol")["close_ts"].shift(-1)
+
+    feat = (
+        out[["symbol", "prediction_ts"]]
+        .reset_index()
+        .rename(columns={"index": "orig_idx"})
+    )
+    feat = feat.sort_values("prediction_ts").reset_index(drop=True)
+
+    closes_for_merge = closes[["symbol", "close_ts", "trade_date", "close"]].sort_values(
+        "close_ts"
+    )
+
+    merged = pd.merge_asof(
+        feat,
+        closes_for_merge.rename(
+            columns={"close_ts": "_cts", "trade_date": "D_date", "close": "D_close"}
+        ),
+        left_on="prediction_ts",
+        right_on="_cts",
+        by="symbol",
+        direction="backward",
+    )
+
+    merged = merged.merge(
+        next_lookup.rename(columns={"trade_date": "D_date"}),
+        on=["symbol", "D_date"],
+        how="left",
+    )
+
+    d_dt = pd.to_datetime(merged["D_date"])
+    n_dt = pd.to_datetime(merged["N_date"])
+    gap = (n_dt - d_dt).dt.days
+
+    valid = merged["N_date"].notna() & (gap > 0) & (gap <= max_gap_days)
+
+    vr = merged.loc[valid]
+    out.loc[vr["orig_idx"].values, "label"] = (
+        vr["N_close"].values > vr["D_close"].values
+    ).astype(float)
+    label_ts_vals = pd.array(vr["N_close_ts"].values, dtype="datetime64[ns, UTC]")
+    out.loc[vr["orig_idx"].values, "label_ts"] = label_ts_vals
+
+    return out
+
+
+def test_daily_close_labels_matches_old_behavior_with_nan_closes():
+    """Differential test: current wrapper must match 816e54b behavior on NaN closes.
+
+    10% NaN closes across 300 random seeds. Proves identical label, label_ts,
+    index, and dtype to the old implementation.
+    """
+    import random
+    for seed in range(300):
+        rng = random.Random(seed)
+        # Build closes: 20 days, some NaN closes
+        closes_rows = []
+        for d in range(20):
+            td = date(2026, 6, 1 + d)
+            close_val = float("nan") if rng.random() < 0.1 else (100.0 + d)
+            closes_rows.append({
+                "symbol": "AAPL", "trade_date": td,
+                "close": close_val,
+                "close_ts": pd.Timestamp(f"2026-06-{1+d:02d} 20:00", tz="UTC"),
+            })
+        closes = pd.DataFrame(closes_rows)
+
+        # Build features: 10 rows
+        features_rows = [
+            {"symbol": "AAPL",
+             "prediction_ts": pd.Timestamp(f"2026-06-{min(5+i, 20):02d} 21:00", tz="UTC")}
+            for i in range(10)
+        ]
+        features = pd.DataFrame(features_rows)
+
+        old_out = _old_daily_close_labels(features, closes)
+        new_out = daily_close_labels(features, closes)
+
+        # Compare label and label_ts (the behavioral contract)
+        pd.testing.assert_series_equal(
+            old_out["label"], new_out["label"],
+            check_names=False, obj=f"label seed={seed}",
+        )
+        pd.testing.assert_series_equal(
+            old_out["label_ts"], new_out["label_ts"],
+            check_names=False, obj=f"label_ts seed={seed}",
+        )
+        # Index must match
+        assert old_out.index.tolist() == new_out.index.tolist(), f"index mismatch seed={seed}"
