@@ -37,7 +37,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 |---|---|---|---|
 | Batch Spark ingestion + medallion | Yes | Yes | Run on 2026-10-05 (287M rows) |
 | Split-adjusted daily prices (Massive corporate actions) | Yes | Yes | Run on 2026-10-05 |
-| SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run on 2026-10-05; SEC chunk coverage was incomplete at that date (230 of 558 tickers had chunks; see docs/BUSINESS_CASE.md) |
+| SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run on 2026-10-05; as measured 2026-10-06, 230 of 558 tickers had SEC chunks (see docs/BUSINESS_CASE.md) |
 | SEC knowledge graph + governed NL analytics contracts | Yes | Yes | Merged |
 | Databricks App (FastAPI + React), warehouse data path, health/trace | Yes | Yes | **Deployed and verified 2026-10-05** — `/api/health`: Lakebase ok, SQL warehouse ok |
 | Lakebase writes from the app | Yes | Yes | **Verified 2026-10-05** — app service principal has `CAN_USE` + a least-privilege Postgres role |
@@ -106,7 +106,7 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 
 ## Known limitations
 
-- SEC retrieval covers all tickers via per-ticker lazy loading with SQL-warehouse fallback for Databricks Apps.
+- SEC retrieval supports per-ticker queries via lazy loading with SQL-warehouse fallback for Databricks Apps, but corpus coverage is incomplete (230 of 558 tickers had chunks as measured 2026-10-06; see docs/BUSINESS_CASE.md).
 - The agent and analytics pipeline are minimal versions built for the capstone deadline. The analytics job is run on demand (it needs a short-lived `LAKEBASE_URL` at run time).
 - Macro (Fed) series are revised values, not first-release vintages.
 - Strategy research reports are descriptive; several are marked `BLOCKED_DATA` (fewer than two complete out-of-sample years).
