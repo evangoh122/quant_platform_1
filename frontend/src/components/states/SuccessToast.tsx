@@ -19,7 +19,7 @@ export function SuccessToast({ message, onDismiss, autoMs = 4000 }: SuccessToast
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--positive)]/20 bg-[var(--surface)] px-4 py-3 text-sm shadow-lg"
+      className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-[var(--radius-md)] border border-positive-dim-20 bg-[var(--surface)] px-4 py-3 text-sm shadow-lg"
     >
       <span className="text-[var(--positive)]" aria-hidden="true">✓</span>
       <span className="text-[var(--text-primary)]">{message}</span>

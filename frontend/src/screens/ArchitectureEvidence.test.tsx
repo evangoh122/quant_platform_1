@@ -9,6 +9,7 @@ describe('ArchitectureEvidence', () => {
     expect(screen.getByRole('heading', { name: 'Architecture & Tests' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Business Workflow' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Deterministic Safety Model' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Expected Test Groups' })).toBeInTheDocument();
 
     expect(screen.getByText(/User asks a research question/)).toBeInTheDocument();
     expect(screen.getByText(/Governed retrieval/)).toBeInTheDocument();
@@ -65,7 +66,7 @@ describe('ArchitectureEvidence', () => {
     expect(diagramContainer).not.toHaveAttribute('role', 'img');
   });
 
-  it('renders verified test groups with commit/date placeholders', () => {
+  it('renders expected test groups with test coverage status', () => {
     render(<ArchitectureEvidence />);
 
     expect(screen.getByText('Contract tests')).toBeInTheDocument();
@@ -73,8 +74,8 @@ describe('ArchitectureEvidence', () => {
     expect(screen.getByText('UI component tests')).toBeInTheDocument();
     expect(screen.getByText('Retrieval tests')).toBeInTheDocument();
 
-    const placeholders = screen.getAllByText(/<pending>/);
-    expect(placeholders.length).toBeGreaterThanOrEqual(4);
+    const coverageLabels = screen.getAllByText(/Test coverage — pending build branch run/);
+    expect(coverageLabels.length).toBeGreaterThanOrEqual(4);
   });
 
   it('renders known limitations including baseline signals and DLT', () => {

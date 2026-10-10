@@ -48,7 +48,8 @@ export function ResearchAgent() {
   const suggestedQuestions = useMemo(() => makeSuggestedQuestions(symbol), [symbol]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: motion ? 'auto' : 'smooth' });
   }, [messages, sending]);
 
   async function send(text?: string) {
@@ -104,27 +105,27 @@ export function ResearchAgent() {
         <Card title="Conversation" subtitle="Every tool call is surfaced as auditable evidence">
           <div ref={scrollRef} className="max-h-[32rem] space-y-3 overflow-y-auto">
             {messages.length === 0 && (
-              <p className="text-sm text-slate-500 dark:text-slate-400">
+              <p className="text-sm text-[var(--text-muted)]">
                 Ask about signals, market features, or SEC filings.
               </p>
             )}
             {messages.map((m, i) => (
               <div
                 key={i}
-                className={`rounded-lg p-3 ${
+                className={`rounded-[var(--radius-lg)] p-3 ${
                   m.role === 'user'
-                    ? 'bg-slate-100 dark:bg-slate-800'
-                    : 'bg-blue-50 dark:bg-blue-950/40'
+                    ? 'msg-user'
+                    : 'msg-assistant'
                 }`}
               >
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
                   {m.role}
                 </div>
-                <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800 dark:text-slate-200">
+                <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--text-primary)]">
                   {m.text}
                 </p>
                 {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && hasValidNoteId(tc)) && (
-                  <div data-tour="lakebase-write" className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                  <div data-tour="lakebase-write" className="mt-2 rounded-md border border-[var(--success-fill)] bg-success-fill p-2 text-xs text-[var(--on-success)]">
                     Research note saved to Lakebase.
                   </div>
                 )}
@@ -132,7 +133,7 @@ export function ResearchAgent() {
             ))}
             {sending && <LoadingState label="Agent is working…" />}
             {error && (
-              <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">
+              <div role="alert" className="rounded-[var(--radius-md)] border border-[var(--negative)] bg-negative-dim p-2 text-sm text-[var(--negative)]">
                 {error}
               </div>
             )}
@@ -140,7 +141,7 @@ export function ResearchAgent() {
 
           {messages.length === 0 && (
             <div className="mt-4 space-y-2">
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              <p className="text-xs font-medium text-[var(--text-muted)]">
                 Suggested questions
               </p>
               <div className="flex flex-wrap gap-2">
@@ -150,7 +151,7 @@ export function ResearchAgent() {
                     type="button"
                     disabled={sending}
                     onClick={() => void send(q)}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                    className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] disabled:opacity-50"
                   >
                     {q}
                   </button>
@@ -159,17 +160,21 @@ export function ResearchAgent() {
             </div>
           )}
 
-          <form className="mt-3 flex gap-2" onSubmit={handleSubmit}>
+          <form data-tour="agent-input" className="mt-3 flex gap-2" onSubmit={handleSubmit}>
+            <label htmlFor="research-agent-input" className="sr-only">
+              Research question
+            </label>
             <input
+              id="research-agent-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900"
+              className="flex-1 rounded-md border border-[var(--border-strong)] px-3 py-2 text-sm bg-[var(--surface-raised)] text-[var(--text-primary)]"
               placeholder="Ask the research agent…"
             />
             <button
               type="submit"
               disabled={sending || !input.trim()}
-              className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+              className="rounded-md bg-[var(--accent-fill)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] disabled:opacity-50"
             >
               Send
             </button>

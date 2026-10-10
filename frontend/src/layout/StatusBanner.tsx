@@ -9,7 +9,7 @@ export function StatusBanner({ lakebaseDown }: StatusBannerProps) {
     <div
       data-tour="lakebase-banner"
       role="alert"
-      className="mb-4 rounded-[var(--radius-md)] border border-[var(--negative)]/20 bg-[var(--negative)]/5 px-4 py-3 text-sm text-[var(--negative)]"
+      className="mb-4 rounded-[var(--radius-md)] border border-negative-dim-20 bg-negative-dim-5 px-4 py-3 text-sm text-[var(--negative)]"
     >
       Account services unavailable — write operations (orders, watchlists) are disabled. Read-only data is still accessible.
     </div>
