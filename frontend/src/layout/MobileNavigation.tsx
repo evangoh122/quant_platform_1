@@ -63,10 +63,12 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
     <div className="lg:hidden">
       <button
         ref={triggerRef}
+        data-tour="mobile-menu"
         onClick={onToggle}
         className="fixed left-4 top-3 z-40 rounded-[var(--radius-sm)] p-2 text-[var(--text-primary)] hover:bg-[var(--surface-raised)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         aria-label={open ? 'Close navigation' : 'Open navigation'}
         aria-expanded={open}
+        aria-controls="mobile-nav-drawer"
       >
         {open ? '✕' : '☰'}
       </button>
@@ -80,6 +82,7 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
           />
           <div
             ref={drawerRef}
+            id="mobile-nav-drawer"
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"
@@ -104,11 +107,7 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
                         key={item.id}
                         onClick={() => onNavigate(item.id)}
                         aria-current={active ? 'page' : undefined}
-                        className={`block w-full rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm transition-colors ${
-                          active
-                            ? 'bg-[var(--accent)] font-medium text-white'
-                            : 'text-[var(--text-secondary)] hover:bg-[var(--surface-raised)]'
-                        }`}
+                        className={`nav-item ${active ? 'active' : ''}`}
                       >
                         {item.label}
                       </button>

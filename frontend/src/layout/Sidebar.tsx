@@ -27,6 +27,7 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
           onClick={onToggle}
           className="rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-expanded={!collapsed}
         >
           {collapsed ? '→' : '←'}
         </button>
@@ -48,11 +49,7 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
                   onClick={() => onNavigate(item.id)}
                   aria-current={active ? 'page' : undefined}
                   aria-label={collapsed ? item.label : undefined}
-                  className={`block w-full rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm transition-colors ${
-                    active
-                      ? 'bg-[var(--accent)] font-medium text-white'
-                      : 'text-[var(--text-secondary)] hover:bg-[var(--surface-raised)]'
-                  } ${collapsed ? 'text-center' : ''}`}
+                  className={`nav-item ${active ? 'active' : ''} ${collapsed ? 'justify-center' : ''}`}
                   title={collapsed ? item.label : undefined}
                 >
                   {collapsed ? item.label.charAt(0) : item.label}

@@ -12,22 +12,56 @@ export interface CoachStep {
   title: string;
   body: string;
   placement?: 'top' | 'bottom' | 'auto';
+  /** Screen ID to navigate to before showing this step (for cross-screen tours) */
+  navigateTo?: string;
+  /** Timeout in ms to wait for target to appear (default: 3000) */
+  waitForTargetTimeout?: number;
 }
 
 interface CoachMarksProps {
   steps: CoachStep[];
   run: boolean;
   onClose: () => void;
+  /** Called when a step requests navigation to a different screen */
+  onNavigate?: (screenId: string) => void;
+  /** Current screen ID, used to restore the screen on tour close */
+  currentScreen?: string;
 }
 
 const PAD = 8;
 const CARD_W = 320;
+const CARD_H_FALLBACK = 180;
+const GAP = 12;
+const VIEWPORT_MARGIN = 12;
 
-export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
+export const SCREEN_NAMES: Record<string, string> = {
+  'platform-overview': 'Platform Overview',
+  'market': 'Market Explorer',
+  'options': 'Options Analytics',
+  'sec': 'SEC Research',
+  'agent': 'AI Research Agent',
+  'signals': 'Signal Explorer',
+  'strategy-lab': 'Strategy Lab',
+  'portfolio': 'Paper Portfolio',
+  'orders': 'Order Approval',
+  'analytics': 'Analytics',
+  'health': 'System Health',
+  'architecture': 'Architecture & Tests',
+};
+
+export default function CoachMarks({ steps, run, onClose, onNavigate, currentScreen }: CoachMarksProps) {
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [waitingForTarget, setWaitingForTarget] = useState(false);
+  const [targetTimedOut, setTargetTimedOut] = useState(false);
+  const [screenAnnouncement, setScreenAnnouncement] = useState('');
+  const [cardHeight, setCardHeight] = useState(CARD_H_FALLBACK);
   const cardRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  const observerRef = useRef<MutationObserver | null>(null);
+  const initialScreenRef = useRef<string | undefined>(undefined);
+  const currentScreenRef = useRef(currentScreen);
+  currentScreenRef.current = currentScreen;
 
   const step = steps[index];
 
@@ -42,6 +76,11 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
       return;
     }
     const r = el.getBoundingClientRect();
+    // Treat zero-area target as missing (e.g. hidden sidebar on mobile)
+    if (r.width === 0 && r.height === 0) {
+      setRect(null);
+      return;
+    }
     const w = window.innerWidth;
     const h = window.innerHeight;
     const fullyOffScreen = r.bottom < 0 || r.top > h || r.right < 0 || r.left > w;
@@ -55,20 +94,93 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
   useEffect(() => {
     if (run) {
       openerRef.current = document.activeElement as HTMLElement;
+      initialScreenRef.current = currentScreenRef.current;
       setIndex(0);
+      setTargetTimedOut(false);
+    } else {
+      // Reset while hidden so the next run never evaluates a stale step's navigateTo.
+      setIndex(0);
+      setWaitingForTarget(false);
+      setTargetTimedOut(false);
+      setScreenAnnouncement('');
     }
   }, [run]);
 
+  // Handle navigation and target waiting for cross-screen steps
   useLayoutEffect(() => {
-    if (!run) return;
-    const el = step?.selector
-      ? (document.querySelector(step.selector) as HTMLElement | null)
-      : null;
-    const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    el?.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
-    const t = window.setTimeout(measure, el ? 280 : 0);
-    return () => window.clearTimeout(t);
-  }, [run, step, measure]);
+    if (!run || !step) return;
+    setTargetTimedOut(false);
+
+    // If step requires navigation, trigger it first
+    if (step.navigateTo && onNavigate) {
+      onNavigate(step.navigateTo);
+      const screenName = SCREEN_NAMES[step.navigateTo] ?? step.navigateTo;
+      setScreenAnnouncement(`Navigated to ${screenName}`);
+    }
+
+    const timeout = step.waitForTargetTimeout ?? 3000;
+
+    // If step has a selector, check if target exists
+    if (step.selector) {
+      const el = document.querySelector(step.selector) as HTMLElement | null;
+
+      if (el) {
+        // Target exists immediately
+        setWaitingForTarget(false);
+        const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        el.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
+        const t = window.setTimeout(measure, 280);
+        return () => window.clearTimeout(t);
+      } else {
+        // Target not found - wait with bounded observer/timeout
+        setWaitingForTarget(true);
+        setTargetTimedOut(false);
+        let resolved = false;
+        let measureTimer: number | undefined;
+
+        const resolveTarget = () => {
+          if (resolved) return;
+          resolved = true;
+          setWaitingForTarget(false);
+          const foundEl = document.querySelector(step.selector!) as HTMLElement | null;
+          if (foundEl) {
+            setTargetTimedOut(false);
+            const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            foundEl.scrollIntoView({ behavior: motion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
+            measureTimer = window.setTimeout(measure, 280);
+          } else {
+            setTargetTimedOut(true);
+          }
+        };
+
+        // Set up MutationObserver to watch for target
+        const observer = new MutationObserver(() => {
+          if (document.querySelector(step.selector!)) {
+            observer.disconnect();
+            resolveTarget();
+          }
+        });
+        observerRef.current = observer;
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        // Bounded timeout - if target doesn't appear, show skip/defer state
+        const timeoutId = window.setTimeout(() => {
+          observer.disconnect();
+          resolveTarget();
+        }, timeout);
+
+        return () => {
+          observer.disconnect();
+          window.clearTimeout(timeoutId);
+          if (measureTimer !== undefined) window.clearTimeout(measureTimer);
+        };
+      }
+    } else {
+      // No selector - centered card (introductory step)
+      setWaitingForTarget(false);
+      setRect(null);
+    }
+  }, [run, step, measure, onNavigate]);
 
   useEffect(() => {
     if (!run) return;
@@ -84,7 +196,7 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
   useEffect(() => {
     if (!run || !cardRef.current) return;
     cardRef.current.focus();
-  }, [run, index]);
+  }, [run, index, waitingForTarget, targetTimedOut]);
 
   // Tab wrap: cycle from last focusable to first and Shift+Tab from first to last
   useEffect(() => {
@@ -125,12 +237,22 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
 
     card.addEventListener('keydown', onKeyDown);
     return () => card.removeEventListener('keydown', onKeyDown);
-  }, [run, index]);
+  }, [run, index, waitingForTarget, targetTimedOut]);
+
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const measured = card.getBoundingClientRect().height || card.offsetHeight;
+    if (measured > 0) setCardHeight(measured);
+  }, [run, index, step, rect, waitingForTarget, targetTimedOut]);
 
   const handleClose = useCallback(() => {
+    if (initialScreenRef.current !== undefined && onNavigate) {
+      onNavigate(initialScreenRef.current);
+    }
     onClose();
     setTimeout(() => openerRef.current?.focus(), 0);
-  }, [onClose]);
+  }, [onClose, onNavigate]);
 
   const next = useCallback(() => {
     if (index >= steps.length - 1) {
@@ -155,9 +277,9 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
 
   useEffect(() => {
     if (!run) return;
-    const card = cardRef.current;
-    if (!card) return;
     const onFocus = (e: FocusEvent) => {
+      const card = cardRef.current;
+      if (!card) return;
       if (!card.contains(e.target as Node)) {
         e.stopPropagation();
         card.focus();
@@ -173,6 +295,63 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
   const vh = window.innerHeight;
   const isMobile = vw < 640;
 
+  // Show waiting state if we're waiting for a target
+  if (waitingForTarget || targetTimedOut) {
+    return (
+      <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true" aria-label="Guided tour">
+        <div className="absolute inset-0 bg-black/60" />
+        <div
+          ref={cardRef}
+          tabIndex={-1}
+          className="absolute left-1/2 bottom-5 -translate-x-1/2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 shadow-2xl focus:outline-none"
+          style={{ width: Math.min(CARD_W, vw - 24) }}
+        >
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+              Step {index + 1} of {steps.length}
+            </span>
+            <button
+              onClick={handleClose}
+              aria-label="Skip tour"
+              className="p-1 -m-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] bg-transparent border-0 cursor-pointer"
+            >
+              &times;
+            </button>
+          </div>
+          <h3 className="text-[15px] font-semibold text-[var(--text-primary)] mb-1.5 tracking-tight">
+            {step.title}
+          </h3>
+          <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed m-0">
+            {step.body}
+          </p>
+          {targetTimedOut ? (
+            <p className="mt-2 text-[12px] text-[var(--warning)] italic" role="status" aria-live="polite">
+              This step's target could not be shown.
+            </p>
+          ) : (
+            <p className="mt-2 text-[12px] text-[var(--text-muted)] italic">
+              Waiting for screen to load...
+            </p>
+          )}
+          <div className="flex items-center justify-end gap-2 mt-4">
+            <button
+              onClick={() => {
+                if (index >= steps.length - 1) {
+                  handleClose();
+                } else {
+                  setIndex((i) => i + 1);
+                }
+              }}
+              className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] bg-transparent border-0 p-0 cursor-pointer"
+            >
+              {targetTimedOut ? 'Next step' : 'Skip step'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   let cardStyle: CSSProperties;
   if (!rect || isMobile) {
     cardStyle = {
@@ -181,13 +360,29 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
       width: Math.min(CARD_W, vw - 24),
     };
   } else {
-    const below = rect.bottom + 12;
-    const wantAbove = below + 180 > vh && rect.top > 200;
-    const top = wantAbove ? undefined : below;
-    const bottom = wantAbove ? vh - rect.top + 12 : undefined;
+    const effectivePlacement = step?.placement ?? 'auto';
+    const h = cardHeight;
+    const fitsBelow = rect.bottom + GAP + h <= vh - VIEWPORT_MARGIN;
+    const fitsAbove = rect.top - GAP - h >= VIEWPORT_MARGIN;
+    const belowRoom = vh - VIEWPORT_MARGIN - (rect.bottom + GAP);
+    const aboveRoom = rect.top - GAP - VIEWPORT_MARGIN;
+    let placeAbove: boolean;
+    if (effectivePlacement === 'bottom') {
+      placeAbove = !fitsBelow && (fitsAbove || aboveRoom > belowRoom);
+    } else if (effectivePlacement === 'top') {
+      placeAbove = fitsAbove || (!fitsBelow && aboveRoom > belowRoom);
+    } else {
+      placeAbove = !fitsBelow && aboveRoom > belowRoom;
+    }
+    const minTop = VIEWPORT_MARGIN;
+    const maxTop = Math.max(minTop, vh - VIEWPORT_MARGIN - h);
+    const desiredTop = placeAbove ? rect.top - GAP - h : rect.bottom + GAP;
+    const cardTop = Math.min(Math.max(minTop, desiredTop), maxTop);
     let left = rect.left + rect.width / 2 - CARD_W / 2;
-    left = Math.min(Math.max(12, left), vw - CARD_W - 12);
-    cardStyle = { left, top, bottom, width: CARD_W };
+    left = Math.min(Math.max(VIEWPORT_MARGIN, left), vw - CARD_W - VIEWPORT_MARGIN);
+    cardStyle = placeAbove
+      ? { left, bottom: vh - cardTop - h, width: CARD_W }
+      : { left, top: cardTop, width: CARD_W };
   }
 
   return (
@@ -217,12 +412,12 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
             top: clamped.top,
             width: clamped.width,
             height: clamped.height,
-            boxShadow: '0 0 0 9999px rgba(0,0,0,0.58)',
+            boxShadow: '0 0 0 9999px rgba(0,0,0,0.60)',
             border: '2px solid var(--accent, #6366f1)',
           }}
         />
       ) })() : (
-        <div className="absolute inset-0 bg-black/58" />
+        <div className="absolute inset-0 bg-black/60" />
       )}
 
       <div className="absolute inset-0" onClick={(e) => e.stopPropagation()} />
@@ -282,12 +477,17 @@ export default function CoachMarks({ steps, run, onClose }: CoachMarksProps) {
             )}
             <button
               onClick={next}
-              className="rounded-[var(--radius-sm)] bg-[var(--accent)] px-3.5 py-1.5 text-[13px] font-medium text-white hover:opacity-90"
+              className="rounded-[var(--radius-sm)] bg-[var(--accent)] px-3.5 py-1.5 text-[13px] font-medium text-[var(--accent-ink)] hover:opacity-90"
             >
               {index >= steps.length - 1 ? 'Done' : 'Next'}
             </button>
           </div>
         </div>
+        {screenAnnouncement && (
+          <div aria-live="polite" className="sr-only" role="status">
+            {screenAnnouncement}
+          </div>
+        )}
       </div>
     </div>
   );

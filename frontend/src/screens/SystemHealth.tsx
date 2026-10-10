@@ -17,7 +17,7 @@ function AnalyticsSection({ title, envelope }: { title: string; envelope: Envelo
         <ul className="space-y-1 text-sm">
           {envelope.data.map((item) => (
             <li key={item.metric} className="flex justify-between">
-              <span className="text-slate-600 dark:text-slate-300">{item.metric || item.detail}</span>
+              <span className="text-[var(--text-secondary)]">{item.metric || item.detail}</span>
               <span className="font-medium">{item.value?.toString() ?? '—'}</span>
             </li>
           ))}
@@ -34,7 +34,7 @@ function SlowStagesList({ events }: { events: TraceEvent[] }) {
       <ul className="space-y-1 text-sm">
         {events.map((e, i) => (
           <li key={i} className="flex justify-between">
-            <span className="text-slate-600 dark:text-slate-300">
+            <span className="text-[var(--text-secondary)]">
               {e.ok ? '' : '! '}{e.name}
               {e.error ? ` (${e.error})` : ''}
             </span>
@@ -52,11 +52,11 @@ function DependencyCard({ d }: { d: { name: string; ok: boolean; detail: string;
     <div className="rounded border p-3 space-y-1">
       <div className="flex items-center justify-between">
         <span className="font-medium">{d.name}</span>
-        <span className={d.ok ? 'text-green-600' : 'text-red-600'}>{d.ok ? 'ok' : 'down'}</span>
+        <span className={d.ok ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}>{d.ok ? 'ok' : 'down'}</span>
       </div>
-      <div className="text-xs text-slate-500 space-y-0.5">
+      <div className="text-xs text-[var(--text-muted)] space-y-0.5">
         <div>Latency: {d.latency_ms != null ? `${d.latency_ms.toFixed(0)}ms` : '—'}</div>
-        {d.last_error && <div className="text-red-500">Error: {d.last_error}</div>}
+        {d.last_error && <div className="text-[var(--negative)]">Error: {d.last_error}</div>}
         <div>Last OK: {lastOk}</div>
         {d.circuit_breaker_state && <div>CB: {d.circuit_breaker_state}</div>}
       </div>
@@ -98,7 +98,7 @@ export function SystemHealth() {
                 <ul className="space-y-1 text-sm">
                   {health.data.startup.map((s, i) => (
                     <li key={i} className="flex justify-between">
-                      <span className="text-slate-600 dark:text-slate-300">{s.name}</span>
+                      <span className="text-[var(--text-secondary)]">{s.name}</span>
                       <span className="font-medium">{s.elapsed_ms.toFixed(0)}ms</span>
                     </li>
                   ))}

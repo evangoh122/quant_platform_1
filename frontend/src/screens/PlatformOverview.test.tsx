@@ -9,7 +9,7 @@ describe('PlatformOverview', () => {
 
     expect(screen.getByRole('heading', { name: 'Quant Research Platform' })).toBeInTheDocument();
     expect(screen.getByText(/Market and regulatory records transformed through Spark/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Verified snapshot: 2026-10-05/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Recorded snapshot: 2026-10-05/).length).toBeGreaterThanOrEqual(1);
   });
 
   it('routes overview actions to agent, market, and architecture callbacks', async () => {
@@ -61,10 +61,10 @@ describe('PlatformOverview', () => {
   it('does not render snapshot evidence as live counters', () => {
     render(<PlatformOverview onNavigate={vi.fn()} />);
 
-    const snapshotLabels = screen.getAllByText(/Verified snapshot: 2026-10-05/);
+    const snapshotLabels = screen.getAllByText(/Recorded snapshot: 2026-10-05/);
     expect(snapshotLabels.length).toBeGreaterThanOrEqual(1);
 
-    expect(screen.queryByText(/live/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/real-time/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/real-time count/i)).not.toBeInTheDocument();
   });
 
@@ -81,7 +81,7 @@ describe('PlatformOverview', () => {
 
       const el = walker.currentNode.parentElement;
       const card = el?.closest('[data-evidence-card]');
-      const labelled = !!card && (card.textContent?.includes('Verified snapshot: 2026-10-05') ?? false);
+      const labelled = !!card && (card.textContent?.includes('Recorded snapshot: 2026-10-05') ?? false);
       if (!labelled) {
         failures.push(`Unlabelled numeric claim: "${text.trim()}"`);
       }

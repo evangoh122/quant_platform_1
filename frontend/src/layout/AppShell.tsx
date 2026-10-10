@@ -40,8 +40,9 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
   }, []);
 
   const handleTour = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('qp-tour-request', { detail: { tour: 'application' } }));
-  }, []);
+    const tour = currentId === 'agent' ? 'agent' : currentId === 'architecture' ? 'architecture' : 'application';
+    window.dispatchEvent(new CustomEvent('qp-tour-request', { detail: { tour } }));
+  }, [currentId]);
 
   const lakebaseDown = health?.dependencies.some(
     (d) => d.name === 'lakebase' && (!d.ok || d.circuit_breaker_state === 'open'),
@@ -49,13 +50,21 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
 
   return (
     <div className="flex min-h-screen bg-[var(--canvas)] text-[var(--text-primary)]">
-      <Sidebar
-        groups={groups}
-        currentId={currentId}
-        onNavigate={handleNavigate}
-        collapsed={!sidebarOpen}
-        onToggle={handleToggleSidebar}
-      />
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[9999] focus:rounded-[var(--radius-sm)] focus:bg-[var(--accent)] focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--accent-ink)] focus:shadow-lg"
+      >
+        Skip to main content
+      </a>
+      <div {...(mobileOpen ? { inert: '', 'aria-hidden': true } : {})}>
+        <Sidebar
+          groups={groups}
+          currentId={currentId}
+          onNavigate={handleNavigate}
+          collapsed={!sidebarOpen}
+          onToggle={handleToggleSidebar}
+        />
+      </div>
 
       <MobileNavigation
         groups={groups}
@@ -66,7 +75,7 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
         onClose={handleCloseMobile}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div {...(mobileOpen ? { inert: '', 'aria-hidden': true } : {})} className="flex min-w-0 flex-1 flex-col">
         <PageHeader
           currentId={currentId}
           groups={groups}
@@ -74,7 +83,7 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
           onTour={handleTour}
         />
 
-        <main className="min-w-0 flex-1 p-[var(--space-6)]">
+        <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 p-[var(--space-6)]">
           <StatusBanner lakebaseDown={lakebaseDown} />
           {children}
         </main>

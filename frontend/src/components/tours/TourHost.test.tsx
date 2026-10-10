@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe('useTourHost — versioned keys', () => {
-  it('writes qp_tour_application_v1 on close', () => {
+  it('writes qp_tour_application_v2 on close', () => {
     vi.useFakeTimers();
     const { result } = renderHook(() => useTourHost());
 
@@ -59,10 +59,10 @@ describe('useTourHost — versioned keys', () => {
 
     expect(tourSeen(APPLICATION_TOUR_KEY)).toBe(true);
     expect(mockStore[APPLICATION_TOUR_KEY]).toBe('1');
-    expect('qp_tour_application_v1' in mockStore).toBe(true);
+    expect('qp_tour_application_v2' in mockStore).toBe(true);
   });
 
-  it('writes qp_tour_agent_v1 on close', () => {
+  it('writes qp_tour_agent_v2 on close', () => {
     const { result } = renderHook(() => useTourHost());
 
     act(() => {
@@ -75,10 +75,10 @@ describe('useTourHost — versioned keys', () => {
 
     expect(tourSeen(AGENT_TOUR_KEY)).toBe(true);
     expect(mockStore[AGENT_TOUR_KEY]).toBe('1');
-    expect('qp_tour_agent_v1' in mockStore).toBe(true);
+    expect('qp_tour_agent_v2' in mockStore).toBe(true);
   });
 
-  it('writes qp_tour_architecture_v1 on close', () => {
+  it('writes qp_tour_architecture_v2 on close', () => {
     const { result } = renderHook(() => useTourHost());
 
     act(() => {
@@ -91,10 +91,10 @@ describe('useTourHost — versioned keys', () => {
 
     expect(tourSeen(ARCHITECTURE_TOUR_KEY)).toBe(true);
     expect(mockStore[ARCHITECTURE_TOUR_KEY]).toBe('1');
-    expect('qp_tour_architecture_v1' in mockStore).toBe(true);
+    expect('qp_tour_architecture_v2' in mockStore).toBe(true);
   });
 
-  it('does not auto-start when all tours are already seen (_v1 keys)', () => {
+  it('does not auto-start when all tours are already seen (_v2 keys)', () => {
     vi.useFakeTimers();
     markTourSeen(APPLICATION_TOUR_KEY);
     markTourSeen(AGENT_TOUR_KEY);
@@ -108,11 +108,11 @@ describe('useTourHost — versioned keys', () => {
     expect(result.current.activeTour).toBeNull();
   });
 
-  it('stored _v1 key prevents auto-start (hardcoded key check)', () => {
+  it('stored _v2 key prevents auto-start (hardcoded key check)', () => {
     vi.useFakeTimers();
-    mockStore['qp_tour_application_v1'] = '1';
-    mockStore['qp_tour_agent_v1'] = '1';
-    mockStore['qp_tour_architecture_v1'] = '1';
+    mockStore['qp_tour_application_v2'] = '1';
+    mockStore['qp_tour_agent_v2'] = '1';
+    mockStore['qp_tour_architecture_v2'] = '1';
     const { result } = renderHook(() => useTourHost());
 
     act(() => {
@@ -311,7 +311,7 @@ describe('useTourHost — StrictMode double-mount dedup (r13)', () => {
         return (
           <div data-tour="agent">
             <div data-tour="agent-evidence" />
-            <div data-tour="lakebase-write" />
+            <div data-tour="agent-input" />
           </div>
         );
       }
@@ -479,7 +479,7 @@ describe('useTourHost — agent tour target-availability gating', () => {
       return (
         <div data-tour="agent">
           <div data-tour="agent-evidence" />
-          <div data-tour="lakebase-write" />
+          <div data-tour="agent-input" />
         </div>
       );
     }
@@ -514,7 +514,7 @@ describe('useTourHost — agent tour target-availability gating', () => {
     const evidence = document.createElement('div');
     evidence.setAttribute('data-tour', 'agent-evidence');
     const lakebase = document.createElement('div');
-    lakebase.setAttribute('data-tour', 'lakebase-write');
+    lakebase.setAttribute('data-tour', 'agent-input');
     target.appendChild(evidence);
     target.appendChild(lakebase);
     document.body.appendChild(target);
@@ -566,7 +566,7 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
       const evidence = document.createElement('div');
       evidence.setAttribute('data-tour', 'agent-evidence');
       const lakebase = document.createElement('div');
-      lakebase.setAttribute('data-tour', 'lakebase-write');
+      lakebase.setAttribute('data-tour', 'agent-input');
       container.appendChild(evidence);
       container.appendChild(lakebase);
 
@@ -615,7 +615,7 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
         return (
           <div data-tour="agent">
             <div data-tour="agent-evidence" />
-            <div data-tour="lakebase-write" />
+            <div data-tour="agent-input" />
           </div>
         );
       }
@@ -667,7 +667,7 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
     const evidence = document.createElement('div');
     evidence.setAttribute('data-tour', 'agent-evidence');
     const lakebase = document.createElement('div');
-    lakebase.setAttribute('data-tour', 'lakebase-write');
+    lakebase.setAttribute('data-tour', 'agent-input');
     root.appendChild(evidence);
     root.appendChild(lakebase);
 
@@ -711,7 +711,7 @@ describe('useTourHost — observable tour cleanup regressions (r13)', () => {
       const evidence = document.createElement('div');
       evidence.setAttribute('data-tour', 'agent-evidence');
       const lakebase = document.createElement('div');
-      lakebase.setAttribute('data-tour', 'lakebase-write');
+      lakebase.setAttribute('data-tour', 'agent-input');
       container.appendChild(evidence);
       container.appendChild(lakebase);
 
@@ -747,7 +747,7 @@ describe('useTourHost — manual tour lifecycle (r15)', () => {
       return (
         <div data-tour="agent">
           <div data-tour="agent-evidence" />
-          <div data-tour="lakebase-write" />
+          <div data-tour="agent-input" />
         </div>
       );
     }
@@ -808,7 +808,7 @@ describe('useTourHost — resume unseen Agent tour after manual tour closes (r19
       return (
         <div data-tour="agent">
           <div data-tour="agent-evidence" />
-          <div data-tour="lakebase-write" />
+          <div data-tour="agent-input" />
         </div>
       );
     }
@@ -863,7 +863,7 @@ describe('useTourHost — resume unseen Agent tour after manual tour closes (r19
       return (
         <div data-tour="agent">
           <div data-tour="agent-evidence" />
-          <div data-tour="lakebase-write" />
+          <div data-tour="agent-input" />
         </div>
       );
     }
@@ -918,7 +918,7 @@ describe('useTourHost — resume unseen Agent tour after manual tour closes (r19
         return (
           <div data-tour="agent">
             <div data-tour="agent-evidence" />
-            <div data-tour="lakebase-write" />
+            <div data-tour="agent-input" />
           </div>
         );
       }
@@ -965,7 +965,7 @@ describe('useTourHost — resume unseen Agent tour after manual tour closes (r19
       return (
         <div data-tour="agent">
           <div data-tour="agent-evidence" />
-          <div data-tour="lakebase-write" />
+          <div data-tour="agent-input" />
         </div>
       );
     }

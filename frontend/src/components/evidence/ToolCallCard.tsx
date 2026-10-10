@@ -12,14 +12,14 @@ export function hasValidNoteId(tc: ToolCall): boolean {
 
 function deriveBadge(tc: ToolCall): { label: string; cls: string } {
   if (!tc.ok) {
-    return { label: 'Failed', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' };
+    return { label: 'Failed', cls: 'bg-[var(--danger-fill)] text-[var(--on-danger)]' };
   }
   if (tc.name === 'search_sec_filings') {
     const rows = tc.result?.rows;
     if (!Array.isArray(rows)) {
       return {
         label: 'SEC search',
-        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+        cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
       };
     }
     const nonError = rows.filter(
@@ -27,36 +27,36 @@ function deriveBadge(tc: ToolCall): { label: string; cls: string } {
     );
     return {
       label: `${nonError.length} source${nonError.length !== 1 ? 's' : ''}`,
-      cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+      cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
     };
   }
   if (tc.name === 'get_latest_signal') {
     return {
       label: 'Signal',
-      cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+      cls: 'bg-[var(--accent-dim)] text-[var(--accent-bright)]',
     };
   }
   if (tc.name === 'save_research_note') {
     if (hasValidNoteId(tc)) {
       return {
         label: `Note ${tc.result!.note_id}`,
-        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+        cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
       };
     }
     return {
       label: 'Save not confirmed',
-      cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+      cls: 'bg-warning-dim text-warning-text',
     };
   }
   if (tc.name === 'add_to_watchlist') {
     return {
       label: 'Watchlist',
-      cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+      cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
     };
   }
   return {
     label: 'OK',
-    cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+    cls: 'bg-[var(--success-fill)] text-[var(--on-success)]',
   };
 }
 
@@ -90,10 +90,10 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
   return (
     <div
       data-testid={`tool-call-${index}`}
-      className="rounded-md border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900"
+      className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-3"
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs font-semibold text-slate-800 dark:text-slate-200">
+        <span className="font-mono text-xs font-semibold text-[var(--text-primary)]">
           {toolCall.name}
         </span>
         <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.cls}`}>
@@ -101,36 +101,36 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
         </span>
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--text-muted)]">
         {ticker && (
           <span>
-            Ticker: <span className="font-medium text-slate-700 dark:text-slate-300">{ticker}</span>
+            Ticker: <span className="font-medium text-[var(--text-secondary)]">{ticker}</span>
           </span>
         )}
         {sourceCount !== undefined && (
           <span>
-            Sources: <span className="font-medium text-slate-700 dark:text-slate-300">{sourceCount}</span>
+            Sources: <span className="font-medium text-[var(--text-secondary)]">{sourceCount}</span>
           </span>
         )}
         {isWrite && toolCall.ok && noteId && (
           <span>
-            Note ID: <span className="font-mono font-medium text-slate-700 dark:text-slate-300">{noteId}</span>
+            Note ID: <span className="font-mono font-medium text-[var(--text-secondary)]">{noteId}</span>
           </span>
         )}
         {toolCall.name === 'add_to_watchlist' && toolCall.ok && (
           <span>
-            Storage: <span className="font-medium text-emerald-600 dark:text-emerald-400">Lakebase</span>
+            Storage: <span className="font-medium text-[var(--on-success)]">Lakebase</span>
           </span>
         )}
         {toolCall.name === 'save_research_note' && toolCall.ok && noteId && (
           <span>
-            Storage: <span className="font-medium text-emerald-600 dark:text-emerald-400">Lakebase</span>
+            Storage: <span className="font-medium text-[var(--on-success)]">Lakebase</span>
           </span>
         )}
       </div>
 
       {toolCall.name === 'save_research_note' && toolCall.ok && noteId && (
-        <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+        <p className="mt-2 text-xs text-[var(--on-success)]">
           Research note saved to Lakebase.
         </p>
       )}

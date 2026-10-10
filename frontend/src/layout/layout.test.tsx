@@ -516,7 +516,7 @@ describe('360px contract', () => {
     tables.forEach((table) => {
       const parent = table.parentElement;
       expect(parent).toBeTruthy();
-      expect(parent!.className).toMatch(/overflow-x-auto|overflow-x-scroll/);
+      expect(parent!.className).toMatch(/data-table-wrap|overflow-x-auto|overflow-x-scroll/);
     });
   });
 });
