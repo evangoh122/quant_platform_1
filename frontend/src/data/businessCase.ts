@@ -1,7 +1,9 @@
-// Business Case content (Overview, Data, Features, Controls).
+// Business Case content (Overview, Data, Infrastructure, Features, Controls, Rubric).
 // Static snapshot measured 2026-10-06; platform figures are copied from docs/BUSINESS_CASE.md.
 // Study years in NEXT_APPROACH are copied from docs/QUANT_STRATEGIES.md; no strategy-result figure is quoted.
-// Edited final v2: earlier interfaces and constants are unchanged; NextApproach and NEXT_APPROACH are added.
+// INFRASTRUCTURE also copies counts from docs/proposal/row_counts_2026-10-05.tsv, each labelled with its own as-of time.
+// RUBRIC_AI is a self-assessment against the owner-supplied official rubric; its point ranges are judgements, not data.
+// Edited final v3: earlier exports keep their names and shapes; fields and exports are only added.
 // No imports, no JSX.
 
 export interface Snapshot {
@@ -20,10 +22,26 @@ export interface ExecutiveSummary {
 
 export type EvidencePage = 'data' | 'features' | 'controls';
 
+// Supporting page that deepens one key-line argument (Infrastructure deepens Data).
+export type DetailPage = 'infrastructure';
+
+// Cross-cutting page that judges the whole case; it is not a key-line argument.
+export type AssessmentPage = 'rubric';
+
+// Every Business Case page, in navigation order.
+export type BusinessCasePage = 'overview' | 'data' | 'infrastructure' | 'features' | 'controls' | 'rubric';
+
 export interface KeyLine {
   governingThought: string;
   orderingLogic: string;
-  arguments: { id: EvidencePage; claim: string; proof: string; page: EvidencePage }[];
+  arguments: {
+    id: EvidencePage;
+    claim: string;
+    proof: string;
+    page: EvidencePage;
+    detailPages: DetailPage[];
+  }[];
+  assessment: { label: string; text: string; page: AssessmentPage };
 }
 
 export interface Overview {
@@ -127,8 +145,10 @@ export interface NextApproach {
 export interface NavigationLinks {
   overview: string;
   data: string;
+  infrastructure: string;
   features: string;
   controls: string;
+  rubric: string;
 }
 
 // ── Snapshot banner ──────────────────────────────────────────────────────────
@@ -160,7 +180,7 @@ export const KEY_LINE: KeyLine = {
   governingThought:
     'The answer rests on separate claims, each proved on its own page: the inputs are real, the workflow is built, and the controls are enforced.',
   orderingLogic:
-    'Process order, following the data: what goes in (Data), what the platform does with it (Features), and why its output can be trusted and where it cannot (Controls).',
+    'Process order, following the data: what goes in (Data, with its pipeline on Infrastructure), what the platform does with it (Features), and why its output can be trusted and where it cannot (Controls).',
   arguments: [
     {
       id: 'data',
@@ -168,6 +188,7 @@ export const KEY_LINE: KeyLine = {
       proof:
         '48 tables, including 152,104,694 daily option rows, 23,420,557 minute bars and 133,886 SEC chunks with embeddings, measured on 2026-10-06.',
       page: 'data',
+      detailPages: ['infrastructure'],
     },
     {
       id: 'features',
@@ -175,6 +196,7 @@ export const KEY_LINE: KeyLine = {
       proof:
         'Ingestion, cleaning, features, retrieval, the agent, baseline signals and audit exist in code; scheduled ingestion, streaming deployment, placeholder screens and the intended ranking strategy do not, and a research roadmap names what is still to do.',
       page: 'features',
+      detailPages: [],
     },
     {
       id: 'controls',
@@ -182,8 +204,14 @@ export const KEY_LINE: KeyLine = {
       proof:
         'Agent writes pass a typed schema, an allowlist, request-scoped authorisation and a role check before deterministic execution and an audit record; known limitations are listed alongside.',
       page: 'controls',
+      detailPages: [],
     },
   ],
+  assessment: {
+    label: 'How the case would be judged',
+    text: 'The Rubric page scores all three arguments against the official capstone rubric as a conservative range, naming every item that cannot be verified offline. It is a self-assessment, not a grade.',
+    page: 'rubric',
+  },
 };
 
 // ── Page 1: Overview ─────────────────────────────────────────────────────────
@@ -286,7 +314,7 @@ export const DATA: DataPage = {
   eyebrow: 'Business case · Data',
   title: 'The platform holds real data at research scale, with freshness and coverage gaps stated.',
   governingThought:
-    'A dated inventory of 48 tables shows the inputs are real and sized, and shows equally plainly where data is stale, partial or still planned.',
+    'A dated inventory of 48 tables shows the inputs are real and sized, and shows equally plainly where data is stale, partial or still planned. The Infrastructure page shows how each source reaches Bronze, Silver and Gold.',
   tiles: [
     { label: 'Tables', value: '48', note: 'Unity Catalog count at the snapshot.' },
     { label: 'Daily option rows', value: '152,104,694' },
@@ -356,7 +384,7 @@ export const DATA: DataPage = {
           name: 'Federal Reserve / FRED',
           what: 'Rates and macroeconomic series in bronze tables.',
           status: 'partial',
-          note: 'Row counts were not measured. Revised series use ingest time as availability and are not first-release vintage data.',
+          note: 'Row counts were not measured at this snapshot. Revised series use ingest time as availability and are not first-release vintage data.',
         },
       ],
     },
@@ -1000,6 +1028,1111 @@ export const NEXT_APPROACH: NextApproach = {
 export const NAV_LINKS: NavigationLinks = {
   overview: 'Overview',
   data: 'Data',
+  infrastructure: 'Infrastructure',
   features: 'Features',
   controls: 'Controls',
+  rubric: 'Rubric self-assessment',
+};
+
+// ── Data page section: infrastructure (key-line argument 1, how the inputs got there) ─
+
+export type InfrastructureLayerId = 'bronze' | 'silver' | 'gold' | 'serving';
+
+export type FunnelStage = 'bronze' | 'filter' | 'silver' | 'gold';
+
+export type InfrastructureFutureStatus = 'planned' | 'built-not-deployed' | 'blocked-on-owner';
+
+export interface Infrastructure {
+  eyebrow: string;
+  title: string;
+  governingThought: string;
+  flow: { id: string; label: string; role: string; evidence: string }[];
+  sources: { name: string; whatItProvides: string; howObtained: string; lands: string; evidence: string }[];
+  layers: {
+    id: InfrastructureLayerId;
+    heading: string;
+    conclusion: string;
+    items: { name: string; what: string; rowsLabel?: string; asOf?: string; evidence: string }[];
+  }[];
+  funnel: {
+    heading: string;
+    intro: string;
+    steps: { stage: FunnelStage; label: string; count: string; asOf: string; note: string; source: string }[];
+    caveat: string;
+  };
+  whyNotEverythingIsInSilver: {
+    heading: string;
+    text: string;
+    points: { text: string; evidence: string }[];
+  };
+  future: {
+    heading: string;
+    intro: string;
+    items: {
+      id: string;
+      title: string;
+      text: string;
+      status: InfrastructureFutureStatus;
+      existsToday: string;
+      stillToDo: string;
+      evidence: string;
+    }[];
+  };
+}
+
+export const INFRASTRUCTURE: Infrastructure = {
+  eyebrow: 'Business case · Data · Infrastructure',
+  title: 'Inputs land raw in Bronze; Silver and Gold narrow them to time-tagged research data.',
+  governingThought:
+    'Batch jobs land seven external sources in Bronze with lineage intact. Silver and Gold work on a deliberately narrow 39-symbol research universe, and every Gold feature carries the time it became available. Counts are dated; no ingestion schedule is active.',
+  flow: [
+    {
+      id: 'sources',
+      label: 'External sources',
+      role: 'Massive flat files and REST, Polygon REST, SEC EDGAR, CFTC and FRED supply batch inputs; provider keys come from a Databricks secret scope or environment variables.',
+      evidence: 'notebooks/refresh_bronze_equities.py:293-294; notebooks/refresh_bronze_options.py:385-399; pipelines/sec_rag_ingest.py:86-95',
+    },
+    {
+      id: 'bronze',
+      label: 'Bronze landing',
+      role: 'Refresh jobs append only new data, skipping files or keys already loaded, and log every source file; SEC filings use an insert-only MERGE on accession number.',
+      evidence: 'notebooks/refresh_bronze_equities.py:1-20; notebooks/refresh_bronze_options.py:1-30; pipelines/sec_rag_ingest.py:2133-2140',
+    },
+    {
+      id: 'universe',
+      label: 'Research-universe filter',
+      role: 'The orchestrator registers the 39 symbols in config/universe.yaml as the universe view that the market and options transforms filter on.',
+      evidence: 'pipelines/run_silver_gold.py:86-96; config/universe.yaml; gold/05_gold_model_features.sql:8-9',
+    },
+    {
+      id: 'silver',
+      label: 'Silver cleaning',
+      role: 'SQL MERGE transforms type, deduplicate and range-check records; bars that fail a rule go to a quarantine table instead of the clean layer.',
+      evidence: 'silver/01_silver_ohlcv.sql:1-19; silver/02_silver_ohlcv_quarantine.sql:1-10',
+    },
+    {
+      id: 'gold',
+      label: 'Gold features',
+      role: 'Features record when their information became available, and the build fails if any joined feature postdates its prediction time.',
+      evidence: 'gold/05_gold_model_features.sql:13-23; pipelines/run_silver_gold.py:177-284',
+    },
+    {
+      id: 'serving',
+      label: 'Analytical serving',
+      role: 'A parameterised, bounded SQL-warehouse adapter feeds FastAPI routes, the React screens and the agent’s read tools.',
+      evidence: 'db/delta_adapter.py:190-221; agent/tools_retrieval.py:127-168',
+    },
+    {
+      id: 'operational',
+      label: 'Operational writes',
+      role: 'Lakebase (Postgres) stores watchlists, notes, orders, approvals and agent actions; each change writes an outbox event in the same transaction.',
+      evidence: 'db/migrations/001_operational_schema.sql:18-145; db/migrations/004_analytics_outbox.sql:610-652',
+    },
+    {
+      id: 'analytics',
+      label: 'Activity analytics',
+      role: 'A job claims pending outbox events, merges them into Delta by event ID, rebuilds the affected daily aggregates, then marks the events delivered.',
+      evidence: 'pipelines/lakebase_analytics.py:1-12,598-652; db/migrations/CDC.md',
+    },
+  ],
+  sources: [
+    {
+      name: 'Massive equities',
+      whatItProvides: 'Minute and daily US equity bars.',
+      howObtained: 'S3 flat files read with keys from a Databricks secret scope. Daily files load the full market; minute files load a fixed ticker list set in the refresh notebook.',
+      lands: 'bronze_ohlcv; bronze_ohlcv_day; massive_ingestion_log; massive_daily_ingestion_log',
+      evidence: 'notebooks/refresh_bronze_equities.py:1-20,44-45,58-70,293-294',
+    },
+    {
+      name: 'Massive options',
+      whatItProvides: 'Daily per-contract option aggregates.',
+      howObtained: 'S3 flat files; a date outside the data entitlement is logged as a gap, never filled.',
+      lands: 'bronze_options_day; massive_ingestion_log',
+      evidence: 'notebooks/refresh_bronze_options.py:5-11,662-681',
+    },
+    {
+      name: 'Massive corporate actions',
+      whatItProvides: 'Stock splits used to adjust daily prices.',
+      howObtained: 'REST API that retries with backoff on rate-limit and server errors, stops on authorisation errors and drops malformed split rows.',
+      lands: 'bronze_corporate_actions; corporate_actions_ingestion_log',
+      evidence: 'etl/corporate_actions.py:208-290; notebooks/refresh_bronze_corporate_actions.py:1-22',
+    },
+    {
+      name: 'Polygon',
+      whatItProvides: 'A current option-chain snapshot with implied volatility and greeks.',
+      howObtained: 'REST snapshot endpoint; only the snapshot actually returned is stored, and no historical snapshot is fabricated.',
+      lands: 'bronze_options_quotes',
+      evidence: 'notebooks/refresh_bronze_options.py:13-20',
+    },
+    {
+      name: 'SEC EDGAR',
+      whatItProvides: '10-K and 10-Q filing text.',
+      howObtained: 'HTTP requests with a declared User-Agent held as a secret, a shared rate limiter, Retry-After handling and exponential backoff.',
+      lands: 'bronze_sec_filings_v2; sec_ingest_log',
+      evidence: 'pipelines/sec_rag_ingest.py:86-95,700-712,839-871',
+    },
+    {
+      name: 'CFTC',
+      whatItProvides: 'Traders in Financial Futures positioning reports.',
+      howObtained: 'Annual report archives downloaded over HTTPS and appended to Bronze.',
+      lands: 'bronze_cftc_fut; bronze_cftc_com',
+      evidence: 'notebooks/refresh_bronze_cot.py:1-11,69,117-134',
+    },
+    {
+      name: 'Federal Reserve / FRED',
+      whatItProvides: 'Rates and macroeconomic series.',
+      howObtained: 'Public CSV downloads with retries and header validation, appended to Bronze. History is revised, not first-release vintage.',
+      lands: 'bronze_fed_series',
+      evidence: 'notebooks/refresh_bronze_fed.py:1-9,194-215,422-430; docs/BUSINESS_CASE.md:48',
+    },
+  ],
+  layers: [
+    {
+      id: 'bronze',
+      heading: 'Bronze keeps whole-market history, far more than research uses today.',
+      conclusion: 'Refresh jobs append only new data, log each source file and record entitlement gaps instead of filling them.',
+      items: [
+        {
+          name: 'Equity bars',
+          what: 'Daily files cover the full market; minute files cover the fixed ticker list in the refresh notebook.',
+          rowsLabel: '73298082 minute rows; 13219248 daily rows',
+          asOf: '2026-10-05T03:41:23 UTC',
+          evidence: 'docs/proposal/row_counts_2026-10-05.tsv:1,8-9; notebooks/refresh_bronze_equities.py:58-70',
+        },
+        {
+          name: 'Daily option aggregates',
+          what: 'Per-contract daily option history from Massive flat files: the largest table in the lakehouse.',
+          rowsLabel: '152,104,694 rows',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:4,39; notebooks/refresh_bronze_options.py:8-11',
+        },
+        {
+          name: 'SEC filings',
+          what: '10-K and 10-Q text since 2024-09, stored as section chunks and merged insert-only by accession number.',
+          rowsLabel: '191,248 rows; 225 tickers; 2,845 filings',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:45; pipelines/sec_rag_ingest.py:2133-2140',
+        },
+        {
+          name: 'Positioning and macro',
+          what: 'CFTC futures-only and combined reports and FRED series, appended as downloaded.',
+          evidence: 'notebooks/refresh_bronze_cot.py:1-11; notebooks/refresh_bronze_fed.py:422-430',
+        },
+      ],
+    },
+    {
+      id: 'silver',
+      heading: 'Silver cleans a 39-symbol research universe, not the whole Bronze market.',
+      conclusion: 'Market transforms filter to config/universe.yaml, and every transform is a MERGE on a stable key, so a re-run updates rows rather than duplicating them.',
+      items: [
+        {
+          name: 'Minute bars',
+          what: 'Typed, UTC-stamped bars deduplicated by hash; only bars with non-null prices, consistent ranges and non-negative volume enter.',
+          rowsLabel: '23,420,557 rows',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:4,38; silver/01_silver_ohlcv.sql:1-19,60-79',
+        },
+        {
+          name: 'Quarantine',
+          what: 'Bars that fail a range or null rule go to a separate batch quarantine table, which held no rows at the dated count.',
+          rowsLabel: '0 rows',
+          asOf: '2026-10-05T03:41:23 UTC',
+          evidence: 'silver/02_silver_ohlcv_quarantine.sql:1-10; docs/proposal/row_counts_2026-10-05.tsv:35',
+        },
+        {
+          name: 'Option trades and quotes',
+          what: 'Trades come from bronze_options_trades. The quote snapshot keeps greeks, but its bid and ask fields are empty in every row.',
+          rowsLabel: '60,068 trade rows',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:39; silver/04_silver_options_trades.sql:1-11; silver/03_silver_options_quotes.sql:1-9',
+        },
+        {
+          name: 'SEC sections and adjusted daily prices',
+          what: 'These use the wider Gold tradable universe instead: SEC adds a fixed list of semiconductor tickers, and adjusted prices add SPY, RSP and QQQ.',
+          evidence: 'silver/05_silver_sec_sections.sql:14-30; silver/08_silver_ohlcv_day_adjusted.sql:115-130',
+        },
+      ],
+    },
+    {
+      id: 'gold',
+      heading: 'Gold attaches availability times, and the build fails on any look-ahead.',
+      conclusion: 'Each feature records when its information became public; the orchestrator raises an error if a joined feature postdates its prediction time.',
+      items: [
+        {
+          name: 'Minute features',
+          what: 'A minute bar becomes available one minute after it opens, and that availability time is the point-in-time key.',
+          rowsLabel: '23,377,478 rows',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:38; gold/01_gold_ohlcv_features.sql:9-15',
+        },
+        {
+          name: 'Options features',
+          what: 'Aggregated directly from Bronze daily options for the research universe, available only after that day’s New York close plus a buffer; greeks exist only on the snapshot date.',
+          rowsLabel: '20,318 rows',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:39; gold/02_gold_options_features.sql:1-24,28-47',
+        },
+        {
+          name: 'Tradable universe',
+          what: 'Built from Bronze daily bars using only earlier sessions: the most liquid names by trailing median dollar volume, with recency and history filters.',
+          rowsLabel: '281,700 rows; 557 symbols',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:4,38; gold/06_gold_tradable_universe.sql:1-20',
+        },
+        {
+          name: 'Model snapshots and SEC embeddings',
+          what: 'Daily snapshots join every source as of the prediction time; SEC chunks are embedded with BAAI/bge-small-en-v1.5 for retrieval.',
+          rowsLabel: '40,983 snapshots; 133,886 embeddings',
+          asOf: '2026-10-06 ~09:30 SGT',
+          evidence: 'docs/BUSINESS_CASE.md:4,45,54; gold/05_gold_model_features.sql:1-23; pipelines/build_sec_embeddings.py:4-5',
+        },
+        {
+          name: 'Build-time leakage checks',
+          what: 'Availability and matrix invariants count violating rows and raise an error, failing the build, if any exist.',
+          evidence: 'pipelines/run_silver_gold.py:177-284',
+        },
+      ],
+    },
+    {
+      id: 'serving',
+      heading: 'Analytical reads and operational writes take separate, auditable paths.',
+      conclusion: 'Delta serves research reads through a bounded adapter; Lakebase holds transactional state and feeds activity back to Delta through an outbox.',
+      items: [
+        {
+          name: 'Research reads',
+          what: 'FastAPI routes query Gold through a SQL-warehouse adapter with named parameters, row limits and timeouts; React screens render the results.',
+          evidence: 'db/delta_adapter.py:190-221; api/routes/market.py; frontend/src/api/client.ts',
+        },
+        {
+          name: 'Agent retrieval',
+          what: 'Four read tools query signals, market and options features, and hybrid BM25 and vector search over SEC chunks filtered by acceptance time.',
+          evidence: 'agent/contracts.py:203-209; agent/tools_retrieval.py:127-168; api/services/hybrid_retriever.py:15-20',
+        },
+        {
+          name: 'Operational state and analytics',
+          what: 'Lakebase writes add an outbox event in the same transaction; a single-concurrency job merges events into Delta by event ID and only then marks them delivered.',
+          evidence: 'db/migrations/004_analytics_outbox.sql:610-652; pipelines/lakebase_analytics.py:598-652',
+        },
+        {
+          name: 'Job definitions',
+          what: 'Bundle jobs define daily Silver/Gold and analytics refreshes, but both schedules are set to paused; the analytics job runs on demand.',
+          evidence: 'resources/jobs.yml:3-13,130-140; docs/BUSINESS_CASE.md:56',
+        },
+      ],
+    },
+  ],
+  funnel: {
+    heading: 'The equity path narrows from whole-market Bronze to 35 baseline signals.',
+    intro: 'One path, followed layer by layer. Grains differ between steps, so a count is not a subset of the one before, and each count shows its own as-of time.',
+    steps: [
+      {
+        stage: 'bronze',
+        label: 'Minute bars landed (bronze_ohlcv)',
+        count: '73298082',
+        asOf: '2026-10-05T03:41:23 UTC',
+        note: 'Massive minute files for the refresh ticker list, before any cleaning.',
+        source: 'docs/proposal/row_counts_2026-10-05.tsv:1,8',
+      },
+      {
+        stage: 'filter',
+        label: 'Research universe (config/universe.yaml)',
+        count: '39',
+        asOf: 'Configuration at this commit',
+        note: 'The only symbol filter the orchestrator registers for Silver and Gold market transforms.',
+        source: 'config/universe.yaml; gold/05_gold_model_features.sql:8; pipelines/run_silver_gold.py:86-96',
+      },
+      {
+        stage: 'silver',
+        label: 'Clean minute bars (silver_ohlcv)',
+        count: '23,420,557',
+        asOf: '2026-10-06 ~09:30 SGT',
+        note: 'Typed, deduplicated, range-checked bars for the research universe.',
+        source: 'docs/BUSINESS_CASE.md:4,38',
+      },
+      {
+        stage: 'gold',
+        label: 'Minute features (gold_ohlcv_features)',
+        count: '23,377,478',
+        asOf: '2026-10-06 ~09:30 SGT',
+        note: 'Features keyed to the time each bar became available.',
+        source: 'docs/BUSINESS_CASE.md:38',
+      },
+      {
+        stage: 'gold',
+        label: 'Model snapshots (gold_model_features)',
+        count: '40,983',
+        asOf: '2026-10-06 ~09:30 SGT',
+        note: 'One row per symbol per prediction time: a coarser grain, not a filtered subset.',
+        source: 'docs/BUSINESS_CASE.md:4,54',
+      },
+      {
+        stage: 'gold',
+        label: 'Baseline signals (gold_trading_signals)',
+        count: '35',
+        asOf: '2026-10-06 ~09:30 SGT',
+        note: 'Output of an untuned logistic regression that proves the pipeline; no trading edge is claimed.',
+        source: 'docs/BUSINESS_CASE.md:4,54',
+      },
+    ],
+    caveat: 'The Bronze count comes from the 2026-10-05T03:41:23 UTC count file; the Silver and Gold counts come from the 2026-10-06 ~09:30 SGT banner. No count was re-queried for this page.',
+  },
+  whyNotEverythingIsInSilver: {
+    heading: 'Large Bronze tables bypass Silver or have no consumer yet.',
+    text: 'Silver is selective by design: it cleans what the research universe uses. These tables are real but take other paths.',
+    points: [
+      {
+        text: 'bronze_options_day (152,104,694 rows) has no Silver table; Gold options features aggregate it directly, for the research universe only.',
+        evidence: 'docs/BUSINESS_CASE.md:4; gold/02_gold_options_features.sql:1-5,70-80; silver/04_silver_options_trades.sql:1-11',
+      },
+      {
+        text: 'Daily equity bars feed the Gold tradable universe directly from Bronze, without a Silver step.',
+        evidence: 'gold/06_gold_tradable_universe.sql:1-20',
+      },
+      {
+        text: 'config/tickers.yaml lists 12,400 tickers by industry group; it serves the symbol allow-list and industry mapping, not ingestion or Silver filtering.',
+        evidence: 'docs/QUANT_STRATEGIES.md:54; agent/guardrails.py:113-120; config/universe.yaml',
+      },
+      {
+        text: 'FRED tables and the combined CFTC report have no Silver or Gold transform; COT Silver reads only the futures-only report.',
+        evidence: 'silver/07_silver_cot_positions.sql:1-5,77; pipelines/run_silver_gold.py:42-60',
+      },
+    ],
+  },
+  future: {
+    heading: 'Eight infrastructure improvements are identified; none is done yet.',
+    intro: 'Each item states what exists today and what is still to do. Status words are literal: planned means not started, and blocked on owner means it needs an approved live window.',
+    items: [
+      {
+        id: 'incremental',
+        title: 'Schedule incremental Bronze ingestion.',
+        text: 'Not yet done. Refresh notebooks append new dates only when started by hand, so market data stops around 2026-09-02.',
+        status: 'planned',
+        existsToday: 'Append-only refresh notebooks with ingestion logs and entitlement-gap handling, plus written refresh plans.',
+        stillToDo: 'An owner-approved schedule, completeness checks on every run and alerts on failure.',
+        evidence: 'docs/BRONZE_REFRESH_PLAN.md; docs/data/PLAN-massive-incremental.md; notebooks/refresh_bronze_equities.py:1-20',
+      },
+      {
+        id: 'job-schedules',
+        title: 'Un-pause the Silver/Gold and analytics job schedules.',
+        text: 'Not yet done. Both jobs are defined with daily schedules that are set to paused.',
+        status: 'blocked-on-owner',
+        existsToday: 'Bundle job definitions for the Silver/Gold refresh and the analytics refresh.',
+        stillToDo: 'Owner approval for the running cost, then monitored scheduled runs.',
+        evidence: 'resources/jobs.yml:3-13,130-140',
+      },
+      {
+        id: 'streaming',
+        title: 'Deploy the streaming pipeline and measure its latency.',
+        text: 'Not yet done. The continuous pipeline is built and validated locally, but has never run.',
+        status: 'built-not-deployed',
+        existsToday: 'A DLT bundle that streams bronze_ohlcv into dlt_-prefixed tables and defines a latency-metrics table.',
+        stillToDo: 'An approved deployment, recorded end-to-end latency, checkpoint recovery and monitoring.',
+        evidence: 'bundles/streaming/README.md:1-10,26-58',
+      },
+      {
+        id: 'options-silver',
+        title: 'Give daily options a Silver layer.',
+        text: 'Not yet done. Gold reads the largest Bronze table without a cleaned intermediate.',
+        status: 'planned',
+        existsToday: 'Gold aggregates bronze_options_day directly; Silver holds only option trades and the quote snapshot.',
+        stillToDo: 'A keyed Silver transform with type, range and duplicate checks for daily contracts.',
+        evidence: 'gold/02_gold_options_features.sql:1-24; silver/04_silver_options_trades.sql:1-11',
+      },
+      {
+        id: 'wider-universe',
+        title: 'Widen Silver beyond the 39-symbol research universe.',
+        text: 'Not yet done. Research features cover only the configured universe, although Bronze holds the whole market.',
+        status: 'planned',
+        existsToday: 'Whole-market daily bars and options in Bronze; a Gold tradable universe that already ranks 557 symbols.',
+        stillToDo: 'Extend the universe file, size the compute first, and re-run with coverage and point-in-time checks.',
+        evidence: 'config/universe.yaml; gold/06_gold_tradable_universe.sql:1-20; docs/BUSINESS_CASE.md:4',
+      },
+      {
+        id: 'rebuild-order',
+        title: 'Make a clean rebuild independent of the previous run.',
+        text: 'Not yet done. Silver SEC and adjusted-price steps read the Gold tradable universe, which the orchestrator builds later in the same run.',
+        status: 'planned',
+        existsToday: 'MERGE-based re-runs and an optional truncate flag for a clean backfill.',
+        stillToDo: 'Build the tradable universe first, then show that a truncate-and-rebuild matches an incremental run.',
+        evidence: 'pipelines/run_silver_gold.py:1-20,42-60,99-111; silver/05_silver_sec_sections.sql:22-30; silver/08_silver_ohlcv_day_adjusted.sql:122-130',
+      },
+      {
+        id: 'freshness',
+        title: 'Set freshness targets for each source.',
+        text: 'Not yet done. Freshness is reported as measured, not held to a target.',
+        status: 'planned',
+        existsToday: 'Ingestion logs and dated counts show when data last landed; no target or alert exists.',
+        stillToDo: 'Per-source freshness targets, a check after every run and alerts on misses.',
+        evidence: 'docs/BUSINESS_CASE.md:32; notebooks/refresh_bronze_equities.py:44-45',
+      },
+      {
+        id: 'live-proof',
+        title: 'Re-verify the deployed path in an approved live window.',
+        text: 'Not yet done for this snapshot, which asserts no running service.',
+        status: 'blocked-on-owner',
+        existsToday: 'The README records a deployment and live agent, write and analytics runs on 2026-10-05; the planning file records the app and Lakebase as stopped.',
+        stillToDo: 'Start the services with owner approval, capture dated smoke, write and replay evidence, then stop them.',
+        evidence: 'README.md:42-45; docs/rubric/PLAN.md:20-21,33',
+      },
+    ],
+  },
+};
+
+// ── Rubric page: self-assessment against the official rubric (cross-cutting) ─
+
+export type RubricEvidenceStrength =
+  | 'demonstrated-in-repo'
+  | 'partly-demonstrated'
+  | 'not-demonstrated'
+  | 'unverified-needs-live-proof';
+
+export type EvidenceGapStatus = 'verified-present' | 'unverified' | 'absent';
+
+export type RubricGapStatus = 'planned' | 'not-started';
+
+export interface RubricAI {
+  eyebrow: string;
+  title: string;
+  governingThought: string;
+  basis: {
+    heading: string;
+    text: string;
+    officialRubricInRepo: boolean;
+    scoringRule: string;
+    evidence: string;
+  };
+  scorecard: {
+    heading: string;
+    intro: string;
+    rows: {
+      id: string;
+      category: string;
+      component: string;
+      pointsPossible: number;
+      whatTheGraderLooksFor: string;
+      evidence: string;
+      evidenceStrength: RubricEvidenceStrength;
+      selfAssessedBand: { low: number; high: number };
+      bandReasoning: string;
+      gap: string;
+      unverifiedItems: string[];
+    }[];
+    byCategory: {
+      id: string;
+      category: string;
+      pointsPossible: number;
+      low: number;
+      high: number;
+      note: string;
+    }[];
+  };
+  totals: {
+    heading: string;
+    possible: number;
+    selfAssessedLow: number;
+    selfAssessedHigh: number;
+    capApplies: boolean;
+    capNote: string;
+    caveat: string;
+    swingFactors: string[];
+  };
+  agent: {
+    heading: string;
+    intro: string;
+    capabilities: { title: string; text: string; evidence: string }[];
+    safetyModel: {
+      heading: string;
+      steps: { title: string; text: string; enforcedIn: string }[];
+      caveats: string[];
+    };
+  };
+  demoScript: {
+    heading: string;
+    intro: string;
+    steps: { order: number; category: string; show: string; proves: string; how: string }[];
+  };
+  gaps: {
+    heading: string;
+    intro: string;
+    items: {
+      id: string;
+      category: string;
+      currentBand: string;
+      nextBand: string;
+      gap: string;
+      concreteAction: string;
+      status: RubricGapStatus;
+    }[];
+  };
+  strengths: { heading: string; items: { title: string; text: string; evidence: string }[] };
+  evidenceGaps: {
+    heading: string;
+    intro: string;
+    items: { item: string; status: EvidenceGapStatus; evidence: string; note: string }[];
+  };
+}
+
+export const RUBRIC_AI: RubricAI = {
+  eyebrow: 'Business case · Rubric self-assessment',
+  title: 'Against the official rubric, the evidence supports a range, not a grade.',
+  governingThought:
+    'Scored conservatively against the official Databricks AI Capstone Rubric, repository evidence supports 44 to 71 of 100 points. The spread reflects evidence a grader cannot re-check offline: deployment, Change Data Feed or DLT, measured latency and the live agent write.',
+  basis: {
+    heading: 'This is a self-assessment against the official rubric; the grader decides.',
+    text: 'The official Databricks AI Capstone Rubric, eight categories worth 100 points, was supplied by the owner and is not in the repository. Each row maps repository evidence to its band descriptions; nothing here is a grade or a promised score.',
+    officialRubricInRepo: false,
+    scoringRule:
+      'Low end: credit only what a grader can re-check from the repository today. High end: also accept the dated live runs the README records. Neither end goes beyond what the code supports.',
+    evidence: 'README.md:17-49; docs/rubric/PLAN.md:23-38',
+  },
+  scorecard: {
+    heading: 'Twelve rubric rows, each scored as a conservative range with its evidence.',
+    intro: 'The rubric splits the agent into three sub-scores and Big Data into three Vs, giving twelve rows. Evidence pointers are files a grader can open.',
+    rows: [
+      {
+        id: 'spark',
+        category: 'Spark Data Pipeline',
+        component: 'Whole category',
+        pointsPossible: 15,
+        whatTheGraderLooksFor:
+          'Spark, not only pandas, that ingests, cleans, enriches and validates data; re-runnable and idempotent; handles schema, nulls, duplicates and malformed records; output tables that serve the application.',
+        evidence: 'pipelines/run_silver_gold.py:42-60,177-284; silver/01_silver_ohlcv.sql:1-19; silver/02_silver_ohlcv_quarantine.sql:1-10; gold/05_gold_model_features.sql:1-23; docs/proposal/row_counts_2026-10-05.tsv',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 9, high: 12 },
+        bandReasoning:
+          'Code meets most top-band descriptors: MERGE on stable keys, quarantine, null and range rules, and point-in-time checks that fail the build. Dated counts show it ran. No run logs are committed, and a clean rebuild depends on step order.',
+        gap: 'Commit dated run logs, fix the rebuild order and show that a re-run leaves counts unchanged.',
+        unverifiedItems: ['Spark execution logs'],
+      },
+      {
+        id: 'api',
+        category: 'Third-Party API Integration',
+        component: 'Whole category',
+        pointsPossible: 10,
+        whatTheGraderLooksFor:
+          'Real external data stored and used downstream, with secrets management, rate-limit handling, retries, malformed-response handling and validation. Simulated or hardcoded data loses credit.',
+        evidence: 'etl/corporate_actions.py:208-290; pipelines/sec_rag_ingest.py:86-95,700-712,839-871; notebooks/refresh_bronze_options.py:385-399,662-681; notebooks/refresh_bronze_fed.py:194-215',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 6, high: 8 },
+        bandReasoning:
+          'Five providers feed stored, dated tables that features and retrieval use; no production path serves simulated or hardcoded data. Secrets, retries and rate limiting are strongest for SEC and corporate actions. No request logs are committed.',
+        gap: 'Apply one retry and validation policy to every provider and commit redacted request and failure logs.',
+        unverifiedItems: ['API request and error logs'],
+      },
+      {
+        id: 'lakebase',
+        category: 'Lakebase Data Model',
+        component: 'Whole category',
+        pointsPossible: 15,
+        whatTheGraderLooksFor:
+          'Clear core entities with primary keys and relationships; constraints that block duplicates and invalid writes; indexes, timestamps and audit fields; an application that actually reads and writes Lakebase.',
+        evidence: 'db/migrations/001_operational_schema.sql:18-145; db/migrations/002_approvals_accounts.sql:23-45; db/migrations/005_agent_runtime.sql:15-38; db/lakebase.py:1-10; agent/tools_write.py:188-280',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 9, high: 12 },
+        bandReasoning:
+          'Versioned migrations define users, watchlists, notes, orders, approvals, executions, positions and agent actions with keys, foreign keys, unique and check constraints, indexes and timestamps. Applied state and live reads and writes cannot be re-checked offline.',
+        gap: 'Document the model on one schema page and record applied migration versions with a write-then-read check.',
+        unverifiedItems: ['Applied migrations', 'Live Lakebase connection'],
+      },
+      {
+        id: 'agent-read',
+        category: 'Action-Taking AI Agent',
+        component: 'Retrieval and read tools',
+        pointsPossible: 6,
+        whatTheGraderLooksFor:
+          'Tools that retrieve relevant structured and unstructured data accurately and within scope, combining sources such as Lakebase, Delta tables, APIs and vector search.',
+        evidence: 'agent/contracts.py:203-209; agent/runtime.py:92-140; agent/tools_retrieval.py:127-168; api/services/hybrid_retriever.py:15-20; tests/rag/test_hybrid_retriever.py',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 3, high: 5 },
+        bandReasoning:
+          'Four bounded read tools combine Delta signals and features with hybrid vector and BM25 search over SEC text, filtered by acceptance time. Offline tests use fixtures; the one live retrieval is recorded only as README text.',
+        gap: 'Record dated multi-source sessions with cited sources and add golden retrieval cases for the agent route.',
+        unverifiedItems: ['Agent demo transcript'],
+      },
+      {
+        id: 'agent-write',
+        category: 'Action-Taking AI Agent',
+        component: 'Write and action tools',
+        pointsPossible: 8,
+        whatTheGraderLooksFor:
+          'Several reliable actions that save, update or delete Lakebase data, with validation, authorisation or confirmation, error handling and clear user feedback. A read-only chatbot does not qualify.',
+        evidence: 'agent/runtime.py:141-156,487-598; agent/tools_write.py:188-280; api/schemas.py:131-148; frontend/src/api/client.ts:59-60',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 4, high: 6 },
+        bandReasoning:
+          'Two write tools save notes and add watchlist symbols, idempotently, behind request-scoped authorisation, role and demo checks, each with an audit row. The chat screen sends no write authorisation, so the UI cannot trigger them.',
+        gap: 'Add an in-chat confirmation that sends write authorisation, show the saved record, and add an update or delete action.',
+        unverifiedItems: ['Live write and read-back'],
+      },
+      {
+        id: 'agent-quality',
+        category: 'Action-Taking AI Agent',
+        component: 'Quality and reasoning',
+        pointsPossible: 6,
+        whatTheGraderLooksFor:
+          'Appropriate tool selection, answers grounded in retrieved data, explained actions, ambiguity handling, input validation, no unsupported claims, clear failure messages and accurate summaries of completed actions.',
+        evidence: 'api/routes/agent_chat.py:1-19,41-101; agent/runtime.py:418-447,487-536; agent/contracts.py:147-201; tests/agent/test_runtime.py',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 2, high: 4 },
+        bandReasoning:
+          'The model chooses tools; code validates every proposal, refuses out-of-order or unbound writes, and returns named failure codes after one corrective retry. No transcript or evaluation of real-model reasoning is committed.',
+        gap: 'Score a golden set of agent conversations, including ambiguous and adversarial prompts, and commit the transcripts.',
+        unverifiedItems: ['Real-model transcripts'],
+      },
+      {
+        id: 'analytics',
+        category: 'Analytics Pipeline',
+        component: 'Whole category',
+        pointsPossible: 10,
+        whatTheGraderLooksFor:
+          'Demonstrated Lakebase Change Data Feed or Delta Live Tables feeding incremental, re-runnable analytics with useful metrics, monitoring and documented logic. A dashboard or summary table alone earns little.',
+        evidence: 'db/migrations/004_analytics_outbox.sql:610-652; pipelines/lakebase_analytics.py:1-12,598-652; db/migrations/CDC.md; docs/rubric/PLAN.md:55-75',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 1, high: 4 },
+        bandReasoning:
+          'A transactional outbox and an idempotent Delta job compute agent-activity, watchlist, order-funnel and usage tables. The rubric names Change Data Feed or DLT; this design deliberately uses neither, so a strict grader may hold it in the lowest band.',
+        gap: 'Ask the grader to rule on outbox equivalence, or adopt native Lakebase CDF once the instance supports it.',
+        unverifiedItems: ['Change Data Feed or DLT configuration', 'Analytics run log'],
+      },
+      {
+        id: 'frontend',
+        category: 'Frontend and Core Workflow',
+        component: 'Whole category',
+        pointsPossible: 10,
+        whatTheGraderLooksFor:
+          'A clear interface to submit queries, view results and trigger agent actions, with writes reflected in the UI, loading, empty and error states, and confirmation for consequential actions.',
+        evidence: 'frontend/src/App.tsx:116-152; frontend/src/screens/ResearchAgent.tsx; frontend/src/screens/OrderApprovalDrawer.tsx; frontend/src/screens/ResearchAgent.test.tsx',
+        evidenceStrength: 'partly-demonstrated',
+        selfAssessedBand: { low: 4, high: 7 },
+        bandReasoning:
+          'Market, options, filing, signal, agent, order-approval and health screens exist, with screen tests that include error states. Agent writes cannot start from the UI, and Activity Analytics and Strategy Lab are placeholders.',
+        gap: 'Wire agent write confirmation and the analytics screen, then capture the flow in screenshots or the video.',
+        unverifiedItems: ['Screenshots or demo transcript'],
+      },
+      {
+        id: 'deployment',
+        category: 'Deployed Application',
+        component: 'Whole category',
+        pointsPossible: 5,
+        whatTheGraderLooksFor:
+          'A stable, accessible deployment on Databricks Apps or Render with documented setup, environment configuration, secrets handling and reliable access. A local-only application does not earn full credit.',
+        evidence: 'README.md:8,42-43; docs/DEPLOYMENT.md; resources/app.yml; render.yaml; docs/rubric/PLAN.md:33',
+        evidenceStrength: 'unverified-needs-live-proof',
+        selfAssessedBand: { low: 0, high: 3 },
+        bandReasoning:
+          'The README records a Databricks App verified healthy on 2026-10-05, and setup is documented. This snapshot claims no running service; if the app cannot be reached when graded, the rubric’s cannot-be-verified band of zero applies.',
+        gap: 'Keep the app reachable through the grading window and commit a dated smoke-test result.',
+        unverifiedItems: ['Deployment URL access'],
+      },
+      {
+        id: 'volume',
+        category: 'Big Data: Two of Three Vs',
+        component: 'Volume',
+        pointsPossible: 5,
+        whatTheGraderLooksFor:
+          'More than one million rows ingested and processed with a distributed workflow; full credit needs documented scale, partitioning, performance considerations and downstream use.',
+        evidence: 'docs/BUSINESS_CASE.md:4,38-39; docs/proposal/row_counts_2026-10-05.tsv',
+        evidenceStrength: 'demonstrated-in-repo',
+        selfAssessedBand: { low: 3, high: 4 },
+        bandReasoning:
+          'Dated counts show 152,104,694 daily option rows and 23,420,557 Silver minute bars processed with Spark. Partitioning and performance are not documented, so the top band is not claimed.',
+        gap: 'Document partitioning and run times from a dated Spark run.',
+        unverifiedItems: ['Reproducible count query'],
+      },
+      {
+        id: 'velocity',
+        category: 'Big Data: Two of Three Vs',
+        component: 'Velocity',
+        pointsPossible: 5,
+        whatTheGraderLooksFor:
+          'Events processed in under one minute by a working incremental or streaming pipeline; full credit needs monitoring, checkpointing, recovery and measured latency.',
+        evidence: 'bundles/streaming/README.md:1-10,26,58; README.md:47',
+        evidenceStrength: 'not-demonstrated',
+        selfAssessedBand: { low: 0, high: 1 },
+        bandReasoning:
+          'A continuous DLT bundle with a latency-metrics table exists, but it has never run, so no latency has been measured. All production ingestion is batch.',
+        gap: 'Run the streaming bundle in an approved window and commit measured end-to-end latency with recovery evidence.',
+        unverifiedItems: ['Measured processing latency'],
+      },
+      {
+        id: 'variety',
+        category: 'Big Data: Two of Three Vs',
+        component: 'Variety',
+        pointsPossible: 5,
+        whatTheGraderLooksFor:
+          'Unstructured data such as documents or text that is meaningfully transformed, embedded, indexed, searched or surfaced in the application workflow.',
+        evidence: 'docs/BUSINESS_CASE.md:45; pipelines/build_sec_embeddings.py:4-5; api/services/hybrid_retriever.py:15-20; agent/tools_retrieval.py:127-168; frontend/src/screens/SecFilingExplorer.tsx',
+        evidenceStrength: 'demonstrated-in-repo',
+        selfAssessedBand: { low: 3, high: 5 },
+        bandReasoning:
+          'SEC filing text is chunked into 133,886 passages, embedded with BAAI/bge-small-en-v1.5, indexed for hybrid search and surfaced through the agent and the filing explorer. Retrieval quality rests on offline fixtures.',
+        gap: 'Commit a dated retrieval evaluation on the real corpus and show cited passages in the demo.',
+        unverifiedItems: ['Retrieval evaluation on the real corpus'],
+      },
+    ],
+    byCategory: [
+      {
+        id: 'spark',
+        category: 'Spark Data Pipeline',
+        pointsPossible: 15,
+        low: 9,
+        high: 12,
+        note: 'Functional band, reaching toward robust.',
+      },
+      {
+        id: 'api',
+        category: 'Third-Party API Integration',
+        pointsPossible: 10,
+        low: 6,
+        high: 8,
+        note: 'Working to reliably integrated.',
+      },
+      {
+        id: 'lakebase',
+        category: 'Lakebase Data Model',
+        pointsPossible: 15,
+        low: 9,
+        high: 12,
+        note: 'Appropriate relational schema; live use unverified.',
+      },
+      {
+        id: 'agent',
+        category: 'Action-Taking AI Agent',
+        pointsPossible: 20,
+        low: 9,
+        high: 15,
+        note: 'Sum of the three agent sub-scores; the required-agent cap is assessed separately below.',
+      },
+      {
+        id: 'analytics',
+        category: 'Analytics Pipeline',
+        pointsPossible: 10,
+        low: 1,
+        high: 4,
+        note: 'Outbox, not Change Data Feed or DLT.',
+      },
+      {
+        id: 'frontend',
+        category: 'Frontend and Core Workflow',
+        pointsPossible: 10,
+        low: 4,
+        high: 7,
+        note: 'Usable read workflow; agent writes not in the UI.',
+      },
+      {
+        id: 'deployment',
+        category: 'Deployed Application',
+        pointsPossible: 5,
+        low: 0,
+        high: 3,
+        note: 'Zero if unreachable when graded.',
+      },
+      {
+        id: 'big-data',
+        category: 'Big Data: Two of Three Vs',
+        pointsPossible: 15,
+        low: 6,
+        high: 10,
+        note: 'Volume and variety at a basic-to-partial level fall in the rubric’s 6–10 band; with velocity unmeasured, losing either V would cap the category at 5.',
+      },
+    ],
+  },
+  totals: {
+    heading: 'The self-assessed range is 44 to 71 of 100, before any grader judgement.',
+    possible: 100,
+    selfAssessedLow: 44,
+    selfAssessedHigh: 71,
+    capApplies: false,
+    capNote:
+      'The 60-point cap applies only when the agent is missing or strictly read-only. Code gives the agent two authorised Lakebase write tools, and the README records a live note write, so the cap should not apply.',
+    caveat:
+      'A self-assessment against the rubric’s band descriptions, not a grade or a promised score. The ranges are judgements; unverified items can pull a grader’s score toward, or below, the low end.',
+    swingFactors: [
+      'Deployment: zero if the app cannot be reached when graded; up to 3 on the recorded deployment.',
+      'Required-agent cap: if a grader can verify no agent write, for example by testing only the UI, the total is capped at 60.',
+      'Analytics: the rubric names Change Data Feed or DLT; a strict reading holds the outbox design in the lowest band.',
+      'Velocity: no latency has been measured, so the Big Data score rests on volume and variety alone.',
+    ],
+  },
+  agent: {
+    heading: 'The model proposes typed actions; deterministic code decides what executes.',
+    intro:
+      'The chat route calls a model-directed runtime; the earlier keyword dispatch has been removed. The model can use four read tools and propose two writes; order, approval and broker tools are never exposed to it.',
+    capabilities: [
+      {
+        title: 'Retrieves filing evidence and market context.',
+        text: 'Read tools return signals, market features, options features and hybrid SEC search results; filing text comes back as delimited evidence, never as instructions.',
+        evidence: 'agent/contracts.py:203-209; agent/runtime.py:92-140,188-212',
+      },
+      {
+        title: 'Saves research and watchlist entries in Lakebase.',
+        text: 'Notes and watchlist additions run as parameterised transactions with an audit row; replaying a note with the same idempotency key returns the original note.',
+        evidence: 'agent/runtime.py:141-156; agent/tools_write.py:188-280',
+      },
+      {
+        title: 'Fails visibly instead of guessing.',
+        text: 'Invalid output gets one corrective retry; then the run stops and returns a named reason such as malformed, write_not_authorized or role_denied.',
+        evidence: 'agent/runtime.py:418-447; api/routes/agent_chat.py:8-15',
+      },
+      {
+        title: 'Is evaluated offline, not yet on live sessions.',
+        text: 'A RAG evaluation harness and golden fixtures test retrieval and answers; runtime tests cover injected instructions, malformed actions, authorisation and replay. No live-session evaluation is committed.',
+        evidence: 'evals/rag_eval/__main__.py; tests/rag/test_rag_eval_round3.py; tests/agent/test_runtime.py',
+      },
+    ],
+    safetyModel: {
+      heading: 'Every agent write must clear five gates before it changes any data.',
+      steps: [
+        {
+          title: 'Closed schema and allowlist.',
+          text: 'Output must parse as one of four action types naming an allowed tool with strict arguments; unknown tools and extra fields are rejected.',
+          enforcedIn: 'agent/contracts.py:147-225',
+        },
+        {
+          title: 'Research before writing.',
+          text: 'A write cannot be the first action and must target a symbol already researched; a note that cites evidence must cite chunk IDs from the same trace.',
+          enforcedIn: 'agent/runtime.py:487-536',
+        },
+        {
+          title: 'Request-scoped authorisation.',
+          text: 'The request must name that exact write tool and carry an idempotency key; without it the write is refused.',
+          enforcedIn: 'api/schemas.py:131-148; agent/runtime.py:538-566',
+        },
+        {
+          title: 'Role and demo guards.',
+          text: 'The user must hold the trader role, and public-demo mode refuses every write.',
+          enforcedIn: 'agent/runtime.py:567-598; agent/tools_write.py:79',
+        },
+        {
+          title: 'Audited execution.',
+          text: 'Validated writes run through a closed registry, and each executed write inserts an agent_actions row in the same transaction as the change.',
+          enforcedIn: 'agent/runtime.py:600-625; agent/tools_write.py:171-212',
+        },
+      ],
+      caveats: [
+        'The chat screen sends only the message, never write authorisation, so agent writes are reachable through the API, not the UI.',
+        'The per-step runtime audit defaults to a no-op sink, so refused proposals leave no database record.',
+        'The documented one-write-per-run budget is not enforced.',
+        'Evidence binding applies only when SEC evidence was retrieved and the note cites IDs; a note may cite none.',
+      ],
+    },
+  },
+  demoScript: {
+    heading: 'Seven offline steps let a grader check the evidence without a live service.',
+    intro: 'Each step names what to open or run and what it proves. The tests use fixtures: they show behaviour in code, not live operation.',
+    steps: [
+      {
+        order: 1,
+        category: 'Spark Data Pipeline',
+        show: 'The Silver/Gold orchestrator and its leakage tests.',
+        proves: 'MERGE-based transforms with quarantine and point-in-time invariants that fail the build.',
+        how: 'Open pipelines/run_silver_gold.py; run pytest -q tests/silver/test_silver_conversions.py tests/gold/test_pit_leakage.py',
+      },
+      {
+        order: 2,
+        category: 'Third-Party API Integration',
+        show: 'Provider clients and their failure tests.',
+        proves: 'Retries, rate limiting, authorisation errors and malformed-row rejection in production code paths.',
+        how: 'Open etl/corporate_actions.py and pipelines/sec_rag_ingest.py; run pytest -q tests/bronze/test_corporate_actions.py',
+      },
+      {
+        order: 3,
+        category: 'Lakebase Data Model',
+        show: 'The versioned migrations.',
+        proves: 'Keys, foreign keys, unique and check constraints, indexes, timestamps and idempotency keys.',
+        how: 'Open db/migrations/001_operational_schema.sql, 002_approvals_accounts.sql and 005_agent_runtime.sql',
+      },
+      {
+        order: 4,
+        category: 'Action-Taking AI Agent',
+        show: 'The action contract and runtime tests.',
+        proves: 'Proposals are validated; unauthorised, out-of-order and injected actions are refused; authorised writes execute.',
+        how: 'Run pytest -q tests/agent/test_contracts.py tests/agent/test_runtime.py',
+      },
+      {
+        order: 5,
+        category: 'Analytics Pipeline',
+        show: 'Outbox triggers and the Delta consumer tests.',
+        proves: 'Same-transaction capture and replay-safe merging; it does not show Change Data Feed or DLT.',
+        how: 'Run pytest -q tests/rubric/test_outbox_sql.py tests/rubric/test_lakebase_analytics.py',
+      },
+      {
+        order: 6,
+        category: 'Frontend and Core Workflow',
+        show: 'The Research Agent screen tests.',
+        proves: 'Tool calls, sources, saved-note confirmation and error states render correctly from fixture responses.',
+        how: 'In frontend/, run npx vitest run src/screens/ResearchAgent.test.tsx',
+      },
+      {
+        order: 7,
+        category: 'Big Data and Deployed Application',
+        show: 'Dated counts, retrieval tests, the architecture diagram and the README status table.',
+        proves: 'Volume and variety evidence; deployment and latency remain claims that need live proof.',
+        how: 'Run pytest -q tests/rag/test_hybrid_retriever.py; open docs/proposal/row_counts_2026-10-05.tsv, docs/proposal/architecture.png and README.md',
+      },
+    ],
+  },
+  gaps: {
+    heading: 'Eight concrete actions would raise the score; none is done yet.',
+    intro: 'Framed like the rubric’s suggestions for improvement. These are not promises, and no dates are attached.',
+    items: [
+      {
+        id: 'deployment',
+        category: 'Deployed Application',
+        currentBand: '0–3',
+        nextBand: '4',
+        gap: 'No reachable deployment can be shown while the services are stopped.',
+        concreteAction: 'With owner approval, keep the app and Lakebase running through the grading window and commit a dated smoke-test result.',
+        status: 'planned',
+      },
+      {
+        id: 'agent-write-ui',
+        category: 'Action-Taking AI Agent',
+        currentBand: '4–6 (write tools)',
+        nextBand: '7–8',
+        gap: 'Agent writes cannot be triggered or confirmed from the UI, and no update or delete action exists.',
+        concreteAction: 'Add a confirm-before-write step in chat that sends write authorisation, show the saved record, and add a remove-from-watchlist tool.',
+        status: 'not-started',
+      },
+      {
+        id: 'analytics-mechanism',
+        category: 'Analytics Pipeline',
+        currentBand: '1–4',
+        nextBand: '4–6',
+        gap: 'The rubric credits Change Data Feed or DLT; the outbox is neither.',
+        concreteAction: 'Seek a ruling on outbox equivalence, or adopt native Lakebase CDF once the instance supports it; never relabel the outbox as CDF.',
+        status: 'planned',
+      },
+      {
+        id: 'velocity',
+        category: 'Big Data: Velocity',
+        currentBand: '0–1',
+        nextBand: '3–4',
+        gap: 'No streaming run and no latency measurement exist.',
+        concreteAction: 'Run the streaming bundle in an approved window and commit end-to-end latency, checkpoint and recovery evidence.',
+        status: 'planned',
+      },
+      {
+        id: 'agent-quality',
+        category: 'Action-Taking AI Agent',
+        currentBand: '2–4 (quality)',
+        nextBand: '4–5',
+        gap: 'No evaluation of live model sessions is committed.',
+        concreteAction: 'Score a golden set of agent conversations, including ambiguous and adversarial prompts, and commit the transcripts.',
+        status: 'not-started',
+      },
+      {
+        id: 'spark-evidence',
+        category: 'Spark Data Pipeline',
+        currentBand: '9–12',
+        nextBand: '13–15',
+        gap: 'No committed run logs, and a clean rebuild depends on step order.',
+        concreteAction: 'Build the tradable universe before the Silver steps that read it, and commit logs showing a re-run leaves counts unchanged.',
+        status: 'not-started',
+      },
+      {
+        id: 'api-consistency',
+        category: 'Third-Party API Integration',
+        currentBand: '6–8',
+        nextBand: '9–10',
+        gap: 'Retry and validation depth varies by provider, and no request logs are committed.',
+        concreteAction: 'Share one retry, rate-limit and validation wrapper across providers and commit redacted run logs.',
+        status: 'not-started',
+      },
+      {
+        id: 'frontend-workflow',
+        category: 'Frontend and Core Workflow',
+        currentBand: '4–7',
+        nextBand: '8–9',
+        gap: 'Two placeholder screens, and no agent write from the UI.',
+        concreteAction: 'Build the Activity Analytics screen on the existing analytics API, alongside the agent write confirmation above.',
+        status: 'not-started',
+      },
+    ],
+  },
+  strengths: {
+    heading: 'Four strengths a grader can verify directly in the code.',
+    items: [
+      {
+        title: 'Point-in-time correctness is enforced at build time.',
+        text: 'Every Gold feature carries an availability time, model snapshots join sources only as of the prediction time, and the orchestrator fails the build on any violating row.',
+        evidence: 'gold/05_gold_model_features.sql:1-23; pipelines/run_silver_gold.py:177-284; tests/gold/test_pit_leakage.py',
+      },
+      {
+        title: 'The agent cannot act on model output alone.',
+        text: 'A closed action schema, an allowlist, request-scoped authorisation, and role and demo checks precede every write; broker tools are never exposed to the model.',
+        evidence: 'agent/contracts.py:147-225; agent/runtime.py:487-598',
+      },
+      {
+        title: 'Unstructured filings are searchable as of a date.',
+        text: '133,886 SEC chunks are embedded and searched with hybrid BM25 and vector retrieval that excludes filings accepted after the as-of time.',
+        evidence: 'docs/BUSINESS_CASE.md:45; api/services/hybrid_retriever.py:15-20,858-870',
+      },
+      {
+        title: 'Operational changes reach Delta without dual writes.',
+        text: 'Same-transaction outbox triggers on eight tables and a replay-safe Delta job turn Lakebase activity into analytics tables.',
+        evidence: 'db/migrations/004_analytics_outbox.sql:610-652; pipelines/lakebase_analytics.py:598-652',
+      },
+    ],
+  },
+  evidenceGaps: {
+    heading: 'The rubric’s evidence checklist, marked for this repository.',
+    intro: 'The rubric treats missing evidence as unverified, not as proof of absence. Absent here means not committed to the repository.',
+    items: [
+      {
+        item: 'Deployment URL',
+        status: 'unverified',
+        evidence: 'README.md:8,42',
+        note: 'A URL and a 2026-10-05 health check are recorded; access depends on the app running when graded.',
+      },
+      {
+        item: 'Spark execution logs',
+        status: 'absent',
+        evidence: 'docs/proposal/row_counts_2026-10-05.tsv',
+        note: 'No run logs are committed; dated row counts are the only execution evidence.',
+      },
+      {
+        item: 'Lakebase schema and connection code',
+        status: 'verified-present',
+        evidence: 'db/migrations/001_operational_schema.sql; db/lakebase.py:1-10',
+        note: 'Migrations and an OAuth connection layer are committed; applied state is not.',
+      },
+      {
+        item: 'Change Data Feed configuration',
+        status: 'absent',
+        evidence: 'docs/rubric/PLAN.md:55-65',
+        note: 'The design chose a transactional outbox; native CDF is deferred until the instance supports it.',
+      },
+      {
+        item: 'Dataset size',
+        status: 'verified-present',
+        evidence: 'docs/BUSINESS_CASE.md:3-4; docs/proposal/row_counts_2026-10-05.tsv:1',
+        note: 'Two dated count snapshots are committed; neither can be re-queried offline.',
+      },
+      {
+        item: 'Measured processing latency',
+        status: 'absent',
+        evidence: 'bundles/streaming/README.md:8-10,58',
+        note: 'The streaming bundle defines latency metrics but has never run.',
+      },
+      {
+        item: 'API request and error-handling code',
+        status: 'verified-present',
+        evidence: 'etl/corporate_actions.py:208-290; pipelines/sec_rag_ingest.py:700-712,839-871',
+        note: 'Retry, rate-limit and validation code is committed; request logs are not.',
+      },
+      {
+        item: 'Agent tool definitions',
+        status: 'verified-present',
+        evidence: 'agent/contracts.py:203-225',
+        note: 'Four read tools and two write tools are defined in a closed contract.',
+      },
+      {
+        item: 'Screenshots or demo transcript',
+        status: 'absent',
+        evidence: 'README.md:44',
+        note: 'None are committed; the README describes one live agent run in text. The video can supply this.',
+      },
+    ],
+  },
 };
