@@ -18,9 +18,8 @@ tables:
     freshness: "Split information is available at 09:30 America/New_York on ex_date, converted to UTC"
     split_ratio_definition: "new shares / old shares; values above 1 are forward splits and values below 1 are reverse splits"
     sources:
-      yfinance: implemented
-      massive: planned
-    source_note: "The branch implements only yfinance; no Massive-over-yfinance precedence is active yet."
+      massive: implemented
+    source_note: "Massive is the sole implemented source (per etl/corporate_actions.py MassiveCorporateActionsSource and the refresh notebook)."
   bronze_options_day:
     grain: "One provider daily option-contract bar per (contract_symbol, event_ts, timespan); event_date is derived"
     keys: [contract_symbol, event_ts, timespan]

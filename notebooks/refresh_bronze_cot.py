@@ -175,14 +175,15 @@ def compute_release_ts(report_date_col: "pd.Series") -> "pd.Series":
     Returns a pandas Series of naive UTC timestamps (timezone info stripped
     so PySpark createDataFrame handles them cleanly).
     """
-    import pytz
+    from zoneinfo import ZoneInfo
 
     release_offsets = timedelta(days=3 + RELEASE_SAFETY_DAYS)
     release_time = datetime.strptime(
         f"{RELEASE_HOUR_ET:02d}:{RELEASE_MINUTE_ET:02d}", "%H:%M"
     ).time()
 
-    et_tz = pytz.timezone(RELEASE_TZ)
+    et_tz = ZoneInfo(RELEASE_TZ)
+    utc_tz = ZoneInfo("UTC")
 
     results = []
     for rd in report_date_col:
@@ -191,10 +192,9 @@ def compute_release_ts(report_date_col: "pd.Series") -> "pd.Series":
             continue
         rd_date = rd if isinstance(rd, date) else rd.date()
         release_date = rd_date + release_offsets
-        release_local = datetime.combine(release_date, release_time)
-        release_localized = et_tz.localize(release_local)
+        release_local = datetime.combine(release_date, release_time, tzinfo=et_tz)
         # Convert to naive UTC ISO string for PySpark compatibility
-        utc_naive = release_localized.astimezone(pytz.utc).replace(tzinfo=None)
+        utc_naive = release_local.astimezone(utc_tz).replace(tzinfo=None)
         results.append(utc_naive.strftime("%Y-%m-%dT%H:%M:%S"))
 
     return pd.Series(results)

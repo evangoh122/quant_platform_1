@@ -8,4 +8,4 @@ Daily equity prices in `bronze_ohlcv_day` are unadjusted. Cross-day return, real
 
 The five `serve_*_v1` tables are proposals, not live relations. They remain `status: proposed` until an owner or Databricks administrator executes and verifies the DDL in `docs/NL1_PROPOSED_SERVING_VIEWS.md`; any metric sourced from one is likewise marked proposed.
 
-Corporate-action split ratios use the normalized convention `new shares / old shares`: forward splits are greater than one and reverse splits are between zero and one. The current corporate-actions branch implements yfinance only. Massive is recorded as planned, with no source-precedence claim until its adapter exists.
+Corporate-action split ratios use the normalized convention `new shares / old shares`: forward splits are greater than one and reverse splits are between zero and one. Massive is the sole implemented corporate-actions source (per `etl/corporate_actions.py` MassiveCorporateActionsSource and the refresh notebook).

@@ -2,7 +2,7 @@
 #
 # Databricks Apps installs THIS file.  Every top-level third-party import
 # reachable from api/ and agent/ MUST be declared here.  Non-app deps
-# (pyspark, mlflow, yfinance, ibapi, etc.) live in requirements-dev.txt
+# (pyspark, mlflow, ibapi, etc.) live in requirements-dev.txt
 # or requirements-pipelines.txt and are installed by CI, not by the app.
 fastapi>=0.142.2
 uvicorn[standard]>=0.54.0
@@ -25,6 +25,12 @@ sentence-transformers>=2.2.0
 rank-bm25>=0.2.2
 huggingface-hub>=0.19.0
 duckdb>=0.10.0
+# pytz: duckdb's Python client converts timezone-aware TIMESTAMP results via
+# pytz, so tz-aware fetches raise InvalidInputException ("Required module
+# 'pytz' failed to import") without it.  Previously pulled in transitively via
+# yfinance; declared explicitly because api/ code paths use duckdb at runtime
+# (api/services/runtime_snapshot.py) and tests fetch tz-aware results.
+pytz>=2023.3
 python-dotenv>=1.0.0
 pyyaml>=6.0
 langsmith>=0.8.18
