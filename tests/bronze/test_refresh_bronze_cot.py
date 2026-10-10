@@ -175,6 +175,20 @@ class TestComputeReleaseTs:
         assert len(result) == 3
         assert all(ts is not None for ts in result)
 
+    def test_dst_edt_summer(self):
+        """Summer date: 15:30 EDT = 19:30 UTC."""
+        dates = pd.Series([date(2026, 7, 7)])
+        result = compute_release_ts(dates)
+        ts = datetime.strptime(result.iloc[0], "%Y-%m-%dT%H:%M:%S")
+        assert ts.hour == 19 and ts.minute == 30
+
+    def test_dst_est_winter(self):
+        """Winter date: 15:30 EST = 20:30 UTC."""
+        dates = pd.Series([date(2026, 1, 6)])
+        result = compute_release_ts(dates)
+        ts = datetime.strptime(result.iloc[0], "%Y-%m-%dT%H:%M:%S")
+        assert ts.hour == 20 and ts.minute == 30
+
 
 # =============================================================================
 # validate_contract_code_column

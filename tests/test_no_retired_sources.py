@@ -11,6 +11,7 @@ Runs in CI without pyspark. Validates:
 """
 import ast
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -46,6 +47,27 @@ def _in_allowlist(rel: str, allowlist: set[str]) -> bool:
     for prefix in allowlist:
         if norm_rel == prefix or norm_rel.startswith(prefix + "/"):
             return True
+    return False
+
+
+def _has_importorskip_db_database(tree: ast.AST) -> bool:
+    """Return True if *tree* contains ``pytest.importorskip("db.database")``."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # pytest.importorskip(...) or importorskip(...)
+        is_importorskip = False
+        if isinstance(func, ast.Attribute) and func.attr == "importorskip":
+            if isinstance(func.value, ast.Name) and func.value.id == "pytest":
+                is_importorskip = True
+        if isinstance(func, ast.Name) and func.id == "importorskip":
+            is_importorskip = True
+        if not is_importorskip:
+            continue
+        if node.args and isinstance(node.args[0], ast.Constant):
+            if node.args[0].value == "db.database":
+                return True
     return False
 
 
@@ -150,7 +172,8 @@ class TestNoRetiredSources:
 
         Test files that use pytest.importorskip("db.database") are allowed —
         they use DuckDB as a test-time SQL engine and will be skipped when
-        db.database is absent.
+        db.database is absent.  The importorskip exemption is AST-based so
+        comments and unrelated string matches do not cause false negatives.
         """
         violations = []
         for rel in _py_files():
@@ -160,14 +183,22 @@ class TestNoRetiredSources:
                 text = (REPO / rel).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            # Allow test files that guard db.database with importorskip
-            if rel.startswith("tests" + os.sep) and "importorskip(\"db.database\"" in text:
-                continue
+            # AST-based check: skip files that contain a real
+            # pytest.importorskip("db.database") call.
+            if rel.startswith("tests" + os.sep):
+                try:
+                    tree = ast.parse(text, filename=rel)
+                except SyntaxError:
+                    tree = None
+                if tree is not None and _has_importorskip_db_database(tree):
+                    continue
             for i, line in enumerate(text.splitlines(), 1):
                 stripped = line.lstrip()
                 if stripped.startswith("#"):
                     continue
                 if "from db.database" in line or "import db.database" in line:
+                    violations.append(f"{rel}:{i}: {line.strip()}")
+                if re.match(r"from\s+db\s+import\s+.*\bdatabase\b", stripped):
                     violations.append(f"{rel}:{i}: {line.strip()}")
         assert not violations, "db.database imports found:\n" + "\n".join(violations)
 
@@ -179,17 +210,28 @@ class TestNoRetiredSources:
         """
         import tempfile
 
+        # Build an env that strips git repo env vars so the temp repo
+        # is not confused with the enclosing worktree (e.g. when run
+        # from a git hook).
+        clean_env = {
+            k: v for k, v in os.environ.items()
+            if not k.startswith("GIT_")
+        }
+        clean_env["GIT_AUTHOR_NAME"] = "test"
+        clean_env["GIT_AUTHOR_EMAIL"] = "t@t"
+        clean_env["GIT_COMMITTER_NAME"] = "test"
+        clean_env["GIT_COMMITTER_EMAIL"] = "t@t"
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             (tmp / "tracked.py").write_text("# tracked\n")
             (tmp / "untracked.py").write_text("# untracked\n")
-            subprocess.run(["git", "init"], cwd=str(tmp), capture_output=True, check=True)
-            subprocess.run(["git", "add", "tracked.py"], cwd=str(tmp), capture_output=True, check=True)
+            subprocess.run(["git", "init"], cwd=str(tmp), capture_output=True, check=True, env=clean_env)
+            subprocess.run(["git", "add", "tracked.py"], cwd=str(tmp), capture_output=True, check=True, env=clean_env)
             subprocess.run(
                 ["git", "commit", "-m", "init"],
                 cwd=str(tmp), capture_output=True, check=True,
-                env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
-                     "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+                env=clean_env,
             )
 
             result = subprocess.run(
@@ -198,6 +240,7 @@ class TestNoRetiredSources:
                 capture_output=True,
                 text=True,
                 check=True,
+                env=clean_env,
             )
             files = result.stdout.splitlines()
             assert "tracked.py" in files, "tracked.py must be listed"
@@ -237,5 +280,37 @@ class TestNoRetiredSources:
                         break
         assert not violations, (
             "Retired fixture definitions found (must not exist):\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_pytz_import_without_declaration(self):
+        """No tracked .py imports pytz unless declared in requirements*.txt."""
+        declared = set()
+        for req in REPO.glob("requirements*.txt"):
+            for line in req.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#") or not stripped:
+                    continue
+                if re.match(r"pytz\b", stripped, re.IGNORECASE):
+                    declared.add(req.name)
+        if declared:
+            return  # pytz is declared; nothing to guard
+
+        violations = []
+        for rel in _py_files():
+            if _in_allowlist(rel, {"docs/archive", "notebooks/archive", "tests/test_no_retired_sources.py"}):
+                continue
+            try:
+                text = (REPO / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                if re.match(r"(import\s+pytz|from\s+pytz\s+import)", stripped):
+                    violations.append(f"{rel}:{i}: {line.strip()}")
+        assert not violations, (
+            "pytz imports found without declaration in requirements*.txt:\n"
             + "\n".join(violations)
         )
