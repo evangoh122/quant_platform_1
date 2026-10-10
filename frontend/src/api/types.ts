@@ -88,8 +88,8 @@ export interface Position {
   quantity: number;
   avg_cost: number;
   market_price: number | null;
-  realized_pnl: number;
-  unrealized_pnl: number;
+  realized_pnl: number | null;
+  unrealized_pnl: number | null;
   updated_at: string;
 }
 

@@ -407,7 +407,7 @@ def market_features(symbol: str, start_ts: str, end_ts: str, *, limit: int = 500
         df = spark.table(_fqn("silver_ohlcv_day_adjusted")).where(
             (F.col("symbol") == symbol) & (F.col("event_date").between(start_ts, end_ts))
         ).select(*daily_cols)
-        return df.limit(limit)
+        return df.orderBy(F.col("event_date").desc()).limit(limit)
 
     # Warehouse fallback
     daily_query, params = _build_market_features_daily_query(symbol, start_ts, end_ts)
@@ -458,7 +458,7 @@ def read_analytics_table(section: str, limit: int = 500) -> List[Dict[str, Any]]
         spark = _spark()
         try:
             df = spark.table(_fqn(table))
-            rows = [r.asDict() for r in df.limit(limit).collect()]
+            rows = [r.asDict() for r in df.orderBy(F.col("event_date").desc()).limit(limit).collect()]
         except Exception:
             return []
         return rows

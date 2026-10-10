@@ -14,14 +14,14 @@ interface TableProps<T> {
 
 export function Table<T>({ columns, rows, rowKey }: TableProps<T>) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
+    <div className="data-table-wrap">
+      <table className="data-table">
         <thead>
-          <tr className="border-b border-slate-200 dark:border-slate-700">
+          <tr>
             {columns.map((col) => (
               <th
                 key={col.key}
-                className="whitespace-nowrap px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+                className="data-table-th"
               >
                 {col.header}
               </th>
@@ -30,12 +30,9 @@ export function Table<T>({ columns, rows, rowKey }: TableProps<T>) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr
-              key={rowKey(row)}
-              className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800"
-            >
+            <tr key={rowKey(row)}>
               {columns.map((col) => (
-                <td key={col.key} className="px-3 py-2 text-slate-700 dark:text-slate-300">
+                <td key={col.key}>
                   {col.render(row)}
                 </td>
               ))}

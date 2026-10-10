@@ -77,14 +77,14 @@ export function ProvenanceGrid({ toolCalls }: ProvenanceGridProps) {
 
   return (
     <div data-testid="provenance-grid" className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
         SEC Sources
       </h3>
       {errorRows.map((row, i) => (
         <div
           key={`err-${safeStr(row.ticker) ?? i}`}
           data-testid="provenance-error"
-          className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+          className="rounded-md border border-warning-dim-20 bg-warning-dim p-2 text-xs text-warning-text"
         >
           {errorLabel(row)}
         </div>

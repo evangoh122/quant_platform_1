@@ -60,15 +60,15 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
           onClick={() => setRange(opt.label)}
           className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
             range === opt.label
-              ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
-              : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+              ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+              : 'bg-[var(--surface-raised)] text-[var(--text-secondary)] hover:bg-[var(--border-subtle)]'
           }`}
         >
           {opt.label}
         </button>
       ))}
       {missing > 0 && (
-        <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
+        <span className="ml-2 text-xs text-warning-text">
           {missing} missing point{missing !== 1 ? 's' : ''}
         </span>
       )}
@@ -273,7 +273,7 @@ export function MarketDashboard() {
             actions={
               <div className="flex items-center gap-2">
                 {data && <FreshnessBadge freshness={data.ohlcv.freshness} />}
-                <span className="text-xs text-slate-500 dark:text-slate-400">
+                <span className="text-xs text-[var(--text-muted)]">
                   {sortedOhlcv.length} rows
                 </span>
               </div>

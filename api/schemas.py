@@ -117,8 +117,8 @@ class Position(BaseModel):
     quantity: float = 0.0
     avg_cost: float = 0.0
     market_price: Optional[float] = None
-    realized_pnl: float = 0.0
-    unrealized_pnl: float = 0.0
+    realized_pnl: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
     updated_at: str = ""
 
 
