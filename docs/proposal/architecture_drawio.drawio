@@ -1,0 +1,153 @@
+<mxfile host="app.diagrams.net" scale="1" border="0">
+  <diagram name="Quant Platform architecture" id="Xi2JqgXlCa8C5pPET8Jh">
+    <mxGraphModel dx="2287" dy="2079" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="uv_aasutmiwkWN0vVkHN-1" parent="1" style="text;html=1;fontSize=24;fontStyle=1;align=left;verticalAlign=middle;strokeColor=none;fillColor=none;" value="Quant Platform: data, serving and agent architecture (status as of 2026-10-05)" vertex="1">
+          <mxGeometry height="40" width="1500" x="40" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-2" parent="1" style="swimlane;startSize=36;rounded=1;html=1;fontSize=16;fontStyle=1;fillColor=none;strokeColor=#9AA5AE;fontColor=#9AA5AE;collapsible=0;" value="External APIs (batch)" vertex="1">
+          <mxGeometry height="560" width="300" x="40" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-3" parent="uv_aasutmiwkWN0vVkHN-2" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="Massive / Polygon&lt;br&gt;OHLCV, options, splits" vertex="1">
+          <mxGeometry height="90" width="240" x="30" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-4" parent="uv_aasutmiwkWN0vVkHN-2" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="SEC EDGAR&lt;br&gt;filings, XBRL" vertex="1">
+          <mxGeometry height="90" width="240" x="30" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-5" parent="uv_aasutmiwkWN0vVkHN-2" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="CFTC&lt;br&gt;Commitments of Traders" vertex="1">
+          <mxGeometry height="90" width="240" x="30" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-6" parent="uv_aasutmiwkWN0vVkHN-2" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="Federal Reserve / FRED&lt;br&gt;macro series" vertex="1">
+          <mxGeometry height="90" width="240" x="30" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-7" parent="1" style="swimlane;startSize=36;rounded=1;html=1;fontSize=16;fontStyle=1;fillColor=none;strokeColor=#1F77B4;fontColor=#1F77B4;collapsible=0;" value="Databricks Lakehouse, Unity Catalog (Delta)" vertex="1">
+          <mxGeometry height="660" width="1040" x="400" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-8" parent="uv_aasutmiwkWN0vVkHN-7" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#E8F1FA;" value="PySpark ingestion jobs&lt;br&gt;(Databricks Jobs, serverless)" vertex="1">
+          <mxGeometry height="110" width="200" x="20" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-9" parent="uv_aasutmiwkWN0vVkHN-7" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F3E5D8;" value="Bronze&lt;br&gt;raw, append-only&lt;br&gt;239.1M rows" vertex="1">
+          <mxGeometry height="110" width="200" x="260" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-45" edge="1" parent="uv_aasutmiwkWN0vVkHN-7" source="uv_aasutmiwkWN0vVkHN-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" target="uv_aasutmiwkWN0vVkHN-9" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-10" parent="uv_aasutmiwkWN0vVkHN-7" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#E6E6E6;" value="Silver&lt;br&gt;cleaned, split-adjusted,&lt;br&gt;PIT availability&lt;br&gt;24.3M rows" vertex="1">
+          <mxGeometry height="110" width="240" x="500" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-11" parent="uv_aasutmiwkWN0vVkHN-7" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#FFF3C4;" value="Gold&lt;br&gt;features, universe, COT,&lt;br&gt;SEC chunks and embeddings&lt;br&gt;23.7M rows" vertex="1">
+          <mxGeometry height="110" width="240" x="780" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-12" parent="uv_aasutmiwkWN0vVkHN-7" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#E3F2E3;" value="CDC consumer job&lt;br&gt;(outbox to Delta MERGE,&lt;br&gt;watermarked, idempotent)&lt;br&gt;[minimal, new]" vertex="1">
+          <mxGeometry height="120" width="240" x="500" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-13" parent="uv_aasutmiwkWN0vVkHN-7" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#E3F2E3;" value="Delta analytics tables&lt;br&gt;agent activity, watchlist changes,&lt;br&gt;order funnel, usage daily&lt;br&gt;[minimal, new]" vertex="1">
+          <mxGeometry height="130" width="240" x="780" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-14" parent="1" style="swimlane;startSize=36;rounded=1;html=1;fontSize=16;fontStyle=1;fillColor=none;strokeColor=#9467BD;fontColor=#9467BD;collapsible=0;" value="Lakebase (Postgres)" vertex="1">
+          <mxGeometry height="260" width="1040" x="400" y="800" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-15" parent="uv_aasutmiwkWN0vVkHN-14" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#EFE7F7;" value="Operational tables&lt;br&gt;users, watchlists, research notes,&lt;br&gt;orders, agent actions, approvals" vertex="1">
+          <mxGeometry height="110" width="380" x="60" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-16" parent="uv_aasutmiwkWN0vVkHN-14" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#E3F2E3;" value="analytics_outbox&lt;br&gt;(transactional triggers)&lt;br&gt;[minimal, new]" vertex="1">
+          <mxGeometry height="110" width="300" x="560" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-17" parent="1" style="swimlane;startSize=36;rounded=1;html=1;fontSize=16;fontStyle=1;fillColor=none;strokeColor=#2CA02C;fontColor=#2CA02C;collapsible=0;" value="Databricks App (FastAPI + React)" vertex="1">
+          <mxGeometry height="990" width="760" x="1520" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-18" parent="uv_aasutmiwkWN0vVkHN-17" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="React frontend&lt;br&gt;market, signals, analytics,&lt;br&gt;agent, system health,&lt;br&gt;Business Case pages" vertex="1">
+          <mxGeometry height="120" width="360" x="200" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-19" parent="uv_aasutmiwkWN0vVkHN-17" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="FastAPI api/main.py&lt;br&gt;routes, auth and roles, health" vertex="1">
+          <mxGeometry height="100" width="360" x="200" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-20" parent="uv_aasutmiwkWN0vVkHN-17" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="SQL-warehouse adapter&lt;br&gt;named params, bounded, timeouts" vertex="1">
+          <mxGeometry height="110" width="330" x="30" y="440" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-21" parent="uv_aasutmiwkWN0vVkHN-17" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#F4F6F8;" value="Hybrid SEC retrieval&lt;br&gt;BM25 + dense + rerank, PIT" vertex="1">
+          <mxGeometry height="110" width="330" x="400" y="440" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-22" parent="uv_aasutmiwkWN0vVkHN-17" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#5B6770;fillColor=#E3F2E3;" value="LLM-directed agent&lt;br&gt;model proposes, deterministic validator&lt;br&gt;(allowlist, roles, idempotency)&lt;br&gt;[minimal, new]" vertex="1">
+          <mxGeometry height="160" width="380" x="190" y="650" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-30" edge="1" parent="uv_aasutmiwkWN0vVkHN-17" source="uv_aasutmiwkWN0vVkHN-11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" value="SELECT">
+          <mxGeometry relative="1" x="-0.1185" as="geometry">
+            <mxPoint x="-170.00000000000045" y="152.5" as="sourcePoint" />
+            <mxPoint x="125" y="447.5" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-23" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-8" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-24" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-8" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-25" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-8" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-26" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-8" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-27" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-9" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-28" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-10" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-29" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-11" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-31" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-21" value="chunks + embeddings">
+          <mxGeometry relative="1" x="-0.0844" as="geometry">
+            <Array as="points">
+              <mxPoint x="1300" y="110" />
+              <mxPoint x="2200" y="110" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-32" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-18" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-19" value="HTTPS">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-33" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-20" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-34" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-21" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-35" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;" target="uv_aasutmiwkWN0vVkHN-22" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-36" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-21" value="read tool">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-37" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-20" value="read tools">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-38" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-16" value="save_research_note (validated write)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-39" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-15" value="watchlists, orders">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-40" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-15" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-16" value="same transaction">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-41" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-16" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-12" value="pending events">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-42" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-13" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-43" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-20" value="analytics API">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="uv_aasutmiwkWN0vVkHN-44" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;align=left;spacingLeft=12;strokeColor=#E3A82B;fillColor=#FFF8E1;" value="Not shown: streaming (DLT) bundle is built but not deployed.&lt;br&gt;Agent writes run through the API today; in-chat confirmation is designed, not built.&lt;br&gt;Green fill = minimal, new." vertex="1">
+          <mxGeometry height="90" width="1400" x="40" y="1100" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

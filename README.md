@@ -7,9 +7,9 @@ agent research a company and save a note through validated tools, and records us
 
 **Deployment (verified 2026-10-05; current availability not asserted here):** https://quant-platform-dev-1352785079224954.aws.databricksapps.com (Databricks workspace login required)
 
-![Architecture](docs/proposal/architecture.png)
+![Architecture](docs/proposal/architecture_drawio.png)
 
-Diagram source: [`docs/proposal/architecture.dot`](docs/proposal/architecture.dot). Detailed write-up:
+Diagram source (editable in diagrams.net): [`docs/proposal/architecture_drawio.drawio`](docs/proposal/architecture_drawio.drawio); the earlier Graphviz version is kept as [`architecture.png`](docs/proposal/architecture.png) / [`architecture.dot`](docs/proposal/architecture.dot). Detailed write-up:
 [`docs/proposal/CAPSTONE.md`](docs/proposal/CAPSTONE.md).
 
 ---
