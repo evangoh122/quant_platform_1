@@ -47,6 +47,7 @@ application activity through an analytics pipeline back into the lakehouse.
 ## 5. Architecture
 
 See `architecture.png` (source `architecture.dot`).
+The updated diagram, drawn in diagrams.net, is `architecture_drawio.gif` (animated; source `architecture_drawio.drawio`).
 
 ## 6. Quality and evidence
 
