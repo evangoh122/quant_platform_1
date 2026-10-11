@@ -126,7 +126,7 @@
         <mxCell id="uv_aasutmiwkWN0vVkHN-37" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-20" value="read tools">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="uv_aasutmiwkWN0vVkHN-38" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-16" value="save_research_note (validated write)">
+        <mxCell id="uv_aasutmiwkWN0vVkHN-38" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-15" value="save_research_note (validated write)">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="uv_aasutmiwkWN0vVkHN-39" edge="1" parent="1" source="uv_aasutmiwkWN0vVkHN-19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5B6770;fontSize=12;strokeWidth=2;flowAnimation=1;" target="uv_aasutmiwkWN0vVkHN-15" value="watchlists, orders">
