@@ -1,3 +1,5 @@
+import animatedUrl from '../assets/architecture_animated.gif';
+import stillUrl from '../assets/architecture_still.png';
 import { EXECUTIVE_SUMMARY, KEY_LINE, OVERVIEW } from '../data/businessCase';
 import {
   CrossLinks,
@@ -66,6 +68,51 @@ export function BusinessCaseOverview({ onNavigate }: BusinessCaseScreenProps) {
           ))}
         </div>
       </section>
+
+      {(() => {
+        const diagram = OVERVIEW.diagram;
+        return (
+          <figure aria-labelledby="bc-diagram-heading" className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
+            <h2 id="bc-diagram-heading" className="text-lg font-semibold text-[var(--text-primary)]">
+              {diagram.heading}
+            </h2>
+            <picture className="mt-3 block rounded-[var(--radius-md)] overflow-hidden" style={{ backgroundColor: '#121212' }}>
+              <source media="(prefers-reduced-motion: reduce)" srcSet={stillUrl} />
+              <img
+                src={animatedUrl}
+                alt={diagram.alt}
+                width="2242"
+                height="1181"
+                loading="eager"
+                decoding="async"
+                style={{ maxWidth: '100%', height: 'auto', display: 'block' }}
+              />
+            </picture>
+            <figcaption className="mt-3 text-sm leading-relaxed text-[var(--text-secondary)]">
+              {diagram.caption}
+            </figcaption>
+            <ul className="mt-3 space-y-1" data-diagram-notes>
+              {diagram.statusNotes.map((note) => (
+                <li key={note} className="flex items-start gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3">
+                  <span aria-hidden="true" className="mt-0.5 text-[var(--warning)]">&#9888;</span>
+                  <span className="text-sm leading-relaxed text-[var(--text-secondary)]">{note}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-[var(--text-muted)]">
+              Status as of {diagram.asOf}
+            </p>
+            <a
+              href={animatedUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 inline-flex min-h-[44px] items-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--accent)] transition hover:bg-[var(--surface-raised)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+            >
+              Open the diagram full size
+            </a>
+          </figure>
+        );
+      })()}
 
       <section
         aria-labelledby="bc-key-line"

@@ -150,3 +150,77 @@ describe('BusinessCaseOverview navigation and accessibility', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('architecture diagram figure', () => {
+  it('renders heading, caption, every statusNote and as-of text from OVERVIEW.diagram', () => {
+    const { container } = render(<BusinessCaseOverview onNavigate={vi.fn()} />);
+    const diagram = OVERVIEW.diagram;
+    expect(container.textContent).toContain(diagram.heading);
+    expect(container.textContent).toContain(diagram.caption);
+    for (const note of diagram.statusNotes) {
+      expect(container.textContent).toContain(note);
+    }
+    expect(container.textContent).toContain(`Status as of ${diagram.asOf}`);
+  });
+
+  it('img alt equals diagram.alt exactly and is non-empty', () => {
+    render(<BusinessCaseOverview onNavigate={vi.fn()} />);
+    const img = document.querySelector('figure img') as HTMLImageElement;
+    expect(img).not.toBeNull();
+    expect(img.alt).toBe(OVERVIEW.diagram.alt);
+    expect(img.alt.length).toBeGreaterThan(0);
+  });
+
+  it('DOM order: executive summary < figure < key line', () => {
+    const { container } = render(<BusinessCaseOverview onNavigate={vi.fn()} />);
+    const execSummary = container.querySelector('[aria-labelledby="bc-executive-summary"]')!;
+    const figure = container.querySelector('figure')!;
+    const keyLine = container.querySelector('[aria-labelledby="bc-key-line"]')!;
+    expect(execSummary.compareDocumentPosition(figure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(figure.compareDocumentPosition(keyLine) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('picture has a reduced-motion source with .png srcset differing from the .gif img src', () => {
+    const { container } = render(<BusinessCaseOverview onNavigate={vi.fn()} />);
+    const picture = container.querySelector('figure picture')!;
+    const source = picture.querySelector('source[media="(prefers-reduced-motion: reduce)"]') as HTMLSourceElement;
+    expect(source).not.toBeNull();
+    const img = picture.querySelector('img') as HTMLImageElement;
+    expect(img).not.toBeNull();
+    expect(source.srcset.length).toBeGreaterThan(0);
+    expect(img.src.length).toBeGreaterThan(0);
+    expect(source.srcset).not.toBe(img.src);
+    expect(img.src).toMatch(/\.gif/);
+    expect(source.srcset).toMatch(/\.png/);
+  });
+
+  it('full-size link has href equal to img src, target _blank and rel containing noopener and noreferrer', () => {
+    const { container } = render(<BusinessCaseOverview onNavigate={vi.fn()} />);
+    const img = container.querySelector('figure img') as HTMLImageElement;
+    const link = container.querySelector('figure a[href]') as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.href).toBe(img.src);
+    expect(link.target).toBe('_blank');
+    expect(link.rel).toContain('noopener');
+    expect(link.rel).toContain('noreferrer');
+  });
+
+  it('heading order stays valid and figure has an accessible name', () => {
+    const { container } = render(<BusinessCaseOverview onNavigate={vi.fn()} />);
+    expectHeadingOrder(container);
+    const figure = container.querySelector('figure')!;
+    expect(figure.getAttribute('aria-labelledby')).toBeTruthy();
+    const labelId = figure.getAttribute('aria-labelledby')!;
+    expect(document.getElementById(labelId)).not.toBeNull();
+  });
+
+  it('no fetch/network call when rendering the page', () => {
+    const fetchSpy = vi.fn(() => {
+      throw new Error('business case pages must not call fetch');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    render(<BusinessCaseOverview onNavigate={vi.fn()} />);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});
