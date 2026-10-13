@@ -41,7 +41,7 @@ echo "[dispatch] agent=$AGENT request=$REQUEST timeout=${TIMEOUT}s log=$LOG"
 
 case "$AGENT" in
   mimo)
-    timeout "$TIMEOUT" opencode run --auto -m xiaomi-token-plan-sgp/mimo-v2.5-pro \
+    timeout "$TIMEOUT" opencode run --auto -m xiaomi-token-plan-sgp/mimo-v2.6-pro \
       --title "qp1-$(basename "$REQUEST" .md)" "$PROMPT" 2>&1 | tee "$LOG"
     ;;
   deepseek)
