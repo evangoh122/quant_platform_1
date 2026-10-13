@@ -10,6 +10,7 @@ import type {
   OrderIntentRequest,
   OrderIntentResult,
   Portfolio,
+  ResearchNote,
   SecCoverageResponse,
   Signal,
   WatchlistItem,
@@ -58,6 +59,9 @@ export const api = {
     request<MarketSnapshot>(`/api/market/${encodeURIComponent(symbol)}`),
   chat: (message: string): Promise<ChatResponse> =>
     post<ChatResponse>('/api/agent/chat', { message } satisfies ChatRequest),
+  confirmWrite: (token: string): Promise<ChatResponse> =>
+    post<ChatResponse>('/api/agent/chat', { confirm_token: token } satisfies ChatRequest),
+  notes: (): Promise<Envelope<ResearchNote>> => request<Envelope<ResearchNote>>('/api/notes'),
   watchlists: (): Promise<Envelope<WatchlistItem>> =>
     request<Envelope<WatchlistItem>>('/api/watchlists'),
   addWatchlist: (symbol: string): Promise<WatchlistItem> =>
