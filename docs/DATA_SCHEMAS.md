@@ -361,7 +361,7 @@
   release_ts                         timestamp NOT NULL
   processed_ts                       timestamp NOT NULL
 
-### gold_ohlcv_features  (19 cols)
+### gold_ohlcv_features  (23 cols)
   symbol                             string NOT NULL
   feature_ts                         timestamp NOT NULL
   information_available_ts           timestamp NOT NULL
@@ -369,6 +369,10 @@
   return_5m                          double
   return_15m                         double
   return_30m                         double
+  log_return_1m                      double
+  log_return_5m                      double
+  log_return_15m                     double
+  log_return_30m                     double
   rvol_5m                            double
   rvol_15m                           double
   rvol_30m                           double
@@ -381,6 +385,15 @@
   dist_session_high                  double
   dist_session_low                   double
   processed_ts                       timestamp NOT NULL
+
+  return_N = close / NULLIF(LAG(close, N) over (symbol, session day) ...) - 1 and
+  log_return_N = LN(close / NULLIF(LAG(close, N) over the same window)) are
+  companion minute features: the log return equals LN(1 + return_N) wherever it
+  is defined, uses the same (symbol, DATE(event_ts)) partitioning so nothing
+  leaks across sessions, and is NULL when the lagged bar is missing or the close
+  ratio is non-positive (LN never sees 0 or a negative ratio). Both are computed
+  from raw silver_ohlcv closes (unadjusted) and are available at
+  information_available_ts = feature_ts + 1 minute like the rest of the row.
 
 ### gold_options_features  (16 cols)
   symbol                             string NOT NULL

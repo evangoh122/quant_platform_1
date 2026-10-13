@@ -20,6 +20,7 @@ TABLE_COLUMNS: Dict[str, FrozenSet[str]] = {
     "gold_ohlcv_features": frozenset({
         "symbol", "feature_ts", "information_available_ts",
         "return_1m", "return_5m", "return_15m", "return_30m",
+        "log_return_1m", "log_return_5m", "log_return_15m", "log_return_30m",
         "rvol_5m", "rvol_15m", "rvol_30m",
         "atr_14", "momentum_5m", "momentum_15m",
         "rsi_14", "vwap_deviation", "relative_volume",

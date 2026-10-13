@@ -81,6 +81,19 @@ GOLD_MODEL_AVAILABILITY_COLUMNS = {
     "cot_available_ts": "TIMESTAMP",
 }
 
+# Additive schema change (log returns): gold_ohlcv_features gains four
+# log-return columns computed beside return_*. The table is pre-deployed (there
+# is no CREATE TABLE for it in this repo), so every missing column must reach
+# the existing Delta table before the gold_ohlcv_features MERGE runs its
+# UPDATE SET * / INSERT * — same additive precedent as the round-8
+# gold_model_features *_available_ts columns below.
+GOLD_OHLCV_LOG_RETURN_COLUMNS = {
+    "log_return_1m": "DOUBLE",
+    "log_return_5m": "DOUBLE",
+    "log_return_15m": "DOUBLE",
+    "log_return_30m": "DOUBLE",
+}
+
 
 
 def register_universe(spark) -> list[str]:
@@ -135,6 +148,39 @@ def ensure_model_availability_columns(spark):
     cols = ", ".join(f"{c} {GOLD_MODEL_AVAILABILITY_COLUMNS[c]}" for c in missing)
     spark.sql(f"ALTER TABLE {FQN}.gold_model_features ADD COLUMNS ({cols})")
     print(f"  added gold_model_features columns: {', '.join(missing)}")
+
+
+def missing_gold_ohlcv_log_return_columns(existing) -> list[str]:
+    """Pure column diff for ``ensure_gold_ohlcv_log_return_columns``.
+
+    Returns the gold_ohlcv_features log-return columns absent from ``existing``
+    (any iterable of column names), in declaration order. An empty result means
+    the schema is complete — the idempotent second-call state.
+    """
+    present = set(existing)
+    return [c for c in GOLD_OHLCV_LOG_RETURN_COLUMNS if c not in present]
+
+
+def ensure_gold_ohlcv_log_return_columns(spark):
+    """Additive schema change on gold_ohlcv_features (log returns).
+
+    Adds each missing log_return_* column (DOUBLE) with ALTER TABLE ... ADD
+    COLUMNS so the pre-deployed table matches the gold_ohlcv_features MERGE
+    source before that step runs. Idempotent and re-runnable: only columns not
+    already present are added. Requires the table to exist (it does — the build
+    MERGEs into a pre-deployed table)."""
+    try:
+        existing = set(spark.table(f"{FQN}.gold_ohlcv_features").columns)
+    except Exception as e:
+        print(f"  ensure columns: gold_ohlcv_features not readable "
+              f"({str(e)[:80]}); skipping")
+        return
+    missing = missing_gold_ohlcv_log_return_columns(existing)
+    if not missing:
+        return
+    cols = ", ".join(f"{c} {GOLD_OHLCV_LOG_RETURN_COLUMNS[c]}" for c in missing)
+    spark.sql(f"ALTER TABLE {FQN}.gold_ohlcv_features ADD COLUMNS ({cols})")
+    print(f"  added gold_ohlcv_features columns: {', '.join(missing)}")
 
 
 def run_step(spark, name, path, kind, symbols):
@@ -390,6 +436,7 @@ def main():
         return
 
     if not args.counts and (args.only is None or args.only == "gold"):
+        ensure_gold_ohlcv_log_return_columns(spark)
         ensure_model_availability_columns(spark)
 
     for name, path, kind in STEPS:
