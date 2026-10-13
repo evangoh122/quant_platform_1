@@ -893,6 +893,21 @@ def _run_snapshot(spark, client, dry_run):
 # CLI
 # -----------------------------------------------------------------------------
 
+def _finish(code: int) -> int:
+    """Apply the entry-point exit policy after the refresh finishes.
+
+    Databricks job runners report ``SystemExit(0)`` as a FAILED task, so a
+    successful run under ``DATABRICKS_RUNTIME_VERSION`` must return to the
+    runner instead of exiting. Real failures still exit non-zero everywhere
+    and CLI exit codes are unchanged (0 on success, non-zero on failure).
+    """
+    if code:
+        sys.exit(code)
+    if _in_databricks():
+        return 0
+    sys.exit(0)
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description="Refresh Bronze options (daily aggregates + chain snapshots)."
@@ -966,11 +981,23 @@ def main(argv):
         snapshot = _run_snapshot(spark, client, dry_run)
     except Exception as exc:
         print("=" * 78)
-        print("POLYGON REST SNAPSHOT: access probe FAILED "
-              f"({type(exc).__name__}).")
-        print("No snapshot can be retrieved; the current snapshot coverage gap "
-              "(2026-09-03 .. execution date) remains unrecoverable without a "
-              "historical as-of endpoint. Nothing was appended.")
+        missing = getattr(exc, "name", None)
+        if isinstance(exc, ModuleNotFoundError) and missing:
+            # A missing import is an environment dependency gap, not an
+            # entitlement failure. Report the missing module name only —
+            # never str(exc), which can carry request URLs or keys.
+            print(f"POLYGON REST SNAPSHOT: missing Python module {missing!r} "
+                  f"({type(exc).__name__}). Runtime dependency gap, not an "
+                  "access/entitlement failure: declare the distribution that "
+                  "provides this module in the job environment (see "
+                  "docs/BRONZE_REFRESH_PLAN.md, 'Options snapshot runtime "
+                  "dependency'). Nothing was appended.")
+        else:
+            print("POLYGON REST SNAPSHOT: access probe FAILED "
+                  f"({type(exc).__name__}).")
+            print("No snapshot can be retrieved; the current snapshot coverage gap "
+                  "(2026-09-03 .. execution date) remains unrecoverable without a "
+                  "historical as-of endpoint. Nothing was appended.")
         snapshot = None
 
     print("\n" + "=" * 78)
@@ -984,9 +1011,9 @@ def main(argv):
         print(f"  snapshot : appended={snapshot['appended']:,} "
               f"candidate={snapshot['candidate']:,} new={snapshot['new']:,}")
     if daily is None or (daily and daily.get("failed", 0) > 0):
-        return 1
-    return 0
+        return _finish(1)
+    return _finish(0)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

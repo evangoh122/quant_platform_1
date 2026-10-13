@@ -13,6 +13,7 @@ Usage:
 import argparse
 import csv
 import io
+import os
 import sys
 import time
 from datetime import datetime, date, timedelta, timezone
@@ -456,7 +457,7 @@ def run_refresh(dry_run: bool, start_date: Optional[date] = None, end_date: Opti
     spark = _get_spark()
     if spark is None:
         print("[ERROR] Cannot obtain Spark session. Aborting.")
-        sys.exit(1)
+        return 1
 
     series_ids = list(SERIES_CONFIG.keys())
     existing_keys, max_dates, pre_count = _get_existing_keys(spark, FQN, series_ids)
@@ -583,6 +584,21 @@ def run_refresh(dry_run: bool, start_date: Optional[date] = None, end_date: Opti
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def _finish(code: int) -> int:
+    """Apply the entry-point exit policy after the refresh finishes.
+
+    Databricks job runners report ``SystemExit(0)`` as a FAILED task, so a
+    successful run under ``DATABRICKS_RUNTIME_VERSION`` must return to the
+    runner instead of exiting. Real failures still exit non-zero everywhere
+    and CLI exit codes are unchanged (0 on success, non-zero on failure).
+    """
+    if code:
+        sys.exit(code)
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        return 0
+    sys.exit(0)
+
+
 def main():
     parser = argparse.ArgumentParser(description="FRED Bronze Refresh")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -597,7 +613,7 @@ def main():
     end = date.fromisoformat(args.end_date) if args.end_date else None
 
     rc = run_refresh(dry_run=args.dry_run, start_date=start, end_date=end)
-    sys.exit(rc)
+    return _finish(rc)
 
 
 if __name__ == "__main__":

@@ -473,3 +473,241 @@ class TestDatasetConfig:
         from notebooks.refresh_bronze_cot import DATASETS
         tables = [ds["table"] for ds in DATASETS]
         assert tables[0] != tables[1]
+
+
+# =============================================================================
+# Spark acquisition (runtime-aware; no .serverless on plain SparkSession.builder)
+# =============================================================================
+
+class TestCotSparkAcquisition:
+    def test_ambient_session_when_databricks_runtime_set(self, monkeypatch):
+        """Inside a Databricks runtime use SparkSession.builder.getOrCreate()."""
+        import sys
+        import types
+
+        monkeypatch.setenv("DATABRICKS_RUNTIME_VERSION", "15.4")
+
+        calls = []
+
+        class FakeBuilder:
+            def getOrCreate(self):
+                calls.append("getOrCreate")
+                return "AMBIENT_SESSION"
+
+        class FakeSparkSession:
+            builder = FakeBuilder()
+
+        fake_pyspark = types.ModuleType("pyspark")
+        fake_sql = types.ModuleType("pyspark.sql")
+        fake_sql.SparkSession = FakeSparkSession
+        fake_pyspark.sql = fake_sql
+        monkeypatch.setitem(sys.modules, "pyspark", fake_pyspark)
+        monkeypatch.setitem(sys.modules, "pyspark.sql", fake_sql)
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        result = cot_mod._get_spark()
+        assert result == "AMBIENT_SESSION"
+        assert calls == ["getOrCreate"]
+
+    def test_connect_session_outside_runtime(self, monkeypatch):
+        """Outside the runtime create a serverless DatabricksSession."""
+        import sys
+        import types
+
+        monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
+
+        calls = []
+
+        class FakeBuilder:
+            def serverless(self, flag):
+                calls.append(("serverless", flag))
+                return self
+
+            def getOrCreate(self):
+                calls.append("getOrCreate")
+                return "CONNECT_SESSION"
+
+        class FakeDatabricksSession:
+            builder = FakeBuilder()
+
+        fake_dbx = types.ModuleType("databricks")
+        fake_connect = types.ModuleType("databricks.connect")
+        fake_connect.DatabricksSession = FakeDatabricksSession
+        monkeypatch.setitem(sys.modules, "databricks", fake_dbx)
+        monkeypatch.setitem(sys.modules, "databricks.connect", fake_connect)
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        result = cot_mod._get_spark()
+        assert result == "CONNECT_SESSION"
+        assert ("serverless", True) in calls
+
+    def test_never_calls_serverless_on_plain_spark_session_builder(self):
+        """Static scan: no ``SparkSession.builder.serverless`` in the module.
+
+        Plain ``SparkSession.builder`` has no ``.serverless`` attribute in the
+        Databricks runtime (AttributeError), so acquisition must be runtime
+        aware instead.
+        """
+        from pathlib import Path
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        src = Path(cot_mod.__file__).read_text(encoding="utf-8")
+        assert "SparkSession.builder.serverless" not in src
+        assert "DatabricksSession.builder.serverless(True)" in src
+
+
+# =============================================================================
+# _build_cot_headers: env -> Databricks secret, fail-closed, no value leaks
+# =============================================================================
+
+class TestBuildCotHeaders:
+    def test_env_wins_over_secret(self, monkeypatch):
+        """CFTC_USER_EMAIL from CLI/env is used and the secret is not read."""
+        monkeypatch.setenv("CFTC_USER_EMAIL", "env-reader@quantdesk.io")
+        secret_calls = []
+
+        def _fake_secret(key_name):
+            secret_calls.append(key_name)
+            return "secret-reader@quantdesk.io"
+
+        monkeypatch.setattr(
+            "notebooks.refresh_bronze_cot._get_secret", _fake_secret
+        )
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        headers = cot_mod._build_cot_headers()
+        assert headers == {
+            "User-Agent": "capstone-research (evangoh) env-reader@quantdesk.io"
+        }
+        assert secret_calls == []
+
+    def test_secret_fallback_when_env_empty(self, monkeypatch):
+        """Empty env falls back to scope evangoh_capstone key cftc_user_email."""
+        monkeypatch.delenv("CFTC_USER_EMAIL", raising=False)
+        seen = {}
+
+        def _fake_secret(key_name):
+            seen["key"] = key_name
+            return "ops-duty@quantdesk.io"
+
+        monkeypatch.setattr(
+            "notebooks.refresh_bronze_cot._get_secret", _fake_secret
+        )
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        headers = cot_mod._build_cot_headers()
+        assert headers["User-Agent"].endswith("ops-duty@quantdesk.io")
+        assert seen["key"] == "cftc_user_email"
+
+    def test_secret_read_via_dbutils_uses_scope_and_plaintext(self, monkeypatch):
+        """Notebook mode: dbutils.secrets.get(scope, key) returns plaintext."""
+        import notebooks.refresh_bronze_cot as cot_mod
+
+        seen = {}
+
+        class _Secrets:
+            def get(self, scope, key):
+                seen["scope"] = scope
+                seen["key"] = key
+                return "notebook-reader@quantdesk.io"
+
+        class _Dbutils:
+            secrets = _Secrets()
+
+        monkeypatch.setitem(cot_mod.__dict__, "dbutils", _Dbutils())
+        value = cot_mod._get_secret("cftc_user_email")
+        assert value == "notebook-reader@quantdesk.io"
+        assert seen == {"scope": "evangoh_capstone", "key": "cftc_user_email"}
+
+    def test_secret_read_via_sdk_decodes_base64(self, monkeypatch):
+        """CLI mode: WorkspaceClient().secrets.get_secret().value is base64."""
+        import base64
+        import sys
+        import types
+
+        import notebooks.refresh_bronze_cot as cot_mod
+
+        email = "sdk-reader@quantdesk.io"
+        seen = {}
+
+        class _GetSecretResponse:
+            value = base64.b64encode(email.encode("utf-8")).decode("ascii")
+
+        class _Secrets:
+            def get_secret(self, scope, key):
+                seen["scope"] = scope
+                seen["key"] = key
+                return _GetSecretResponse()
+
+        class _WorkspaceClient:
+            def __init__(self, profile=None):
+                seen["profile"] = profile
+                self.secrets = _Secrets()
+
+        fake_sdk = types.ModuleType("databricks.sdk")
+        fake_sdk.WorkspaceClient = _WorkspaceClient
+        monkeypatch.setitem(sys.modules, "databricks.sdk", fake_sdk)
+        monkeypatch.delitem(cot_mod.__dict__, "dbutils", raising=False)
+        value = cot_mod._get_secret("cftc_user_email")
+        assert value == email
+        assert seen["scope"] == "evangoh_capstone"
+        assert seen["key"] == "cftc_user_email"
+
+    def test_neither_env_nor_secret_raises(self, monkeypatch):
+        """Fail closed when neither source provides an email."""
+        monkeypatch.delenv("CFTC_USER_EMAIL", raising=False)
+
+        def _missing(key_name):
+            raise RuntimeError("secret unavailable")
+
+        monkeypatch.setattr(
+            "notebooks.refresh_bronze_cot._get_secret", _missing
+        )
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        with pytest.raises(ValueError, match="CFTC_USER_EMAIL must be set"):
+            cot_mod._build_cot_headers()
+
+    def test_placeholder_from_env_rejected(self, monkeypatch):
+        monkeypatch.setenv("CFTC_USER_EMAIL", "user@example.com")
+        import notebooks.refresh_bronze_cot as cot_mod
+        with pytest.raises(ValueError, match="CFTC_USER_EMAIL must be set"):
+            cot_mod._build_cot_headers()
+
+    def test_placeholder_from_secret_rejected(self, monkeypatch):
+        monkeypatch.delenv("CFTC_USER_EMAIL", raising=False)
+        monkeypatch.setattr(
+            "notebooks.refresh_bronze_cot._get_secret",
+            lambda key_name: "test@example.org",
+        )
+        import notebooks.refresh_bronze_cot as cot_mod
+        with pytest.raises(ValueError, match="CFTC_USER_EMAIL must be set"):
+            cot_mod._build_cot_headers()
+
+    def test_value_never_in_logs_or_exception_text(self, monkeypatch, capsys):
+        """Canary: the resolved email must not leak into logs or exceptions."""
+        canary = "canary-9f31c2@quantdesk.io"
+        monkeypatch.delenv("CFTC_USER_EMAIL", raising=False)
+        monkeypatch.setattr(
+            "notebooks.refresh_bronze_cot._get_secret", lambda key_name: canary
+        )
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        headers = cot_mod._build_cot_headers()
+        assert canary in headers["User-Agent"]  # by design, in the header only
+        out, err = capsys.readouterr()
+        assert canary not in out
+        assert canary not in err
+
+    def test_invalid_value_never_in_exception_text(self, monkeypatch, capsys):
+        """Canary: an invalid value must not be echoed in the error."""
+        canary = "canary-77aa@example.com"
+        monkeypatch.setenv("CFTC_USER_EMAIL", canary)
+
+        import notebooks.refresh_bronze_cot as cot_mod
+        with pytest.raises(ValueError) as excinfo:
+            cot_mod._build_cot_headers()
+        assert canary not in str(excinfo.value)
+        out, err = capsys.readouterr()
+        assert canary not in out
+        assert canary not in err

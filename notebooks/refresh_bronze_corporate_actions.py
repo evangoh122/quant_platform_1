@@ -37,10 +37,71 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-# Ensure repo root is on sys.path so `etl` is importable from notebooks/.
-_REPO_ROOT = str(Path(__file__).resolve().parents[1])
-if _REPO_ROOT not in sys.path:
+# Ensure the repo root is on sys.path so `etl` is importable from notebooks/.
+# Databricks notebook execution has no `__file__` (NameError), so resolution
+# is guarded: `globals().get("__file__") or sys.argv[0]` first, then the
+# deployed bundle layout (/Workspace/.../files) via the notebook path.
+
+
+def _notebook_workspace_file() -> str:
+    """Workspace file of this notebook when running as a Databricks notebook."""
+    dbutils_obj = globals().get("dbutils")
+    if dbutils_obj is None:
+        return ""
+    try:
+        ctx = dbutils_obj.notebook.entry_point.getDbutils().notebook().getContext()
+        return ctx.notebookPath().get() or ""
+    except Exception:
+        return ""
+
+
+def _repo_root() -> Optional[str]:
+    """Root directory that contains ``etl``; ``None`` when it cannot be found.
+
+    ``globals().get("__file__")`` covers normal CLI runs and
+    ``sys.argv[0]`` covers serverless ``spark_python_task``. Notebook mode
+    has neither usable, so the deployed bundle layout (``/Workspace/.../files``
+    with ``etl/`` next to ``notebooks/``) supplies the root from the
+    notebook path. Falls back safely when nothing resolves.
+    """
+    candidates = []
+    script = globals().get("__file__") or (sys.argv[0] if sys.argv else "")
+    if script:
+        candidates.append(script)
+    nb_file = _notebook_workspace_file()
+    if nb_file:
+        candidates.append(nb_file)
+    for candidate in candidates:
+        try:
+            root = Path(candidate).resolve().parents[1]
+        except (OSError, RuntimeError, IndexError):
+            continue
+        if (root / "etl").is_dir():
+            return str(root)
+    return None
+
+
+_REPO_ROOT = _repo_root()
+if _REPO_ROOT is not None and _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+
+def _ensure_etl_importable() -> None:
+    """Make ``etl`` importable, including notebook mode on a deployed bundle.
+
+    Re-resolves at call time (``dbutils`` may only be injected once the
+    notebook runs) and adds the deployed ``/Workspace/.../files`` root to
+    ``sys.path`` before re-raising a clear import failure.
+    """
+    try:
+        import etl  # noqa: F401
+        return
+    except ImportError:
+        pass
+    root = _repo_root()
+    if root is not None and root not in sys.path:
+        sys.path.insert(0, root)
+    import etl  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no Spark, no network)
@@ -114,6 +175,7 @@ def _resolve_cli_api_key() -> str:
 def _make_adapter(source: str, delay_seconds: float, max_retries: int, api_key: str = ""):
     """Create the appropriate adapter instance."""
     if source == "massive":
+        _ensure_etl_importable()
         from etl.corporate_actions import MassiveCorporateActionsSource
         return MassiveCorporateActionsSource(
             api_key=api_key,

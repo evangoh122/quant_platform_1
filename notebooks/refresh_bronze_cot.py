@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import base64
 import io
 import os
 import sys
@@ -34,15 +35,28 @@ T = None
 def _ensure_spark_imports():
     global SparkSession, DataFrame, F, T
     if SparkSession is None:
+        from pyspark.sql import SparkSession as _SS
         from pyspark.sql import functions as _F, types as _T
-        try:
-            from databricks.connect import DatabricksSession as _SS
-        except ImportError:
-            from pyspark.sql import SparkSession as _SS
         SparkSession = _SS
         DataFrame = _SS  # placeholder, actual DataFrame type resolved at runtime
         F = _F
         T = _T
+
+
+def _get_spark():
+    """Return a SparkSession for the current execution context.
+
+    Runtime-aware, same pattern as ``pipelines/_runtime.get_spark`` and
+    ``refresh_bronze_options._get_spark``: inside a Databricks runtime
+    (``DATABRICKS_RUNTIME_VERSION`` set) use the ambient session — plain
+    ``SparkSession.builder`` has no ``.serverless`` attribute there. Only
+    outside the runtime create a serverless ``DatabricksSession``.
+    """
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        from pyspark.sql import SparkSession
+        return SparkSession.builder.getOrCreate()
+    from databricks.connect import DatabricksSession
+    return DatabricksSession.builder.serverless(True).getOrCreate()
 
 
 # =============================================================================
@@ -69,10 +83,49 @@ DATASETS = [
 BASE_URL = "https://www.cftc.gov/files/dea/history"
 HTTP_TIMEOUT = 120
 
+SECRET_SCOPE = "evangoh_capstone"
+CFTC_EMAIL_SECRET_KEY = "cftc_user_email"
+
+
+def _get_secret(key_name: str) -> str:
+    """Read one Databricks secret (scope ``evangoh_capstone``).
+
+    Notebook mode uses ``dbutils.secrets.get`` (plaintext). Outside a
+    notebook the Databricks SDK is used and ``get_secret(...).value`` is
+    base64, so it is decoded here. Never log or print the returned value.
+    """
+    dbutils_obj = globals().get("dbutils")
+    if dbutils_obj is not None:
+        return dbutils_obj.secrets.get(scope=SECRET_SCOPE, key=key_name)
+    from databricks.sdk import WorkspaceClient
+    w = WorkspaceClient(profile=os.environ.get("DATABRICKS_CONFIG_PROFILE"))
+    raw = w.secrets.get_secret(SECRET_SCOPE, key_name).value
+    try:
+        return base64.b64decode(raw, validate=True).decode("utf-8")
+    except Exception:
+        return raw
+
+
+def _resolve_cftc_user_email() -> str:
+    """Contact email for the CFTC User-Agent: env first, then Databricks secret.
+
+    Resolution order: ``CFTC_USER_EMAIL`` (CLI/env), then secret scope
+    ``evangoh_capstone`` key ``cftc_user_email``. Never log or print the
+    value.
+    """
+    email = os.getenv("CFTC_USER_EMAIL", "").strip()
+    if email:
+        return email
+    try:
+        return _get_secret(CFTC_EMAIL_SECRET_KEY).strip()
+    except Exception:
+        return ""
+
+
 def _build_cot_headers() -> dict:
     """Build CFTC User-Agent headers. Fail closed on missing email."""
     import re
-    email = os.getenv("CFTC_USER_EMAIL", "")
+    email = _resolve_cftc_user_email()
     if not email:
         raise ValueError(
             "CFTC_USER_EMAIL must be set to a valid contact email. "
@@ -554,6 +607,21 @@ def refresh_dataset(
 # CLI
 # =============================================================================
 
+def _finish(code: int) -> int:
+    """Apply the entry-point exit policy after the refresh finishes.
+
+    Databricks job runners report ``SystemExit(0)`` as a FAILED task, so a
+    successful run under ``DATABRICKS_RUNTIME_VERSION`` must return to the
+    runner instead of exiting. Real failures still exit non-zero everywhere
+    and CLI exit codes are unchanged (0 on success, non-zero on failure).
+    """
+    if code:
+        sys.exit(code)
+    if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+        return 0
+    sys.exit(0)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="CFTC TFF Bronze Refresh — append-only incremental"
@@ -583,7 +651,7 @@ def main():
     end_date = args.end_date
 
     _ensure_spark_imports()
-    spark = SparkSession.builder.serverless(True).getOrCreate()
+    spark = _get_spark()
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG_SCHEMA}")
 
     mode_label = "DRY-RUN" if dry_run else "WRITE"
@@ -650,9 +718,10 @@ def main():
     any_failed = any(r["status"] == "FAILED" for r in all_reports)
     if any_failed:
         print("\nOne or more datasets FAILED. Exiting with error.")
-        sys.exit(1)
+        return _finish(1)
 
     print(f"\nCFTC TFF refresh complete ({mode_label}).")
+    return _finish(0)
 
 
 if __name__ == "__main__":

@@ -672,3 +672,119 @@ def test_anti_join_new_passes_genuinely_new_keys():
     keys = [(r["contract_symbol"], r["event_ts"], r["timespan"]) for r in result]
     assert ("sym_B", "t2", "day") in keys
     assert len(result) == 2  # sym_A (deduped) + sym_B; sym_C excluded
+
+
+# ---------------------------------------------------------------------------
+# Snapshot lane: missing runtime module (the ModuleNotFoundError cause)
+# ---------------------------------------------------------------------------
+
+class _FakeResult:
+    def __init__(self, row):
+        self._row = row
+
+    def collect(self):
+        return [self._row]
+
+
+class _FakeSpark:
+    def sql(self, query):
+        if "COUNT(*)" in query:
+            return _FakeResult({"n": 0})
+        return _FakeResult({"m": None})
+
+
+def _run_main_with_polygon_failure(monkeypatch, exc):
+    """Run main(--dry-run) with everything mocked except the polygon probe."""
+    monkeypatch.setattr(m, "_get_spark", lambda: _FakeSpark())
+    monkeypatch.setattr(m, "_load_secrets", lambda: ("ak", "sk", "pk"))
+    monkeypatch.setattr(m, "_detect_s3", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(
+        m, "_make_polygon_client", lambda key: (_ for _ in ()).throw(exc)
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        m.main(["--dry-run"])
+    assert excinfo.value.code == 1
+
+
+def test_polygon_import_path_reproduces_module_not_found(monkeypatch):
+    """Repro (no network): with `polygon` absent, the probe import fails.
+
+    The 2026-10-13 serverless dry-run hit exactly this: `polygon` (the
+    `polygon-api-client` distribution) is not installed in the job
+    environment, so `from polygon import RESTClient` raises ModuleNotFoundError.
+    """
+    import sys
+
+    class _BlockPolygon:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "polygon" or fullname.startswith("polygon."):
+                raise ModuleNotFoundError(
+                    f"No module named {fullname!r}", name="polygon"
+                )
+            return None
+
+    for key in [k for k in list(sys.modules) if k == "polygon" or k.startswith("polygon.")]:
+        monkeypatch.delitem(sys.modules, key)
+    monkeypatch.setattr(sys, "meta_path", [_BlockPolygon(), *sys.meta_path])
+
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        m._make_polygon_client("not-a-real-key")
+    assert excinfo.value.name == "polygon"
+
+
+def test_snapshot_probe_reports_missing_module_by_name(monkeypatch, capsys):
+    """A missing import must be reported as a dependency gap naming the module.
+
+    Regression for the 2026-10-13 misclassification: ModuleNotFoundError was
+    reported as an access-probe/entitlement failure without naming the module.
+    """
+    exc = ModuleNotFoundError("No module named 'polygon'", name="polygon")
+    _run_main_with_polygon_failure(monkeypatch, exc)
+    out, _ = capsys.readouterr()
+    assert "missing Python module 'polygon'" in out
+    assert "Runtime dependency gap" in out
+    assert "POLYGON REST SNAPSHOT: access probe FAILED" not in out
+    assert "coverage gap" not in out
+
+
+def test_snapshot_probe_does_not_leak_exception_text(monkeypatch, capsys):
+    """Only the module name is printed — never str(exc) (can carry URLs/keys)."""
+    canary = "CANARY-KEY-91f0"
+    exc = ModuleNotFoundError(
+        f"No module named 'polygon' (probing https://api.polygon.io/v3?apiKey={canary})",
+        name="polygon",
+    )
+    _run_main_with_polygon_failure(monkeypatch, exc)
+    out, _ = capsys.readouterr()
+    assert canary not in out
+    assert "No module named 'polygon'" not in out
+
+
+def test_snapshot_probe_keeps_access_failure_text_for_other_errors(monkeypatch, capsys):
+    """Non-import failures keep the access-probe classification."""
+    _run_main_with_polygon_failure(monkeypatch, RuntimeError("probe failed"))
+    out, _ = capsys.readouterr()
+    assert "POLYGON REST SNAPSHOT: access probe FAILED (RuntimeError)." in out
+    assert "coverage gap" in out
+    assert "missing Python module" not in out
+
+
+def test_polygon_api_client_declared_for_ci_and_workers():
+    """The distribution importing as `polygon` stays declared where installs run.
+
+    `polygon-api-client` is imported by notebooks/refresh_bronze_options.py
+    and etl/polygon_client.py; requirements-dev.txt is what CI and developer
+    environments install (requirements*.txt). Removing the declaration
+    reintroduces the missing-module class of failure.
+    """
+    from pathlib import Path
+
+    req = (Path(m.__file__).resolve().parents[1] / "requirements-dev.txt")
+    lines = [
+        line.split("#")[0].strip()
+        for line in req.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(line.startswith("polygon-api-client") for line in lines), (
+        "polygon-api-client must stay declared in requirements-dev.txt "
+        "(import name `polygon`)"
+    )

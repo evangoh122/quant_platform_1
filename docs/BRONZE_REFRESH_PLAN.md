@@ -59,6 +59,35 @@ The four builders must not edit any shared file, including:
 
 Dependencies used by these lanes—Spark, `boto3`, `requests`, and standard-library CSV/ZIP handling—already appear in the existing notebook code. If a missing dependency is discovered, the affected builder must report it instead of editing a shared requirements file.
 
+### Options snapshot runtime dependency (Databricks serverless)
+
+`notebooks/refresh_bronze_options.py` imports the Polygon REST SDK lazily in the
+snapshot lane (`from polygon import RESTClient`; PyPI distribution
+`polygon-api-client`, also used by `etl/polygon_client.py`). The distribution is
+declared in `requirements-dev.txt`, which CI and local development install, but
+**Databricks serverless environments do not install `requirements*.txt`**: a
+`spark_python_task`/`notebook_task` only sees packages declared in the job
+environment (`resources/jobs.yml` → `environments.*.spec.dependencies`, the
+mechanism `sec_rag_ingest` uses for `beautifulsoup4`/`lxml`) or installed at
+runtime (`%pip install`).
+
+A live dry-run on 2026-10-13 therefore failed the snapshot probe with
+`ModuleNotFoundError` for `polygon`, which the run reported as an access-probe
+failure. The lane now reports this class of failure as
+`POLYGON REST SNAPSHOT: missing Python module 'polygon'` — a runtime dependency
+gap, not an entitlement failure.
+
+To run the options snapshot lane on serverless, declare
+`polygon-api-client>=1.12.0` in the environment dependencies of whichever job
+executes `notebooks/refresh_bronze_options.py`, or run
+`%pip install polygon-api-client` before an ad-hoc notebook run. The daily lane
+additionally relies on `boto3`/`botocore`, which Databricks Runtime provides
+preinstalled but which are not declared in any `requirements*.txt`; add them to
+the same environment dependencies if a runtime image stops shipping them.
+
+Dependency manifests in this repo: `requirements.txt` (Databricks Apps runtime),
+`requirements-dev.txt` (CI/pipeline/ML, includes `polygon-api-client`).
+
 Each test file must be self-contained and test pure parsing/key-selection helpers without importing a notebook that immediately starts a live ingestion.
 
 ---

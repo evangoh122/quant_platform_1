@@ -10,6 +10,7 @@ clock, and sleeper.
 import datetime as dt
 import math
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -2147,3 +2148,131 @@ def test_notebook_task_targets_have_databricks_header():
     for p in paths:
         first = p.read_text(encoding="utf-8").splitlines()[0]
         assert first.strip() == "# Databricks notebook source", f"{p} is a notebook_task target without the header"
+
+
+# ---------------------------------------------------------------------------
+# 11. Notebook mode: no __file__ + deployed-path etl import
+# ---------------------------------------------------------------------------
+
+def _make_fake_dbutils(notebook_path):
+    """Minimal fake dbutils exposing only the notebook-context path chain."""
+
+    class _Value:
+        def get(self):
+            return notebook_path
+
+    class _Ctx:
+        def notebookPath(self):
+            return _Value()
+
+    class _NotebookApi:
+        def getContext(self):
+            return _Ctx()
+
+    class _InnerDbutils:
+        def notebook(self):
+            return _NotebookApi()
+
+    class _EntryPoint:
+        def getDbutils(self):
+            return _InnerDbutils()
+
+    class _Notebook:
+        entry_point = _EntryPoint()
+
+    class _Dbutils:
+        notebook = _Notebook()
+
+    return _Dbutils()
+
+
+class TestNotebookFileGuardAndEtlImport:
+    """`Path(__file__)` is a NameError in a Databricks notebook; resolution
+    must be guarded and ``etl`` must resolve from the deployed bundle layout
+    (/Workspace/.../files) in notebook mode and from the repo root in CLI mode.
+    """
+
+    NB_REL = Path("notebooks") / "refresh_bronze_corporate_actions.py"
+
+    def _exec_module(self, extra_globals=None):
+        import sys
+
+        nb_path = Path(__file__).resolve().parents[2] / self.NB_REL
+        src = nb_path.read_text(encoding="utf-8")
+        g = {"__name__": "refresh_bronze_corporate_actions_nbguard"}
+        assert "__file__" not in g
+        if extra_globals:
+            g.update(extra_globals)
+        exec(compile(src, str(nb_path), "exec"), g)
+        return g
+
+    def test_module_imports_without_file(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
+        g = self._exec_module()
+        assert callable(g["main"])
+        assert callable(g["_repo_root"])
+        # Falls back safely: nothing resolvable -> no root, no crash.
+        assert g["_REPO_ROOT"] is None
+
+    def test_etl_importable_in_notebook_mode_via_deployed_layout(
+        self, monkeypatch, tmp_path
+    ):
+        import sys
+
+        files_root = tmp_path / "files"
+        (files_root / "notebooks").mkdir(parents=True)
+        etl_dir = files_root / "etl"
+        etl_dir.mkdir()
+        (etl_dir / "__init__.py").write_text("", encoding="utf-8")
+        (etl_dir / "corporate_actions.py").write_text(
+            "class MassiveCorporateActionsSource:\n"
+            "    def __init__(self, api_key='', delay_seconds=1.0,\n"
+            "                 max_retries=3, **kwargs):\n"
+            "        self.api_key = api_key\n",
+            encoding="utf-8",
+        )
+        deployed_nb = files_root / "notebooks" / "refresh_bronze_corporate_actions.py"
+        deployed_nb.write_text("# Databricks notebook source\n", encoding="utf-8")
+
+        saved_etl = {
+            k: sys.modules[k]
+            for k in list(sys.modules)
+            if k == "etl" or k.startswith("etl.")
+        }
+        for k in saved_etl:
+            monkeypatch.delitem(sys.modules, k)
+        monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
+
+        saved_path = list(sys.path)
+        try:
+            g = self._exec_module(
+                {"dbutils": _make_fake_dbutils(str(deployed_nb))}
+            )
+            assert g["_REPO_ROOT"] == str(files_root)
+            adapter = g["_make_adapter"]("massive", 0.5, 2, api_key="k")
+            assert type(adapter).__name__ == "MassiveCorporateActionsSource"
+            loaded_from = sys.modules["etl.corporate_actions"].__file__
+            assert loaded_from.startswith(str(files_root)), (
+                f"etl.corporate_actions must come from the deployed files "
+                f"root, got {loaded_from}"
+            )
+        finally:
+            sys.path[:] = saved_path
+
+    def test_etl_importable_in_cli_mode_from_repo_root(self):
+        import importlib.util
+
+        nb_path = Path(__file__).resolve().parents[2] / self.NB_REL
+        spec = importlib.util.spec_from_file_location(
+            "refresh_bronze_corporate_actions_cliroot", nb_path
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        root = mod._repo_root()
+        assert root == str(nb_path.resolve().parents[1])
+        assert (Path(root) / "etl").is_dir()
+        adapter = mod._make_adapter("massive", 0.5, 2, api_key="k")
+        assert isinstance(adapter, MassiveCorporateActionsSource)
