@@ -343,6 +343,48 @@ class TestConfirmWrite:
         assert write_fn.calls == []
         assert "write_rejected" in audit.actions
 
+    def test_viewer_confirm_forbidden_and_audited(self, monkeypatch, registry, write_fn, audit):
+        """A viewer (role≠trader) with a valid token gets 403; no execution."""
+        from fastapi.testclient import TestClient
+
+        from api.deps import get_current_user
+        from api.main import create_app
+
+        viewer = AppUser(
+            user_id="viewer@example.com", role="viewer", authenticated=True,
+        )
+        app = create_app()
+        app.dependency_overrides[get_current_user] = lambda: viewer
+        with TestClient(app) as viewer_client:
+            resp = viewer_client.post("/api/agent/chat", json={
+                "confirm_token": _token(user_id="viewer@example.com"),
+            })
+
+        assert resp.status_code == 403
+        assert write_fn.calls == []
+        rejected = [e for e in audit.entries if e.action == "write_rejected"]
+        assert rejected and rejected[-1].validation_outcome == "role_denied"
+
+    def test_unauthenticated_confirm_401(self, monkeypatch, registry, write_fn, audit):
+        """An unauthenticated principal (APP_ENV=dev fallback) gets 401; no execution."""
+        from fastapi.testclient import TestClient
+
+        from api.deps import get_current_user
+        from api.main import create_app
+
+        unauth = AppUser(
+            user_id="dev-user", role="viewer", authenticated=False,
+        )
+        app = create_app()
+        app.dependency_overrides[get_current_user] = lambda: unauth
+        with TestClient(app) as unauth_client:
+            resp = unauth_client.post("/api/agent/chat", json={
+                "confirm_token": _token(user_id="dev-user"),
+            })
+
+        assert resp.status_code == 401
+        assert write_fn.calls == []
+
     def test_no_llm_call_on_confirm(self, monkeypatch, client, registry, write_fn):
         def _boom():
             raise AssertionError("LLM runtime must not run on confirm")

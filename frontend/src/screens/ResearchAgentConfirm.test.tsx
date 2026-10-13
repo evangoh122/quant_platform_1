@@ -232,4 +232,61 @@ describe('ResearchAgent confirm-and-write', () => {
     });
     expect(screen.queryByTestId('confirm-saved')).not.toBeInTheDocument();
   });
+
+  it('renders Added <symbol> to watchlist for a watchlist confirm', async () => {
+    const watchlistPending = {
+      ...pendingResponse,
+      pending_action: {
+        tool: 'add_to_watchlist',
+        args: { symbol: 'AMD' },
+        token: 'watchlist-token',
+        expires_at: '2026-10-13T11:00:00+00:00',
+        summary: 'add_to_watchlist for AMD',
+      },
+    };
+    const watchlistConfirm = {
+      ...confirmResponse,
+      write_result: {
+        note_id: null,
+        symbol: 'AMD',
+        status: 'added',
+        replay: false,
+        trace_id: 'trace-wl',
+      },
+    };
+    let notesCalls = 0;
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/agent/chat' && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string) as { confirm_token?: string };
+        if (body.confirm_token) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(watchlistConfirm) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(watchlistPending) });
+      }
+      if (url === '/api/notes') {
+        notesCalls += 1;
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(emptyNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    render(<ResearchAgent />);
+    await user.type(
+      screen.getByPlaceholderText('Ask the research agent…'),
+      'Add AMD to watchlist',
+    );
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('pending-confirm-card')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Confirm write' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('confirm-saved')).toHaveTextContent('Added AMD to watchlist');
+    });
+    expect(screen.getByTestId('confirm-saved')).toHaveTextContent('trace-wl');
+  });
 });

@@ -231,8 +231,10 @@ export function ResearchAgent() {
                         aria-live="polite"
                         className="mt-2 rounded-md border border-[var(--success-fill)] bg-success-fill p-2 text-xs text-[var(--on-success)]"
                       >
-                        Saved. Note id: {String(m.writeResult.note_id ?? '')} · Trace id:{' '}
-                        {m.writeResult.trace_id}
+                        {m.pendingAction?.tool === 'add_to_watchlist'
+                          ? `Added ${String(m.writeResult.symbol ?? '')} to watchlist`
+                          : `Saved note ${String(m.writeResult.note_id ?? '')}`}{' '}
+                        · Trace id: {m.writeResult.trace_id}
                       </div>
                     ) : (
                       <>
