@@ -155,8 +155,9 @@ class TestAgentChatEndpoint:
         assert data["available"] is True
         assert len(data["tool_calls"]) == 2
 
-    def test_write_without_authorization_denied(self, client):
-        """Write without authorization is denied — reply indicates the issue."""
+    def test_write_without_authorization_denied(self, client, monkeypatch):
+        """Write without authorization and no confirm secret is refused (fail closed)."""
+        monkeypatch.delenv("AGENT_CONFIRM_SECRET", raising=False)
         transport = FakeModelTransport([
             json.dumps({"action": "retrieve", "tool": "get_latest_signal", "args": {"symbol": "NVDA"}}),
             json.dumps({

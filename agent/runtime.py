@@ -22,6 +22,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from loguru import logger
@@ -55,6 +56,7 @@ REASON_BUDGET_EXCEEDED = "budget_exceeded"
 REASON_SYMBOL_DRIFT = "symbol_drift"
 REASON_NO_EVIDENCE = "no_evidence"
 REASON_WRITE_NOT_AUTHORIZED = "write_not_authorized"
+REASON_CONFIRMATION_UNAVAILABLE = "confirmation_unavailable"
 REASON_WRITE_FIRST_ACTION = "write_first_action"
 REASON_PUBLIC_DEMO = "public_demo"
 REASON_ROLE_DENIED = "role_denied"
@@ -221,6 +223,15 @@ def _sanitize_for_audit(text: str, max_len: int = 200) -> str:
     return text
 
 
+def _proposal_summary(tool: str, args: dict) -> str:
+    """Short human-readable summary of a proposed write (user-facing)."""
+    symbol = args.get("symbol", "")
+    if tool == "save_research_note":
+        note = str(args.get("note", "")).strip().replace("\n", " ")[:120]
+        return f"save_research_note for {symbol}: {note}"
+    return f"{tool} for {symbol}"
+
+
 # Rule 4: action/tool/args key-value lines at line start (case-insensitive).
 # "action" only counts when its value is an action type, so prose such as
 # "Action: monitor China exposure" is still accepted as a final answer.
@@ -296,6 +307,7 @@ class AgentResult:
     model_calls: int
     available: bool = True
     error_code: Optional[str] = None
+    pending_action: Optional[Dict[str, Any]] = None
 
 
 class AgentRuntime:
@@ -535,34 +547,9 @@ class AgentRuntime:
                                     available=True, error_code=REASON_NO_EVIDENCE,
                                 )
 
-            # Write authorization check
+            # Write guards. Deterministic order: public demo → role →
+            # authorization/confirmation. A model proposal is never authority.
             if isinstance(action, WriteAction):
-                if write_authorization is None:
-                    self._audit_sink.emit(AuditEntry(
-                        trace_id=tid, step=step, action="write_not_authorized",
-                        tool=action.tool, validation_outcome=REASON_WRITE_NOT_AUTHORIZED,
-                        result_status="refused", endpoint=response.endpoint,
-                        latency_ms=response.latency_ms,
-                    ))
-                    return AgentResult(
-                        reply="Write operations are not authorized for this request.",
-                        tool_calls=tool_calls, sources=sources,
-                        trace_id=tid, steps=step, model_calls=model_calls,
-                        available=True, error_code=REASON_WRITE_NOT_AUTHORIZED,
-                    )
-                if write_authorization.tool != action.tool:
-                    self._audit_sink.emit(AuditEntry(
-                        trace_id=tid, step=step, action="write_not_authorized",
-                        tool=action.tool, validation_outcome=REASON_WRITE_NOT_AUTHORIZED,
-                        result_status="refused", endpoint=response.endpoint,
-                        latency_ms=response.latency_ms,
-                    ))
-                    return AgentResult(
-                        reply=f"Write tool {action.tool!r} is not authorized for this request.",
-                        tool_calls=tool_calls, sources=sources,
-                        trace_id=tid, steps=step, model_calls=model_calls,
-                        available=True, error_code=REASON_WRITE_NOT_AUTHORIZED,
-                    )
                 # Public demo guard
                 from api.demo import is_public_demo
                 if is_public_demo():
@@ -594,6 +581,77 @@ class AgentRuntime:
                         tool_calls=tool_calls, sources=sources,
                         trace_id=tid, steps=step, model_calls=model_calls,
                         available=True, error_code=REASON_ROLE_DENIED,
+                    )
+                # Authorization / two-step confirmation
+                if write_authorization is None:
+                    # No request-scoped write authority: propose the exact write
+                    # for user confirmation and execute NOTHING. When no signing
+                    # secret is configured, fail closed with no proposal.
+                    from agent.confirmation import (
+                        DEFAULT_TTL_SECONDS,
+                        ConfirmationError,
+                        issue_token,
+                    )
+                    proposal_args = action.args.model_dump()
+                    now = time.time()
+                    try:
+                        token = issue_token(
+                            user_id, action.tool, proposal_args, tid, now=now,
+                        )
+                    except ConfirmationError:
+                        self._audit_sink.emit(AuditEntry(
+                            trace_id=tid, step=step,
+                            action="confirmation_unavailable",
+                            tool=action.tool,
+                            validation_outcome=REASON_CONFIRMATION_UNAVAILABLE,
+                            result_status="refused", endpoint=response.endpoint,
+                            latency_ms=response.latency_ms,
+                        ))
+                        return AgentResult(
+                            reply="Write operations are not authorized for this request.",
+                            tool_calls=tool_calls, sources=sources,
+                            trace_id=tid, steps=step, model_calls=model_calls,
+                            available=True,
+                            error_code=REASON_CONFIRMATION_UNAVAILABLE,
+                        )
+                    expires_at = datetime.fromtimestamp(
+                        int(now) + DEFAULT_TTL_SECONDS, tz=timezone.utc,
+                    ).isoformat()
+                    pending = {
+                        "tool": action.tool,
+                        "args": proposal_args,
+                        "token": token,
+                        "expires_at": expires_at,
+                        "summary": _proposal_summary(action.tool, proposal_args),
+                    }
+                    self._audit_sink.emit(AuditEntry(
+                        trace_id=tid, step=step, action="write_proposed",
+                        tool=action.tool, validation_outcome=REASON_VALID,
+                        result_status="pending", endpoint=response.endpoint,
+                        latency_ms=response.latency_ms,
+                    ))
+                    return AgentResult(
+                        reply=(
+                            "I prepared a write action but have not executed it: "
+                            f"{pending['summary']}. Confirm the write to execute "
+                            "exactly this action, or cancel to discard it."
+                        ),
+                        tool_calls=tool_calls, sources=sources,
+                        trace_id=tid, steps=step, model_calls=model_calls,
+                        available=True, error_code=None, pending_action=pending,
+                    )
+                if write_authorization.tool != action.tool:
+                    self._audit_sink.emit(AuditEntry(
+                        trace_id=tid, step=step, action="write_not_authorized",
+                        tool=action.tool, validation_outcome=REASON_WRITE_NOT_AUTHORIZED,
+                        result_status="refused", endpoint=response.endpoint,
+                        latency_ms=response.latency_ms,
+                    ))
+                    return AgentResult(
+                        reply=f"Write tool {action.tool!r} is not authorized for this request.",
+                        tool_calls=tool_calls, sources=sources,
+                        trace_id=tid, steps=step, model_calls=model_calls,
+                        available=True, error_code=REASON_WRITE_NOT_AUTHORIZED,
                     )
                 write_used = True
 

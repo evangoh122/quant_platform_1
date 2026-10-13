@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { api } from '../api/client';
-import type { ChatResponse } from '../api/types';
+import type { ChatResponse, PendingAction, ResearchNote, WriteResult } from '../api/types';
 import { Card } from '../components/Card';
 import { LoadingState } from '../components/LoadingState';
 import { ExecutionTrace } from '../components/ExecutionTrace';
@@ -26,6 +26,10 @@ interface Message {
   text: string;
   toolCalls: ChatResponse['tool_calls'];
   available: boolean;
+  pendingAction?: PendingAction | null;
+  writeResult?: WriteResult | null;
+  confirmError?: string | null;
+  confirmDismissed?: boolean;
 }
 
 interface AttemptTrace {
@@ -41,6 +45,9 @@ export function ResearchAgent() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentAttempt, setCurrentAttempt] = useState<AttemptTrace | null>(null);
+  const [savedNotes, setSavedNotes] = useState<ResearchNote[]>([]);
+  const [confirmingIndex, setConfirmingIndex] = useState<number | null>(null);
+  const confirmInFlight = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const secList = (symbols as { sec: string[] }).sec;
@@ -51,6 +58,20 @@ export function ResearchAgent() {
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: motion ? 'auto' : 'smooth' });
   }, [messages, sending]);
+
+  async function refreshSavedNotes() {
+    try {
+      const envelope = await api.notes();
+      setSavedNotes(Array.isArray(envelope.data) ? envelope.data : []);
+    } catch {
+      setSavedNotes([]);
+    }
+  }
+
+  useEffect(() => {
+    void refreshSavedNotes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function send(text?: string) {
     const message = (text ?? input).trim();
@@ -65,7 +86,16 @@ export function ResearchAgent() {
       const resp = await api.chat(message);
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', text: resp.reply, toolCalls: resp.tool_calls, available: resp.available },
+        {
+          role: 'assistant',
+          text: resp.reply,
+          toolCalls: resp.tool_calls,
+          available: resp.available,
+          pendingAction: resp.pending_action ?? null,
+          writeResult: null,
+          confirmError: null,
+          confirmDismissed: false,
+        },
       ]);
       setCurrentAttempt({ toolCalls: resp.tool_calls, reply: resp.reply, available: resp.available });
     } catch (e) {
@@ -75,6 +105,39 @@ export function ResearchAgent() {
     } finally {
       setSending(false);
     }
+  }
+
+  async function confirmPending(index: number) {
+    const target = messages[index];
+    if (!target?.pendingAction || confirmInFlight.current) return;
+    confirmInFlight.current = true;
+    setConfirmingIndex(index);
+    setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, confirmError: null } : m)));
+    try {
+      const resp = await api.confirmWrite(target.pendingAction.token);
+      if (!resp.write_result) {
+        throw new Error(resp.reply || 'The write was not confirmed by the server.');
+      }
+      setMessages((prev) =>
+        prev.map((m, i) => (i === index ? { ...m, writeResult: resp.write_result } : m)),
+      );
+      await refreshSavedNotes();
+    } catch (e) {
+      setMessages((prev) =>
+        prev.map((m, i) =>
+          i === index ? { ...m, confirmError: e instanceof Error ? e.message : String(e) } : m,
+        ),
+      );
+    } finally {
+      confirmInFlight.current = false;
+      setConfirmingIndex(null);
+    }
+  }
+
+  function cancelPending(index: number) {
+    setMessages((prev) =>
+      prev.map((m, i) => (i === index ? { ...m, pendingAction: null, confirmDismissed: true } : m)),
+    );
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -127,6 +190,90 @@ export function ResearchAgent() {
                 {m.role === 'assistant' && m.toolCalls.some((tc) => tc.name === 'save_research_note' && tc.ok && hasValidNoteId(tc)) && (
                   <div data-tour="lakebase-write" className="mt-2 rounded-md border border-[var(--success-fill)] bg-success-fill p-2 text-xs text-[var(--on-success)]">
                     Research note saved to Lakebase.
+                  </div>
+                )}
+                {m.role === 'assistant' && m.pendingAction && !m.confirmDismissed && (
+                  <div
+                    data-testid="pending-confirm-card"
+                    role="group"
+                    aria-label="Confirm proposed write"
+                    className="mt-2 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface-raised)] p-3"
+                  >
+                    <div className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                      Proposed write — not executed yet
+                    </div>
+                    <p className="mt-1 text-sm text-[var(--text-primary)]">
+                      <span className="font-medium">Tool:</span> {m.pendingAction.tool}
+                    </p>
+                    <p className="text-sm text-[var(--text-primary)]">
+                      <span className="font-medium">Symbol:</span>{' '}
+                      {String(m.pendingAction.args.symbol ?? '')}
+                    </p>
+                    {typeof m.pendingAction.args.note === 'string' && (
+                      <div className="mt-2">
+                        <div className="text-xs font-medium text-[var(--text-muted)]">Note text</div>
+                        <pre
+                          data-testid="pending-note-text"
+                          className="whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-primary)]"
+                        >
+                          {m.pendingAction.args.note}
+                        </pre>
+                      </div>
+                    )}
+                    {Array.isArray(m.pendingAction.args.evidence_ids) &&
+                      m.pendingAction.args.evidence_ids.length > 0 && (
+                        <p data-testid="pending-evidence-ids" className="mt-2 text-xs text-[var(--text-muted)]">
+                          Evidence ids:{' '}
+                          {(m.pendingAction.args.evidence_ids as unknown[]).map(String).join(', ')}
+                        </p>
+                      )}
+                    {m.writeResult ? (
+                      <div
+                        data-testid="confirm-saved"
+                        role="status"
+                        aria-live="polite"
+                        className="mt-2 rounded-md border border-[var(--success-fill)] bg-success-fill p-2 text-xs text-[var(--on-success)]"
+                      >
+                        {m.pendingAction?.tool === 'add_to_watchlist'
+                          ? `Added ${String(m.writeResult.symbol ?? '')} to watchlist`
+                          : `Saved note ${String(m.writeResult.note_id ?? '')}`}{' '}
+                        · Trace id: {m.writeResult.trace_id}
+                      </div>
+                    ) : (
+                      <>
+                        {m.confirmError && (
+                          <div
+                            data-testid="confirm-error"
+                            role="alert"
+                            className="mt-2 rounded-md border border-[var(--negative)] bg-negative-dim p-2 text-sm text-[var(--negative)]"
+                          >
+                            {m.confirmError}
+                          </div>
+                        )}
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            data-testid="confirm-write"
+                            aria-label="Confirm write"
+                            disabled={confirmingIndex === i}
+                            onClick={() => void confirmPending(i)}
+                            className="min-h-[44px] min-w-[44px] rounded-md bg-[var(--accent-fill)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] disabled:opacity-50"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="cancel-write"
+                            aria-label="Cancel write"
+                            disabled={confirmingIndex === i}
+                            onClick={() => cancelPending(i)}
+                            className="min-h-[44px] min-w-[44px] rounded-md border border-[var(--border-strong)] px-4 py-2 text-sm text-[var(--text-secondary)] disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -196,6 +343,25 @@ export function ResearchAgent() {
           />
         </div>
       </div>
+
+      <Card title="Saved notes" subtitle="Research notes saved for your account">
+        {savedNotes.length === 0 ? (
+          <p data-testid="saved-notes-empty" className="text-sm text-[var(--text-muted)]">
+            No saved notes yet.
+          </p>
+        ) : (
+          <ul data-testid="saved-notes" className="space-y-2">
+            {savedNotes.map((n) => (
+              <li key={n.note_id} className="rounded-md border border-[var(--border)] p-2 text-sm">
+                <div className="text-xs text-[var(--text-muted)]">
+                  {n.symbol} · {n.created_at} · {n.note_id}
+                </div>
+                <p className="mt-1 whitespace-pre-wrap text-[var(--text-primary)]">{n.note_text}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
     </div>
   );
 }

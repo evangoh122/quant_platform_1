@@ -105,8 +105,26 @@ export interface ToolCall {
   ok: boolean;
 }
 
+export interface PendingAction {
+  tool: string;
+  args: Record<string, unknown>;
+  token: string;
+  expires_at: string;
+  summary: string;
+}
+
+export interface WriteResult {
+  note_id?: string | null;
+  symbol?: string | null;
+  status: string;
+  replay: boolean;
+  trace_id: string;
+  watchlist_id?: string | null;
+}
+
 export interface ChatRequest {
-  message: string;
+  message?: string;
+  confirm_token?: string;
 }
 
 export interface ChatResponse {
@@ -115,6 +133,15 @@ export interface ChatResponse {
   sources: Record<string, unknown>[];
   available: boolean;
   empty: boolean;
+  pending_action?: PendingAction | null;
+  write_result?: WriteResult | null;
+}
+
+export interface ResearchNote {
+  note_id: string;
+  symbol: string;
+  note_text: string;
+  created_at: string;
 }
 
 export interface DependencyStatus {

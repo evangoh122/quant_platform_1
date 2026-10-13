@@ -189,6 +189,14 @@ The app reads these through the standard env-var names in `.env.example`
 (if an LLM is added later) must follow the same path: `DEEPSEEK_API_KEY`,
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `POLYGON_API_KEY`, etc.
 
+`AGENT_CONFIRM_SECRET` (chat confirm-and-write proposal signing) follows the
+same rule: generate a random value, store it in a secret scope, and inject it
+into the app env through the app config — never commit a value. `app.yaml` and
+`resources/app.yml` currently carry no secret-scope references at all, so this
+is documented here rather than as an env entry. If the variable is unset the
+agent simply refuses to issue write proposals (fail closed; there is no
+default secret).
+
 **Never** put a `databricks` personal access token, OAuth client secret, or
 Lakebase password in `app.yaml`, `requirements-*.txt`, or any committed file.
 

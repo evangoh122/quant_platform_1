@@ -322,9 +322,11 @@ class TestToolException:
 
 # ── write authorization ──────────────────────────────────────────────────────
 class TestWriteAuthorization:
-    def test_viewer_write_denied(self):
-        """Viewer cannot write."""
+    def test_viewer_write_denied(self, monkeypatch):
+        """Viewer cannot write: the role guard refuses before any proposal."""
+        monkeypatch.delenv("AGENT_CONFIRM_SECRET", raising=False)
         retrieval_fn = FakeRetrievalFn({"get_latest_signal": {"direction": "LONG"}})
+        write_fn = FakeWriteFn()
         model_responses = [
             json.dumps({"action": "retrieve", "tool": "get_latest_signal", "args": {"symbol": "NVDA"}}),
             json.dumps({
@@ -334,7 +336,9 @@ class TestWriteAuthorization:
             }),
         ]
 
-        runtime, sink = _make_runtime(model_responses, retrieval_fn=retrieval_fn)
+        runtime, sink = _make_runtime(
+            model_responses, retrieval_fn=retrieval_fn, write_fn=write_fn,
+        )
         result = runtime.run(
             "Research NVDA and save a note",
             user_id="viewer_1",
@@ -343,11 +347,15 @@ class TestWriteAuthorization:
         )
 
         assert result.available is True
-        assert result.error_code == "write_not_authorized"
+        assert result.error_code == "role_denied"
+        assert result.pending_action is None
+        assert write_fn.call_count == 0
 
-    def test_degraded_write_denied(self):
-        """Degraded user (Lakebase unavailable) cannot write."""
+    def test_write_without_authorization_proposes(self, monkeypatch):
+        """Unauthenticated write proposal: pending_action returned, nothing executes."""
+        monkeypatch.setenv("AGENT_CONFIRM_SECRET", "unit-test-secret")
         retrieval_fn = FakeRetrievalFn({"get_latest_signal": {"direction": "LONG"}})
+        write_fn = FakeWriteFn()
         model_responses = [
             json.dumps({"action": "retrieve", "tool": "get_latest_signal", "args": {"symbol": "NVDA"}}),
             json.dumps({
@@ -357,18 +365,24 @@ class TestWriteAuthorization:
             }),
         ]
 
-        runtime, sink = _make_runtime(model_responses, retrieval_fn=retrieval_fn)
-        # No write_authorization means no write attempt
+        runtime, sink = _make_runtime(
+            model_responses, retrieval_fn=retrieval_fn, write_fn=write_fn,
+        )
         result = runtime.run(
             "Research NVDA and save a note",
-            user_id="degraded_user",
-            role="viewer",
+            user_id="trader_1",
+            role="trader",
             write_authorization=None,
         )
 
-        # Without write_authorization, the runtime blocks the write
+        # The write is proposed for confirmation — never executed in-turn.
         assert result.available is True
-        assert result.error_code == "write_not_authorized"
+        assert result.error_code is None
+        assert result.pending_action is not None
+        assert result.pending_action["tool"] == "save_research_note"
+        assert result.pending_action["args"]["symbol"] == "NVDA"
+        assert result.pending_action["token"]
+        assert write_fn.call_count == 0
 
     def test_write_first_action_blocked(self):
         """Write cannot be the first action."""

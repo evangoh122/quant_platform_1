@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 T = TypeVar("T")
 
@@ -97,6 +97,14 @@ class WatchlistItem(BaseModel):
     created_at: str = ""
 
 
+class ResearchNote(BaseModel):
+    """A research note saved by the agent for the authenticated user."""
+    note_id: str = ""
+    symbol: str = ""
+    note_text: str = ""
+    created_at: str = ""
+
+
 class Order(BaseModel):
     order_id: str
     symbol: str
@@ -144,8 +152,43 @@ class WriteAuthorization(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=4000)
+    """Chat request: a message turn, or a write confirmation.
+
+    ``message`` is required unless ``confirm_token`` is present (a confirm
+    request carries no message — the server never re-runs the LLM on confirm).
+    ``confirm_token`` and ``write_authorization`` are mutually exclusive.
+    Unknown fields are rejected: the client never supplies write arguments or
+    idempotency keys — those come only from the signed proposal token.
+    """
+    model_config = {"extra": "forbid"}
+
+    message: str = Field(default="", max_length=4000)
     write_authorization: Optional[WriteAuthorization] = None
+    confirm_token: Optional[str] = Field(default=None, max_length=4096)
+
+    @model_validator(mode="after")
+    def _validate_shape(self) -> "ChatRequest":
+        if self.confirm_token is not None and self.write_authorization is not None:
+            raise ValueError(
+                "confirm_token and write_authorization are mutually exclusive"
+            )
+        if self.confirm_token is None and len(self.message) < 1:
+            raise ValueError("message is required")
+        return self
+
+
+class PendingAction(BaseModel):
+    """A proposed write awaiting user confirmation.
+
+    The token authorizes exactly one write (tool + args + server-generated
+    idempotency key). The client echoes the token back unchanged at confirm
+    time and never supplies arguments or keys itself.
+    """
+    tool: str = ""
+    args: Dict[str, Any] = Field(default_factory=dict)
+    token: str = ""
+    expires_at: str = ""
+    summary: str = ""
 
 
 class ToolCall(BaseModel):
@@ -161,6 +204,8 @@ class ChatResponse(BaseModel):
     sources: List[Dict[str, Any]] = Field(default_factory=list)
     available: bool = True
     empty: bool = True
+    pending_action: Optional[PendingAction] = None
+    write_result: Optional[Dict[str, Any]] = None
 
 
 # ── order intents ─────────────────────────────────────────────────────────────
