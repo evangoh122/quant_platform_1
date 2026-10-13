@@ -35,7 +35,7 @@ too complex for a routine check (record the reason):
    interfaces, or touches 3+ top-level packages.
 2. **Database schemas and data contracts**: `db/migrations/**`,
    `db/schema_contract.py`, `api/schemas.py`, table/view definitions under
-   `bronze/`, `silver/`, `gold/`, `sql/`.
+   `silver/`, `gold/`, `sql/`.
 3. **Payment-gateway equivalent** — order placement, approvals, guardrails and
    broker/execution code: `api/routes/orders.py`, `agent/guardrails.py`,
    `agent/tools_write.py`, `execution/**`, anything handling credentials,
@@ -136,8 +136,8 @@ gh pr comment <PR_NUMBER> --body "@coderabbitai review"
 ```
 
 The workflow `.github/workflows/coderabbit-trigger.yml` already posts
-`@coderabbitai review` when a PR is opened, reopened, or marked ready — do NOT
-also comment manually at open. Comment `@coderabbitai review` manually only
+`@coderabbitai review` when a non-draft PR is opened or reopened, or a draft is
+marked ready — do NOT also comment manually at open. Comment `@coderabbitai review` manually only
 after pushing commits that have passed DeepSeek and the selected final gate, and only if no
 automatic request (open, reopen, ready-for-review) already covers the current
 head SHA. Use
