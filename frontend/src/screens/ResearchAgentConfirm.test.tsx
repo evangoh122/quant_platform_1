@@ -208,6 +208,49 @@ describe('ResearchAgent confirm-and-write', () => {
     expect(screen.queryByTestId('confirm-saved')).not.toBeInTheDocument();
   });
 
+  it('treats a 200 confirm without write_result as a failure (server reply as error)', async () => {
+    const noResult = {
+      ...confirmResponse,
+      write_result: null,
+    };
+    vi.stubGlobal('fetch', mockFetch({ confirmResponse: noResult }));
+    const user = await sendQuestion();
+
+    await user.click(screen.getByRole('button', { name: 'Confirm write' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Confirmed. The proposed write has been executed.',
+      );
+    });
+    expect(screen.queryByTestId('confirm-saved')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved note note-/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Added .* to watchlist/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Trace id/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm write' })).toBeInTheDocument();
+  });
+
+  it('falls back to the default error text when write_result and reply are missing', async () => {
+    const noResult = {
+      ...confirmResponse,
+      reply: '',
+      write_result: null,
+    };
+    vi.stubGlobal('fetch', mockFetch({ confirmResponse: noResult }));
+    const user = await sendQuestion();
+
+    await user.click(screen.getByRole('button', { name: 'Confirm write' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The write was not confirmed by the server.',
+      );
+    });
+    expect(screen.queryByTestId('confirm-saved')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved note note-/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm write' })).toBeInTheDocument();
+  });
+
   it('Cancel discards the token client-side and sends nothing', async () => {
     const fetchMock = mockFetch();
     vi.stubGlobal('fetch', fetchMock);

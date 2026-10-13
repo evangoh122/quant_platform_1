@@ -115,8 +115,11 @@ export function ResearchAgent() {
     setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, confirmError: null } : m)));
     try {
       const resp = await api.confirmWrite(target.pendingAction.token);
+      if (!resp.write_result) {
+        throw new Error(resp.reply || 'The write was not confirmed by the server.');
+      }
       setMessages((prev) =>
-        prev.map((m, i) => (i === index ? { ...m, writeResult: resp.write_result ?? null } : m)),
+        prev.map((m, i) => (i === index ? { ...m, writeResult: resp.write_result } : m)),
       );
       await refreshSavedNotes();
     } catch (e) {

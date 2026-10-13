@@ -19,6 +19,7 @@ Failure modes are distinguishable by safe reason code:
   * malformed — model returned invalid JSON or unknown action
   * write_not_authorized — write tool mismatch (or confirmation unavailable)
   * confirmation_unavailable — no AGENT_CONFIRM_SECRET configured (fail closed)
+  * unauthenticated — caller lacks a trusted identity (401 before token checks)
   * role_denied — user lacks required role
   * public_demo — write attempted in demo mode
   * execution_failed — tool raised an exception
@@ -95,13 +96,26 @@ def _audit(action: str, tool: str, outcome: str, status: str, trace_id: str = ""
 def _confirm_write(body: ChatRequest, user: AppUser) -> ChatResponse:
     """Execute exactly the write authorized by ``body.confirm_token``.
 
-    Order (fail-closed): degraded → token verification → public-demo/role
-    re-checks → execution. Every rejected confirm emits a ``write_rejected``
-    audit entry; a successful confirm emits ``write_confirmed``. No LLM call.
+    Order (fail-closed): authentication → degraded → token verification →
+    public-demo/role re-checks → execution. Every rejected confirm emits a
+    ``write_rejected`` audit entry; a successful confirm emits
+    ``write_confirmed``. No LLM call.
     """
     from agent.confirmation import ConfirmationError, verify_token
+    from api.demo import is_public_demo
 
-    # 1. Degraded Lakebase: writes are impossible, fail fast.
+    # 1. Authentication before any token feedback: an unauthenticated caller
+    #    must never learn whether a token verifies. The fixed public-demo
+    #    principal is refused by the public-demo re-check in step 4 instead,
+    #    keeping public-demo behaviour unchanged.
+    if not is_public_demo() and not user.authenticated:
+        _audit("write_rejected", "", "unauthenticated", "refused")
+        raise HTTPException(
+            status_code=401,
+            detail="authentication required",
+        )
+
+    # 2. Degraded Lakebase: writes are impossible, fail fast.
     if user.degraded:
         _audit("write_rejected", "", "degraded", "refused")
         raise HTTPException(
@@ -109,7 +123,7 @@ def _confirm_write(body: ChatRequest, user: AppUser) -> ChatResponse:
             detail="Account services unavailable; write operations require Lakebase",
         )
 
-    # 2. Verify the signed proposal for this principal only.
+    # 3. Verify the signed proposal for this principal only.
     try:
         payload = verify_token(body.confirm_token or "", user.user_id)
     except ConfirmationError as exc:
@@ -119,9 +133,7 @@ def _confirm_write(body: ChatRequest, user: AppUser) -> ChatResponse:
             detail=_CONFIRM_ERROR_DETAIL.get(exc.code, "invalid confirmation token"),
         ) from None
 
-    # 3. Re-check public-demo and role on the execute path.
-    from api.demo import is_public_demo
-
+    # 4. Re-check public-demo and role on the execute path.
     if is_public_demo():
         _audit("write_rejected", payload.tool, "public_demo", "refused", payload.trace_id)
         raise HTTPException(
@@ -134,7 +146,7 @@ def _confirm_write(body: ChatRequest, user: AppUser) -> ChatResponse:
         _audit("write_rejected", payload.tool, "role_denied", "refused", payload.trace_id)
         raise exc
 
-    # 4. Execute exactly what was proposed: token args + server idempotency key.
+    # 5. Execute exactly what was proposed: token args + server idempotency key.
     args: Dict[str, Any] = dict(payload.args)
     args["idempotency_key"] = payload.idempotency_key
     try:

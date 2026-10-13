@@ -214,6 +214,20 @@ def _token(user_id: str = USER_ID, *, now: Optional[float] = None, ttl: int = 60
     )
 
 
+def _tamper_token(token: str) -> str:
+    """Return *token* with its payload rewritten but the old signature kept."""
+    import base64
+
+    payload_b64, signature_b64 = token.split(".")
+    pad = "=" * (-len(payload_b64) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64 + pad))
+    payload["args"]["note"] = "Tampered note text"
+    tampered_payload = base64.urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return f"{tampered_payload}.{signature_b64}"
+
+
 # ── confirm path ─────────────────────────────────────────────────────────────
 class TestConfirmWrite:
     def test_confirm_executes_exactly_once(self, client, registry, write_fn, audit):
@@ -384,6 +398,113 @@ class TestConfirmWrite:
 
         assert resp.status_code == 401
         assert write_fn.calls == []
+
+    def test_unauthenticated_garbage_token_401_before_verification(
+        self, monkeypatch, registry, write_fn, audit,
+    ):
+        """Unauthenticated + garbage token -> 401 before token verification.
+
+        The old order verified the token first and answered 400, leaking
+        token validity to an unauthenticated caller.
+        """
+        from fastapi.testclient import TestClient
+
+        from api.deps import get_current_user
+        from api.main import create_app
+
+        unauth = AppUser(
+            user_id="dev-user", role="viewer", authenticated=False,
+        )
+        app = create_app()
+        app.dependency_overrides[get_current_user] = lambda: unauth
+        with TestClient(app) as unauth_client:
+            resp = unauth_client.post("/api/agent/chat", json={
+                "confirm_token": "not-a-token",
+            })
+
+        assert resp.status_code == 401
+        assert write_fn.calls == []
+        rejected = [e for e in audit.entries if e.action == "write_rejected"]
+        assert rejected and rejected[-1].validation_outcome == "unauthenticated"
+        assert rejected[-1].tool == ""
+
+    def test_unauthenticated_tampered_token_401_before_verification(
+        self, monkeypatch, registry, write_fn, audit,
+    ):
+        """Unauthenticated + tampered token -> 401 (old: 400 bad_signature)."""
+        from fastapi.testclient import TestClient
+
+        from api.deps import get_current_user
+        from api.main import create_app
+
+        unauth = AppUser(
+            user_id="dev-user", role="viewer", authenticated=False,
+        )
+        app = create_app()
+        app.dependency_overrides[get_current_user] = lambda: unauth
+        with TestClient(app) as unauth_client:
+            resp = unauth_client.post("/api/agent/chat", json={
+                "confirm_token": _tamper_token(_token(user_id="dev-user")),
+            })
+
+        assert resp.status_code == 401
+        assert write_fn.calls == []
+        rejected = [e for e in audit.entries if e.action == "write_rejected"]
+        assert rejected and rejected[-1].validation_outcome == "unauthenticated"
+        assert rejected[-1].tool == ""
+
+    def test_unauthenticated_valid_token_401_audited_unauthenticated(
+        self, monkeypatch, registry, write_fn, audit,
+    ):
+        """Unauthenticated + valid token -> 401 with a tool-less audit entry.
+
+        The write is never executed and the audit reason is ``unauthenticated``
+        (the old order audited ``role_denied`` with the token's tool name).
+        """
+        from fastapi.testclient import TestClient
+
+        from api.deps import get_current_user
+        from api.main import create_app
+
+        unauth = AppUser(
+            user_id="dev-user", role="viewer", authenticated=False,
+        )
+        app = create_app()
+        app.dependency_overrides[get_current_user] = lambda: unauth
+        with TestClient(app) as unauth_client:
+            resp = unauth_client.post("/api/agent/chat", json={
+                "confirm_token": _token(user_id="dev-user"),
+            })
+
+        assert resp.status_code == 401
+        assert write_fn.calls == []
+        rejected = [e for e in audit.entries if e.action == "write_rejected"]
+        assert rejected and rejected[-1].validation_outcome == "unauthenticated"
+        assert rejected[-1].tool == ""
+
+    def test_degraded_bad_token_503_before_token_verification(
+        self, monkeypatch, registry, write_fn, audit,
+    ):
+        """Degraded user + garbage token -> 503 before token verification."""
+        from fastapi.testclient import TestClient
+
+        from api.deps import get_current_user
+        from api.main import create_app
+
+        degraded = AppUser(
+            user_id=USER_ID, role="trader", authenticated=True, degraded=True,
+        )
+        app = create_app()
+        app.dependency_overrides[get_current_user] = lambda: degraded
+        with TestClient(app) as degraded_client:
+            resp = degraded_client.post("/api/agent/chat", json={
+                "confirm_token": "not-a-token",
+            })
+
+        assert resp.status_code == 503
+        assert write_fn.calls == []
+        rejected = [e for e in audit.entries if e.action == "write_rejected"]
+        assert rejected and rejected[-1].validation_outcome == "degraded"
 
     def test_no_llm_call_on_confirm(self, monkeypatch, client, registry, write_fn):
         def _boom():
