@@ -16,6 +16,10 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+            dependencies:
+              - "loguru>=0.7.0"
+              - "python-dotenv>=1.0.0"
+              - "pyyaml>=6.0"
 
     corporate_action_refresh:
       name: quant-platform-corporate-action-refresh-${bundle.target}
