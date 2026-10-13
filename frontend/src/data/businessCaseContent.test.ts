@@ -19,7 +19,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PINNED_SHA256 = 'a1e11de2136d466d91022e818726fbd8a4d81ad3d20fee9ddf5d2cc21ee74912';
+const PINNED_SHA256 = '9269e24359fdc955794fc55bdeb18e6b01df20e403cbee6c3604d0c6568cdc64';
 
 describe('business case content lock', () => {
   it('frontend/src/data/businessCase.ts matches the pinned SHA-256 (copy changes require Sol+Opus re-authoring and re-pinning)', () => {

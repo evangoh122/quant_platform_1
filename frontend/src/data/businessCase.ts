@@ -45,6 +45,13 @@ export interface KeyLine {
 }
 
 export interface Overview {
+  diagram: {
+    heading: string;
+    caption: string;
+    alt: string;
+    statusNotes: string[];
+    asOf: string;
+  };
   eyebrow: string;
   title: string;
   governingThought: string;
@@ -217,6 +224,17 @@ export const KEY_LINE: KeyLine = {
 // ── Page 1: Overview ─────────────────────────────────────────────────────────
 
 export const OVERVIEW: Overview = {
+  diagram: {
+    heading: 'APIs feed Bronze, Silver and Gold for the app; Lakebase feeds Delta analytics.',
+    caption: 'Follow the dashed flow lines from left to right: external sources, the lakehouse, then the app. The Lakebase loop below returns operational events through the outbox and CDC consumer to Delta analytics.',
+    alt: 'External APIs feed the Databricks Lakehouse through Bronze, Silver and Gold. The Databricks App (React, FastAPI, an agent, warehouse access and SEC retrieval) reads Gold and writes watchlists, orders and validated agent notes to Lakebase. Lakebase events pass through a transactional outbox and CDC consumer into Delta analytics, which the app reads.',
+    statusNotes: [
+      'The streaming (DLT) bundle is built but not deployed.',
+      'Agent writes run through the API today; in-chat confirmation is designed, not built.',
+      'Green fill marks minimal, new components.',
+    ],
+    asOf: '2026-10-05',
+  },
   eyebrow: 'Business case · Overview',
   title: 'Quant Platform delivers governed, point-in-time equity research without claiming a trading edge.',
   governingThought:
