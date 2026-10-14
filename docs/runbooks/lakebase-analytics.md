@@ -79,6 +79,31 @@ errors (`raise ... from None`): the message carries only the exception type
 name — never a URL, password or token — and no credential text remains
 reachable through `__cause__`/`__context__`.
 
+## Single-runner lock
+
+The runner enforces a real single-runner lock across **both** entry points
+(the scheduled job and manual CLI runs — `max_concurrent_runs: 1` covers only
+scheduled runs):
+
+- On startup, `main()` takes a Postgres **SESSION-level** advisory lock with
+  `SELECT pg_try_advisory_lock(...)` using the module constant
+  `RUNNER_LOCK_KEY` (a fixed 64-bit key derived from the string
+  `lakebase_analytics`), on the same **DIRECT (non-pooled)** connection the
+  pipeline uses (`open_lakebase_connection`; never on a `psycopg_pool` pooled
+  connection — a pooled connection would not hold the session lock).
+- If the lock is **not** acquired, the run logs `another runner holds the
+  lock; exiting without claiming events` and **exits 0 cleanly** without
+  claiming any outbox events and without marking anything failed. This is not
+  an error: the other runner processes the events.
+- On every exit path the lock is released with `pg_advisory_unlock` in a
+  `finally` (it is also released when the connection closes).
+
+Why the lock is needed: `claim_batch` keeps `FOR UPDATE SKIP LOCKED` row locks
+only until commit, while `delivered_at` stays NULL until the whole pipeline
+succeeds — without the advisory lock a second runner could claim the same
+events and two delete+insert recomputes of the same dates could overwrite each
+other (a stale snapshot winning, both marking delivered).
+
 ## How to check `analytics_cdc_state`
 
 Each successful run writes a row to `analytics_cdc_state` with:
@@ -108,6 +133,14 @@ ORDER BY completed_at DESC LIMIT 5;
 - **Delivery confirmation**: events are marked `delivered_at` ONLY after the
   full pipeline (Delta MERGE + analytics recompute) succeeds. A crash before
   confirmation leaves events re-claimable.
+- **State write after delivery**: the success row in `analytics_cdc_state` is
+  written after `mark_delivered` has committed and **outside** the
+  delivery-failure handler. If that state write fails, the run logs a warning
+  naming only the exception class (e.g. `record_state failed after delivery
+  (RuntimeError); events stay delivered`) and **does not fail the run** and
+  **never calls `mark_failed`** — delivered events must not be reverted and no
+  misleading error is recorded for them. Failures *before* `mark_delivered`
+  still call `mark_failed` and leave the events re-claimable.
 
 ## How to replay
 
@@ -175,7 +208,9 @@ WHERE delivered_at IS NULL;
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `LAKEBASE_URL not set` (old behavior) | Running old code | Upgrade to current version |
-| `Lakebase connection failed` | Credential mint failed | Check Databricks auth / CLI |
+| `Lakebase credential mint failed` (also `Lakebase credential mint failed via SDK`, `Lakebase credential mint timed out` — from `db/lakebase.py`) | Token mint failed: SDK/CLI/permissions, or `databricks-sdk < 0.56.0` | Check Databricks auth / CLI / instance permissions; raise the `databricks-sdk` floor to `>= 0.56.0` |
+| `Lakebase connection failed` (from `pipelines/lakebase_analytics.py` — the connect step, after the token mint succeeded) | Connect step failed: network / host / role / SSL | Check network reachability, `LAKEBASE_HOST`, database role, and SSL mode |
 | High `source_target_lag_s` | Batch size too small or job paused | Increase `--max-batches` |
 | `idle` state, no events | Outbox empty | Normal if no writes occurred |
+| `another runner holds the lock` | A second runner (scheduled or manual) is active | Normal: the second run exits 0 and the active runner processes the events |
 | Repeated retries | Transient DB/Delta failure | Check job logs in Databricks |
