@@ -71,6 +71,13 @@ metrics:
     source_table: gold_ohlcv_features
     price_adjustment: unadjusted
     unadjusted_reason: "These existing intraday features use raw silver_ohlcv close; exclude corporate-action boundaries from downstream use."
+  log_return_N:
+    formula: "LN(close[t] / NULLIF(close[t-N], 0))"
+    variants: [log_return_1m, log_return_5m, log_return_15m, log_return_30m]
+    source_table: gold_ohlcv_features
+    price_adjustment: unadjusted
+    unadjusted_reason: "These existing intraday features use raw silver_ohlcv close; exclude corporate-action boundaries from downstream use."
+    note: "Same (symbol, session-day) windows as return_N. NULL when the lagged bar is missing or the close ratio is non-positive (LN is undefined there); equals LN(1 + return_N) wherever defined."
   rolling_realized_volatility:
     formula: "STDDEV_SAMP(return_1m) over the trailing N bars"
     variants: [rvol_5m, rvol_15m, rvol_30m]
