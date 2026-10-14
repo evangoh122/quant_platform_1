@@ -68,6 +68,16 @@ DEFAULT_BATCH_SIZE = int(os.getenv("CDC_BATCH_SIZE", "5000"))
 CHANGE_EVENTS_TABLE = "lakebase_change_events"
 STATE_TABLE = "analytics_cdc_state"
 
+# Single-runner lock key for the Postgres SESSION-level advisory lock acquired
+# in main() via pg_try_advisory_lock (see acquire_runner_lock).  A fixed 64-bit
+# integer derived from the string 'lakebase_analytics': the first 8 bytes of
+# its SHA-256 digest read big-endian and signed, so the key always fits
+# PostgreSQL's bigint advisory-lock argument and every entry point (scheduled
+# job, manual CLI run) agrees on one key without configuration:
+#   int.from_bytes(hashlib.sha256(b"lakebase_analytics").digest()[:8],
+#                  "big", signed=True)
+RUNNER_LOCK_KEY = 1238305642791536675
+
 # Order status → funnel stage mapping.
 # Each status transition produces exactly one stage for the order's UTC date.
 # An update that changes status produces a stage for the NEW status only
@@ -451,6 +461,36 @@ def mark_failed(conn: Any, event_ids: List[int], error: str) -> None:
     conn.commit()
 
 
+# ── single-runner advisory lock ──────────────────────────────────────────────
+
+def acquire_runner_lock(conn: Any) -> bool:
+    """Try to take the single-runner lock on the given connection.
+
+    Executes ``SELECT pg_try_advisory_lock(%s)`` with ``RUNNER_LOCK_KEY`` on
+    the caller's DIRECT (non-pooled) Postgres connection.  The lock is
+    SESSION-level: it survives commits/rollbacks of the connection and is
+    released by ``release_runner_lock`` or when the connection closes.
+
+    Returns True when this runner holds the lock.  A False return is not an
+    error — another runner (scheduled job or manual CLI run) is processing the
+    outbox and will handle the events.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT pg_try_advisory_lock(%s)", (RUNNER_LOCK_KEY,))
+    row = cur.fetchone()
+    return bool(row[0]) if row is not None else False
+
+
+def release_runner_lock(conn: Any) -> None:
+    """Release the single-runner lock taken by ``acquire_runner_lock``.
+
+    No-op when the lock is not held by this session.  The lock is also released
+    automatically when the connection closes.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT pg_advisory_unlock(%s)", (RUNNER_LOCK_KEY,))
+
+
 # ── Delta I/O ────────────────────────────────────────────────────────────────
 
 def _fqn(catalog: str, schema: str, table: str) -> str:
@@ -654,16 +694,27 @@ def run_pipeline(spark: Any, conn: Any, catalog: str, schema: str,
         #    both succeed.  A crash before this point leaves events re-claimable.
         mark_delivered(conn, eids)
 
-        # 8. Record state + log lag
-        lag = (datetime.now(timezone.utc) - events[-1].occurred_at).total_seconds()
-        log.info("source-target lag: %.1fs", lag)
-        record_state(spark, run_id, max_eid, 0, lag, "success", catalog, schema)
-
     except Exception as exc:
         log.error("pipeline failed: %s", exc)
         mark_failed(conn, eids, str(exc))
         record_state(spark, run_id, 0, len(events), 0.0, "error", catalog, schema)
         raise
+
+    # 8. Record success state + log lag.  This runs AFTER mark_delivered has
+    #    committed: a state-write failure must NOT re-enter the delivery-failure
+    #    handler (mark_failed would revert the already-delivered events and
+    #    record a misleading error) and must NOT fail the run.  Policy: log a
+    #    warning with the exception class name only (no exception text) and
+    #    treat the batch as delivered.
+    lag = (datetime.now(timezone.utc) - events[-1].occurred_at).total_seconds()
+    log.info("source-target lag: %.1fs", lag)
+    try:
+        record_state(spark, run_id, max_eid, 0, lag, "success", catalog, schema)
+    except Exception as exc:  # noqa: BLE001 — must not revert delivered events
+        log.warning(
+            "record_state failed after delivery (%s); events stay delivered",
+            type(exc).__name__,
+        )
 
     return len(events) >= batch_size
 
@@ -846,9 +897,26 @@ def main(
     conn = (open_connection or open_lakebase_connection)()
 
     try:
-        batches = run_batches(spark, conn, args.catalog, args.schema,
-                              args.batch_size, args.max_batches)
-        log.info("pipeline complete (batches=%d)", batches)
+        # Single-runner lock: a Postgres SESSION-level advisory lock
+        # (pg_try_advisory_lock) on this same DIRECT (non-pooled) connection.
+        # claim_batch's FOR UPDATE SKIP LOCKED row locks are released at commit
+        # while delivered_at stays NULL until the pipeline succeeds, so without
+        # this lock a second runner (the scheduled job or a manual CLI run —
+        # max_concurrent_runs covers only scheduled runs) could claim the same
+        # events and two delete+insert recomputes could overwrite each other.
+        if not acquire_runner_lock(conn):
+            log.info(
+                "another runner holds the lock; exiting without claiming events"
+            )
+            return
+        try:
+            batches = run_batches(spark, conn, args.catalog, args.schema,
+                                  args.batch_size, args.max_batches)
+            log.info("pipeline complete (batches=%d)", batches)
+        finally:
+            # Released here on every exit path (also released when the
+            # connection closes).
+            release_runner_lock(conn)
     finally:
         conn.close()
 

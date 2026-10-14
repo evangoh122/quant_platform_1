@@ -36,6 +36,7 @@ from pipelines.lakebase_analytics import (
     run_pipeline,
     DEFAULT_MAX_BATCHES,
 )
+import pipelines.lakebase_analytics as _la_mod
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -241,6 +242,23 @@ class FakeCursor:
 
     def execute(self, sql: str, params: tuple = ()) -> None:
         sql = sql.strip()
+        self._conn._executed.append(sql)
+        self._conn._params.append(tuple(params))
+
+        # -- runner lock: SELECT pg_try_advisory_lock(%s)
+        if "pg_try_advisory_lock" in sql:
+            key = params[0] if params else None
+            self._conn._lock_attempts.append(key)
+            acquired = bool(self._conn._advisory_lock_acquired)
+            self._rows = [_FakeRowWrapper({"pg_try_advisory_lock": acquired})]
+            return
+
+        # -- runner lock release: SELECT pg_advisory_unlock(%s)
+        if "pg_advisory_unlock" in sql:
+            self._conn._lock_releases.append(params[0] if params else None)
+            self._rows = []
+            return
+
         # -- claim_batch: UPDATE ... SET attempt_count = attempt_count + 1
         #    WHERE event_id IN (SELECT ... delivered_at IS NULL ...) RETURNING ...
         if "attempt_count = attempt_count + 1" in sql:
@@ -295,9 +313,16 @@ class FakeCursor:
 class FakeConn:
     """In-memory Postgres connection tracking analytics_outbox state."""
 
-    def __init__(self, outbox_rows: List[Dict[str, Any]]):
+    def __init__(self, outbox_rows: List[Dict[str, Any]], *,
+                 advisory_lock_acquired: bool = True):
         self._outbox = [dict(r) for r in outbox_rows]
         self._committed = False
+        self._advisory_lock_acquired = advisory_lock_acquired
+        self._executed: List[str] = []
+        self._params: List[tuple] = []
+        self._lock_attempts: List[Any] = []
+        self._lock_releases: List[Any] = []
+        self.closed = False
 
     def cursor(self) -> FakeCursor:
         return FakeCursor(self)
@@ -306,7 +331,7 @@ class FakeConn:
         self._committed = True
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 # ── open_lakebase_connection tests ──────────────────────────────────────────
@@ -888,3 +913,202 @@ class TestPysparkImportGuard:
                     del sys.modules[k]
             sys.modules.update(saved)
             importlib.reload(mod)
+
+# ── single-runner advisory lock tests ────────────────────────────────────────
+
+def _lock_outbox_row(event_id: int = 70, pk: str = "a70",
+                     occurred: str = "2025-10-01T10:00:00+00:00") -> Dict[str, Any]:
+    return {
+        "event_id": event_id, "source_table": "agent_actions",
+        "source_pk": pk, "operation": "insert",
+        "before_payload": None,
+        "after_payload": json.dumps({
+            "user_id": "u1", "tool_name": "search",
+            "action_type": "read", "status": "success",
+        }),
+        "occurred_at": _dt(occurred),
+        "delivered_at": None, "attempt_count": 0, "last_error": None,
+    }
+
+
+class TestRunnerLock:
+    """main() must hold a session-level advisory lock for the whole run."""
+
+    _ARGV = ["--catalog", "cat", "--schema", "sch", "--max-batches", "1"]
+
+    def test_lock_not_acquired_exits_cleanly_without_claiming(
+            self, monkeypatch, caplog):
+        """pg_try_advisory_lock False -> exit 0, no claim, no mark_failed,
+        unlock not attempted."""
+        conn = FakeConn([_lock_outbox_row()], advisory_lock_acquired=False)
+        spark = FakeSpark()
+        claim_mock = MagicMock(return_value=[])
+        mark_failed_mock = MagicMock()
+        monkeypatch.setattr(_la_mod, "claim_batch", claim_mock)
+        monkeypatch.setattr(_la_mod, "mark_failed", mark_failed_mock)
+
+        with caplog.at_level(logging.INFO):
+            result = _la_mod.main(
+                self._ARGV,
+                spark_factory=lambda: spark,
+                open_connection=lambda: conn,
+            )
+
+        assert result is None  # clean exit 0
+        claim_mock.assert_not_called()
+        mark_failed_mock.assert_not_called()
+        assert not any("attempt_count" in s for s in conn._executed)
+        assert not any("delivered_at" in s for s in conn._executed)
+        assert not any("pg_advisory_unlock" in s for s in conn._executed)
+        assert conn._lock_attempts == [_la_mod.RUNNER_LOCK_KEY]
+        assert conn._lock_releases == []
+        assert "another runner holds the lock" in caplog.text
+        assert conn.closed
+
+    def test_lock_acquired_unlocked_in_finally_when_run_raises(self):
+        """pg_try_advisory_lock True + run_batches raising -> unlock in finally."""
+        conn = FakeConn([_lock_outbox_row()], advisory_lock_acquired=True)
+
+        class FailOnMerge(FakeSpark):
+            def sql(self, text):
+                if "MERGE" in text.upper() and "lakebase_change_events" in text:
+                    raise RuntimeError("deliberate failure")
+                return super().sql(text)
+
+        with pytest.raises(RuntimeError, match="deliberate failure"):
+            _la_mod.main(
+                self._ARGV,
+                spark_factory=lambda: FailOnMerge(),
+                open_connection=lambda: conn,
+            )
+
+        assert any("pg_advisory_unlock" in s for s in conn._executed)
+        assert conn._lock_releases == [_la_mod.RUNNER_LOCK_KEY]
+        assert conn.closed
+
+    def test_lock_acquired_normal_flow_unlocks_with_same_key(self):
+        """pg_try_advisory_lock True -> normal flow; both lock calls use the
+        same RUNNER_LOCK_KEY and the unlock runs after the batch loop."""
+        conn = FakeConn([_lock_outbox_row()], advisory_lock_acquired=True)
+        spark = FakeSpark()
+
+        _la_mod.main(
+            self._ARGV,
+            spark_factory=lambda: spark,
+            open_connection=lambda: conn,
+        )
+
+        assert conn._lock_attempts == [_la_mod.RUNNER_LOCK_KEY]
+        assert conn._lock_releases == [_la_mod.RUNNER_LOCK_KEY]
+        try_idx = next(i for i, s in enumerate(conn._executed)
+                       if "pg_try_advisory_lock" in s)
+        unlock_idx = next(i for i, s in enumerate(conn._executed)
+                          if "pg_advisory_unlock" in s)
+        claim_idx = next(i for i, s in enumerate(conn._executed)
+                         if "attempt_count" in s)
+        assert try_idx < claim_idx < unlock_idx
+        assert conn._outbox[0]["delivered_at"] is not None
+        assert conn.closed
+
+
+# ── record_state after mark_delivered ────────────────────────────────────────
+
+class TestRecordStateAfterDelivery:
+    """A success-state write failure must not revert delivered events."""
+
+    @staticmethod
+    def _conn() -> FakeConn:
+        event = _ev(71, "agent_actions", "a71", "insert",
+                    after={"user_id": "u1", "tool_name": "search",
+                           "action_type": "read", "status": "success"},
+                    occurred="2025-10-02T10:00:00+00:00")
+        return FakeConn([{
+            "event_id": 71, "source_table": "agent_actions",
+            "source_pk": "a71", "operation": "insert",
+            "before_payload": None,
+            "after_payload": json.dumps(event.after_payload),
+            "occurred_at": event.occurred_at,
+            "delivered_at": None, "attempt_count": 0, "last_error": None,
+        }])
+
+    def test_record_state_failure_after_delivery_keeps_events_delivered(
+            self, caplog):
+        """mark_delivered succeeds, record_state raises -> mark_failed is NOT
+        called, events stay delivered, run does not fail; the warning names
+        only the exception class."""
+        class FailOnStateMerge(FakeSpark):
+            def sql(self, text):
+                if "analytics_cdc_state" in text and "MERGE" in text.upper():
+                    raise RuntimeError("state write boom")
+                return super().sql(text)
+
+        conn = self._conn()
+        with caplog.at_level(logging.WARNING):
+            result = run_pipeline(FailOnStateMerge(), conn, "cat", "sch", 100)
+
+        assert result is False
+        assert conn._outbox[0]["delivered_at"] is not None
+        assert conn._outbox[0]["last_error"] is None
+        assert not any("delivered_at = NULL, last_error = %s" in s
+                       for s in conn._executed)  # mark_failed never executed
+        assert "state write boom" not in caplog.text  # no exception text
+        assert "RuntimeError" in caplog.text          # class name only
+        assert "events stay delivered" in caplog.text
+
+    def test_upsert_failure_before_delivery_still_marks_failed(self):
+        """Failures BEFORE mark_delivered keep the old behaviour: mark_failed
+        runs and the events stay re-claimable."""
+        class FailOnUpsert(FakeSpark):
+            def sql(self, text):
+                if ("INSERT INTO" in text and "analytics_" in text
+                        and "analytics_cdc_state" not in text):
+                    raise RuntimeError("upsert boom")
+                return super().sql(text)
+
+        conn = self._conn()
+        with pytest.raises(RuntimeError, match="upsert boom"):
+            run_pipeline(FailOnUpsert(), conn, "cat", "sch", 100)
+
+        assert conn._outbox[0]["delivered_at"] is None
+        assert conn._outbox[0]["last_error"] == "upsert boom"
+        assert any("delivered_at = NULL, last_error = %s" in s
+                   for s in conn._executed)  # mark_failed executed
+
+
+# ── runbook docs ─────────────────────────────────────────────────────────────
+
+class TestRunbookDocs:
+    _RUNBOOK = (Path(__file__).resolve().parents[2]
+                / "docs" / "runbooks" / "lakebase-analytics.md")
+
+    def test_troubleshooting_rows_use_exact_error_strings(self):
+        """The mint failure and the connect failure are separate rows, each
+        mapped to its own cause, using the error strings verbatim."""
+        text = self._RUNBOOK.read_text(encoding="utf-8")
+        assert "| `Lakebase credential mint failed`" in text
+        assert "| `Lakebase connection failed`" in text
+        # the old wrong mapping (connect failure -> mint cause) must be gone
+        assert "| `Lakebase connection failed` | Credential mint failed |" not in text
+        # mint row: token mint causes; connect row: connect-step causes
+        mint_line = next(ln for ln in text.splitlines()
+                         if ln.startswith("| `Lakebase credential mint failed`"))
+        conn_line = next(ln for ln in text.splitlines()
+                         if ln.startswith("| `Lakebase connection failed`"))
+        assert "Token mint failed" in mint_line
+        assert "databricks-sdk" in mint_line
+        assert "Connect step failed" in conn_line
+        assert "network" in conn_line and "SSL" in conn_line
+
+    def test_runbook_documents_single_runner_lock(self):
+        text = self._RUNBOOK.read_text(encoding="utf-8")
+        assert "pg_try_advisory_lock" in text
+        assert "SESSION-level" in text
+        assert "DIRECT (non-pooled)" in text
+        assert "another runner holds the lock" in text
+        assert "exits 0 cleanly" in text
+
+    def test_runbook_documents_record_state_policy(self):
+        text = self._RUNBOOK.read_text(encoding="utf-8")
+        assert "State write after delivery" in text
+        assert "never calls `mark_failed`" in text
+        assert "does not fail the run" in text
