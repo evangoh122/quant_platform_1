@@ -385,13 +385,15 @@ def claim_batch(conn: Any, batch_size: int) -> List[OutboxEvent]:
     """Claim a bounded batch of pending outbox events.
 
     Uses FOR UPDATE SKIP LOCKED to avoid contention with concurrent runners.
-    Sets delivered_at to now() atomically so no other runner claims the same rows.
+    Does NOT set delivered_at — delivery is confirmed only after the full
+    pipeline (Delta MERGE + analytics recompute) succeeds via mark_delivered.
+    Events whose pipeline crashes before confirmation remain re-claimable.
     """
     cur = conn.cursor()
     cur.execute(
         """
         UPDATE analytics_outbox
-        SET delivered_at = now(), attempt_count = attempt_count + 1
+        SET attempt_count = attempt_count + 1
         WHERE event_id IN (
             SELECT event_id FROM analytics_outbox
             WHERE delivered_at IS NULL
@@ -414,12 +416,23 @@ def claim_batch(conn: Any, batch_size: int) -> List[OutboxEvent]:
 
 
 def mark_delivered(conn: Any, event_ids: List[int]) -> None:
-    """Confirm delivery for the given event IDs (already set during claim).
+    """Confirm delivery for the given event IDs after Delta MERGE + recompute.
 
-    This is a no-op in the current design because claim_batch already sets
-    delivered_at. Kept for clarity and future extensibility.
+    Called ONLY after the full pipeline succeeds.  A crash before this call
+    leaves events re-claimable (delivered_at stays NULL).
     """
-    pass
+    if not event_ids:
+        return
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE analytics_outbox
+        SET delivered_at = now(), last_error = NULL
+        WHERE event_id = ANY(%s)
+        """,
+        (event_ids,),
+    )
+    conn.commit()
 
 
 def mark_failed(conn: Any, event_ids: List[int], error: str) -> None:
@@ -609,6 +622,7 @@ def run_pipeline(spark: Any, conn: Any, catalog: str, schema: str,
         record_state(spark, run_id, 0, 0, 0.0, "idle", catalog, schema)
         return False
 
+    eids = [e.event_id for e in events]
     try:
         # 2. MERGE into lakebase_change_events
         merge_events_to_delta(spark, events, catalog, schema)
@@ -636,13 +650,17 @@ def run_pipeline(spark: Any, conn: Any, catalog: str, schema: str,
         upsert_analytics(spark, aa, wc, of_, ud, affected, catalog, schema)
         log.info("analytics tables updated")
 
-        # 7. Record state
+        # 7. Confirm delivery — ONLY after Delta MERGE + analytics recompute
+        #    both succeed.  A crash before this point leaves events re-claimable.
+        mark_delivered(conn, eids)
+
+        # 8. Record state + log lag
         lag = (datetime.now(timezone.utc) - events[-1].occurred_at).total_seconds()
+        log.info("source-target lag: %.1fs", lag)
         record_state(spark, run_id, max_eid, 0, lag, "success", catalog, schema)
 
     except Exception as exc:
         log.error("pipeline failed: %s", exc)
-        eids = [e.event_id for e in events]
         mark_failed(conn, eids, str(exc))
         record_state(spark, run_id, 0, len(events), 0.0, "error", catalog, schema)
         raise
@@ -650,36 +668,187 @@ def run_pipeline(spark: Any, conn: Any, catalog: str, schema: str,
     return len(events) >= batch_size
 
 
-def main() -> None:
+# ── connection helper ────────────────────────────────────────────────────────
+
+def _sanitized_error(message: str) -> RuntimeError:
+    """Build a RuntimeError with no exception chain attached.
+
+    Raw failures from the token provider or ``psycopg.connect`` may embed
+    credentials (conninfo URLs, passwords, tokens) in their message and in
+    their ``__cause__``/``__context__`` chain.  The sanitized error must keep
+    none of that reachable: ``__context__`` is cleared here (``__cause__`` is
+    left alone — setting it would mask ``__suppress_context__``) and the
+    caller raises with ``raise ... from None`` outside the ``except`` block,
+    which sets ``__cause__`` to *None* and suppresses any context display.
+    """
+    err = RuntimeError(message)
+    err.__context__ = None
+    return err
+
+
+def open_lakebase_connection(
+    *,
+    token_provider: Any = None,
+    connect: Any = None,
+) -> Any:
+    """Open a Postgres connection to Lakebase.
+
+    Connection source priority:
+      1. ``LAKEBASE_URL`` env var — local-dev override; logged as ``url-override``
+         (value is never logged).
+      2. Minted OAuth token via ``db.lakebase`` credential minting (short-lived
+         in-memory token).  Logged as ``minted-oauth``.
+
+    Any failure on either path is re-raised as a sanitized ``RuntimeError``
+    (``raise ... from None``): the message carries only the exception type
+    name — never a URL, password or token — and no credential text remains
+    reachable through ``__cause__``/``__context__``.
+
+    Parameters
+    ----------
+    token_provider : callable, optional
+        Returns ``{"token": ..., "expiration_time": ...}``.  Defaults to
+        ``db.lakebase.mint_token_via_cli`` (lazy-imported so the module is
+        importable without psycopg on CI).
+    connect : callable, optional
+        ``psycopg.connect``-compatible callable.  Defaults to ``psycopg.connect``.
+    """
+    import psycopg as _psycopg  # local import so module is importable without it
+
+    url_override = os.environ.get("LAKEBASE_URL", "").strip()
+    if url_override:
+        log.info("lakebase connection source: url-override")
+        err = None
+        try:
+            conn = (connect or _psycopg.connect)(url_override)
+        except Exception as exc:  # noqa: BLE001 — raw errors may embed the URL
+            err = _sanitized_error(
+                f"Lakebase connection failed ({type(exc).__name__})"
+            )
+        if err is not None:
+            raise err from None
+        conn.autocommit = True
+        return conn
+
+    # Lazy import: db.lakebase requires psycopg_pool at import time.
+    err = None
+    try:
+        from db import lakebase as _lb
+
+        provider = token_provider or _lb.mint_token_via_cli
+        cred = provider()
+        token = cred["token"]
+    except Exception as exc:  # noqa: BLE001 — raw errors may embed tokens
+        err = _sanitized_error(
+            f"Lakebase credential mint failed ({type(exc).__name__})"
+        )
+    if err is not None:
+        raise err from None
+
+    conninfo = {
+        "host": _lb.LAKEBASE_HOST,
+        "port": _lb.LAKEBASE_PORT,
+        "dbname": _lb.LAKEBASE_DBNAME,
+        "user": _lb.LAKEBASE_USER,
+        "password": token,
+        "sslmode": _lb.LAKEBASE_SSLMODE,
+        "connect_timeout": _lb.LAKEBASE_CONNECT_TIMEOUT,
+    }
+    log.info("lakebase connection source: minted-oauth")
+    err = None
+    try:
+        conn = (connect or _psycopg.connect)(**conninfo)
+    except Exception as exc:  # noqa: BLE001 — raw errors may embed the token
+        err = _sanitized_error(
+            f"Lakebase connection failed ({type(exc).__name__})"
+        )
+    if err is not None:
+        raise err from None
+    conn.autocommit = True
+    return conn
+
+
+# ── batch loop ───────────────────────────────────────────────────────────────
+
+DEFAULT_MAX_BATCHES = 20
+
+
+def run_batches(
+    spark: Any,
+    conn: Any,
+    catalog: str,
+    schema: str,
+    batch_size: int,
+    max_batches: int,
+    run_pipeline_fn: Any = None,
+) -> int:
+    """Execute ``run_pipeline`` in a loop until exhausted or max_batches.
+
+    Returns the number of batches actually executed.  The caller retains
+    ownership of ``conn`` (must close it).
+    """
+    fn = run_pipeline_fn or run_pipeline
+    batches = 0
+    for i in range(1, max_batches + 1):
+        has_more = fn(spark, conn, catalog, schema, batch_size)
+        batches += 1
+        log.info("batch %d/%d complete (has_more=%s)", i, max_batches, has_more)
+        if not has_more:
+            break
+    log.info("batch loop finished after %d batches", batches)
+    return batches
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def main(
+    argv: Any = None,
+    *,
+    spark_factory: Any = None,
+    open_connection: Any = None,
+) -> None:
+    """Entry point for the Lakebase analytics CDC runner.
+
+    Parameters
+    ----------
+    argv : list[str], optional
+        CLI arguments.  Defaults to ``sys.argv[1:]``.
+    spark_factory : callable, optional
+        Returns a SparkSession.  When *None* the normal pyspark / Databricks
+        Connect path is used (and pyspark must be installed).
+    open_connection : callable, optional
+        Returns a psycopg connection.  When *None*, ``open_lakebase_connection``
+        is called with its default parameters.
+    """
     parser = argparse.ArgumentParser(description="Lakebase analytics CDC runner")
     parser.add_argument("--catalog", default=DEFAULT_CATALOG)
     parser.add_argument("--schema", default=DEFAULT_SCHEMA)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--warehouse-id", default=WAREHOUSE_ID)
-    args = parser.parse_args()
+    parser.add_argument("--max-batches", type=int, default=DEFAULT_MAX_BATCHES)
+    args = parser.parse_args(argv)
 
-    if not _has_pyspark:
+    if spark_factory is None and not _has_pyspark:
         log.error("pyspark not installed")
         sys.exit(1)
-    if not _has_psycopg:
+    if open_connection is None and not _has_psycopg:
         log.error("psycopg not installed")
         sys.exit(1)
 
-    # Acquire Spark (only inside main)
-    from pipelines._runtime import get_spark
-    spark = get_spark()
+    # Acquire Spark
+    if spark_factory is not None:
+        spark = spark_factory()
+    else:
+        from pipelines._runtime import get_spark
+        spark = get_spark()
 
     # Acquire Postgres connection
-    conn_str = os.environ.get("LAKEBASE_URL", "")
-    if not conn_str:
-        log.error("LAKEBASE_URL not set")
-        sys.exit(1)
-    conn = psycopg.connect(conn_str)
+    conn = (open_connection or open_lakebase_connection)()
 
     try:
-        has_more = run_pipeline(spark, conn, args.catalog, args.schema,
-                                args.batch_size)
-        log.info("pipeline complete (has_more=%s)", has_more)
+        batches = run_batches(spark, conn, args.catalog, args.schema,
+                              args.batch_size, args.max_batches)
+        log.info("pipeline complete (batches=%d)", batches)
     finally:
         conn.close()
 
