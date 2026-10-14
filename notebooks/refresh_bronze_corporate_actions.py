@@ -40,7 +40,16 @@ from typing import Any, Optional
 # Ensure the repo root is on sys.path so `etl` is importable from notebooks/.
 # Databricks notebook execution has no `__file__` (NameError), so resolution
 # is guarded: `globals().get("__file__") or sys.argv[0]` first, then the
-# deployed bundle layout (/Workspace/.../files) via the notebook path.
+# notebook workspace path (as given and under the `/Workspace` filesystem
+# mount) via the deployed bundle layout (/Workspace/.../files), then the
+# working directory (the notebook's own directory on Databricks — the
+# `os.path.abspath("__file__")` pattern in notebooks/02_ingest_sec_edgar.py).
+
+# Filesystem mount of the Databricks workspace. `notebookPath()` returns a
+# workspace path with no `/Workspace` prefix and no `.py` extension, e.g.
+# /Users/<u>/.bundle/<bundle>/<target>/files/notebooks/<notebook>; on the
+# driver only the mounted form exists.
+_WORKSPACE_MOUNT = "/Workspace"
 
 
 def _notebook_workspace_file() -> str:
@@ -55,29 +64,57 @@ def _notebook_workspace_file() -> str:
         return ""
 
 
+def _root_from_path(path_str: str) -> Optional[str]:
+    """Repo root for a script/notebook path: parent of its directory.
+
+    ``parents[1]`` is independent of the file name/extension, so both the
+    ``.py`` file form and the extensionless workspace notebook form resolve
+    to the parent of the ``notebooks/`` directory. ``None`` when the path
+    cannot be resolved.
+    """
+    if not path_str:
+        return None
+    try:
+        return str(Path(path_str).resolve().parents[1])
+    except (OSError, RuntimeError, IndexError):
+        return None
+
+
 def _repo_root() -> Optional[str]:
     """Root directory that contains ``etl``; ``None`` when it cannot be found.
 
-    ``globals().get("__file__")`` covers normal CLI runs and
-    ``sys.argv[0]`` covers serverless ``spark_python_task``. Notebook mode
-    has neither usable, so the deployed bundle layout (``/Workspace/.../files``
-    with ``etl/`` next to ``notebooks/``) supplies the root from the
-    notebook path. Falls back safely when nothing resolves.
+    Candidates are tried in order, first root containing ``etl/`` wins:
+    (a) ``globals().get("__file__")`` (CLI runs) or ``sys.argv[0]``
+        (serverless ``spark_python_task``);
+    (b) the Databricks notebook workspace path, both as given and with the
+        ``/Workspace`` mount prepended (``notebookPath()`` carries neither
+        the filesystem prefix nor the ``.py`` extension);
+    (c) the working directory itself and its parent — on Databricks the cwd
+        is the notebook's directory (see notebooks/02_ingest_sec_edgar.py).
+    Falls back safely to ``None``: never raises.
     """
-    candidates = []
+    path_candidates: list[str] = []
     script = globals().get("__file__") or (sys.argv[0] if sys.argv else "")
     if script:
-        candidates.append(script)
+        path_candidates.append(script)
     nb_file = _notebook_workspace_file()
     if nb_file:
-        candidates.append(nb_file)
-    for candidate in candidates:
-        try:
-            root = Path(candidate).resolve().parents[1]
-        except (OSError, RuntimeError, IndexError):
-            continue
-        if (root / "etl").is_dir():
-            return str(root)
+        path_candidates.append(nb_file)
+        mount = globals().get("_WORKSPACE_MOUNT") or "/Workspace"
+        if not nb_file.startswith(mount):
+            path_candidates.append(f"{mount}{nb_file}")
+    for candidate in path_candidates:
+        root = _root_from_path(candidate)
+        if root is not None and (Path(root) / "etl").is_dir():
+            return root
+    try:
+        cwd = Path(os.getcwd())
+    except (OSError, RuntimeError):
+        cwd = None
+    if cwd is not None:
+        for root in (str(cwd), str(cwd.parent)):
+            if (Path(root) / "etl").is_dir():
+                return root
     return None
 
 
@@ -91,7 +128,7 @@ def _ensure_etl_importable() -> None:
 
     Re-resolves at call time (``dbutils`` may only be injected once the
     notebook runs) and adds the deployed ``/Workspace/.../files`` root to
-    ``sys.path`` before re-raising a clear import failure.
+    ``sys.path``; when nothing resolves, raises a clear import failure.
     """
     try:
         import etl  # noqa: F401
@@ -101,7 +138,15 @@ def _ensure_etl_importable() -> None:
     root = _repo_root()
     if root is not None and root not in sys.path:
         sys.path.insert(0, root)
-    import etl  # noqa: F401
+    try:
+        import etl  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "cannot import 'etl': no repository root containing etl/ was "
+            "found from the notebook path, the working directory, or this "
+            "file — deploy the bundle files (etl/ next to notebooks/) or run "
+            "from the repository checkout"
+        ) from exc
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no Spark, no network)

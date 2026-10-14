@@ -2190,9 +2190,18 @@ class TestNotebookFileGuardAndEtlImport:
     """`Path(__file__)` is a NameError in a Databricks notebook; resolution
     must be guarded and ``etl`` must resolve from the deployed bundle layout
     (/Workspace/.../files) in notebook mode and from the repo root in CLI mode.
+
+    Realistic notebook input: ``notebookPath()`` returns a WORKSPACE path with
+    no ``/Workspace`` filesystem prefix and no ``.py`` extension, e.g.
+    ``/Users/<u>/.bundle/<bundle>/<target>/files/notebooks/<notebook>``.
     """
 
     NB_REL = Path("notebooks") / "refresh_bronze_corporate_actions.py"
+    # Fake dbutils notebookPath() value: workspace path, no /Workspace
+    # filesystem prefix, no .py extension (deployed bundle job).
+    NB_WORKSPACE_PATH = (
+        "/Users/test/.bundle/qp/dev/files/notebooks/refresh_bronze_corporate_actions"
+    )
 
     def _exec_module(self, extra_globals=None):
         import sys
@@ -2206,25 +2215,33 @@ class TestNotebookFileGuardAndEtlImport:
         exec(compile(src, str(nb_path), "exec"), g)
         return g
 
-    def test_module_imports_without_file(self, monkeypatch):
+    def _hide_etl(self, monkeypatch):
+        """Make ``import etl`` fail until teardown (driver state before the
+        deployed files root is resolved): purge cached ``etl*`` modules and
+        drop every ``sys.path`` entry that provides an ``etl`` package.
+        """
+        import os
         import sys
 
-        monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
-        g = self._exec_module()
-        assert callable(g["main"])
-        assert callable(g["_repo_root"])
-        # Falls back safely: nothing resolvable -> no root, no crash.
-        assert g["_REPO_ROOT"] is None
+        for name in [
+            k for k in list(sys.modules) if k == "etl" or k.startswith("etl.")
+        ]:
+            monkeypatch.delitem(sys.modules, name)
+        monkeypatch.setattr(
+            sys,
+            "path",
+            [
+                p
+                for p in sys.path
+                if not (Path(p or os.getcwd()) / "etl" / "__init__.py").is_file()
+            ],
+        )
 
-    def test_etl_importable_in_notebook_mode_via_deployed_layout(
-        self, monkeypatch, tmp_path
-    ):
-        import sys
-
-        files_root = tmp_path / "files"
-        (files_root / "notebooks").mkdir(parents=True)
+    @staticmethod
+    def _write_deployed_etl(files_root):
+        """Deployed files layout: ``etl/`` next to ``notebooks/``."""
         etl_dir = files_root / "etl"
-        etl_dir.mkdir()
+        etl_dir.mkdir(parents=True, exist_ok=True)
         (etl_dir / "__init__.py").write_text("", encoding="utf-8")
         (etl_dir / "corporate_actions.py").write_text(
             "class MassiveCorporateActionsSource:\n"
@@ -2233,33 +2250,135 @@ class TestNotebookFileGuardAndEtlImport:
             "        self.api_key = api_key\n",
             encoding="utf-8",
         )
+
+    def test_module_imports_without_file(self, monkeypatch, tmp_path):
+        import sys
+
+        monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
+        monkeypatch.chdir(tmp_path)
+        g = self._exec_module()
+        assert callable(g["main"])
+        assert callable(g["_repo_root"])
+        # Falls back safely: nothing resolvable -> no root, no crash.
+        assert g["_REPO_ROOT"] is None
+        assert g["_repo_root"]() is None
+
+    def test_etl_importable_in_notebook_mode_via_unprefixed_workspace_path(
+        self, monkeypatch, tmp_path
+    ):
+        """Realistic notebook mode: dbutils returns the bare workspace path
+        (no /Workspace filesystem prefix, no .py).  tmp_path stands in for the
+        /Workspace filesystem mount, so the mounted candidate
+        ``/Workspace`` + notebookPath() must resolve the deployed files root.
+        """
+        import sys
+
+        files_root = tmp_path / "Users/test/.bundle/qp/dev/files"
+        (files_root / "notebooks").mkdir(parents=True)
+        self._write_deployed_etl(files_root)
+        nb_file = self.NB_WORKSPACE_PATH
+        assert not nb_file.startswith("/Workspace")
+        assert not nb_file.endswith(".py")
+
+        monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
+        empty_cwd = tmp_path / "empty-cwd"
+        empty_cwd.mkdir()
+        monkeypatch.chdir(empty_cwd)
+        self._hide_etl(monkeypatch)
+
+        g = self._exec_module({"dbutils": _make_fake_dbutils(nb_file)})
+        # The bare workspace path is not a local filesystem path: without the
+        # /Workspace mount candidate nothing resolves.
+        assert g["_REPO_ROOT"] is None
+        monkeypatch.setitem(g, "_WORKSPACE_MOUNT", str(tmp_path))
+        root = g["_repo_root"]()
+        assert root == str(files_root.resolve())
+        g["_ensure_etl_importable"]()
+        adapter = g["_make_adapter"]("massive", 0.5, 2, api_key="k")
+        assert type(adapter).__name__ == "MassiveCorporateActionsSource"
+        loaded_from = sys.modules["etl.corporate_actions"].__file__
+        assert loaded_from.startswith(str(files_root)), (
+            f"etl.corporate_actions must come from the deployed files "
+            f"root, got {loaded_from}"
+        )
+
+    def test_etl_importable_via_file_path_deployed_layout(
+        self, monkeypatch, tmp_path
+    ):
+        """The `__file__`-path case: the script/file path is a real local
+        `.py` file in the deployed files layout (kept from the earlier round;
+        realistic notebook input is covered above).
+        """
+        import sys
+
+        files_root = tmp_path / "files"
+        (files_root / "notebooks").mkdir(parents=True)
+        self._write_deployed_etl(files_root)
         deployed_nb = files_root / "notebooks" / "refresh_bronze_corporate_actions.py"
         deployed_nb.write_text("# Databricks notebook source\n", encoding="utf-8")
 
-        saved_etl = {
-            k: sys.modules[k]
-            for k in list(sys.modules)
-            if k == "etl" or k.startswith("etl.")
-        }
-        for k in saved_etl:
-            monkeypatch.delitem(sys.modules, k)
         monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
+        empty_cwd = tmp_path / "empty-cwd"
+        empty_cwd.mkdir()
+        monkeypatch.chdir(empty_cwd)
+        self._hide_etl(monkeypatch)
 
-        saved_path = list(sys.path)
-        try:
-            g = self._exec_module(
-                {"dbutils": _make_fake_dbutils(str(deployed_nb))}
-            )
-            assert g["_REPO_ROOT"] == str(files_root)
-            adapter = g["_make_adapter"]("massive", 0.5, 2, api_key="k")
-            assert type(adapter).__name__ == "MassiveCorporateActionsSource"
-            loaded_from = sys.modules["etl.corporate_actions"].__file__
-            assert loaded_from.startswith(str(files_root)), (
-                f"etl.corporate_actions must come from the deployed files "
-                f"root, got {loaded_from}"
-            )
-        finally:
-            sys.path[:] = saved_path
+        g = self._exec_module({"__file__": str(deployed_nb)})
+        assert g["_REPO_ROOT"] == str(files_root.resolve())
+        adapter = g["_make_adapter"]("massive", 0.5, 2, api_key="k")
+        assert type(adapter).__name__ == "MassiveCorporateActionsSource"
+        loaded_from = sys.modules["etl.corporate_actions"].__file__
+        assert loaded_from.startswith(str(files_root)), (
+            f"etl.corporate_actions must come from the deployed files "
+            f"root, got {loaded_from}"
+        )
+
+    def test_etl_importable_via_cwd_without_dbutils(self, monkeypatch, tmp_path):
+        """No dbutils and no usable `__file__`: the working directory resolves
+        the root.  On Databricks the cwd is the notebook's own directory, the
+        `os.path.abspath("__file__")` pattern of notebooks/02_ingest_sec_edgar.py.
+        """
+        import sys
+
+        files_root = tmp_path / "files"
+        (files_root / "notebooks").mkdir(parents=True)
+        self._write_deployed_etl(files_root)
+
+        monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
+        monkeypatch.chdir(files_root / "notebooks")
+        self._hide_etl(monkeypatch)
+
+        g = self._exec_module()
+        assert g["_REPO_ROOT"] == str(files_root.resolve())
+        assert g["_repo_root"]() == str(files_root.resolve())
+        g["_ensure_etl_importable"]()
+        adapter = g["_make_adapter"]("massive", 0.5, 2, api_key="k")
+        assert type(adapter).__name__ == "MassiveCorporateActionsSource"
+        loaded_from = sys.modules["etl.corporate_actions"].__file__
+        assert loaded_from.startswith(str(files_root)), (
+            f"etl.corporate_actions must come from the cwd-resolved files "
+            f"root, got {loaded_from}"
+        )
+
+    def test_nothing_resolves_raises_clear_import_error(self, monkeypatch, tmp_path):
+        import sys
+
+        import pytest
+
+        monkeypatch.setattr(sys, "argv", ["/nonexistent/driver/python"])
+        monkeypatch.chdir(tmp_path)
+        self._hide_etl(monkeypatch)
+        g = self._exec_module(
+            {
+                "dbutils": _make_fake_dbutils(
+                    "/Users/nobody/.bundle/x/y/files/notebooks/nb"
+                )
+            }
+        )
+        assert g["_REPO_ROOT"] is None
+        assert g["_repo_root"]() is None
+        with pytest.raises(ImportError, match="cannot import 'etl'"):
+            g["_ensure_etl_importable"]()
 
     def test_etl_importable_in_cli_mode_from_repo_root(self):
         import importlib.util
