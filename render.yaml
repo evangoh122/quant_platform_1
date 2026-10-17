@@ -16,3 +16,11 @@ services:
         value: "1"
       - key: APP_ENV
         value: demo
+      # PostHog product analytics - inlined by Vite at build time. Public
+      # project key, safe to expose client-side; set in the Render
+      # dashboard rather than committed here. Unset -> analytics stays
+      # disabled (the app guards on this).
+      - key: VITE_POSTHOG_KEY
+        sync: false
+      - key: VITE_POSTHOG_HOST
+        sync: false
