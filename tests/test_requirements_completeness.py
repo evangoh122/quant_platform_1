@@ -1,5 +1,5 @@
 """AST-scan test: every third-party import reachable from api/, agent/,
-db/, config/ must be declared in requirements.txt.
+db/, config/ must be declared in pyproject.toml [project].dependencies.
 
 Walks the entire AST (including function bodies) so deferred imports like
 ``from databricks import sql`` inside function bodies are also caught.
@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,7 @@ _IMPORT_TO_DIST: dict[str, str] = {
     "databricks.sql": "databricks-sql-connector",
 }
 
-# Imports that are allowed to be absent from requirements.txt (deferred
+# Imports that are allowed to be absent from pyproject.toml dependencies (deferred
 # by design — only imported inside function bodies, never at module scope
 # in the scanned directories, but we list them defensively).
 _DEFERRED_ALLOWED = {"ibapi", "pyspark", "pyspark.sql"}
@@ -57,17 +58,17 @@ def _is_local_module(name: str) -> bool:
 
 
 def _parse_requirements() -> set[str]:
-    """Parse requirements.txt and return the set of declared distribution names (lowercased)."""
-    req_path = _PROJECT_ROOT / "requirements.txt"
-    if not req_path.exists():
+    """Parse pyproject.toml [project].dependencies and return the set of declared
+    distribution names (lowercased)."""
+    pyproject_path = _PROJECT_ROOT / "pyproject.toml"
+    if not pyproject_path.exists():
         return set()
+    with pyproject_path.open("rb") as f:
+        deps = tomllib.load(f).get("project", {}).get("dependencies", [])
     dists: set[str] = set()
-    for line in req_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line in deps:
         # Strip version specifiers and extras: "psycopg[binary]>=3.1" → "psycopg"
-        name = re.split(r"[><=\[;]", line)[0].strip().lower()
+        name = re.split(r"[><=\[;]", line.strip())[0].strip().lower()
         if name:
             dists.add(name)
     return dists
@@ -134,9 +135,9 @@ def _import_to_dist(import_name: str) -> str:
 
 
 def test_all_top_level_imports_declared_in_requirements():
-    """Every third-party import (including deferred) must be declared in requirements.txt."""
+    """Every third-party import (including deferred) must be declared in pyproject.toml [project].dependencies."""
     req_dists = _parse_requirements()
-    assert req_dists, "requirements.txt is empty or missing"
+    assert req_dists, "pyproject.toml has no [project].dependencies"
 
     top_imports = _scan_all_imports(_SCAN_DIRS)
 
@@ -158,5 +159,5 @@ def test_all_top_level_imports_declared_in_requirements():
 
     assert not missing, (
         f"These imports are reachable at module scope but missing from "
-        f"requirements.txt: {missing}"
+        f"pyproject.toml [project].dependencies: {missing}"
     )

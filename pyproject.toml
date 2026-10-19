@@ -1,0 +1,76 @@
+[project]
+name = "quant-platform"
+version = "0.1.0"
+description = "Point-in-time research, retrieval and paper-trading on Databricks"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+# Databricks App runtime dependencies. Databricks Apps installs these with uv
+# (pyproject.toml + uv.lock, no requirements.txt). Every top-level third-party
+# import reachable from api/ and agent/ MUST be declared here
+# (tests/test_requirements_completeness.py enforces it). uv-based apps have NO
+# pre-installed libraries, so this list must be complete.
+# Non-app deps (pyspark, mlflow, ibapi, etc.) live in [dependency-groups].
+dependencies = [
+    "fastapi>=0.142.2",
+    "uvicorn[standard]>=0.54.0",
+    "pydantic>=2.0",
+    "databricks-sdk>=0.20.0",
+    "databricks-sql-connector>=3.0.0,<5",
+    "psycopg[binary]>=3.1",
+    "psycopg-pool>=3.1",
+    "loguru>=0.7.0",
+    "requests>=2.33.0",
+    "tenacity>=8.2.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "polars>=0.20.0",
+    "openai>=1.0.0",
+    "langchain-core>=1.2.22",
+    "langchain-openai>=0.1.0",
+    "langgraph>=0.0.20",
+    "sentence-transformers>=2.2.0",
+    "rank-bm25>=0.2.2",
+    "huggingface-hub>=0.19.0",
+    "duckdb>=0.10.0",
+    # pytz: duckdb's Python client converts timezone-aware TIMESTAMP results via
+    # pytz, so tz-aware fetches raise InvalidInputException ("Required module
+    # 'pytz' failed to import") without it. Declared explicitly because api/
+    # code paths use duckdb at runtime (api/services/runtime_snapshot.py) and
+    # tests fetch tz-aware results.
+    "pytz>=2023.3",
+    # tzdata: IANA zone database for zoneinfo/pandas. uv-based Databricks Apps ship
+    # no pre-installed libraries and do not guarantee a system zoneinfo, and the
+    # code resolves zones such as America/New_York.
+    "tzdata>=2024.1",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "langsmith>=0.8.18",
+    "edgartools>=2.0.0",
+    "finvizfinance>=0.14.0",
+    # oauthlib: transitive via databricks-sql-connector (requires ^3.1.0, i.e. <4).
+    # PYSEC-2026-4114 (CVE-2026-49265) is a PKCE timing side-channel fixed in 4.0.0.
+    # Accepted risk: databricks-sql-connector caps oauthlib<4; see docs/SECURITY.md.
+    "oauthlib>=3.1.0,<4",
+]
+
+[dependency-groups]
+# CI / pipeline / ML / test dependencies NOT needed by the app. `uv sync`
+# installs the `dev` group by default; the Databricks App installs none of it.
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout>=2.2.0",
+    "httpx",
+    "scikit-learn",
+    "mlflow>=2.10.0",
+    "langchain>=1.0.0",
+    "langchain-community>=0.3.27",
+    "polygon-api-client>=1.12.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.2",
+]
+
+[tool.uv]
+# Application, not a library: install dependencies only, never build/install
+# this repository as a package.
+package = false

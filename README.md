@@ -79,11 +79,16 @@ Dates are the last recorded verification; this repository does not assert the cu
 ## Local development
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest -q -m "not spark and not lakebase and not databricks"   # offline suite
+uv sync --frozen                                    # runtime deps + dev group from uv.lock
+uv run pytest -q -m "not spark and not lakebase and not databricks"   # offline suite
 cd frontend && npm ci && npm test -- --run && npm run build
-uvicorn api.main:app --reload
+uv run uvicorn api.main:app --reload
 ```
+
+Dependencies live in `pyproject.toml` (app runtime in `[project].dependencies`, CI/ML/test tools in the `dev`
+dependency group) and are locked in `uv.lock`. Add or change one with `uv add <pkg>` (or edit `pyproject.toml` and run
+`uv lock`) and commit both files. Databricks Apps installs the runtime set with uv from `pyproject.toml` + `uv.lock`
+(there is deliberately no `requirements.txt`, which would take precedence and switch it back to pip).
 
 Configuration comes from environment variables / bundle variables (`CATALOG`, `SCHEMA`, `DATABRICKS_WAREHOUSE_ID`,
 `LAKEBASE_INSTANCE`, `AGENT_MODEL_ENDPOINT`); no credentials are committed. Secrets live in a Databricks secret scope.

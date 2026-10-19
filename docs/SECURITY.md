@@ -13,7 +13,7 @@ Dependencies are audited for known vulnerabilities using:
 The `security-audit` job in `.github/workflows/ci.yml` runs:
 
 1. `pip-audit -r requirements-render.txt` — the Render deploy lockfile (exact pins)
-2. `pip-audit -r requirements-app.txt` — the app runtime dependencies
+2. `uv export --frozen --no-dev` piped to `pip-audit --no-deps` — the locked app runtime dependencies (`uv.lock`)
 3. `npm audit --omit=dev --audit-level=high` — frontend production dependencies
 
 Any vulnerability without an accepted-risk entry in `security/pip-audit-ignore.txt`
@@ -54,9 +54,8 @@ This change supersedes both PRs:
 
 ```bash
 pip-audit -r requirements-render.txt
-pip-audit -r requirements-app.txt
-# exclude ibapi (not on PyPI):
-grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements.txt | pip-audit -r /dev/stdin
+uv export --frozen --no-dev --no-hashes --no-emit-project -o /tmp/app-locked.txt
+pip-audit -r /tmp/app-locked.txt --no-deps --disable-pip
 ```
 
 ## Starlette CVEs resolved by this change

@@ -2744,7 +2744,10 @@ class TestNoPlaceholderUserAgent:
             for path in repo_root.rglob(ext):
                 rel = path.relative_to(repo_root)
                 parts = rel.parts
-                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive") for p in parts):
+                # .venv/venv: the uv-managed environment lives inside the repo and
+                # holds third-party packages that must not be scanned.
+                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive",
+                             ".venv", "venv", "node_modules") for p in parts):
                     continue
                 try:
                     content = path.read_text(encoding="utf-8")
@@ -2808,7 +2811,10 @@ class TestNotebookThinWrapper:
             for path in repo_root.rglob(ext):
                 rel = path.relative_to(repo_root)
                 parts = rel.parts
-                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive") for p in parts):
+                # .venv/venv: the uv-managed environment lives inside the repo and
+                # holds third-party packages that must not be scanned.
+                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive",
+                             ".venv", "venv", "node_modules") for p in parts):
                     continue
                 try:
                     text = path.read_text(encoding="utf-8")

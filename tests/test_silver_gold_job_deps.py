@@ -289,22 +289,25 @@ def test_traced_third_party_imports_are_declared():
 
 
 def test_declared_dependencies_match_requirements_specifiers():
-    """Declared dependencies must reuse the 'name>=lower' lines from
-    requirements.txt (no divergent pinning in the job spec)."""
+    """Declared dependencies must reuse the 'name>=lower' specifiers from
+    pyproject.toml [project].dependencies (no divergent pinning in the job spec)."""
+    import tomllib
+
     deps = _job_environment_dependencies()
     assert deps, (
         f"{_JOB_NAME} declares no dependencies; the entry point needs at least "
         f"the traced third-party imports declared"
     )
-    req_lines = {
-        line.strip()
-        for line in (_REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    }
+    with (_REPO_ROOT / "pyproject.toml").open("rb") as f:
+        req_lines = {
+            line.strip()
+            for line in tomllib.load(f).get("project", {}).get("dependencies", [])
+        }
+    assert req_lines, "pyproject.toml declares no [project].dependencies"
     mismatched = [d for d in deps if d.strip() not in req_lines]
     assert not mismatched, (
-        f"job dependencies {mismatched} do not match requirement lines in "
-        f"requirements.txt; use the same 'name>=lower' specifier"
+        f"job dependencies {mismatched} do not match dependency specifiers in "
+        f"pyproject.toml; use the same 'name>=lower' specifier"
     )
 
 

@@ -1,5 +1,0 @@
-# requirements-app.txt — DEPRECATED: app deps are now in the root requirements.txt.
-#
-# This file is kept for backward compatibility.  The canonical app dependency
-# set is requirements.txt (installed by Databricks Apps).
--r requirements.txt

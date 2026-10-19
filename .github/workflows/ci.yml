@@ -33,30 +33,21 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: |
-            requirements*.txt
+            uv.lock
+            pyproject.toml
 
       - name: Install Python dependencies
-        shell: bash
-        run: |
-          grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements.txt > "${RUNNER_TEMP}/requirements-no-ibapi.txt"
-          uv pip install --system -r "${RUNNER_TEMP}/requirements-no-ibapi.txt"
-          if [[ -f requirements-app.txt ]]; then
-            uv pip install --system -r requirements-app.txt
-          fi
-          if [[ -f requirements-dev.txt ]]; then
-            # drop ibapi (not on PyPI) and the '-r requirements.txt' include (already installed above;
-            # relative includes would not resolve from RUNNER_TEMP)
-            grep -viE '^[[:space:]]*(ibapi([<=>~!]|$)|-r[[:space:]])' requirements-dev.txt > "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
-            uv pip install --system -r "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
-          fi
-          uv pip install --system pytest pytest-asyncio pytest-timeout httpx numpy pandas polars duckdb scikit-learn pyyaml
+        # Installs [project].dependencies plus the default `dev` group from the
+        # committed uv.lock. --frozen fails the build if the lock is stale
+        # instead of silently re-resolving. pyspark is deliberately not installed.
+        run: uv sync --frozen
 
       - name: Run offline test suite
-        run: pytest -q -m "not spark and not lakebase and not databricks"
+        run: uv run --frozen pytest -q -m "not spark and not lakebase and not databricks"
 
       - name: Run streaming bundle tests
         if: ${{ hashFiles('bundles/streaming/tests/**') != '' }}
-        run: pytest -q bundles/streaming/tests
+        run: uv run --frozen pytest -q bundles/streaming/tests
 
   frontend:
     name: Frontend
@@ -168,7 +159,8 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: |
-            requirements*.txt
+            uv.lock
+            pyproject.toml
 
       - name: Install pip-audit
         run: uv pip install --system pip-audit
@@ -191,10 +183,12 @@ jobs:
         run: |
           pip-audit -r requirements-render.txt ${{ steps.ignore.outputs.args }}
 
-      - name: Audit requirements-app.txt
+      - name: Audit locked app dependencies (uv.lock)
         shell: bash
         run: |
-          pip-audit -r requirements-app.txt ${{ steps.ignore.outputs.args }}
+          # Export the fully pinned runtime set (no dev group) and audit it as-is.
+          uv export --frozen --no-dev --no-hashes --no-emit-project -o "${RUNNER_TEMP}/app-locked.txt"
+          pip-audit -r "${RUNNER_TEMP}/app-locked.txt" --no-deps --disable-pip ${{ steps.ignore.outputs.args }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
