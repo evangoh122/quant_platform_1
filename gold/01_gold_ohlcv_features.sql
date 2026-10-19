@@ -2,9 +2,12 @@
 --
 -- Computes minute-bar technical features. All lookback windows are partitioned
 -- by (symbol, trading day) so returns/momentum/ATR/RSI do not leak across
--- sessions. session_high/session_low are trailing (ROWS BETWEEN UNBOUNDED
--- PRECEDING AND CURRENT ROW) so a bar never sees a later bar's high/low within
--- the same day. Minute bars are labelled at their START (Polygon convention:
+-- sessions. log_return_N = LN(close / NULLIF(LAG(close, N) ..., 0)) uses the
+-- same windows and is NULL when the lag bar is missing or the close ratio is
+-- non-positive (LN never sees 0 or a negative ratio). session_high/session_low
+-- are trailing (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) so a bar
+-- never sees a later bar's high/low within the same day. Minute bars are
+-- labelled at their START (Polygon convention:
 -- event_ts marks the [t, t+1min) window); a bar's close is therefore known only
 -- at event_ts + bar interval. information_available_ts = event_ts + the bar
 -- interval derived from timespan (INTERVAL 1 MINUTE for minute bars) — this is
@@ -32,6 +35,10 @@ USING (
       close / NULLIF(LAG(close, 5)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r5,
       close / NULLIF(LAG(close, 15) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r15,
       close / NULLIF(LAG(close, 30) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) - 1 AS r30,
+      close / NULLIF(LAG(close, 1)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) AS cr1,
+      close / NULLIF(LAG(close, 5)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) AS cr5,
+      close / NULLIF(LAG(close, 15) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) AS cr15,
+      close / NULLIF(LAG(close, 30) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts), 0) AS cr30,
       MAX(high) OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_high,
       MIN(low)  OVER (PARTITION BY symbol, DATE(event_ts) ORDER BY event_ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_low
     FROM bootcamp_students.evangoh_capstone.silver_ohlcv
@@ -43,6 +50,10 @@ USING (
     SELECT
       symbol, event_ts, information_available_ts, close, high, low, volume, vwap,
       r1, r5, r15, r30,
+      CASE WHEN cr1  > 0 THEN LN(cr1)  END AS lr1,
+      CASE WHEN cr5  > 0 THEN LN(cr5)  END AS lr5,
+      CASE WHEN cr15 > 0 THEN LN(cr15) END AS lr15,
+      CASE WHEN cr30 > 0 THEN LN(cr30) END AS lr30,
       session_high, session_low,
       CASE WHEN r1 > 0 THEN r1 ELSE 0 END AS gain,
       CASE WHEN r1 < 0 THEN -r1 ELSE 0 END AS loss,
@@ -58,6 +69,10 @@ USING (
       r5  AS return_5m,
       r15 AS return_15m,
       r30 AS return_30m,
+      lr1  AS log_return_1m,
+      lr5  AS log_return_5m,
+      lr15 AS log_return_15m,
+      lr30 AS log_return_30m,
       STDDEV(r1) OVER w5   AS rvol_5m,
       STDDEV(r1) OVER w15  AS rvol_15m,
       STDDEV(r1) OVER w30  AS rvol_30m,
@@ -86,6 +101,7 @@ USING (
     event_ts                                   AS feature_ts,
     information_available_ts                   AS information_available_ts,
     return_1m, return_5m, return_15m, return_30m,
+    log_return_1m, log_return_5m, log_return_15m, log_return_30m,
     rvol_5m, rvol_15m, rvol_30m,
     atr_14, momentum_5m, momentum_15m, rsi_14,
     vwap_deviation, relative_volume,

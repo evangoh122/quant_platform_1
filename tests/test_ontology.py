@@ -38,6 +38,7 @@ PRICE_RETURN_METRICS = {
     "momentum",
     "relative_performance",
     "return_N",
+    "log_return_N",
     "rolling_realized_volatility",
     "momentum_N",
 }
