@@ -66,6 +66,47 @@ def _client(app):
     return TestClient(app)
 
 
+class _FrozenClock:
+    """A monotonic clock the test controls, for rate-limiter determinism.
+
+    ``_FixedWindowLimiter`` derives its window index from ``int(now) // 60``.
+    With the real clock, a burst of 61 requests can straddle a window boundary
+    and the counter resets mid-burst, so the "61st request is 429" assertions
+    would depend on wall-clock timing.  Freezing the clock pins the whole burst
+    inside one window without changing any assertion.
+    """
+
+    def __init__(self, start: float) -> None:
+        self.now = float(start)
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += float(seconds)
+
+
+def _freeze_limiter_clock(monkeypatch, main_mod, **limiter_kwargs) -> _FrozenClock:
+    """Install a fresh limiter frozen 40s into its 60s window.
+
+    Every "the 61st request in a minute is a 429" assertion below charges 60
+    requests to one fixed window.  With the real monotonic clock the burst can
+    straddle a window boundary, the per-IP counter resets mid-burst and the
+    assertion fails intermittently under suite load.  Freezing the clock pins
+    each burst inside one window; no assertion or limit is relaxed.
+    """
+    frozen = _FrozenClock(1_000_000.0)  # 40s into the window -> Retry-After 20
+    # Keep the old "start from a clean limiter" contract for the shared instance
+    # too: it is restored after the test and must not carry a burst forward.
+    main_mod._limiter.reset()
+    monkeypatch.setattr(
+        main_mod,
+        "_limiter",
+        main_mod._FixedWindowLimiter(clock=frozen, **limiter_kwargs),
+    )
+    return frozen
+
+
 def _get_api_get_routes(app):
     """Extract all GET-allowing routes under /api from the app's router.
 
@@ -335,7 +376,7 @@ def test_rate_limit_61st_read_gives_429(monkeypatch):
     """The 61st GET in the same minute returns 429 with Retry-After."""
     import api.main as main_mod
 
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -406,7 +447,7 @@ def test_security_headers_on_429(monkeypatch):
     """A rate-limited response carries all security headers."""
     import api.main as main_mod
 
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -622,7 +663,7 @@ def test_spoofed_rightmost_xff_does_not_evade(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -655,7 +696,7 @@ def test_different_leftmost_ips_get_separate_buckets(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -919,10 +960,7 @@ def test_global_rate_ceiling(monkeypatch):
     request is rejected with a short retry-after."""
     import api.main as main_mod
 
-    main_mod._limiter.reset()
-    monkeypatch.setattr(main_mod, "_limiter", main_mod._FixedWindowLimiter(
-        limit=1000, global_limit=10
-    ))
+    _freeze_limiter_clock(monkeypatch, main_mod, limit=1000, global_limit=10)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -956,7 +994,9 @@ def test_default_xff_leftmost_ignores_cf_connecting_ip(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    # Frozen clock: all 61 requests share one fixed window, so the 429 cannot be
+    # lost to a wall-clock boundary crossing mid-burst.
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -1005,7 +1045,7 @@ def test_no_cf_header_leftmost_xff_used(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -1093,7 +1133,7 @@ def test_outside_render_headers_ignored(monkeypatch):
 
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", False)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -1162,7 +1202,7 @@ def test_xff_leftmost_fixed_xff_rotating_cf_61st_gives_429(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -1291,7 +1331,7 @@ def test_cf_connecting_ip_mode_61st_gives_429(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "cf_connecting_ip")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -1353,7 +1393,7 @@ def test_peer_mode_single_bucket(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)

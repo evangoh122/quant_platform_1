@@ -61,11 +61,11 @@ jobs:
           fi
 
       - name: Run offline test suite
-        run: uv run pytest -q -m "not spark and not lakebase and not databricks"
+        run: uv run --frozen pytest -q -m "not spark and not lakebase and not databricks"
 
       - name: Run streaming bundle tests
         if: ${{ hashFiles('bundles/streaming/tests/**') != '' }}
-        run: uv run pytest -q bundles/streaming/tests
+        run: uv run --frozen pytest -q bundles/streaming/tests
 
   frontend:
     name: Frontend

@@ -106,15 +106,22 @@ class _TokenBucket:
     rather than a hard minute-long outage.
     """
 
-    def __init__(self, capacity: int, refill_rate: float):
+    def __init__(
+        self,
+        capacity: int,
+        refill_rate: float,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._capacity = capacity
         self._refill_rate = refill_rate
+        # Injectable monotonic clock (test hook): production uses time.monotonic.
+        self._clock = clock
         self._tokens = float(capacity)
-        self._last_refill = time.monotonic()
+        self._last_refill = self._clock()
 
     def consume(self) -> tuple[bool, int]:
         """Try to consume one token.  ``(allowed, retry_after_seconds)``."""
-        now = time.monotonic()
+        now = self._clock()
         elapsed = now - self._last_refill
         self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
         self._last_refill = now
@@ -128,7 +135,7 @@ class _TokenBucket:
 
     def reset(self) -> None:
         self._tokens = float(self._capacity)
-        self._last_refill = time.monotonic()
+        self._last_refill = self._clock()
 
 
 class _FixedWindowLimiter:
@@ -139,6 +146,11 @@ class _FixedWindowLimiter:
     no parallel dicts can drift apart.  Aggregate load is governed by a
     :class:`_TokenBucket` instead of a hard ceiling, so bursts cause brief
     429s that self-recover within seconds.
+
+    ``clock`` is an injectable monotonic source (default :func:`time.monotonic`)
+    used for the window index, cleanup and the token bucket.  Tests freeze it so
+    a burst of N requests can be pinned inside one window instead of straddling
+    a wall-clock boundary.
     """
 
     def __init__(
@@ -147,14 +159,20 @@ class _FixedWindowLimiter:
         window: int = 60,
         global_limit: int = _RATE_LIMIT_GLOBAL,
         lru_max: int = _LRU_MAX_KEYS,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self._limit = limit
         self._window = window
         self._maxsize = lru_max
+        self._clock = clock
         self._counts: OrderedDict[str, tuple[int, int]] = OrderedDict()
-        self._last_cleanup = time.monotonic()
+        self._last_cleanup = self._clock()
         # Token bucket: capacity = global_limit, refills at global_limit/60 per second.
-        self._bucket = _TokenBucket(capacity=global_limit, refill_rate=global_limit / 60.0)
+        self._bucket = _TokenBucket(
+            capacity=global_limit,
+            refill_rate=global_limit / 60.0,
+            clock=clock,
+        )
 
     def _cleanup(self, now: float) -> None:
         if now - self._last_cleanup < self._window:
@@ -167,7 +185,7 @@ class _FixedWindowLimiter:
 
     def check(self, ip: str) -> tuple[bool, int]:
         """Return ``(allowed, retry_after)``."""
-        now = time.monotonic()
+        now = self._clock()
         self._cleanup(now)
         window_ts = int(now) // self._window
 
@@ -197,7 +215,7 @@ class _FixedWindowLimiter:
         """Reset all counters (for testing)."""
         self._counts.clear()
         self._bucket.reset()
-        self._last_cleanup = time.monotonic()
+        self._last_cleanup = self._clock()
 
     @property
     def key_count(self) -> int:
