@@ -121,6 +121,24 @@ describe('ArchitectureEvidence', () => {
     expect(screen.getByText(/DLT.*built but not deployed/)).toBeInTheDocument();
     expect(screen.getByText(/Paper broker scaffold/)).toBeInTheDocument();
     expect(screen.getByText(/Analytics require the.*refresh run/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'MLflow runs in the offline ML ablation lane only; not part of the deployed stack.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('qualifies MLflow as offline and not deployed in the diagram and its description', () => {
+    const { container } = render(<ArchitectureEvidence />);
+
+    const mlflow = container.querySelector('[data-node-id="mlflow"]');
+    expect(mlflow).not.toBeNull();
+    expect(mlflow?.textContent).toMatch(/offline ML lane/i);
+    expect(mlflow?.textContent).toMatch(/not deployed/i);
+
+    const desc = container.querySelector('svg desc')?.textContent ?? '';
+    expect(desc).toMatch(/offline ML ablation lane/i);
+    expect(desc).toMatch(/not part of the deployed stack/i);
   });
 
   it('labels baseline signals as a demonstration with no edge claimed', () => {

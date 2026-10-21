@@ -54,6 +54,7 @@ const TEST_GROUPS = [
 const LIMITATIONS = [
   'Baseline signals only: a 1-trading-day logistic-regression baseline used to demonstrate the pipeline — no validated trading edge claimed.',
   'DLT (Delta Live Tables) pipeline built but not deployed to production.',
+  'MLflow runs in the offline ML ablation lane only; not part of the deployed stack.',
   'Paper broker scaffold — no live brokerage integration.',
   'Analytics require the Lakebase analytics refresh run to populate materialized views.',
 ];

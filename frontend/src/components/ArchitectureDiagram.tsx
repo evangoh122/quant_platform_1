@@ -5,7 +5,8 @@
  * Visual language follows the Cocoon architecture-diagram skill
  * (`.agentlogs/skills/architecture-diagram/SKILL.md`): one semantic colour per
  * component type, a 40 px minimum vertical gap between stacked components,
- * connection arrows painted before the boxes, and a legend placed below every
+ * region fills painted under the connectors with connection arrows painted
+ * before the boxes, and a legend placed below every
  * boundary. Accessibility follows the Apple HIG
  * (`.agentlogs/skills/apple-design/references/hig/accessibility.md` › Vision):
  * the SVG is a single labelled image with a title and description, and the
@@ -91,8 +92,9 @@ const COLUMN_3 = 608;
 const COLUMN_4 = 888;
 
 /**
- * Built components only. Planned perps nodes live in a separate dashed
- * boundary below and never appear in the page's PIPELINE_TECH_NODES list.
+ * Built and planned components. Planned perps nodes carry `kind: 'planned'`
+ * (dashed outline, in-box PLANNED tag) and live in a separate dashed boundary
+ * below; they never appear in the page's PIPELINE_TECH_NODES list.
  */
 export const NODES: DiagramNode[] = [
   {
@@ -198,7 +200,9 @@ export const NODES: DiagramNode[] = [
   {
     id: 'mlflow',
     label: 'MLflow',
-    sublabel: 'run comparison',
+    // Real, tested code (ml/registry.py) but excluded from the deployed stack:
+    // it only backs the offline ML ablation lane.
+    sublabel: 'offline ML lane (not deployed)',
     kind: 'cloud',
     x: COLUMN_4,
     y: 516,
@@ -335,7 +339,13 @@ const ARROW_ID = 'architecture-diagram-arrow';
 const DIAGRAM_TITLE = 'Architecture diagram: built platform and planned perps pipeline';
 
 const DIAGRAM_DESCRIPTION =
-  'Data flows from external providers (Massive, SEC, CFTC, FRED) through Spark into Delta Lake bronze, silver and gold tables. FastAPI serves the React research UI and the AI agent, which uses typed tools. The agent writes research notes and audit records to Lakebase, which feeds analytics_outbox, Spark analytics and Delta analytics. MLflow records model runs. A separate dashed section shows the planned perps pipeline — Hyperliquid HIP-3 API and Binance futures archives into bronze_perps_*, silver_perp_* and gold_weekend_perp_features for weekend signal comparison in MLflow. Planned components are not deployed to production.';
+  'Data flows from external providers (Massive, SEC, CFTC, FRED) through Spark into Delta Lake bronze, silver and gold tables. FastAPI serves the React research UI and the AI agent, which uses typed tools. The agent writes research notes and audit records to Lakebase, which feeds analytics_outbox, Spark analytics and Delta analytics. MLflow records model runs in the offline ML ablation lane only and is not part of the deployed stack. A separate dashed section shows the planned perps pipeline — Hyperliquid HIP-3 API and Binance futures archives into bronze_perps_*, silver_perp_* and gold_weekend_perp_features for weekend signal comparison in MLflow. Planned components are not deployed to production.';
+
+/** In-SVG text floor: 10 px is the smallest size the HIG legibility rule allows. */
+export const SUBLABEL_FONT_SIZE = 10;
+export const TAG_FONT_SIZE = 10;
+export const BOUNDARY_LABEL_FONT_SIZE = 10;
+export const LEGEND_FONT_SIZE = 10;
 
 function nodeById(id: string): DiagramNode {
   const node = NODES.find((candidate) => candidate.id === id);
@@ -407,7 +417,32 @@ export default function ArchitectureDiagram() {
         <rect data-layer="background" width={DIAGRAM_WIDTH} height={DIAGRAM_HEIGHT} fill="#020617" />
         <rect width={DIAGRAM_WIDTH} height={DIAGRAM_HEIGHT} fill={`url(#${GRID_ID})`} />
 
-        {/* Arrows before boxes: painted behind the component fills. */}
+        {/* Region fills first: the boundary rects are translucent, so painting
+            them before the arrows keeps connector contrast at its full ~5:1
+            instead of ~1.8:1 where a fill composites over a line (HIG/WCAG
+            3:1 non-text floor). */}
+        <g data-layer="regions">
+          {BOUNDARIES.map((boundary) => (
+            <rect
+              key={boundary.id}
+              data-boundary-id={boundary.id}
+              data-boundary-part="fill"
+              data-planned={boundary.planned ? 'true' : 'false'}
+              x={boundary.x}
+              y={boundary.y}
+              width={boundary.width}
+              height={boundary.height}
+              rx={12}
+              fill={boundary.planned ? 'rgba(15, 23, 42, 0.45)' : 'rgba(15, 23, 42, 0.6)'}
+              stroke={boundary.planned ? '#64748b' : '#334155'}
+              strokeWidth={boundary.planned ? 1.5 : 1}
+              strokeDasharray={boundary.planned ? '6 5' : '8 4'}
+            />
+          ))}
+        </g>
+
+        {/* Arrows after the region fills and before the boxes: arrowheads sit
+            behind the opaque node masks, as the skill requires. */}
         <g data-layer="edges" fill="none" stroke="#64748b" strokeWidth={1.4}>
           {EDGES.map((edge) => {
             const from = nodeById(edge.from);
@@ -425,31 +460,23 @@ export default function ArchitectureDiagram() {
           })}
         </g>
 
-        <g data-layer="regions">
+        {/* Boundary labels stay above the connectors so no arrow crosses out a
+            region title. */}
+        <g data-layer="region-labels">
           {BOUNDARIES.map((boundary) => (
-            <g key={boundary.id} data-boundary-id={boundary.id} data-planned={boundary.planned ? 'true' : 'false'}>
-              <rect
-                x={boundary.x}
-                y={boundary.y}
-                width={boundary.width}
-                height={boundary.height}
-                rx={12}
-                fill={boundary.planned ? 'rgba(15, 23, 42, 0.45)' : 'rgba(15, 23, 42, 0.6)'}
-                stroke={boundary.planned ? '#64748b' : '#334155'}
-                strokeWidth={boundary.planned ? 1.5 : 1}
-                strokeDasharray={boundary.planned ? '6 5' : '8 4'}
-              />
-              <text
-                x={boundary.x + 16}
-                y={boundary.y + 22}
-                fill={boundary.planned ? '#e2e8f0' : '#94a3b8'}
-                fontSize={10}
-                letterSpacing="0.08em"
-                fontWeight={600}
-              >
-                {boundary.label}
-              </text>
-            </g>
+            <text
+              key={boundary.id}
+              data-boundary-id={boundary.id}
+              data-boundary-part="label"
+              x={boundary.x + 16}
+              y={boundary.y + 22}
+              fill={boundary.planned ? '#e2e8f0' : '#94a3b8'}
+              fontSize={BOUNDARY_LABEL_FONT_SIZE}
+              letterSpacing="0.08em"
+              fontWeight={600}
+            >
+              {boundary.label}
+            </text>
           ))}
         </g>
 
@@ -501,7 +528,7 @@ export default function ArchitectureDiagram() {
                     x={node.x + node.width / 2}
                     y={baselines.sublabel}
                     fill="#94a3b8"
-                    fontSize={9}
+                    fontSize={SUBLABEL_FONT_SIZE}
                     textAnchor="middle"
                   >
                     {node.sublabel}
@@ -512,7 +539,7 @@ export default function ArchitectureDiagram() {
                     x={node.x + node.width - 14}
                     y={baselines.tag}
                     fill="#cbd5e1"
-                    fontSize={7}
+                    fontSize={TAG_FONT_SIZE}
                     letterSpacing="0.1em"
                     textAnchor="end"
                   >
@@ -541,7 +568,7 @@ export default function ArchitectureDiagram() {
                   strokeWidth={1.5}
                   strokeDasharray={kind === 'planned' ? '4 3' : undefined}
                 />
-                <text x={22} y={0} fill="#cbd5e1" fontSize={10}>
+                <text x={22} y={0} fill="#cbd5e1" fontSize={LEGEND_FONT_SIZE}>
                   {KIND_LABELS[kind]}
                 </text>
               </g>

@@ -8,6 +8,7 @@ import ArchitectureDiagram, {
   KIND_STYLES,
   LEGEND_Y,
   NODES,
+  SUBLABEL_FONT_SIZE,
   nodeLabelFontSize,
   nodeTextBaselines,
   type DiagramNode,
@@ -129,19 +130,23 @@ describe('ArchitectureDiagram', () => {
     expect(screen.getByText('silver_perp_*')).toBeInTheDocument();
     expect(screen.getByText('gold_weekend_perp_features')).toBeInTheDocument();
 
-    const plannedBoundary = container.querySelector('[data-boundary-id="perps"]');
+    const plannedBoundary = container.querySelector(
+      '[data-boundary-id="perps"][data-boundary-part="fill"]',
+    );
     expect(plannedBoundary).toHaveAttribute('data-planned', 'true');
-    expect(plannedBoundary?.textContent).toMatch(/not in production/i);
+    expect(
+      container.querySelector('[data-boundary-id="perps"][data-boundary-part="label"]'),
+    ).toHaveTextContent(/not in production/i);
   });
 
-  it('draws arrows before the boundaries and node boxes', () => {
+  it('draws arrows after the region fills and before the node boxes', () => {
     const { container } = render(<ArchitectureDiagram />);
     const svg = container.querySelector('svg');
     const layers = Array.from(svg?.querySelectorAll('[data-layer]') ?? []).map((el) =>
       el.getAttribute('data-layer'),
     );
 
-    expect(layers).toEqual(['background', 'edges', 'regions', 'nodes', 'legend']);
+    expect(layers).toEqual(['background', 'regions', 'edges', 'region-labels', 'nodes', 'legend']);
 
     const edgePaths = svg?.querySelectorAll('[data-edge]') ?? [];
     expect(edgePaths).toHaveLength(EDGES.length);
@@ -149,6 +154,54 @@ describe('ArchitectureDiagram', () => {
       expect(path.getAttribute('d')).toMatch(/^M /);
       expect(path.getAttribute('marker-end')).toBe('url(#architecture-diagram-arrow)');
     }
+  });
+
+  it('keeps every translucent region fill behind the connectors', () => {
+    // Regression: `regions` used to be painted after `edges`, so the boundary
+    // fills (alpha 0.45-0.6) composited over 54% of the connector length and
+    // dropped arrow contrast to ~1.8:1 — below the WCAG 3:1 non-text floor.
+    // A fill may only be translucent while it sits underneath the arrows.
+    const { container } = render(<ArchitectureDiagram />);
+    const svg = container.querySelector('svg');
+    const layers = Array.from(svg?.querySelectorAll('[data-layer]') ?? []).map((el) =>
+      el.getAttribute('data-layer'),
+    );
+    const regionsIndex = layers.indexOf('regions');
+    const edgesIndex = layers.indexOf('edges');
+
+    expect(regionsIndex).toBeGreaterThan(-1);
+    expect(edgesIndex).toBeGreaterThan(-1);
+    expect(regionsIndex).toBeLessThan(edgesIndex);
+
+    const fillRects = Array.from(
+      container.querySelectorAll('[data-layer="regions"] rect[data-boundary-id]'),
+    );
+    expect(fillRects).toHaveLength(BOUNDARIES.length);
+
+    for (const rect of fillRects) {
+      const fill = rect.getAttribute('fill') ?? '';
+      const alpha = fill.startsWith('rgba') ? Number(fill.split(',').pop()?.replace(')', '')) : 1;
+      expect(Number.isFinite(alpha)).toBe(true);
+      const mutesConnectors = regionsIndex > edgesIndex && alpha > 0.3;
+      expect(mutesConnectors).toBe(false);
+    }
+  });
+
+  it('labels MLflow as the offline ML lane and not a deployed component', () => {
+    const { container } = render(<ArchitectureDiagram />);
+
+    const mlflow = container.querySelector('[data-node-id="mlflow"]');
+    expect(mlflow).not.toBeNull();
+    // The node stays solid: mlflow is real, tested code (ml/registry.py).
+    expect(mlflow).toHaveAttribute('data-planned', 'false');
+    expect(mlflow?.querySelector('text')).toHaveTextContent('MLflow');
+    expect(mlflow?.textContent).toMatch(/offline ML lane/i);
+    expect(mlflow?.textContent).toMatch(/not deployed/i);
+
+    const desc = container.querySelector('svg desc')?.textContent ?? '';
+    expect(desc).toMatch(/offline ML ablation lane/i);
+    expect(desc).toMatch(/not part of the deployed stack/i);
+    expect(desc).toMatch(/not deployed to production/i);
   });
 
   it('dashes planned edges and keeps every edge endpoint on a real node', () => {
@@ -226,7 +279,7 @@ describe('ArchitectureDiagram', () => {
     // Monospace advance width is ~0.6 em; check the longest possible line.
     for (const candidate of NODES) {
       const labelWidth = candidate.label.length * nodeLabelFontSize(candidate) * 0.6;
-      const sublabelWidth = (candidate.sublabel?.length ?? 0) * 9 * 0.6;
+      const sublabelWidth = (candidate.sublabel?.length ?? 0) * SUBLABEL_FONT_SIZE * 0.6;
       expect(labelWidth).toBeLessThan(candidate.width - 16);
       expect(sublabelWidth).toBeLessThan(candidate.width - 16);
 
@@ -253,5 +306,17 @@ describe('ArchitectureDiagram', () => {
     expect(container.querySelector('image')).toBeNull();
     // Guard the node ids used above against silent renames.
     expect(node('gold_weekend').kind).toBe('planned');
+  });
+
+  it('keeps every in-SVG label at or above the 10 px legibility floor', () => {
+    const { container } = render(<ArchitectureDiagram />);
+
+    const texts = Array.from(container.querySelectorAll('svg text'));
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
+      const size = Number(text.getAttribute('font-size'));
+      expect(Number.isFinite(size)).toBe(true);
+      expect(size).toBeGreaterThanOrEqual(10);
+    }
   });
 });

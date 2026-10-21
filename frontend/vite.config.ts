@@ -24,8 +24,11 @@ export default defineConfig({
     maxWorkers: 4,
     minWorkers: 1,
     // Navigation-enumeration tests render every destination and legitimately
-    // exceed the 5 s default on a loaded agent host.
-    testTimeout: 15000,
-    hookTimeout: 15000,
+    // exceed the 5 s default on a loaded agent host. This is a host workaround
+    // (6-8 GB CI agents), not a product requirement; 10 s stays ~2x the
+    // slowest known-good test instead of the 15 s band that could hide a
+    // genuine 6-14 s regression.
+    testTimeout: 10000,
+    hookTimeout: 10000,
   },
 });
