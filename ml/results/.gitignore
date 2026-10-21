@@ -1,0 +1,5 @@
+# Generated drift-report artifacts (ml/monitoring.py, ml/run_drift_report.py).
+# The HTML report and JSON summary under ml/results/ are output, not source:
+# gitignored and regenerated on demand.
+drift_*.html
+drift_*.json
