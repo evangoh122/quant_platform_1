@@ -426,8 +426,7 @@ _TONE_CACHE_MAX = 64
 def generate_tone_analysis(ticker: str) -> dict:
     """Best-effort LLM synthesis of sentiment data into a management tone summary.
 
-    Follows the same pattern as ``_generate_educational_layers`` in
-    ``langgraph_engine.py``: guarded by ``SENTIMENT_LLM_ENABLED`` env var,
+    Best-effort pattern: guarded by ``SENTIMENT_LLM_ENABLED`` env var,
     cached per ``(ticker, accession)``, returns ``{}`` on failure.
     """
     import os
