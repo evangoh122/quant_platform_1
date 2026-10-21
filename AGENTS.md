@@ -10,9 +10,10 @@ models and worker rules"; wherever this chain says MiMo or DeepSeek, read
 "the coder" or "the validator" accordingly. The two never swap mid-change and
 the validator is never the model that wrote the code.
 
-1. **MiMo implements** from a scoped `BUILD-*.md` request.
-2. **DeepSeek independently validates** the exact committed SHA and returns
-   `APPROVED`, `CHANGES_REQUESTED`, or `FAILED`.
+1. **The scheduled coder (see Role routing) implements** from a scoped
+   `BUILD-*.md` request.
+2. **The other model independently validates** the exact committed SHA and
+   returns `APPROVED`, `CHANGES_REQUESTED`, or `FAILED`.
 3. **One final gate, chosen by complexity**, runs on the exact SHA after
    DeepSeek approves: **Codex Sol** for simple/routine changes, **Opus 5.5**
    (`claude-opus-5-5`) for complex changes or any escalation trigger (see
@@ -23,11 +24,12 @@ the validator is never the model that wrote the code.
 6. After CI and CodeRabbit are clean the owner authorizes the merge (or has
    pre-authorized it for named PRs).
 
-MiMo's report is a builder self-report, never independent approval. Any later
-commit invalidates DeepSeek, Codex Sol and Opus results. Codex Sol and Opus
-5.5 are alternative final gates, never substitutes for DeepSeek. Do not
-substitute Claude, Kimi, GPT, or another model for DeepSeek when DeepSeek is
-unavailable or cannot be positively identified; report the gate as blocked.
+The coder's report is a builder self-report, never independent approval. Any
+later commit invalidates the validator, Codex Sol and Opus results. Codex Sol
+and Opus 5.5 are alternative final gates, never substitutes for the validator.
+Do not substitute Claude, Kimi, GPT, or another model for the validator when
+the validator's model is unavailable or cannot be positively identified; report
+the gate as blocked.
 
 ## Reviewer selection and escalation
 
@@ -92,10 +94,8 @@ that wrote the code, so a fix round or re-validation keeps the original pairing
 even when the schedule would now choose differently.
 
 `.agents/dispatch.sh` roles: `mimo` (MiMo builds), `deepseek` (DeepSeek
-validates), `dsbuild` (DeepSeek builds) and `mimoval` (MiMo validates). The
-`dsbuild` and `mimoval` roles require the dispatcher change from PR #68; on a
-branch cut from a `main` without it, copy that dispatcher to the gitignored
-`.agents/run-dispatch.sh` instead of editing `dispatch.sh`.
+validates), `dsbuild` (DeepSeek builds) and `mimoval` (MiMo validates). All
+four roles live in `.agents/dispatch.sh` on `main`.
 
 ### Model identification (record it in every PR)
 | Role | opencode model | Notes |
@@ -130,6 +130,11 @@ test process loading the 6 GB shared host. Therefore:
 - A validator adds only its evidence file and never commits. A commit that lands
   after the reported SHA invalidates that SHA unless the owner waives
   re-validation in writing (for example an evidence-only commit).
+- On hosts where `opencode` is the Windows binary, every BUILD and VALIDATE
+  request must restate the "Windows and WSL boundary" run-script route: an LF
+  script inside the WSL worktree at `.agents/run-<task>-<round>.sh`, launched
+  once as `wsl.exe -d Ubuntu -- bash /absolute/linux/worktree/.agents/run-<task>-<round>.sh`,
+  never inline `bash -c` or another wrapper.
 
 ### CodeRabbit observe-only mode
 When the owner says CodeRabbit may comment but nothing may change, request the
@@ -146,30 +151,38 @@ endings, non-goals, a commit requirement, and a verdict path. Use isolated
 `git archive` copies under `/tmp` for old-behavior and mutation proofs; never
 copy a worktree recursively.
 
-Run MiMo from the intended worktree:
+Run the build from the intended worktree with the routed coder role, after
+`date -u` and `.agents/pick-roles.sh`:
 
 ```bash
-timeout 7500 ./.agents/dispatch.sh mimo .agents/requests/BUILD-<topic>.md 7200 < /dev/null
+read -r CODER VALIDATOR < <(.agents/pick-roles.sh)   # run `date -u` first
+timeout 7500 ./.agents/dispatch.sh "$CODER" .agents/requests/BUILD-<topic>.md 7200 < /dev/null
 ```
 
-Run DeepSeek against the exact MiMo commit with a scoped validation request:
+Run the validator against the exact coder commit with a scoped validation
+request, using the same pair:
 
 ```bash
-timeout 7500 ./.agents/dispatch.sh deepseek .agents/requests/VALIDATE-<topic>.md 7200 < /dev/null
+timeout 7500 ./.agents/dispatch.sh "$VALIDATOR" .agents/requests/VALIDATE-<topic>.md 7200 < /dev/null
 ```
+
+A fix round or re-validation reuses the original pair: independence beats the
+clock, so the validator is never the model that wrote the code even when the
+schedule would now choose differently.
 
 After every run restore the dispatcher, make it executable, and verify the
 branch, HEAD ownership, worktree status, and unexpected files. Preserve
 unrelated user changes.
 
-MiMo must emit exactly one terminal report after its evidence file is readable:
+The coder must emit exactly one terminal report after its evidence file is
+readable:
 
 ```text
 BUILD DONE | status: <SUCCESS|FAILURE> | sha: <40-character SHA or NO_COMMIT> | branch: <branch> | evidence: <path>
 ```
 
-DeepSeek must emit exactly one terminal report after its evidence artifact is
-written and verified readable:
+The validator must emit exactly one terminal report after its evidence artifact
+is written and verified readable:
 
 ```text
 VALIDATION DONE | verdict: <APPROVED|CHANGES_REQUESTED|FAILED> | sha: <40-character SHA or SHA_NOT_VERIFIED> | evidence: <path>
