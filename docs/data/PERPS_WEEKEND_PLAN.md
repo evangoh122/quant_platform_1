@@ -57,12 +57,40 @@ flags).
 | Measurement window | 2026-08-26 → 2026-10-21 (8 weeks) |
 | Tiers (`weekend_usd_per_h`) | `A ≥ 250k`, `B ≥ 50k`, `C ≥ 10k`, `D < 10k` |
 | Flags | `new` = first bar after the window start; `sparse` = more than 25% of weekend hours with zero volume |
+| Data source | one provider code per row from [`config/data_sources.py`](../../config/data_sources.py): `hyperliquid` for HIP-3 perps, `binance_um` for the Binance USD-M controls |
 
 Tiers and flags are model inputs and filters, **not** ingestion filters: every
 configured instrument is still ingested. They are re-measured with
 [`scripts/perps/measure_closed_liquidity.py`](../../scripts/perps/measure_closed_liquidity.py),
 which writes a proposal JSON and never edits the config; the owner applies
 changes.
+
+### 1.1 The `data_source` provider code
+
+Owner rule (2026-10-22): every new table, view, config row, snapshot record and
+knowledge-graph node/edge/evidence row produced by this track carries a
+non-null `data_source` holding **one** code from
+[`config/data_sources.py`](../../config/data_sources.py). The vocabulary is
+defined once and reused by the loader, the probe and liquidity records, and the
+schemas below:
+
+| Code | Meaning |
+|---|---|
+| `massive` | Massive (Polygon) S3 flat files / REST (OHLCV, options, splits, dividends) |
+| `sec_edgar` | SEC EDGAR filings and the submissions API (`data.sec.gov/submissions`) |
+| `sec_companyfacts` | SEC XBRL Company-Facts API |
+| `hyperliquid` | Hyperliquid info API (HIP-3 perps, funding, candles) |
+| `binance_um` | Binance USD-M futures (`data.binance.vision` archives / API) |
+| `config` | hand-maintained repository config (e.g. the universe YAML) |
+| `derived` | computed in this project from other rows; a row that mixes sources is `derived` and records its input sources in lineage/docs |
+
+SQL tables carry `data_source STRING NOT NULL` with a Unity Catalog column
+comment naming the code and this vocabulary. YAML config rows carry
+`data_source:` and `config/perp_universe.py` rejects a missing or unknown code,
+and a code that contradicts the row's venue (`hyperliquid → hyperliquid`,
+`binance_usdm → binance_um`). Python records (probe and liquidity outputs) carry
+a required `data_source` validated against the same vocabulary.
+
 
 The round-1 ticker review in `scripts/perps/check_universe.py` is report-only.
 It flags ETFs, funds, preferreds and tickers that are unmapped in the **offline**
@@ -170,6 +198,11 @@ The commodity perps are part of the same probe run and are reported in their
 own section; the 2026-10-21 measurement above covers the company perps because
 that run predates the commodity section.
 
+Every per-instrument record in `docs/data/perps_history_probe.json` /
+`docs/data/perps_history_probe.md` and every row of the liquidity proposal
+carries `data_source` (`hyperliquid` for HIP-3 perps, `binance_um` for the
+Binance controls), validated against `config/data_sources.py` (§1.1).
+
 ## 3. Weekend window definition
 
 For a Friday date `F` (America/New_York):
@@ -224,10 +257,11 @@ NYSE calendar + perp universe config (78 + 8 + 2) ──────────
 
 ### 4.1 Bronze schemas (append-only)
 
-All timestamps UTC. Every row carries `ingest_ts`, `run_id`, `payload_hash`; a
-changed payload for an existing natural key is appended as a correction
-observation (never updated in place). Partition by `ingest_date` (and `interval`
-where noted).
+All timestamps UTC. Every row carries `ingest_ts`, `run_id`, `payload_hash` and a
+`data_source STRING NOT NULL` provider code from `config/data_sources.py`
+(§1.1); a changed payload for an existing natural key is appended as a
+correction observation (never updated in place). Partition by `ingest_date` (and
+`interval` where noted).
 
 #### `bronze_perp_candles`
 
@@ -236,6 +270,7 @@ where noted).
 | `ingest_ts` | TIMESTAMP | ingestion time |
 | `run_id` | STRING | manifest run id |
 | `venue` | STRING | `hyperliquid` |
+| `data_source` | STRING | NOT NULL; provider code from `config/data_sources.py` (`hyperliquid` here), commented in Unity Catalog |
 | `dex` | STRING | `xyz` / `para` / `io` |
 | `symbol` | STRING | provider symbol, e.g. `xyz:NVDA` |
 | `ticker` | STRING | company ticker or commodity label, e.g. `NVDA` |
@@ -263,6 +298,7 @@ job onward (API retention ~3.5 days); `15m`/`1h` carry history.
 | `ingest_ts` | TIMESTAMP | |
 | `run_id` | STRING | |
 | `venue` | STRING | `hyperliquid` |
+| `data_source` | STRING | NOT NULL; provider code from `config/data_sources.py` (`hyperliquid` here) |
 | `dex` | STRING | |
 | `symbol` | STRING | |
 | `ticker` | STRING | |
@@ -285,6 +321,7 @@ Natural key: `(venue, symbol, funding_time)`. Partition: `ingest_date`.
 | `ingest_ts` | TIMESTAMP | |
 | `observed_at` | TIMESTAMP | snapshot time (UTC) |
 | `venue` | STRING | |
+| `data_source` | STRING | NOT NULL; provider code from `config/data_sources.py` (`hyperliquid` here) |
 | `dex` | STRING | |
 | `symbol` | STRING | |
 | `ticker` | STRING | |
@@ -307,6 +344,7 @@ This table starts empty; P4 populates it.
 | Column | Type | Notes |
 |---|---|---|
 | `ingest_ts`, `run_id` | TIMESTAMP, STRING | |
+| `data_source` | STRING | NOT NULL; provider code from `config/data_sources.py` (`binance_um` here) |
 | `symbol` | STRING | `BTCUSDT` / `ETHUSDT` |
 | `interval` | STRING | `1h` |
 | `open_time`, `close_time` | TIMESTAMP | archive fields (UTC) |
@@ -321,13 +359,15 @@ Natural key: `(symbol, interval, open_time)`.
 
 #### `bronze_binance_um_funding`
 
-`ingest_ts`, `run_id`, `symbol`, `calc_time`, `funding_interval_hours`,
+`ingest_ts`, `run_id`, `data_source STRING NOT NULL` (`binance_um`),
+`symbol`, `calc_time`, `funding_interval_hours`,
 `last_funding_rate`, `archive_key`, `payload_hash`.
 Natural key: `(symbol, calc_time)`.
 
 #### `bronze_binance_um_metrics`
 
-`ingest_ts`, `run_id`, `symbol`, `create_time`, `sum_open_interest`,
+`ingest_ts`, `run_id`, `data_source STRING NOT NULL` (`binance_um`),
+`symbol`, `create_time`, `sum_open_interest`,
 `sum_open_interest_value`, `count_toptrader_long_short_ratio`,
 `sum_toptrader_long_short_ratio`, `count_long_short_ratio`,
 `sum_taker_long_short_vol_ratio`, `archive_key`, `payload_hash`.
@@ -340,6 +380,7 @@ Natural key: `(symbol, create_time)`.
 | Column | Type | Notes |
 |---|---|---|
 | `venue`, `dex`, `symbol`, `ticker` | STRING | |
+| `data_source` | STRING | NOT NULL; provider code from `config/data_sources.py` (`hyperliquid` here) |
 | `instrument_type`, `underlying_type`, `underlying_symbol`, `contract_symbol` | STRING | NOT NULL; `instrument_type = perpetual_future`; `contract_symbol = symbol` |
 | `bar_start_ts`, `bar_end_ts` | TIMESTAMP | UTC |
 | `open`,`high`,`low`,`close` | DECIMAL(28,10) | perp mark/trade price, **not** the stock price |
@@ -357,9 +398,10 @@ dropping rows.
 #### `silver_perp_funding`
 
 `venue`, `dex`, `symbol`, `ticker`, `instrument_type`, `underlying_type`,
-`underlying_symbol`, `contract_symbol`, `funding_time`, `funding_rate`,
-`funding_interval_hours`, `information_available_ts` (= `funding_time`),
-`source`, `ingest_ts`, `quality_flags`.
+`underlying_symbol`, `contract_symbol`, `data_source STRING NOT NULL`
+(`hyperliquid`; provider code from `config/data_sources.py`), `funding_time`,
+`funding_rate`, `funding_interval_hours`, `information_available_ts`
+(= `funding_time`), `source`, `ingest_ts`, `quality_flags`.
 Natural key: `(venue, symbol, funding_time)`.
 
 ### 4.3 Gold schema
@@ -379,7 +421,7 @@ One row per `(weekend_id, security_id)`.
 | Controls | `btc_ret_weekend`, `eth_ret_weekend`, `btc_realized_vol_1h`, `eth_realized_vol_1h` |
 | Equity baselines (PIT) | `friday_adj_close`, `friday_ret_1d`, `friday_ret_5d`, `friday_iv_atm`, `friday_iv_skew`, `friday_options_volume_z`, `equity_features_available_ts` |
 | Label | `monday_open`, `monday_gap`, `label_available_ts` (= `window_end_ts`) |
-| Governance | `instrument_type` (NOT NULL `perpetual_future`), `underlying_type`, `underlying_symbol`, `contract_symbol`, `venue`, `mapping_status` (`verified` / `unverified`), `information_available_ts`, `feature_version`, `ingest_ts` |
+| Governance | `instrument_type` (NOT NULL `perpetual_future`), `underlying_type`, `underlying_symbol`, `contract_symbol`, `venue`, `data_source` (NOT NULL; `derived` for this feature row — perp/funding inputs are `hyperliquid`, equity/options inputs are `massive`, recorded in lineage), `mapping_status` (`verified` / `unverified`), `information_available_ts`, `feature_version`, `ingest_ts` |
 
 Natural key: `(weekend_id, security_id)`. Partition: `weekend_id`.
 `information_available_ts` is the maximum of the component availability
@@ -483,7 +525,7 @@ size would be meaningful and report an honest negative result.
 
 | Slice | Scope | Acceptance |
 |---|---|---|
-| **P0 (this round)** | `config/perp_universe.yaml` v4 + typed loader (instrument_type, underlying_type, commodities, tiers A-D, flags); static NYSE calendar; `scripts/perps/check_universe.py`; `scripts/perps/probe_history.py`; `scripts/perps/measure_closed_liquidity.py`; this plan; architecture diagram; ontology terms; tests. | `pytest -q -m "not spark and not lakebase and not databricks"` (plain and with pyspark blocked); probe/measure `--dry-run`; no pandas/duckdb imports; calendar `--check`; loader loads 78 companies + 8 commodities + 2 controls; ontology test green. |
+| **P0 (this round)** | `config/perp_universe.yaml` v4 + typed loader (instrument_type, underlying_type, commodities, tiers A-D, flags); static NYSE calendar; `scripts/perps/check_universe.py`; `scripts/perps/probe_history.py`; `scripts/perps/measure_closed_liquidity.py`; this plan; architecture diagram; ontology terms; tests. | `pytest -q -m "not spark and not lakebase and not databricks"` (plain and with pyspark blocked); probe/measure `--dry-run`; no pandas/duckdb imports; calendar `--check`; loader loads 78 companies + 8 commodities + 2 controls; every row/record carries a valid `data_source` from `config/data_sources.py`; ontology test green. |
 | **P2** | Bronze ingestion jobs for Hyperliquid 15m/1h candles and funding, **daily 1m forward capture** (API retains only ~3.5 days), and Binance USD-M archives (full 1m history); manifest, idempotency, bounded backfill, archive checksums. No OI history. | Re-running a run id creates zero duplicate Bronze rows; rate limits respected; partial writes retryable; 1m capture gap alarms; DQ report on missing/duplicate bars. |
 | **P3** | Silver normalization: 1h bars, funding, QA flags (gaps, DST, stale marks, split suspects), canonical dedupe. | Natural keys unique; `information_available_ts` equals bar close; QA counts match Bronze source counts; no forward fill. |
 | **P4** | OI: forward `metaAndAssetCtxs` snapshots into `bronze_perp_oi_snapshots`; optional S3 archive backfill behind owner approval. | Snapshot cadence documented; no fabricated history; `oi_change_pct` null when endpoints missing. |

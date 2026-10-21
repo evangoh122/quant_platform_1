@@ -38,6 +38,12 @@ document: it uses the S3 namespace, lists ``Contents`` keys (and
 ``CommonPrefixes`` for directories) and is paged with ``IsTruncated`` /
 ``NextMarker``.  The probe follows every page before choosing the first month.
 
+Every per-instrument record in the JSON and Markdown report carries
+``data_source`` (``hyperliquid`` for the HIP-3 perps, ``binance_um`` for the
+Binance USD-M controls).  The code comes from the validated universe row and is
+checked against ``config/data_sources.py``, so a report can never label a row
+with an unknown or contradictory provider.
+
 Open interest
 -------------
 Hyperliquid's public info API exposes **current** open interest only (via
@@ -73,6 +79,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from config.data_sources import validate_data_source  # noqa: E402
 from config.perp_universe import (  # noqa: E402
     PerpControl,
     PerpUniverse,
@@ -122,7 +129,14 @@ class ProbeTarget:
     ticker: str
     venue: str
     symbol: str
-    kind: str  # "equity_perp" | "control"
+    kind: str  # "equity_perp" | "commodity_perp" | "control"
+    data_source: str
+
+    def __post_init__(self) -> None:
+        try:
+            validate_data_source(self.data_source)
+        except ValueError as exc:
+            raise ProbeError(f"{self.ticker}: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -152,6 +166,7 @@ def build_targets(universe: PerpUniverse) -> List[ProbeTarget]:
             venue=company.venue,
             symbol=company.symbol,
             kind="equity_perp",
+            data_source=company.data_source,
         )
         for company in universe.companies
     ]
@@ -161,6 +176,7 @@ def build_targets(universe: PerpUniverse) -> List[ProbeTarget]:
             venue=commodity.venue,
             symbol=commodity.symbol,
             kind="commodity_perp",
+            data_source=commodity.data_source,
         )
         for commodity in universe.commodities
     )
@@ -170,6 +186,7 @@ def build_targets(universe: PerpUniverse) -> List[ProbeTarget]:
             venue=control.venue,
             symbol=control.symbol,
             kind="control",
+            data_source=control.data_source,
         )
         for control in universe.controls
     )
@@ -772,10 +789,12 @@ def probe_live(
             venue=company.venue,
             symbol=company.symbol,
             kind="equity_perp",
+            data_source=company.data_source,
         )
         entry: Dict[str, Any] = {
             "ticker": company.ticker,
             "venue": company.venue,
+            "data_source": company.data_source,
             "dex": company.dex,
             "symbol": company.symbol,
             "tier": company.tier,
@@ -802,10 +821,12 @@ def probe_live(
             venue=commodity.venue,
             symbol=commodity.symbol,
             kind="commodity_perp",
+            data_source=commodity.data_source,
         )
         entry = {
             "commodity": commodity.commodity,
             "venue": commodity.venue,
+            "data_source": commodity.data_source,
             "dex": commodity.dex,
             "symbol": commodity.symbol,
             "tier": commodity.tier,
@@ -832,6 +853,7 @@ def probe_live(
         entry = {
             "ticker": control.symbol,
             "venue": control.venue,
+            "data_source": control.data_source,
             "symbol": control.symbol,
             "streams": {},
         }
@@ -871,9 +893,9 @@ def render_markdown(result: Mapping[str, Any]) -> str:
     lines.append("## Hyperliquid HIP-3 equity perpetuals")
     lines.append("")
     lines.append(
-        "| Ticker | Symbol | Tier | First 1h candle | First 1d candle | First funding |"
+        "| Ticker | Symbol | Tier | Data source | First 1h candle | First 1d candle | First funding |"
     )
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|")
     for entry in result.get("hyperliquid", {}).get("instruments", []):
         streams = entry.get("streams", {})
         def field(stream: str, key: str = "first_iso") -> str:
@@ -881,16 +903,17 @@ def render_markdown(result: Mapping[str, Any]) -> str:
             return _fmt(value)
         lines.append(
             f"| {entry.get('ticker')} | `{entry.get('symbol')}` | "
-            f"{entry.get('tier')} | {field('candle_1h')} | "
+            f"{entry.get('tier')} | {_fmt(entry.get('data_source'))} | "
+            f"{field('candle_1h')} | "
             f"{field('candle_1d')} | {field('funding')} |"
         )
     lines.append("")
     lines.append("## Hyperliquid HIP-3 commodity perpetuals")
     lines.append("")
     lines.append(
-        "| Commodity | Symbol | Tier | ETF wrapper | First 1h candle | First 1d candle | First funding |"
+        "| Commodity | Symbol | Tier | Data source | ETF wrapper | First 1h candle | First 1d candle | First funding |"
     )
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for entry in result.get("hyperliquid", {}).get("commodities", []):
         streams = entry.get("streams", {})
         def field(stream: str, key: str = "first_iso") -> str:
@@ -899,23 +922,25 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         wrapper = ", ".join(entry.get("etfs") or []) or "n/a"
         lines.append(
             f"| {entry.get('commodity')} | `{entry.get('symbol')}` | "
-            f"{entry.get('tier')} | {wrapper} ({entry.get('etf_kind')}) | "
+            f"{entry.get('tier')} | {_fmt(entry.get('data_source'))} | "
+            f"{wrapper} ({entry.get('etf_kind')}) | "
             f"{field('candle_1h')} | {field('candle_1d')} | {field('funding')} |"
         )
     lines.append("")
     lines.append("## Binance USD-M controls")
     lines.append("")
     lines.append(
-        "| Symbol | Klines 1h first day | Funding first day | Metrics first day |"
+        "| Symbol | Data source | Klines 1h first day | Funding first day | Metrics first day |"
     )
-    lines.append("|---|---|---|---|")
+    lines.append("|---|---|---|---|---|")
     for entry in result.get("binance_usdm", {}).get("instruments", []):
         streams = entry.get("streams", {})
         def day(stream: str) -> str:
             value = (streams.get(stream) or {}).get("first_day")
             return _fmt(value)
         lines.append(
-            f"| {entry.get('symbol')} | {day('klines_1h')} | "
+            f"| {entry.get('symbol')} | {_fmt(entry.get('data_source'))} | "
+            f"{day('klines_1h')} | "
             f"{day('funding_rate')} | {day('metrics')} |"
         )
     lines.append("")

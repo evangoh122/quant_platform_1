@@ -81,6 +81,9 @@ the NYSE is shut, with the weekend window derived from [`config/market_calendar.
 Planned sources are the Hyperliquid info API (1h/15m history; 1m only ~3.5 days back, so 1m must be forward-captured
 daily) and Binance Vision archives for the controls; design and schemas are in
 [`docs/data/PERPS_WEEKEND_PLAN.md`](docs/data/PERPS_WEEKEND_PLAN.md).
+Every universe row, probe/liquidity record and planned perps table carries one `data_source` provider code
+(`hyperliquid`, `binance_um`, …) defined once in [`config/data_sources.py`](config/data_sources.py); the loader
+rejects a missing, unknown or venue-contradicting code.
 The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12,
 at most ~49 weekends; 23 instruments at most 13) and 1h only back to 2026-03-27 (5,000-candle API cap);
 Binance archives carry klines/funding from 2020-01 and metrics from 2021-12. The plan records the

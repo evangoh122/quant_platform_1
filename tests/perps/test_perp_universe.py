@@ -11,13 +11,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from config.data_sources import DATA_SOURCES, validate_data_source
 from config.perp_universe import (
     ALLOWED_TIERS,
     ALLOWED_UNDERLYING_TYPES,
     CONTROL_VENUE,
     EQUITY_VENUE,
     INSTRUMENT_TYPE,
+    VENUE_DATA_SOURCES,
     PerpUniverseError,
+    data_source_for_venue,
     derive_flags,
     load_perp_universe,
     tier_for_weekend_usd_per_h,
@@ -309,6 +312,7 @@ def test_rejects_missing_required_control(tmp_path):
             "underlying_type": "crypto",
             "underlying": "BTC",
             "venue": "binance_usdm",
+            "data_source": "binance_um",
             "symbol": "BTCUSDT",
         }
     ]
@@ -418,3 +422,75 @@ def test_rejects_empty_companies(tmp_path):
 def test_rejects_missing_file(tmp_path):
     with pytest.raises(PerpUniverseError, match="cannot read"):
         load_perp_universe(tmp_path / "absent.yaml")
+
+
+# ---------------------------------------------------------------------------
+# data_source (owner rule 2026-10-22: one provider code on every row)
+# ---------------------------------------------------------------------------
+
+
+def test_every_real_row_carries_a_valid_data_source():
+    universe = load_perp_universe(_REAL_CONFIG)
+    rows = (*universe.companies, *universe.commodities, *universe.controls)
+    assert len(rows) == 78 + 8 + 2
+    for row in rows:
+        assert row.data_source in DATA_SOURCES
+        assert validate_data_source(row.data_source) == row.data_source
+        # The code must be the one the row's venue implies.
+        assert row.data_source == data_source_for_venue(row.venue)
+
+
+def test_real_rows_use_the_venue_provider_codes():
+    universe = load_perp_universe(_REAL_CONFIG)
+    assert {company.data_source for company in universe.companies} == {"hyperliquid"}
+    assert {commodity.data_source for commodity in universe.commodities} == {
+        "hyperliquid"
+    }
+    # The repository venue is binance_usdm; the owner-rule provider code is binance_um.
+    assert {control.data_source for control in universe.controls} == {"binance_um"}
+    assert VENUE_DATA_SOURCES["binance_usdm"] == "binance_um"
+
+
+def test_data_source_for_venue_rejects_an_unmapped_venue():
+    with pytest.raises(PerpUniverseError, match="no data_source mapping"):
+        data_source_for_venue("kraken")
+
+
+@pytest.mark.parametrize("section", ["companies", "commodities", "controls"])
+def test_rejects_missing_data_source(tmp_path, section):
+    # Mutation target: a loader that defaults the code must fail this test.
+    document = _base_document()
+    del document[section][0]["data_source"]
+    with pytest.raises(PerpUniverseError, match="data_source"):
+        load_perp_universe(_write_document(tmp_path, document))
+
+
+@pytest.mark.parametrize("section", ["companies", "commodities", "controls"])
+@pytest.mark.parametrize("bad", ["polygon", "Massive", "binance_usdm", "", None, 1])
+def test_rejects_unknown_or_malformed_data_source(tmp_path, section, bad):
+    document = _base_document()
+    document[section][0]["data_source"] = bad
+    with pytest.raises(PerpUniverseError, match="data_source"):
+        load_perp_universe(_write_document(tmp_path, document))
+
+
+def test_rejects_company_venue_data_source_mismatch(tmp_path):
+    # A Hyperliquid perp labelled binance_um is a lineage lie, not a near miss.
+    document = _base_document()
+    document["companies"][0]["data_source"] = "binance_um"
+    with pytest.raises(PerpUniverseError, match="must be 'hyperliquid' for venue"):
+        load_perp_universe(_write_document(tmp_path, document))
+
+
+def test_rejects_commodity_venue_data_source_mismatch(tmp_path):
+    document = _base_document()
+    document["commodities"][0]["data_source"] = "binance_um"
+    with pytest.raises(PerpUniverseError, match="must be 'hyperliquid' for venue"):
+        load_perp_universe(_write_document(tmp_path, document))
+
+
+def test_rejects_control_venue_data_source_mismatch(tmp_path):
+    document = _base_document()
+    document["controls"][0]["data_source"] = "hyperliquid"
+    with pytest.raises(PerpUniverseError, match="must be 'binance_um' for venue"):
+        load_perp_universe(_write_document(tmp_path, document))

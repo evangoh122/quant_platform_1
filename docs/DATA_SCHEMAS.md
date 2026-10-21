@@ -817,3 +817,19 @@ holding exactly one code from `config/data_sources.py`:
 `validate_data_source` rejects an empty, unknown or non-string code, and a row
 that mixes providers is two rows. This PR adds contracts only: no table, view or
 DDL is created yet.
+
+### Perp tables (planned P1 — not deployed)
+
+No perps table exists on this branch yet; the design is in docs/data/PERPS_WEEKEND_PLAN.md §4.
+Every perps table, when it lands, carries:
+
+  data_source                        string NOT NULL   -- one provider code from config/data_sources.py
+
+  Meaning: the upstream system that produced the row; one code per row, never null.
+    hyperliquid  -> bronze_perp_candles, bronze_perp_funding, bronze_perp_oi_snapshots,
+                    silver_perp_bars_1h, silver_perp_funding
+    binance_um   -> bronze_binance_um_klines, bronze_binance_um_funding, bronze_binance_um_metrics
+    derived      -> gold_weekend_perp_features (perp inputs hyperliquid; equity/options inputs massive;
+                    record the input sources in lineage)
+  Vocabulary (config/data_sources.py): massive, sec_edgar, sec_companyfacts, hyperliquid,
+    binance_um, config, derived.  The Unity Catalog column comment names the code and that path.

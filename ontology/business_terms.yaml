@@ -128,3 +128,7 @@ terms:
   etf_kind:
     definition: "Structure of the ETF wrapper paired with a commodity perp: physical (metal-backed trust) or futures (futures-based fund with contango/roll). The model must account for the difference."
     aliases: [ETF structure, physical vs futures ETF]
+  data_source:
+    definition: "Provider code for the upstream system that produced a row: massive, sec_edgar, sec_companyfacts, hyperliquid, binance_um, config, or derived (computed here from other rows). One non-null code per row; a row that mixes sources is derived and records its input sources in lineage."
+    aliases: [provider code, lineage source code]
+    critical_rule: "Never null and never free text: validate with config/data_sources.py validate_data_source; SQL tables declare data_source STRING NOT NULL with a Unity Catalog column comment, YAML rows declare data_source: and the loader rejects a missing, unknown or venue-contradicting code."

@@ -38,6 +38,10 @@ validated before any request is made:
 * commodity rows must carry a non-empty ``etfs`` list and a valid ``etf_kind``;
 * venues are limited to the implemented adapters; HIP-3 dexes are limited to
   the three observed sub-dexes (``xyz``, ``para``, ``io``);
+* every row carries an explicit ``data_source`` from :mod:`config.data_sources`
+  (one provider code); a missing/unknown code, or one that contradicts the
+  row's venue (``hyperliquid -> hyperliquid``, ``binance_usdm -> binance_um``),
+  is rejected;
 * the Binance controls must be present;
 * unknown keys are rejected so a misspelled field cannot be ignored.
 
@@ -54,6 +58,8 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
+
+from config.data_sources import DATA_SOURCES, validate_data_source
 
 DEFAULT_PATH = Path(__file__).with_name("perp_universe.yaml")
 
@@ -98,6 +104,14 @@ REQUIRED_CONTROL_SYMBOLS: FrozenSet[str] = frozenset({"BTCUSDT", "ETHUSDT"})
 #: Equity and commodity perpetuals are only implemented on Hyperliquid HIP-3.
 EQUITY_VENUE = "hyperliquid"
 CONTROL_VENUE = "binance_usdm"
+#: ``data_source`` code implied by each implemented venue.  ``binance_usdm`` is
+#: this repository's venue name for Binance USD-M futures, whose owner-rule
+#: provider code is ``binance_um``.
+VENUE_DATA_SOURCES: Mapping[str, str] = {
+    "hyperliquid": "hyperliquid",
+    "binance_usdm": "binance_um",
+    "binance_um": "binance_um",
+}
 
 _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}$")
 _SYMBOL_RE = re.compile(r"^(?P<dex>[a-z0-9]+):(?P<ticker>[A-Z][A-Z0-9]{0,9})$")
@@ -115,7 +129,14 @@ _DEFAULTS_REQUIRED = frozenset(
 _DEFAULTS_OPTIONAL = frozenset({"quote_currency", "trades_24x7"})
 _WINDOW_REQUIRED = frozenset({"start", "end", "basis"})
 _CONTROL_REQUIRED = frozenset(
-    {"instrument_type", "underlying_type", "underlying", "venue", "symbol"}
+    {
+        "instrument_type",
+        "underlying_type",
+        "underlying",
+        "venue",
+        "data_source",
+        "symbol",
+    }
 )
 _CONTROL_OPTIONAL = frozenset({"quote_currency"})
 _COMPANY_REQUIRED = frozenset(
@@ -125,6 +146,7 @@ _COMPANY_REQUIRED = frozenset(
         "underlying_type",
         "underlying",
         "venue",
+        "data_source",
         "dex",
         "symbol",
         "tier",
@@ -142,6 +164,7 @@ _COMMODITY_REQUIRED = frozenset(
         "instrument_type",
         "underlying_type",
         "venue",
+        "data_source",
         "dex",
         "symbol",
         "etfs",
@@ -173,6 +196,7 @@ class PerpControl:
     """A market-wide weekend risk proxy (Binance USD-M crypto perpetual)."""
 
     venue: str
+    data_source: str
     symbol: str
     instrument_type: str
     underlying_type: str
@@ -189,6 +213,7 @@ class PerpCompany:
     underlying_type: str
     underlying: str
     venue: str
+    data_source: str
     dex: str
     symbol: str
     tier: str
@@ -209,6 +234,7 @@ class PerpCommodity:
     instrument_type: str
     underlying_type: str
     venue: str
+    data_source: str
     dex: str
     symbol: str
     etfs: Tuple[str, ...]
@@ -447,6 +473,41 @@ def _require_underlying_type(
     return value
 
 
+def data_source_for_venue(venue: str) -> str:
+    """Return the provider code that every row of *venue* must carry."""
+    try:
+        return VENUE_DATA_SOURCES[venue]
+    except KeyError:
+        raise PerpUniverseError(
+            f"no data_source mapping for venue {venue!r}; known venues: "
+            f"{sorted(VENUE_DATA_SOURCES)}"
+        ) from None
+
+
+def _require_data_source(
+    entry: Mapping[str, Any], source: Path | str, key: str, venue: str
+) -> str:
+    """Validate the row's ``data_source`` and its venue pairing."""
+    if "data_source" not in entry:
+        raise PerpUniverseError(
+            f"{_where(source, key + '.data_source')} is required: every perp row "
+            f"carries one provider code from {sorted(DATA_SOURCES)}"
+        )
+    try:
+        value = validate_data_source(entry["data_source"])
+    except ValueError as exc:
+        raise PerpUniverseError(
+            f"{_where(source, key + '.data_source')}: {exc}"
+        ) from exc
+    expected = data_source_for_venue(venue)
+    if value != expected:
+        raise PerpUniverseError(
+            f"{_where(source, key + '.data_source')} must be {expected!r} for venue "
+            f"{venue!r}, got {value!r}"
+        )
+    return value
+
+
 def _parse_flags(
     raw: Any,
     *,
@@ -593,6 +654,7 @@ def _parse_control(raw: Any, source: Path | str, index: int) -> PerpControl:
             f"{_where(source, key + '.symbol')} must be an uppercase Binance USD-M "
             f"symbol, got {symbol!r}"
         )
+    data_source = _require_data_source(entry, source, key, venue)
     quote_currency: Optional[str] = None
     if "quote_currency" in entry:
         quote_currency = _as_nonempty_str(
@@ -600,6 +662,7 @@ def _parse_control(raw: Any, source: Path | str, index: int) -> PerpControl:
         )
     return PerpControl(
         venue=venue,
+        data_source=data_source,
         symbol=symbol,
         instrument_type=instrument_type,
         underlying_type=underlying_type,
@@ -649,6 +712,7 @@ def _parse_company(
             f"{_where(source, key + '.venue')} must be {EQUITY_VENUE!r} for company "
             f"perpetuals, got {venue!r}"
         )
+    data_source = _require_data_source(entry, source, key, venue)
     dex = _as_nonempty_str(entry["dex"], source, key + ".dex")
     if dex not in ALLOWED_DEXES:
         raise PerpUniverseError(
@@ -716,6 +780,7 @@ def _parse_company(
         underlying_type=underlying_type,
         underlying=underlying,
         venue=venue,
+        data_source=data_source,
         dex=dex,
         symbol=symbol,
         tier=tier,
@@ -762,6 +827,7 @@ def _parse_commodity(
             f"{_where(source, key + '.venue')} must be {EQUITY_VENUE!r} for commodity "
             f"perpetuals, got {venue!r}"
         )
+    data_source = _require_data_source(entry, source, key, venue)
     dex = _as_nonempty_str(entry["dex"], source, key + ".dex")
     if dex not in ALLOWED_DEXES:
         raise PerpUniverseError(
@@ -831,6 +897,7 @@ def _parse_commodity(
         instrument_type=instrument_type,
         underlying_type=underlying_type,
         venue=venue,
+        data_source=data_source,
         dex=dex,
         symbol=symbol,
         etfs=tuple(etfs),

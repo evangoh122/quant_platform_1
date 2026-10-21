@@ -11,6 +11,7 @@ from urllib import request as urlrequest
 
 import pytest
 
+from config.data_sources import DATA_SOURCES, validate_data_source
 from config.perp_universe import load_perp_universe
 from scripts.perps import probe_history as probe
 
@@ -380,3 +381,102 @@ def test_render_markdown_tables_and_oi_note():
     assert "| NVDA | `xyz:NVDA` | A |" in report
     assert "2019-09-08" in report
     assert "current open interest only" in report
+
+
+# ---------------------------------------------------------------------------
+# data_source on every probe record (owner rule 2026-10-22)
+# ---------------------------------------------------------------------------
+
+
+def test_build_targets_take_data_source_from_the_validated_universe():
+    universe = load_perp_universe()
+    targets = probe.build_targets(universe)
+    expected = [
+        row.data_source
+        for row in (
+            *universe.companies,
+            *universe.commodities,
+            *universe.controls,
+        )
+    ]
+    assert [target.data_source for target in targets] == expected
+    assert {target.data_source for target in targets} == {
+        "hyperliquid",
+        "binance_um",
+    }
+    for target in targets:
+        assert validate_data_source(target.data_source) == target.data_source
+
+
+def test_probe_target_rejects_an_unknown_data_source():
+    # Mutation target: a target that accepts any code must fail this test.
+    with pytest.raises(probe.ProbeError, match="data_source"):
+        probe.ProbeTarget(
+            ticker="NVDA",
+            venue="hyperliquid",
+            symbol="xyz:NVDA",
+            kind="equity_perp",
+            data_source="polygon",
+        )
+
+
+def test_probe_live_records_carry_data_source():
+    universe = load_perp_universe()
+    result = probe.probe_live(
+        universe,
+        start="2025-01-01",
+        coarse_days=60,
+        max_steps=1,
+        client=_FakeClient(),
+    )
+    instruments = result["hyperliquid"]["instruments"]
+    commodities = result["hyperliquid"]["commodities"]
+    controls = result["binance_usdm"]["instruments"]
+    assert len(instruments) == universe.company_count
+    assert all(entry["data_source"] == "hyperliquid" for entry in instruments)
+    assert [entry["data_source"] for entry in commodities] == [
+        commodity.data_source for commodity in universe.commodities
+    ]
+    assert all(entry["data_source"] == "binance_um" for entry in controls)
+    for entry in instruments + commodities + controls:
+        assert entry["data_source"] in DATA_SOURCES
+
+
+def test_render_markdown_carries_data_source_per_record():
+    result = {
+        "generated_at": "2026-10-22T00:00:00+00:00",
+        "mode": "live",
+        "probe": {"start": "2025-01-01T00:00:00+00:00"},
+        "hyperliquid": {
+            "instruments": [
+                {
+                    "ticker": "NVDA",
+                    "symbol": "xyz:NVDA",
+                    "tier": "A",
+                    "data_source": "hyperliquid",
+                    "streams": {},
+                }
+            ],
+            "commodities": [
+                {
+                    "commodity": "gold",
+                    "symbol": "xyz:GOLD",
+                    "tier": "A",
+                    "data_source": "hyperliquid",
+                    "etfs": ["GLD", "IAU"],
+                    "etf_kind": "physical",
+                    "streams": {},
+                }
+            ],
+        },
+        "binance_usdm": {
+            "instruments": [
+                {"symbol": "BTCUSDT", "data_source": "binance_um", "streams": {}}
+            ]
+        },
+    }
+    report = probe.render_markdown(result)
+    assert "| Ticker | Symbol | Tier | Data source |" in report
+    assert "| NVDA | `xyz:NVDA` | A | hyperliquid |" in report
+    assert "| gold | `xyz:GOLD` | A | hyperliquid |" in report
+    assert "| BTCUSDT | binance_um |" in report

@@ -12,6 +12,7 @@ from urllib import request as urlrequest
 
 import pytest
 
+from config.data_sources import DATA_SOURCES, validate_data_source
 from config.perp_universe import load_perp_universe
 from scripts.perps import measure_closed_liquidity as measure
 
@@ -188,3 +189,65 @@ def test_rate_limiter_caps_at_two_requests_per_second():
     assert limiter.min_interval == pytest.approx(0.5)
     with pytest.raises(measure.MeasureError, match="<= 2.0"):
         measure.RateLimiter(3.0)
+
+
+# ---------------------------------------------------------------------------
+# data_source on every proposal record (owner rule 2026-10-22)
+# ---------------------------------------------------------------------------
+
+
+def test_proposal_rows_carry_the_universe_data_source():
+    universe = load_perp_universe()
+    windows = measure.weekend_windows_for(
+        universe.liquidity_window.start, universe.liquidity_window.end
+    )
+    measurement = measure.measure_candles(_candles("NVDA"), windows)
+    proposal = measure.build_proposal(
+        universe,
+        {"xyz:NVDA": measurement},
+        window_start=universe.liquidity_window.start,
+        window_end=universe.liquidity_window.end,
+        generated_at=datetime(2026, 10, 22, tzinfo=UTC),
+        mode="fixtures",
+    )
+    expected = {
+        row.symbol: row.data_source
+        for row in (*universe.companies, *universe.commodities)
+    }
+    rows = proposal["companies"] + proposal["commodities"]
+    assert len(rows) == len(expected)
+    for row in rows:
+        assert row["data_source"] == expected[row["symbol"]]
+        assert validate_data_source(row["data_source"]) == row["data_source"]
+    assert {row["data_source"] for row in rows} == {"hyperliquid"}
+
+
+def test_proposal_row_rejects_an_unknown_data_source():
+    # Mutation target: a builder that writes any string must fail this test.
+    measure_universe = load_perp_universe()
+    windows = measure.weekend_windows_for(
+        measure_universe.liquidity_window.start,
+        measure_universe.liquidity_window.end,
+    )
+    measurement = measure.measure_candles(_candles("NVDA"), windows)
+    company = measure_universe.companies[0]
+    with pytest.raises(measure.MeasureError, match="data_source"):
+        measure._proposal_row(
+            identifier=company.ticker,
+            symbol=company.symbol,
+            underlying_type=company.underlying_type,
+            data_source="polygon",
+            current_tier=company.tier,
+            current_flags=company.flags,
+            measurement=measurement,
+            window_start=measure_universe.liquidity_window.start,
+        )
+    for row in measure.build_proposal(
+        measure_universe,
+        {},
+        window_start=measure_universe.liquidity_window.start,
+        window_end=measure_universe.liquidity_window.end,
+        generated_at=datetime(2026, 10, 22, tzinfo=UTC),
+        mode="fixtures",
+    )["companies"]:
+        assert row["data_source"] in DATA_SOURCES

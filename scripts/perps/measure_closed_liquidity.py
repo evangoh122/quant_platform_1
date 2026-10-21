@@ -20,6 +20,9 @@ Method
 * Tiers (``A >= 250k``, ``B >= 50k``, ``C >= 10k``, ``D < 10k``) and flags
   (``new`` = first bar after the window start, ``sparse`` = more than 25% of
   weekend hours with zero volume) come from the loader's shared rules.
+* Every proposal row carries ``data_source`` — the provider code from
+  ``config/data_sources.py`` (validated; ``hyperliquid`` for this measurement) —
+  so a tier proposal is traceable to the source that measured it.
 
 Safety
 ------
@@ -56,6 +59,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from config.data_sources import validate_data_source  # noqa: E402
 from config.market_calendar import (  # noqa: E402
     early_close_dates,
     is_trading_day,
@@ -246,11 +250,16 @@ def _proposal_row(
     identifier: str,
     symbol: str,
     underlying_type: str,
+    data_source: str,
     current_tier: str,
     current_flags: Sequence[str],
     measurement: Mapping[str, Any],
     window_start: date,
 ) -> Dict[str, Any]:
+    try:
+        data_source = validate_data_source(data_source)
+    except ValueError as exc:
+        raise MeasureError(f"{identifier}: {exc}") from exc
     weekend = measurement.get("weekend_usd_per_h")
     proposed_tier = (
         tier_for_weekend_usd_per_h(float(weekend)) if weekend is not None else None
@@ -270,6 +279,7 @@ def _proposal_row(
         "id": identifier,
         "symbol": symbol,
         "underlying_type": underlying_type,
+        "data_source": data_source,
         "current_tier": current_tier,
         "proposed_tier": proposed_tier,
         "tier_changed": proposed_tier is not None and proposed_tier != current_tier,
@@ -305,6 +315,7 @@ def build_proposal(
                 identifier=company.ticker,
                 symbol=company.symbol,
                 underlying_type=company.underlying_type,
+                data_source=company.data_source,
                 current_tier=company.tier,
                 current_flags=company.flags,
                 measurement=measurement,
@@ -320,6 +331,7 @@ def build_proposal(
             identifier=commodity.commodity,
             symbol=commodity.symbol,
             underlying_type=commodity.underlying_type,
+            data_source=commodity.data_source,
             current_tier=commodity.tier,
             current_flags=commodity.flags,
             measurement=measurement,
