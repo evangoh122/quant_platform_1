@@ -174,6 +174,10 @@ After every run restore the dispatcher, make it executable, and verify the
 branch, HEAD ownership, worktree status, and unexpected files. Preserve
 unrelated user changes.
 
+Evidence files under `.agents/evidence/` are local: the directory is
+gitignored, so evidence is summarised in the PR description instead of
+being committed.
+
 The coder must emit exactly one terminal report after its evidence file is
 readable:
 
