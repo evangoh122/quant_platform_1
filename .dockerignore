@@ -1,0 +1,69 @@
+# .dockerignore — build context for deploy/hf/Dockerfile (Hugging Face Space).
+#
+# The Space image only needs: frontend sources (built in stage 1), the runtime
+# Python packages copied in stage 2, pyproject.toml + uv.lock. Everything else
+# is noise, local state, or a secret that must never reach the builder.
+
+# ── vcs / agent / editor noise ───────────────────────────────────────────────
+.git
+.gitignore
+.github
+.agents
+.agentlogs
+.idea
+.vscode
+.DS_Store
+
+# ── python caches and local virtualenvs ──────────────────────────────────────
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+.tox
+
+# ── node / frontend build output (rebuilt inside the image) ──────────────────
+**/node_modules
+frontend/dist
+frontend/build
+.vite
+*.tsbuildinfo
+npm-debug.log*
+
+# ── local data / artifacts (market data is never shipped) ────────────────────
+data
+!data/sentiment_dict
+!data/sentiment_dict/**
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.csv
+mlruns
+checkpoints
+
+# ── not needed at runtime ────────────────────────────────────────────────────
+docs
+notebooks
+bundles
+evals
+tests
+*.md
+
+# ── secrets: never send these to a builder ───────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+auth.json
+secrets.json
+.databrickscfg
+*.agent.log

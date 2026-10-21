@@ -41,7 +41,7 @@ too complex for a routine check (record the reason):
    `agent/tools_write.py`, `execution/**`, anything handling credentials,
    authentication/roles or approvals; also deployment/security configuration:
    `api/deps.py`, `api/demo.py`, `db/lakebase.py`, `security/**`,
-   `.github/**`, `app.yaml`, `databricks.yml`, `resources/**`, `render.yaml`,
+   `.github/**`, `app.yaml`, `databricks.yml`, `resources/**`, `deploy/hf/**`,
    `requirements*.txt`. This list is non-exhaustive.
 4. **A release or submission-candidate merge**, or any change to
    deployment/production configuration.

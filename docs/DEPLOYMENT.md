@@ -289,17 +289,18 @@ or a structured 503 when Lakebase is unreachable — never a 500 crash.
 - CORS is disabled by default (same-origin). Enable only for local dev via
   `CORS_ORIGINS=http://localhost:5173`.
 
-## 10. Render deployment — proxy trust and rate limiting
+## 10. Hosted public deployment — proxy trust and rate limiting
 
-When deploying on Render, the following configuration applies:
+The public demo now runs on a Hugging Face Docker Space (§12); Render is
+retired. The rules below applied to Render and still apply to any *hosted
+public platform*, which `api/demo.py` detects from `RENDER` **or** `SPACE_ID`.
 
 ### Fail-closed startup guard
 
-On Render (the `RENDER` environment variable is set), the application
-**refuses to start** unless `PUBLIC_DEMO=1` is also set. This prevents the
-insecure default where an absent `PUBLIC_DEMO` silently enables the full
-write surface. Set `PUBLIC_DEMO=1` explicitly in the Render service
-environment.
+On a hosted public platform the application **refuses to start** unless
+`PUBLIC_DEMO=1` is also set. This prevents the insecure default where an absent
+`PUBLIC_DEMO` silently enables the full write surface. The Docker image bakes
+`PUBLIC_DEMO=1`; a manual deployment must set it explicitly.
 
 ### Rate limiter — IP extraction (`CLIENT_IP_SOURCE`)
 
@@ -308,23 +309,27 @@ The source of the client IP for rate limiting is controlled by the
 
 | Value | Default on | Behaviour |
 |-------|-----------|-----------|
-| `xff_leftmost` | **Render** | Leftmost `X-Forwarded-For` entry if valid; otherwise `request.client.host`. **Never reads** `CF-Connecting-IP` or `True-Client-IP`. |
+| `xff_leftmost` | **hosted public** (`RENDER`/`SPACE_ID`) | Leftmost `X-Forwarded-For` entry if valid; otherwise `request.client.host`. **Never reads** `CF-Connecting-IP` or `True-Client-IP`. |
 | `cf_connecting_ip` | — | `CF-Connecting-IP` only (valid IP); otherwise `request.client.host`. Opt-in for verified Cloudflare setups. |
-| `peer` | **non-Render** | `request.client.host` only; all headers ignored. |
+| `peer` | **everywhere else** | `request.client.host` only; all headers ignored. |
 
 An unrecognised value raises `PublicDemoConfigurationError` at startup.
 
-**Why `xff_leftmost` is the default on Render:**
+**Why `xff_leftmost` is the default on a hosted public platform:**
 
 Render's documentation states: *"we set the first IP in the list to the real
 client IP"* ([source](https://render.com/docs/forwarding-and-proxying)).
-The `CF-Connecting-IP` and `True-Client-IP` headers are **not** rewritten
-by Render — a client can set them to arbitrary values. DeepSeek's check6
-proved that trusting `CF-Connecting-IP` first is spoofable: rotating the
-header 200x gives 200/200 accepted, then a real client gets 429.
+That was the evidence for Render; on a Hugging Face Space the Space edge is the
+only ingress to the single container, and `--proxy-headers` is used so
+`request.client.host` is the proxy peer while `X-Forwarded-For` carries the
+client. The `CF-Connecting-IP` and `True-Client-IP` headers are **not**
+rewritten by these platforms — a client can set them to arbitrary values.
+DeepSeek's check6 proved that trusting `CF-Connecting-IP` first is spoofable:
+rotating the header 200x gives 200/200 accepted, then a real client gets 429.
 
-Outside Render (no `RENDER` env var), the default is `peer` and all headers
-are ignored regardless of `CLIENT_IP_SOURCE`.
+Outside a hosted public platform (neither `RENDER` nor `SPACE_ID` set), the
+default is `peer` and all headers are ignored regardless of
+`CLIENT_IP_SOURCE`.
 
 We avoid using `--forwarded-allow-ips='*'` because that would make
 `request.client.host` read from the (spoofable) `X-Forwarded-For` header.
@@ -339,11 +344,12 @@ cap on distinct IP keys defaults to 10,000 (configurable via
 ### Uvicorn startup command
 
 ```bash
-uvicorn api.main:app --host 0.0.0.0 --port $PORT
+uvicorn api.main:app --host 0.0.0.0 --port 7860 --proxy-headers
 ```
 
-Do **not** pass `--forwarded-allow-ips='*'`. Render's proxy is not trusted
-at the uvicorn level; the application reads headers directly for
+Port 7860 is the Space's `app_port`; Render used `$PORT`. Do **not** pass
+`--forwarded-allow-ips='*'`. The platform proxy is not trusted at the uvicorn
+level beyond `--proxy-headers`; the application reads headers directly for
 rate-limiting purposes only.
 
 ### Post-deploy verification
@@ -353,8 +359,8 @@ After deploying, run these checks before going public:
 ```bash
 # (a) Confirm which IP the limiter keys on.
 # Enable diagnostic logging, send X-Forwarded-For, check the log (redacted key).
-# Set RATE_LIMIT_DEBUG=1 in your Render service env, then:
-curl -H "X-Forwarded-For: 1.2.3.4" https://YOUR_APP.onrender.com/api/health
+# Set RATE_LIMIT_DEBUG=1 in the Space's environment, then:
+curl -H "X-Forwarded-For: 1.2.3.4" https://<space-subdomain>.hf.space/api/health
 # The log should show: rate_limit_debug client_ip_source=xff_leftmost key=1.2.x.x
 # If the key is "1.2" something is wrong (the redacted format must be "1.2.x.x").
 # Turn RATE_LIMIT_DEBUG off after verification.
@@ -368,7 +374,7 @@ for i in $(seq 1 70); do
     -H "X-Forwarded-For: 10.0.$(( RANDOM % 256 )).1" \
     -H "CF-Connecting-IP: $(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 ))" \
     -H "True-Client-IP: $(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 )).$(( RANDOM % 256 ))" \
-    https://YOUR_APP.onrender.com/api/health
+    https://<space-subdomain>.hf.space/api/health
 done | sort | uniq -c
 
 # (c) If (b) fails (no 429s), switch CLIENT_IP_SOURCE.
@@ -483,24 +489,49 @@ graph build to backfill `concept_norm`:
 databricks jobs run-now --job-name sec_knowledge_graph_build --profile <PROFILE>
 ```
 
-## 12. Render public demo
+## 12. Public demo (Hugging Face Space)
 
-This section describes the **Render public demo** — a single-service snapshot
-demo that is separate from the Databricks deployment described in §1–§9 above.
-It is defined in §7 of `docs/RENDER_DEPLOY_PLAN.md` and governed by the
-Render lane build request (R1 + R8).
+The public showcase is a **Hugging Face Docker Space**. Render is retired: the
+`render.yaml` blueprint, `requirements-render.txt` and the Render CI audit step
+are gone. The Space is separate from the Databricks deployment described in
+§1–§9; the full publish plan lives in `docs/HF_SPACE_DEPLOY.md`.
+
+The Space id is not decided yet and is written as the placeholder
+`<HF_NAMESPACE>/<HF_SPACE>` everywhere. Do not invent a name.
 
 ### Purpose
 
-The Render demo is a publicly accessible, read-only showcase. It serves
-pre-reviewed snapshot data through `demo_data/` and contains **no credentials**,
-**no Lakebase connection**, and **no live Databricks access**. It is deployed
-independently via manual deploy and requires Lane B/C safety gates before any
-public URL is shared.
+A publicly accessible, read-only snapshot demo. It serves pre-reviewed snapshot
+data and contains **no credentials**, **no Lakebase connection**, and **no live
+Databricks access**. It is deployed independently by the owner (manual
+publish) and requires the Lane B/C safety gates before any public URL is shared.
+
+### Image
+
+`deploy/hf/Dockerfile` (copied to `Dockerfile` at the root of the staged Space
+tree) is multi-stage:
+
+1. `node:20.18.0-slim` runs `npm ci && npm run build` in `frontend/` (`VITE_POSTHOG_KEY` /
+   `VITE_POSTHOG_HOST` are build ARGs carrying the same public values as before).
+2. `python:3.12-slim` installs the pinned `uv` image, runs
+   `uv sync --frozen --no-dev` from `uv.lock`, copies only the runtime packages,
+   `frontend/dist`, and runs as non-root uid 1000 (HF requirement) on port 7860.
+
+The command is
+`uvicorn api.main:app --host 0.0.0.0 --port 7860 --proxy-headers`, with
+`PUBLIC_DEMO=1` and `APP_ENV=demo` baked in, and a `HEALTHCHECK` on
+`/api/health`.
+
+`deploy/hf/README.space.md` is the Space README template (HF front matter:
+`sdk: docker`, `app_port: 7860`, title/emoji/colors, `pinned: false`,
+`short_description`). The repository `README.md` is the project README and is
+never overwritten.
 
 ### Environment
 
-The service runs with these environment variables only:
+The container runs with only HF-injected variables (`SPACE_ID`, `SPACE_HOST`,
+`SPACE_AUTHOR_NAME`, `SPACE_REPO_NAME`, `SPACE_TITLE`, `SPACE_CREATOR_USER_ID`,
+`SPACE_SIGNING_SECRET`, `CPU_CORES`, `MEMORY`, `ACCELERATOR`, `HF_HOME`) plus:
 
 | Variable | Value | Purpose |
 | :--- | :--- | :--- |
@@ -508,72 +539,66 @@ The service runs with these environment variables only:
 | `APP_ENV` | `demo` | Selects demo data sources |
 
 **No secrets are configured.** The following variable families must never
-appear in the Render service configuration:
+appear in the Space configuration:
 
 - `LAKEBASE_*` — Lakebase connection and OAuth tokens
 - `DATABRICKS_*` — Databricks workspace, SQL warehouse, and service principal credentials
 - Broker/API tokens: `POLYGON_API_KEY`, `IBKR_*`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
 - Credential-like frontend variables: any `VITE_*` value that contains a token, key, or secret
+- `HF_TOKEN` / `APP_DATA_HF_TOKEN` — the publish/snapshot tokens live on the owner's machine only
 
 Variable names in documentation are allowed; actual secret values are not.
+`api/demo.py` enforces this fail-closed: with `PUBLIC_DEMO=1` any credential
+family aborts startup, and on a Space (`SPACE_ID` set) starting without
+`PUBLIC_DEMO=1` aborts as well.
 
-### Build
-
-```bash
-pip install -r requirements-render.txt && cd frontend && npm ci && npm run build
-```
-
-This installs only the four minimal runtime dependencies (fastapi, uvicorn,
-pydantic, loguru) and builds the React frontend into `frontend/dist/`. Node
-must be available in the Python build environment.
-
-### Start
+### Publish (manual)
 
 ```bash
-uvicorn api.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+git fetch origin main
+./scripts/publish_hf_space.sh                 # dry run: staged file list, no upload
+./scripts/publish_hf_space.sh --yes           # owner only: uploads to <HF_NAMESPACE>/<HF_SPACE>
 ```
 
-The `$PORT` variable is injected by Render. The app serves both the API
-(`/api/*`) and the built frontend (`frontend/dist/`) from a single process.
+The script stages `git archive` of tracked files into a temp dir outside the
+repo, swaps in the Space README, copies the Dockerfile, scans the staged tree
+for secrets, and refuses to run from a dirty worktree or a HEAD that is not
+`origin/main`. It never accepts a token argument; the Hub CLI reads `HF_TOKEN`
+from the environment (or an existing `hf auth login`).
 
 ### Smoke tests
 
-After deploy, verify from the Render service URL:
+After the Space reports "Running", verify from its public URL:
 
 ```bash
 # 1. Health check
-curl -s $RENDER_URL/api/health
+curl -s https://<space-subdomain>.hf.space/api/health
 
 # 2. Frontend served same-origin
-curl -s -o /dev/null -w '%{http_code}\n' $RENDER_URL/
+curl -s -o /dev/null -w '%{http_code}\n' https://<space-subdomain>.hf.space/
 
 # 3. SPA deep link (must return index.html, not 404)
-curl -s -o /dev/null -w '%{http_code}\n' $RENDER_URL/results/walk-forward
+curl -s -o /dev/null -w '%{http_code}\n' https://<space-subdomain>.hf.space/results/walk-forward
 ```
 
-Expected: `/api/health` returns 200; `/` and the deep link both return 200
-with the SPA shell (`index.html`). Deep links must not return 404 — the
-FastAPI static file handler falls back to `index.html` for any path not
-matching `/api/*`.
+Expected: `/api/health` returns 200; `/` and the deep link both return 200 with
+the SPA shell (`index.html`). Deep links must not return 404 — the FastAPI
+static file handler falls back to `index.html` for any path not matching
+`/api/*`.
 
 ### SPA deep-link behavior
 
-All non-API routes serve `frontend/dist/index.html` so that client-side
-routing works for paths like `/results/walk-forward`, `/signals`, `/market/NVDA`,
-and `/agent`. The backend does not swallow `/api/*` routes — those are handled
-by FastAPI routers before the static file fallback.
+All non-API routes serve `frontend/dist/index.html` so that client-side routing
+works for paths like `/results/walk-forward`, `/signals`, `/market/NVDA`, and
+`/agent`. The backend does not swallow `/api/*` routes — those are handled by
+FastAPI routers before the static file fallback.
 
-### Rollback / manual deploy
+### Rollback
 
-The service uses `autoDeploy: false`. To deploy:
-
-1. Push the latest code to the `slice/render-lane-a` branch.
-2. In the Render dashboard, select the `qp1-showcase` service and click
-   **Manual Deploy > Deploy latest commit**.
-3. Wait for the build to complete and the health check to pass.
-
-To rollback: select a previous deploy in the Render dashboard and click
-**Redeploy**. No automatic rollback is configured.
+HF Spaces rebuild the running container on every pushed commit. To roll back,
+re-run the publish script from a checkout of the last good `origin/main`
+commit, or use the Space UI's "Factory reboot" after restoring that commit.
+No automatic rollback is configured.
 
 ### Safety gates
 
