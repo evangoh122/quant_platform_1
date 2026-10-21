@@ -1,0 +1,55 @@
+{
+  "cik": "1234567",
+  "entityName": "Northwind Semiconductor Holdings, Inc.",
+  "name": "Northwind Semiconductor Holdings, Inc.",
+  "entityType": "operating",
+  "sic": "3674",
+  "sicDescription": "Semiconductors & Related Devices",
+  "tickers": [
+    "NWSC"
+  ],
+  "exchanges": [
+    "Nasdaq"
+  ],
+  "stateOfIncorporation": "DE",
+  "fiscalYearEnd": "0927",
+  "ein": "123456789",
+  "lei": "549300NORTHWIND0001",
+  "description": "Fabless semiconductor designer.",
+  "website": "https://northwind.example",
+  "category": "Large accelerated filer",
+  "formerNames": [
+    {
+      "name": "Northwind Semiconductor Corp.",
+      "from": "2001-04-02",
+      "to": "2014-06-30"
+    },
+    {
+      "name": "Northwind Devices, Inc.",
+      "from": "1995-01-03",
+      "to": "2001-04-01"
+    }
+  ],
+  "addresses": {
+    "business": {
+      "street1": "1 Example Way",
+      "city": "Wilmington",
+      "stateOrCountry": "DE",
+      "zipCode": "19801"
+    }
+  },
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001234567-26-000001"
+      ],
+      "form": [
+        "10-K"
+      ],
+      "filingDate": [
+        "2026-02-05"
+      ]
+    },
+    "files": []
+  }
+}

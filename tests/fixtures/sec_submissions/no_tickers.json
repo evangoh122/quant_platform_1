@@ -1,0 +1,29 @@
+{
+  "cik": "9999999",
+  "entityName": "Cascade Income Trust",
+  "name": "Cascade Income Trust",
+  "entityType": "investment",
+  "sic": "6726",
+  "sicDescription": "Investment Offices, Not Elsewhere Classified",
+  "tickers": [],
+  "exchanges": [],
+  "stateOfIncorporation": "MD",
+  "fiscalYearEnd": "0630",
+  "formerNames": [],
+  "addresses": {
+    "business": {
+      "street1": "9 Cascade Plaza",
+      "city": "Baltimore",
+      "stateOrCountry": "MD",
+      "zipCode": "21202"
+    }
+  },
+  "filings": {
+    "recent": {
+      "accessionNumber": [],
+      "form": [],
+      "filingDate": []
+    },
+    "files": []
+  }
+}

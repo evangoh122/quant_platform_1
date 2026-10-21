@@ -59,6 +59,12 @@ STEPS = [
     ("silver_options_trades", "silver/04_silver_options_trades.sql", "sql"),
     ("silver_sec_sections", "silver/05_silver_sec_sections.sql", "sql"),
     ("silver_sec_entities", "silver/06_silver_sec_entities.sql", "sql"),
+    # 09_ creates both silver_sec_registrant and
+    # silver_sec_registrant_former_names (one file, two CREATE OR REPLACE
+    # statements).  They are intentionally absent from TARGET_TABLES: the
+    # tables do not exist before the first run, and CREATE OR REPLACE rebuilds
+    # them anyway (no truncate needed).
+    ("silver_sec_registrant", "silver/09_silver_sec_registrant.sql", "sql"),
     ("silver_cot_positions", "silver/07_silver_cot_positions.sql", "sql"),
     ("silver_ohlcv_day_adjusted", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),
     ("data_quality_breaks", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),

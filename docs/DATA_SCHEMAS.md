@@ -721,3 +721,58 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   Manual review decisions (reviewed_by IS NOT NULL) are preserved on rerun.
   is_masked = TRUE for UNEXPLAINED_PENDING and CONFIRMED_DATA_BREAK.
   Masking sets return_1d = NULL (never 0) in silver_ohlcv_day_adjusted.
+
+### bronze_sec_submissions  (6 cols)
+  cik                                string NOT NULL
+  payload                            string
+  payload_sha256                     string NOT NULL
+  http_status                        int NOT NULL
+  fetched_at                         timestamp NOT NULL
+  ingest_run_id                      string NOT NULL
+
+  Source: https://data.sec.gov/submissions/CIK##########.json (SEC submissions
+  API).  CIKs come from distinct non-null gold_sec_coverage.cik.
+  Fair access: descriptive User-Agent from SEC_EDGAR_USER_AGENT (env or
+  Databricks secret evangoh_capstone/sec_edgar_user_agent; never hard-coded),
+  <= 8 requests/s, retries with backoff.  A 404 is a recorded miss:
+  payload IS NULL and payload_sha256 = sha256('sec-submissions-missing') with
+  http_status = 404.
+  Natural key: (cik, payload_sha256).  Append-only: the writer only INSERTs
+  when the key is absent, so reruns with an unchanged payload are no-ops.
+  payload is the raw JSON text exactly as fetched; fetched_at is the
+  observation time (never back-dated).
+
+### silver_sec_registrant  (13 cols)
+  cik10                              string
+  payload_sha256                     string
+  name                               string
+  sic                                string
+  sic_description                    string
+  tickers                            array<string>
+  exchanges                          array<string>
+  state_of_incorporation             string
+  fiscal_year_end                    string
+  entity_type                        string
+  observed_at                        timestamp
+  ingest_run_id                      string
+  processed_ts                       timestamp
+
+  One row per (cik, payload_sha256) parsed from bronze_sec_submissions.
+  404 misses (payload IS NULL) are excluded.  name is the current legal name;
+  sic is kept as a string (leading zeros are significant); fiscal_year_end is
+  the SEC MMDD value verbatim.  tickers/exchanges are observations at
+  observed_at (ingest time) and are never back-dated.
+
+### silver_sec_registrant_former_names  (8 cols)
+  cik10                              string
+  payload_sha256                     string
+  former_name                        string
+  from_date                          date
+  to_date                            date
+  observed_at                        timestamp
+  ingest_run_id                      string
+  processed_ts                       timestamp
+
+  One row per (cik, payload_sha256, former name), exploded from
+  payload.formerNames.  from_date/to_date are the SEC from/to dates inclusive,
+  cast as given (no +/- 1 day adjustment).

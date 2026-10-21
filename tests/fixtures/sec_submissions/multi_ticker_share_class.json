@@ -1,0 +1,36 @@
+{
+  "cik": "7654321",
+  "entityName": "Orca Cloud Platforms, Inc.",
+  "name": "Orca Cloud Platforms, Inc.",
+  "entityType": "operating",
+  "sic": "7372",
+  "sicDescription": "Services-Prepackaged Software",
+  "tickers": [
+    "ORCA",
+    "ORCA.A"
+  ],
+  "exchanges": [
+    "Nasdaq",
+    "Nasdaq"
+  ],
+  "stateOfIncorporation": "WA",
+  "fiscalYearEnd": "1231",
+  "ein": "987654321",
+  "formerNames": [],
+  "addresses": {
+    "business": {
+      "street1": "400 Harbor Street",
+      "city": "Seattle",
+      "stateOrCountry": "WA",
+      "zipCode": "98101"
+    }
+  },
+  "filings": {
+    "recent": {
+      "accessionNumber": [],
+      "form": [],
+      "filingDate": []
+    },
+    "files": []
+  }
+}
