@@ -25,7 +25,7 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
         )}
         <button
           onClick={onToggle}
-          className="rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          className="control-target rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-expanded={!collapsed}
         >

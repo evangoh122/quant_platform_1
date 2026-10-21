@@ -1,3 +1,5 @@
+import ArchitectureDiagram from '../components/ArchitectureDiagram';
+
 const SNAPSHOT_DATE = '2026-10-05';
 
 const PIPELINE_TECH_NODES = [
@@ -116,18 +118,27 @@ export function ArchitectureEvidence() {
           <h3 className="mb-3 text-sm font-semibold text-[var(--text-secondary)]">
             Pipeline data flow
           </h3>
-          <ol className="flex flex-wrap items-center gap-2" aria-label="Technical architecture pipeline nodes">
-            {PIPELINE_TECH_NODES.map((node, i) => (
-              <li key={node} className="flex items-center gap-1">
-                <span className="inline-block rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs font-medium text-[var(--text-primary)]">
-                  {node}
-                </span>
-                {i < PIPELINE_TECH_NODES.length - 1 && (
-                  <span className="text-[var(--text-muted)]" aria-hidden="true">&rarr;</span>
-                )}
-              </li>
-            ))}
-          </ol>
+          <ArchitectureDiagram />
+          <p className="mt-2 text-xs text-[var(--text-muted)]">
+            Dashed components are planned and are not deployed to production.
+          </p>
+          <div className="mt-6">
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Data flow — text summary
+            </h4>
+            <ol className="flex flex-wrap items-center gap-2" aria-label="Technical architecture pipeline nodes">
+              {PIPELINE_TECH_NODES.map((node, i) => (
+                <li key={node} className="flex items-center gap-1">
+                  <span className="inline-block rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs font-medium text-[var(--text-primary)]">
+                    {node}
+                  </span>
+                  {i < PIPELINE_TECH_NODES.length - 1 && (
+                    <span className="text-[var(--text-muted)]" aria-hidden="true">&rarr;</span>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </div>
         </div>
       </section>
 
