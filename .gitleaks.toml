@@ -14,6 +14,12 @@
 # paths, files or commits. PostHog *personal* API keys (`phx_...`) are real
 # secrets and remain detected by the default rules, as does every other secret
 # type.
+#
+# The regex is anchored (`^...$`) on purpose: it must match a secret that IS the
+# project key, not a secret that merely contains the `phc_` substring anywhere.
+# Unanchored, it also suppressed a real finding such as
+# `api_key = "private_phc_<...>_suffix"`, because the allowlist matched inside
+# that larger value.
 
 [extend]
 useDefault = true
@@ -21,4 +27,4 @@ useDefault = true
 # CI pins gitleaks 8.24.3, which requires this single [allowlist] table (the [[allowlists]] form needs 8.25).
 [allowlist]
 description = "PostHog project API keys (phc_*) are public client-side identifiers, not secrets."
-regexes = ['''phc_[A-Za-z0-9]{20,}''']
+regexes = ['''^phc_[A-Za-z0-9]{20,}$''']

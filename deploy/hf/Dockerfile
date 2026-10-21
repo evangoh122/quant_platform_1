@@ -42,7 +42,15 @@ FROM python:3.12-slim AS runtime
 # official image rather than installed with pip.
 COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
 
-ENV UV_COMPILE_BYTECODE=1 \
+# The `python:3.12-slim` base image records `ENV GPG_KEY=<CPython release-signing
+# fingerprint>` and Docker carries that variable into this stage. `api/demo.py`
+# rejects every non-empty `*_KEY` while PUBLIC_DEMO=1 (deliberately broad: a
+# false positive is safer than a shipped credential), so the inherited value
+# made the Space refuse to boot. Shadow it with an empty value: this stage never
+# downloads or verifies a CPython source tarball — the interpreter is the one
+# from the base image. Covered by tests/deploy/test_hf_image_env_boots.py.
+ENV GPG_KEY= \
+    UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     PYTHONUNBUFFERED=1 \
