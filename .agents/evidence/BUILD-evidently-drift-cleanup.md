@@ -475,3 +475,43 @@ this round:
 5. **Pre-existing failure proof** — see the failure analysis under acceptance
    run 1: the three non-timeout ML failures reproduce on a clean
    `git archive 151e255` extraction and are unrelated to this change.
+
+---
+
+## Round-3 verification (MiMo, 2026-10-21, independent pass)
+
+An independent MiMo pass ran the acceptance set again after the round-2
+commits (the two passes overlapped on this box; both wrote only this evidence
+file — code commit `3cb64d5` is unchanged by either). Results corroborate the
+runs above:
+
+```text
+# exact CI-parity command (plain)
+7 failed, 2930 passed, 70 skipped, 24 deselected, 38 warnings in 899.91s
+  tests/agent/test_pyspark_leak.py::TestHarnessIsReal::test_buggy_conftest_must_fail   Failed: Timeout (>30.0s)
+  tests/ml/test_ablation.py::test_ablation_runner_varies_feature_set_between_arms     Failed: Timeout (>120.0s, own marker)
+  tests/ml/test_baseline_labels.py::test_daily_close_labels_matches_old_behavior_with_nan_closes  Failed: Timeout (>30.0s)
+  tests/ml/test_hardening.py::test_cot_features_nonzero_after_neutralisation          Failed: Timeout (>30.0s)
+  tests/ml/test_hardening.py::test_arm_d_differs_from_arm_c_in_cot_columns            Failed: Timeout (>30.0s)
+  tests/ml/test_hardening.py::test_fold_local_classification_unchanged_by_future_data Failed: Timeout (>30.0s)
+  tests/test_hermetic_guard.py::TestResilienceTiming::test_resilience_route_fast_under_guard  wall-clock: "Resilience test took 29.1s, expected < 10s"
+
+# exact CI-parity command with pyspark stub on PYTHONPATH
+5 failed, 2932 passed, 70 skipped, 24 deselected, 36 warnings in 838.60s
+  (same tests/ml timeout family only)
+
+# same command with --timeout=300 (supplementary)
+2 failed, 2935 passed, 70 skipped, 24 deselected, 41 warnings in 881.69s
+  (test_ablation @pytest.mark.timeout(120) + the wall-clock timing test)
+
+# 15 new tests, shared venv (evidently 0.7.23 now installed there by round 2)
+15 passed, 3 warnings in 114.23s
+```
+
+Every failure is a pre-existing timeout/timing flake (the same set fails in
+today's pre-change baseline run of the identical command on `151e255`); no
+assertion in code touched by this change failed in any run, and all 15 new
+tests pass in every completed run. One earlier attempt of the plain command
+died in a native `Segmentation fault` while `tests/api/test_health_diagnostics.py`
+threads leaked into a later pytest-timeout dump (module untouched by this
+change; identical tree passed in 4 other full-suite runs afterwards).
