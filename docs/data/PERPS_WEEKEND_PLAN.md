@@ -121,6 +121,17 @@ available **daily** archive. It records the archive key, month and day. Rate
 limit and retries are the same as Hyperliquid; archive downloads in P2 must be
 bounded and checksummed.
 
+The archive hostname serves the HTML download site, so the probe lists the
+bucket through the S3 endpoint
+`https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?delimiter=/&prefix=...`.
+That response is a namespaced S3 `ListBucketResult`: `Contents` carries the
+archive keys, `CommonPrefixes` the directory level, and `IsTruncated` /
+`NextMarker` drive pagination. The probe parses by XML local name (so the S3
+namespace cannot hide elements), follows every page, and fails closed on a
+truncated page without `NextMarker` — a listing that silently stops after page
+one would report a false "no archives". The first page pairing is covered by a
+recorded two-page fixture in `tests/fixtures/perps/`.
+
 ### 2.3 Existing equity/options features
 
 Friday equity daily bars and returns come from `silver_ohlcv_day_adjusted`
@@ -138,6 +149,26 @@ names; the parenthesised source columns above are the existing schema.
 - A stable funding interval across venues; store `funding_interval_hours` per row.
 - Corporate-action semantics for HIP-3 perps (splits, index changes). Treat a
   discontinuity as a data-quality event until verified; never silently adjust.
+
+### 2.5 Measured history (probe, 2026-10-21)
+
+The live probe recorded the following lower bounds. They are **first
+observations**, not listing dates, and `n/a` would mean "not found within the
+probe budget", never "no history".
+
+| Stream | Earliest measured | What it means for the design |
+|---|---|---|
+| Hyperliquid `1d` candles (company perps) | NVDA 2025-11-12; latest instrument 2026-10-06 | Per-instrument start differs. NVDA has ~49 weekends through 2026-10-16; 23 instruments have a first `1d` candle on or after 2026-07-20 (at most 13 weekends). |
+| Hyperliquid funding | NVDA 2025-11-12 21:00 UTC | Funding starts with the listing; no deeper backfill exists. |
+| Hyperliquid `1h` candles | 2026-03-27 09:00 UTC for the oldest instruments | The public API returns at most 5,000 candles per interval (~208 days of `1h`), so `1h` history is a recent window only. |
+| Binance USD-M `1h` klines (controls) | 2020-01 monthly archive | Full control history; archive existence verified 2026-10-21 (the probe records the first month/day once the S3 listing is fixed). |
+| Binance USD-M funding (controls) | 2020-01 monthly archive | Same. |
+| Binance USD-M metrics (controls) | 2021-12 monthly archive | OI / long-short metrics are later than klines and funding. |
+| Hyperliquid `1m` candles | ~3.5 days rolling | Forward capture only; never a backfill source. |
+
+The commodity perps are part of the same probe run and are reported in their
+own section; the 2026-10-21 measurement above covers the company perps because
+that run predates the commodity section.
 
 ## 3. Weekend window definition
 
@@ -429,6 +460,24 @@ the review list that drives this table.
 5. **Evaluation:** out-of-time split by `weekend_id`; no random shuffling.
 6. **Controls:** BTC/ETH features use the same UTC window, so any perp signal
    must beat the crypto-only baseline, not just the equity-only baseline.
+
+### 6.1 Statistical power (measured 2026-10-21)
+
+History limits the claim the study can support. Pooled across the 78 company
+perps the measured window gives roughly **1.9k company-weekends** through the
+2026-10-16 weekend (NVDA has at most ~49; 23 instruments have at most 13).
+After requiring a complete Friday equity/options baseline, a verified mapping,
+non-sparse weekend bars and the BTC/ETH controls, the effective sample is closer
+to **1.5–2k company-weekends**, and most individual instruments have too few
+weekends for instrument-level inference.
+
+The panel is therefore unbalanced and clustered by weekend (common market and
+crypto shocks). P6 must evaluate with weekend-blocked/out-of-time splits, report
+the effective sample and uncertainty per model, and treat a null or unstable
+result as the likely outcome. This is a power caveat, not an invitation to pool
+instruments without clustering: the design cannot detect a small incremental
+`R²` from weekend perp features with this history, so pre-register what effect
+size would be meaningful and report an honest negative result.
 
 ## 7. PR slices
 

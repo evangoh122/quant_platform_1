@@ -31,6 +31,13 @@ Binance USD-M controls
 ``fundingRate`` and ``metrics``; the first available month is then refined to
 the first available daily archive.  Downloads are not performed by this probe.
 
+The archive host serves an HTML site, so the probe lists the bucket through the
+S3 endpoint (``s3-ap-northeast-1.amazonaws.com/data.binance.vision``) with
+``delimiter=/&prefix=``.  The response is an S3 ``ListBucketResult`` XML
+document: it uses the S3 namespace, lists ``Contents`` keys (and
+``CommonPrefixes`` for directories) and is paged with ``IsTruncated`` /
+``NextMarker``.  The probe follows every page before choosing the first month.
+
 Open interest
 -------------
 Hyperliquid's public info API exposes **current** open interest only (via
@@ -60,6 +67,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
+from xml.etree import ElementTree
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -73,6 +81,11 @@ from config.perp_universe import (  # noqa: E402
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 BINANCE_VISION_URL = "https://data.binance.vision"
+#: S3 endpoint behind the archive host; this is the one that serves XML listings
+#: (the CDN hostname serves the HTML download site).
+BINANCE_VISION_LISTING_URL = (
+    "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+)
 DEFAULT_OUT_JSON = _REPO_ROOT / "docs" / "data" / "perps_history_probe.json"
 DEFAULT_OUT_MD = _REPO_ROOT / "docs" / "data" / "perps_history_probe.md"
 DEFAULT_START = "2025-01-01"
@@ -82,6 +95,7 @@ DEFAULT_RATE_LIMIT_RPS = 2.0
 DEFAULT_RETRIES = 4
 DEFAULT_TIMEOUT = 30.0
 MAX_RATE_LIMIT_RPS = 2.0
+DEFAULT_MAX_LISTING_PAGES = 100
 
 OPEN_INTEREST_NOTE = (
     "Hyperliquid's public info API serves current open interest only "
@@ -220,8 +234,16 @@ def _binance_daily_prefix(monthly_key: str) -> str:
     )
 
 
-def binance_listing_url(prefix: str) -> str:
-    return f"{BINANCE_VISION_URL}/?prefix={urlparse.quote(prefix, safe='/')}"
+def binance_listing_url(prefix: str, marker: Optional[str] = None) -> str:
+    """Return an S3 ``ListBucketResult`` URL for *prefix* (one delimiter level)."""
+
+    url = (
+        f"{BINANCE_VISION_LISTING_URL}?delimiter=/&prefix="
+        f"{urlparse.quote(prefix, safe='/')}"
+    )
+    if marker:
+        url += f"&marker={urlparse.quote(marker, safe='/')}"
+    return url
 
 
 def plan_requests(
@@ -370,22 +392,150 @@ def _iso_utc(ms: Optional[int]) -> Optional[str]:
 _ZIP_KEY_RE = re.compile(r"(?:<Key>|href=[\"'])(?P<key>[^<\"']+?\.zip)")
 
 
+@dataclass(frozen=True)
+class BinanceListingPage:
+    """One page of an S3 ``ListBucketResult`` listing."""
+
+    keys: Tuple[str, ...]
+    common_prefixes: Tuple[str, ...]
+    truncated: bool
+    next_marker: Optional[str]
+
+
+def _local_name(tag: str) -> str:
+    """Return an XML tag without its ``{namespace}`` prefix."""
+
+    return tag.rsplit("}", 1)[-1]
+
+
+def parse_binance_listing_page(text: str) -> BinanceListingPage:
+    """Parse one namespaced S3 ``ListBucketResult`` page.
+
+    Element names are compared by local name so the S3 default namespace
+    (``http://s3.amazonaws.com/doc/2006-03-01/``) cannot hide ``Contents`` or
+    ``CommonPrefixes``.  Pagination state is returned to the caller.
+    """
+
+    _require(isinstance(text, str) and text.strip(), "listing payload must be text")
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError as exc:
+        raise ProbeError(f"listing is not valid XML: {exc}") from exc
+    _require(
+        _local_name(root.tag) == "ListBucketResult",
+        f"unexpected listing document <{_local_name(root.tag)}>",
+    )
+
+    keys: List[str] = []
+    common_prefixes: List[str] = []
+    truncated = False
+    next_marker: Optional[str] = None
+    for element in root:
+        name = _local_name(element.tag)
+        if name == "Contents":
+            for child in element:
+                if _local_name(child.tag) == "Key" and child.text:
+                    keys.append(child.text.strip())
+        elif name == "CommonPrefixes":
+            for child in element:
+                if _local_name(child.tag) == "Prefix" and child.text:
+                    common_prefixes.append(child.text.strip())
+        elif name == "IsTruncated" and element.text:
+            truncated = element.text.strip().lower() == "true"
+        elif name == "NextMarker" and element.text:
+            next_marker = element.text.strip()
+    return BinanceListingPage(
+        keys=tuple(keys),
+        common_prefixes=tuple(common_prefixes),
+        truncated=truncated,
+        next_marker=next_marker,
+    )
+
+
+def _normalise_listing_key(raw: str) -> str:
+    """Turn a listing ``Key`` or HTML href into a bucket-relative key."""
+
+    raw = raw.split("?")[0].strip()
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+        raw = raw.split("/", 1)[1] if "/" in raw else raw
+    marker = raw.find("data/")
+    if marker > 0:
+        raw = raw[marker:]
+    return urlparse.unquote(raw.lstrip("/"))
+
+
+def _is_xml_listing(text: str) -> bool:
+    stripped = text.lstrip()
+    return stripped.startswith("<?xml") or stripped.startswith("<ListBucketResult")
+
+
 def parse_binance_listing(text: str, prefix: str = "") -> List[str]:
-    """Extract sorted ``.zip`` archive keys from an S3 XML or HTML listing."""
+    """Extract sorted ``.zip`` archive keys from an S3 XML or HTML listing.
+
+    XML pages are parsed with :func:`parse_binance_listing_page` (namespace
+    aware); the HTML fallback covers the archive site's download pages.
+    """
+
     _require(isinstance(text, str), "listing payload must be text")
+    if _is_xml_listing(text):
+        raw_keys: Sequence[str] = parse_binance_listing_page(text).keys
+    else:
+        raw_keys = [match.group("key") for match in _ZIP_KEY_RE.finditer(text)]
     keys = set()
-    for match in _ZIP_KEY_RE.finditer(text):
-        raw = match.group("key").split("?")[0]
-        if "://" in raw:
-            raw = raw.split("://", 1)[1]
-            raw = raw.split("/", 1)[1] if "/" in raw else raw
-        marker = raw.find("data/")
-        if marker > 0:
-            raw = raw[marker:]
-        key = urlparse.unquote(raw.lstrip("/"))
+    for raw in raw_keys:
+        key = _normalise_listing_key(raw)
+        if not key.endswith(".zip"):
+            continue
         if prefix and not key.startswith(prefix):
             continue
         keys.add(key)
+    return sorted(keys)
+
+
+def fetch_binance_listing(client: Any, prefix: str, *, _depth: int = 0) -> List[str]:
+    """Fetch every page of the S3 listing for *prefix* and return ``.zip`` keys.
+
+    Follows ``IsTruncated``/``NextMarker`` until the last page.  A truncated
+    page without ``NextMarker`` is an error (fail closed, never silently drop
+    archives).  When a parent prefix returns only ``CommonPrefixes`` the
+    function descends one level so a listing cannot come back empty merely
+    because the caller passed a directory instead of a dataset prefix.
+    """
+
+    keys = set()
+    marker: Optional[str] = None
+    common_prefixes: List[str] = []
+    for _ in range(DEFAULT_MAX_LISTING_PAGES):
+        text = client.get_text(binance_listing_url(prefix, marker))
+        if not _is_xml_listing(text):
+            keys.update(parse_binance_listing(text, prefix))
+            break
+        page = parse_binance_listing_page(text)
+        keys.update(parse_binance_listing(text, prefix))
+        common_prefixes.extend(page.common_prefixes)
+        if not page.truncated:
+            break
+        _require(
+            bool(page.next_marker),
+            f"{prefix}: truncated listing without NextMarker",
+        )
+        _require(
+            page.next_marker != marker,
+            f"{prefix}: pagination did not advance past {marker!r}",
+        )
+        marker = page.next_marker
+    else:
+        raise ProbeError(
+            f"{prefix}: listing did not finish within "
+            f"{DEFAULT_MAX_LISTING_PAGES} pages"
+        )
+
+    if not keys and common_prefixes and _depth < 1:
+        for child in sorted(set(common_prefixes)):
+            if not child.startswith(prefix):
+                continue
+            keys.update(fetch_binance_listing(client, child, _depth=_depth + 1))
     return sorted(keys)
 
 
@@ -566,18 +716,14 @@ def probe_binance(client: Any, control: PerpControl) -> Dict[str, Any]:
     symbol = control.symbol
     for stream in _BINANCE_STREAMS:
         prefix = _binance_monthly_prefix(symbol, stream)
-        monthly_keys = parse_binance_listing(
-            client.get_text(binance_listing_url(prefix)), prefix
-        )
+        monthly_keys = fetch_binance_listing(client, prefix)
         if not monthly_keys:
             out[stream] = {"error": "no monthly archives", "prefix": prefix}
             continue
         first_key = monthly_keys[0]
         month = _month_of(first_key)
         daily_prefix = _binance_daily_prefix(first_key)
-        daily_keys = parse_binance_listing(
-            client.get_text(binance_listing_url(daily_prefix)), daily_prefix
-        )
+        daily_keys = fetch_binance_listing(client, daily_prefix)
         first_day = _day_of(daily_keys[0]) if daily_keys else None
         out[stream] = {
             "first_month": month,

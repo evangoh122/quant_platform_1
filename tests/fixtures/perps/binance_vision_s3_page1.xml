@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>data.binance.vision</Name>
+  <Prefix>data/futures/um/monthly/klines/BTCUSDT/1h/</Prefix>
+  <KeyCount>2</KeyCount>
+  <MaxKeys>1000</MaxKeys>
+  <Delimiter>/</Delimiter>
+  <IsTruncated>true</IsTruncated>
+  <NextMarker>data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2019-10.zip</NextMarker>
+  <Contents>
+    <Key>data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2019-09.zip</Key>
+    <LastModified>2019-10-01T00:00:00.000Z</LastModified>
+    <ETag>&quot;d41d8cd98f00b204e9800998ecf8427e&quot;</ETag>
+    <Size>123456</Size>
+    <StorageClass>STANDARD</StorageClass>
+  </Contents>
+  <Contents>
+    <Key>data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2019-10.zip</Key>
+    <LastModified>2019-11-01T00:00:00.000Z</LastModified>
+    <ETag>&quot;d41d8cd98f00b204e9800998ecf8427e&quot;</ETag>
+    <Size>223456</Size>
+    <StorageClass>STANDARD</StorageClass>
+  </Contents>
+</ListBucketResult>
