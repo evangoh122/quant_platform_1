@@ -94,10 +94,12 @@ bounded and checksummed.
 
 ### 2.3 Existing equity/options features
 
-Friday equity closes, returns and options features come from the existing
-gold tables (`gold_ohlcv_features`, `gold_options_features`, and their
-`information_available_ts` columns). They are joined as-of the Friday close; this
-track does not re-ingest them.
+Friday equity daily bars and returns come from `silver_ohlcv_day_adjusted`
+(`adj_close`, `return_1d`, `information_available_ts`); options features come
+from `gold_options_features` (`iv_atm`, `iv_skew`, `volume_anomaly_zscore`,
+`information_available_ts`). They are joined as-of the Friday close; this track
+does not re-ingest them. The `friday_*` columns in §4.3 are the new gold output
+names; the parenthesised source columns above are the existing schema.
 
 ### 2.4 What is not available
 
@@ -300,7 +302,7 @@ One row per `(weekend_id, security_id)`.
 | Funding | `funding_sum`, `funding_mean`, `funding_last`, `funding_count`, `funding_interval_hours` |
 | OI (P4, nullable) | `oi_start`, `oi_end`, `oi_change_pct` |
 | Controls | `btc_ret_weekend`, `eth_ret_weekend`, `btc_realized_vol_1h`, `eth_realized_vol_1h` |
-| Equity baselines (PIT) | `friday_close`, `friday_ret_1d`, `friday_ret_5d`, `friday_iv_atm`, `friday_skew_25d`, `friday_volume_z`, `equity_features_available_ts` |
+| Equity baselines (PIT) | `friday_adj_close`, `friday_ret_1d`, `friday_ret_5d`, `friday_iv_atm`, `friday_iv_skew`, `friday_options_volume_z`, `equity_features_available_ts` |
 | Label | `monday_open`, `monday_gap`, `label_available_ts` (= `window_end_ts`) |
 | Governance | `mapping_status` (`verified` / `unverified`), `information_available_ts`, `feature_version`, `ingest_ts` |
 

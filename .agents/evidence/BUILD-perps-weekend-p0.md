@@ -126,7 +126,11 @@ Fixtures: `tests/fixtures/perps/hyperliquid_candle_snapshot.json`,
 Expectations are asserted against fixed dates/timestamps and the production
 loaders; no validation or calendar logic is copied into tests.
 
-## 3. Acceptance runs (final SHA `0a06b20`)
+## 3. Acceptance runs (code SHA `0a06b20`)
+
+The later commits on the branch add this evidence file and one docs-only
+correction to the plan's source-column names; no code, config, test or fixture
+changed after `0a06b20`, so these runs describe the exact code tree under test.
 
 ### 3.1 venv and CI-parity install
 
