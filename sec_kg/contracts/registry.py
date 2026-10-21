@@ -1,0 +1,815 @@
+"""sec_kg/contracts/registry.py — join contracts and the edge registry (KG-A).
+
+Two registries, both executable rather than documentation:
+
+``JOIN_CONTRACTS``
+    One row per external table the graph joins to: grain (unique key),
+    symbol namespace, the **business-time column**, the **stored availability
+    column** (use it, never re-derive it), the AS-OF predicate and the
+    cardinality to a security (``KG_DATA_MODEL_v3`` §7, ``v4`` §H).
+
+``EDGE_CONTRACTS``
+    One row per edge type with explicit source/destination node types,
+    identity rule, required evidence and ownership scope (``v3`` §6).
+
+Requirements are anchored to the SQL that produces each column through
+``availability_evidence``; a test asserts the anchor really contains it.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+
+from sec_kg.model import (
+    EDGE_TYPES,
+    NODE_TYPES,
+    deterministic_json,
+    ensure_utc,
+    normalize_unicode,
+)
+
+# ── Node kinds known to the contracts (superset of the v1 graph) ────────────
+
+CONTRACT_NODE_KINDS: frozenset = frozenset(
+    set(NODE_TYPES) | {"Security", "Instrument", "CryptoAsset"}
+)
+
+#: Node kinds whose rows belong to one company (subset builds replace them).
+COMPANY_SCOPED_NODE_KINDS: frozenset = frozenset(
+    {
+        "Company",
+        "Filing",
+        "Section",
+        "Chunk",
+        "XbrlFact",
+        "RiskFactor",
+        "Event",
+        "Segment",
+        "Product",
+        "Customer",
+        "Security",
+    }
+)
+
+#: Node kinds that are recomputed as the union of references (never deleted by
+#: a subset build).  v4 §G names exactly these four.
+GLOBAL_NODE_KINDS: frozenset = frozenset(
+    {"Metric", "Period", "Concept", "CryptoAsset"}
+)
+
+#: Venue contracts are shared by every issuer that lists on the venue, so a
+#: subset build neither owns nor deletes them (``UNDERLIES`` is global).
+VENUE_NODE_KINDS: frozenset = frozenset({"Instrument"})
+
+NAMESPACES: frozenset = frozenset(
+    {
+        "massive",
+        "sec_corpus",
+        "hyperliquid",
+        "binance_um",
+        "config_universe",
+        "perps",
+    }
+)
+
+CARDINALITIES: frozenset = frozenset({"n:1", "1:1", "1:n"})
+
+AVAILABILITY_STORED = "stored"
+AVAILABILITY_STORED_SAME_AS_BUSINESS = "stored_same_as_business"
+AVAILABILITY_VIA_JOIN = "via_join"
+AVAILABILITY_DERIVED_BAR_CLOSE = "derived_bar_close"
+
+AVAILABILITY_KINDS: frozenset = frozenset(
+    {
+        AVAILABILITY_STORED,
+        AVAILABILITY_STORED_SAME_AS_BUSINESS,
+        AVAILABILITY_VIA_JOIN,
+        AVAILABILITY_DERIVED_BAR_CLOSE,
+    }
+)
+
+EVIDENCE_KINDS: frozenset = frozenset(
+    {
+        "filing",
+        "chunk",
+        "xbrl_observation",
+        "mapping_observation",
+        "classification",
+        "calendar",
+    }
+)
+
+SCOPE_COMPANY = "company"
+SCOPE_GLOBAL_TARGET = "global-target"
+SCOPE_CROSS_COMPANY = "cross-company"
+
+SCOPES: frozenset = frozenset(
+    {SCOPE_COMPANY, SCOPE_GLOBAL_TARGET, SCOPE_CROSS_COMPANY}
+)
+
+
+class RegistryError(ValueError):
+    """Base class for registry-contract violations."""
+
+
+class UnknownTableError(RegistryError, KeyError):
+    """The table is not registered."""
+
+
+class UnknownEdgeTypeError(RegistryError, KeyError):
+    """The edge type is not registered."""
+
+
+class GrainViolation(RegistryError):
+    """Rows violate the declared grain."""
+
+
+class CardinalityViolation(RegistryError):
+    """Rows violate the declared cardinality."""
+
+
+class BridgeViolation(RegistryError):
+    """A symbol bridge is ambiguous, overlapping or not yet observed."""
+
+
+class EdgeContractError(RegistryError):
+    """An edge violates its registered contract."""
+
+
+# ── Join contracts ──────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class JoinContract:
+    table: str
+    grain: Tuple[str, ...]
+    namespace: str
+    business_time: str
+    availability: str
+    availability_kind: str
+    as_of_predicate: str
+    cardinality: str
+    bridge: str
+    availability_evidence: Optional[str] = None
+    notes: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.table:
+            raise RegistryError("table must not be blank")
+        if not self.grain:
+            raise RegistryError(f"{self.table}: grain must not be empty")
+        if self.namespace not in NAMESPACES:
+            raise RegistryError(
+                f"{self.table}: unknown namespace {self.namespace!r}"
+            )
+        if not self.business_time:
+            raise RegistryError(f"{self.table}: business_time is required")
+        if not self.availability:
+            raise RegistryError(f"{self.table}: availability is required")
+        if self.availability_kind not in AVAILABILITY_KINDS:
+            raise RegistryError(
+                f"{self.table}: unknown availability_kind {self.availability_kind!r}"
+            )
+        if self.cardinality not in CARDINALITIES:
+            raise RegistryError(
+                f"{self.table}: unknown cardinality {self.cardinality!r}"
+            )
+        if not self.as_of_predicate:
+            raise RegistryError(f"{self.table}: as_of_predicate is required")
+        if self.as_of_predicate.count("?") > 1:
+            raise RegistryError(
+                f"{self.table}: as_of_predicate must contain at most one placeholder"
+            )
+
+    @property
+    def stored_availability(self) -> bool:
+        return self.availability_kind in (
+            AVAILABILITY_STORED,
+            AVAILABILITY_STORED_SAME_AS_BUSINESS,
+        )
+
+    def columns(self) -> Tuple[str, ...]:
+        ordered = list(self.grain)
+        for column in (self.business_time, self.availability):
+            if column not in ordered:
+                ordered.append(column)
+        return tuple(ordered)
+
+
+JOIN_CONTRACTS: Dict[str, JoinContract] = {
+    "gold_ohlcv_features": JoinContract(
+        table="gold_ohlcv_features",
+        grain=("symbol", "feature_ts"),
+        namespace="massive",
+        business_time="feature_ts",
+        availability="information_available_ts",
+        availability_kind=AVAILABILITY_STORED,
+        as_of_predicate="information_available_ts <= ?",
+        cardinality="n:1",
+        bridge="bridge_security_symbol(provider='massive', symbol)",
+        availability_evidence="gold/01_gold_ohlcv_features.sql",
+        notes=(
+            "information_available_ts is stored (bar start + bar interval); "
+            "never re-derive it from feature_ts"
+        ),
+    ),
+    "gold_options_features": JoinContract(
+        table="gold_options_features",
+        grain=("symbol", "feature_ts"),
+        namespace="massive",
+        business_time="feature_ts",
+        availability="information_available_ts",
+        availability_kind=AVAILABILITY_STORED,
+        as_of_predicate="information_available_ts <= ?",
+        cardinality="n:1",
+        bridge="bridge_security_symbol(provider='massive', symbol)",
+        availability_evidence="gold/02_gold_options_features.sql",
+    ),
+    "gold_model_features": JoinContract(
+        table="gold_model_features",
+        grain=("symbol", "prediction_ts"),
+        namespace="massive",
+        business_time="prediction_ts",
+        availability="prediction_ts",
+        availability_kind=AVAILABILITY_STORED_SAME_AS_BUSINESS,
+        as_of_predicate="prediction_ts <= ?",
+        cardinality="n:1",
+        bridge="bridge_security_symbol(provider='massive', symbol)",
+        availability_evidence="gold/05_gold_model_features.sql",
+        notes=(
+            "prediction_ts is the availability timestamp of the last bar of the "
+            "spine (last bar's feature_ts + 1 minute)"
+        ),
+    ),
+    "gold_tradable_universe": JoinContract(
+        table="gold_tradable_universe",
+        grain=("trade_date", "symbol"),
+        namespace="massive",
+        business_time="trade_date",
+        availability="information_available_ts",
+        availability_kind=AVAILABILITY_STORED,
+        as_of_predicate="information_available_ts <= ?",
+        cardinality="n:1",
+        bridge="bridge_security_symbol(provider='massive', symbol)",
+        availability_evidence="gold/06_gold_tradable_universe.sql",
+        notes=(
+            "information_available_ts = previous session close 16:00 New York "
+            "+ pub_buffer_minutes"
+        ),
+    ),
+    "silver_sec_sections": JoinContract(
+        table="silver_sec_sections",
+        grain=("chunk_id",),
+        namespace="sec_corpus",
+        business_time="accepted_ts",
+        availability="accepted_ts",
+        availability_kind=AVAILABILITY_STORED_SAME_AS_BUSINESS,
+        as_of_predicate="accepted_ts <= ?",
+        cardinality="1:1",
+        bridge="Chunk node by source chunk_id",
+        availability_evidence="silver/05_silver_sec_sections.sql",
+    ),
+    "gold_sec_chunk_embeddings": JoinContract(
+        table="gold_sec_chunk_embeddings",
+        grain=("chunk_id",),
+        namespace="sec_corpus",
+        business_time="accepted_ts",
+        availability="accepted_ts",
+        availability_kind=AVAILABILITY_VIA_JOIN,
+        as_of_predicate="accepted_ts <= ?",
+        cardinality="1:1",
+        bridge="Chunk node by source chunk_id",
+        notes=(
+            "embeddings carry no availability column; accepted_ts is joined from "
+            "silver_sec_sections on chunk_id"
+        ),
+    ),
+    "silver_sec_xbrl_facts": JoinContract(
+        table="silver_sec_xbrl_facts",
+        grain=("observation_key",),
+        namespace="sec_corpus",
+        business_time="filed_date",
+        availability="public_available_at",
+        availability_kind=AVAILABILITY_VIA_JOIN,
+        as_of_predicate="public_available_at <= ?",
+        cardinality="n:1",
+        bridge="assertion/observation keys (no symbol join)",
+        notes=(
+            "public_available_at comes from dim_filing.accepted_ts; when it cannot "
+            "be verified the observation is unverified and never eligible in "
+            "public_as_of"
+        ),
+    ),
+    "bridge_security_symbol": JoinContract(
+        table="bridge_security_symbol",
+        grain=("provider", "symbol", "valid_from"),
+        namespace="config_universe",
+        business_time="valid_from",
+        availability="observed_at",
+        availability_kind=AVAILABILITY_STORED,
+        as_of_predicate="observed_at <= ?",
+        cardinality="n:1",
+        bridge="security_id (this table *is* the bridge)",
+        notes="half-open [valid_from, valid_to); intervals never overlap per (provider, symbol)",
+    ),
+    "perps_bars": JoinContract(
+        table="perps_bars",
+        grain=("instrument_id", "bar_ts"),
+        namespace="perps",
+        business_time="bar_ts",
+        availability="bar_close",
+        availability_kind=AVAILABILITY_DERIVED_BAR_CLOSE,
+        as_of_predicate="bar_close <= ?",
+        cardinality="n:1",
+        bridge=(
+            "bridge_security_symbol(provider IN ('hyperliquid','binance_um'), "
+            "symbol) -> instrument -> underlying"
+        ),
+        notes="bar_close = bar_ts + bar interval; perps ingestion is P1+",
+    ),
+}
+
+
+def table_names() -> Tuple[str, ...]:
+    return tuple(sorted(JOIN_CONTRACTS))
+
+
+def get_contract(table: str) -> JoinContract:
+    key = normalize_unicode(str(table))
+    try:
+        return JOIN_CONTRACTS[key]
+    except KeyError:
+        raise UnknownTableError(
+            f"{table!r} has no join contract; registered: {table_names()}"
+        ) from None
+
+
+def business_time_column(table: str) -> str:
+    return get_contract(table).business_time
+
+
+def availability_column(table: str) -> str:
+    return get_contract(table).availability
+
+
+def availability_kind(table: str) -> str:
+    return get_contract(table).availability_kind
+
+
+def as_of_predicate(table: str, param: str = "T") -> str:
+    contract = get_contract(table)
+    predicate = contract.as_of_predicate
+    if "?" in predicate:
+        return predicate.replace("?", param)
+    return predicate
+
+
+def is_available(
+    table: str, availability_value: Optional[datetime], query_time: datetime
+) -> bool:
+    """PIT eligibility: a NULL/unknown availability is never eligible."""
+    if availability_value is None:
+        return False
+    return ensure_utc(availability_value) <= ensure_utc(query_time)
+
+
+def check_grain(table: str, rows: Iterable[Mapping[str, Any]]) -> int:
+    """Verify the declared grain is unique; returns the row count."""
+    contract = get_contract(table)
+    seen: Dict[Tuple[Any, ...], int] = {}
+    count = 0
+    for index, row in enumerate(rows):
+        key: list = []
+        for column in contract.grain:
+            if column not in row:
+                raise GrainViolation(
+                    f"{table}: row {index} is missing grain column {column!r}"
+                )
+            value = row[column]
+            if value is None:
+                raise GrainViolation(
+                    f"{table}: row {index} has NULL grain column {column!r}"
+                )
+            key.append(value)
+        tuple_key = tuple(key)
+        if tuple_key in seen:
+            raise GrainViolation(
+                f"{table}: duplicate grain {tuple_key!r} at rows "
+                f"{seen[tuple_key]} and {index}"
+            )
+        seen[tuple_key] = index
+        count += 1
+    return count
+
+
+def check_cardinality(
+    table: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    left_column: str,
+    right_column: str,
+) -> None:
+    """Verify the declared cardinality between ``left_column`` and ``right``.
+
+    For ``n:1`` every left value must map to exactly one right value (many rows
+    per security is fine, two securities for one symbol is not).
+    """
+    contract = get_contract(table)
+    if contract.cardinality not in ("n:1", "1:1"):
+        raise RegistryError(
+            f"{table}: declared cardinality {contract.cardinality!r} cannot be "
+            "validated with check_cardinality"
+        )
+    forward: Dict[Any, set] = {}
+    reverse: Dict[Any, set] = {}
+    for index, row in enumerate(rows):
+        for column in (left_column, right_column):
+            if column not in row:
+                raise CardinalityViolation(
+                    f"{table}: row {index} is missing column {column!r}"
+                )
+        left = row[left_column]
+        right = row[right_column]
+        if left is None or right is None:
+            continue
+        forward.setdefault(left, set()).add(right)
+        reverse.setdefault(right, set()).add(left)
+    for left, rights in sorted(forward.items(), key=lambda item: str(item[0])):
+        if len(rights) > 1:
+            raise CardinalityViolation(
+                f"{table}: {left_column}={left!r} maps to {len(rights)} "
+                f"{right_column} values {sorted(str(r) for r in rights)} but "
+                f"cardinality is {contract.cardinality}"
+            )
+    if contract.cardinality == "1:1":
+        for right, lefts in sorted(reverse.items(), key=lambda item: str(item[0])):
+            if len(lefts) > 1:
+                raise CardinalityViolation(
+                    f"{table}: {right_column}={right!r} maps to {len(lefts)} "
+                    f"{left_column} values {sorted(str(l) for l in lefts)} but "
+                    "cardinality is 1:1"
+                )
+
+
+# ── Provider-symbol bridge ──────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SecuritySymbolBridge:
+    provider: str
+    symbol: str
+    security_id: str
+    valid_from: datetime
+    valid_to: Optional[datetime]
+    observed_at: datetime
+    mapping_status: str = "verified"
+    evidence_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("provider", self.provider),
+            ("symbol", self.symbol),
+            ("security_id", self.security_id),
+        ):
+            if not normalize_unicode(str(value)):
+                raise BridgeViolation(f"{label} must not be blank")
+        object.__setattr__(self, "provider", normalize_unicode(str(self.provider)).lower())
+        object.__setattr__(self, "observed_at", ensure_utc(self.observed_at))
+        start = ensure_utc(self.valid_from)
+        object.__setattr__(self, "valid_from", start)
+        if self.valid_to is not None:
+            end = ensure_utc(self.valid_to)
+            if end <= start:
+                raise BridgeViolation("bridge valid_to must be after valid_from")
+            object.__setattr__(self, "valid_to", end)
+        if self.mapping_status not in ("verified", "inferred", "unknown"):
+            raise BridgeViolation(
+                f"unknown mapping_status {self.mapping_status!r}"
+            )
+
+    def covers(self, business_time: datetime) -> bool:
+        moment = ensure_utc(business_time)
+        if moment < self.valid_from:
+            return False
+        return self.valid_to is None or moment < self.valid_to
+
+
+def validate_bridge_rows(bridges: Iterable[SecuritySymbolBridge]) -> None:
+    """Reject overlapping validity intervals per ``(provider, symbol)``."""
+    grouped: Dict[Tuple[str, str], list] = {}
+    for bridge in bridges:
+        grouped.setdefault((bridge.provider, bridge.symbol), []).append(bridge)
+    for (provider, symbol), rows in sorted(grouped.items()):
+        rows = sorted(rows, key=lambda row: row.valid_from)
+        for previous, current in zip(rows, rows[1:]):
+            previous_end = previous.valid_to
+            if previous_end is None or current.valid_from < previous_end:
+                raise BridgeViolation(
+                    f"{provider}/{symbol}: bridge intervals overlap "
+                    f"({previous.valid_from.isoformat()}.."
+                    f"{None if previous_end is None else previous_end.isoformat()}) and "
+                    f"{current.valid_from.isoformat()}"
+                )
+
+
+def resolve_security_symbol(
+    bridges: Iterable[SecuritySymbolBridge],
+    *,
+    provider: str,
+    symbol: str,
+    business_time: datetime,
+    query_time: datetime,
+) -> Optional[str]:
+    """Resolve ``(provider, symbol)`` to a security as of *business_time*.
+
+    The bridge row is selected by the **business** time (a ticker change after
+    the business time must not rewrite history) and must already have been
+    observed at *query_time*; future observations are not usable.
+    """
+    provider_key = normalize_unicode(str(provider)).lower()
+    symbol_key = normalize_unicode(str(symbol))
+    moment = ensure_utc(business_time)
+    observed_by = ensure_utc(query_time)
+
+    matches = [
+        bridge
+        for bridge in bridges
+        if bridge.provider == provider_key
+        and normalize_unicode(bridge.symbol) == symbol_key
+        and bridge.covers(moment)
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise BridgeViolation(
+            f"{provider_key}/{symbol_key} at {moment.isoformat()}: "
+            f"{len(matches)} bridge rows match"
+        )
+    bridge = matches[0]
+    if bridge.observed_at > observed_by:
+        return None
+    return bridge.security_id
+
+
+# ── Edge contracts ──────────────────────────────────────────────────────────
+
+REQUIRED_EDGE_FIELDS: Tuple[str, ...] = (
+    "edge_id",
+    "src_id",
+    "edge_type",
+    "dst_id",
+    "valid_from",
+    "valid_to",
+    "system_from",
+    "system_to",
+    "public_available_at",
+    "system_observed_at",
+    "confidence",
+    "extraction_method",
+    "evidence_count",
+    "build_generation_id",
+)
+
+
+@dataclass(frozen=True)
+class EdgeContract:
+    edge_type: str
+    src_types: Tuple[str, ...]
+    dst_types: Tuple[str, ...]
+    identity: Tuple[str, ...]
+    evidence: Tuple[str, ...]
+    scope: str
+    directional: bool = True
+    symmetric: bool = False
+    temporal: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.edge_type:
+            raise RegistryError("edge_type must not be blank")
+        if self.scope not in SCOPES:
+            raise RegistryError(
+                f"{self.edge_type}: unknown scope {self.scope!r}"
+            )
+        if not self.src_types or not self.dst_types:
+            raise RegistryError(f"{self.edge_type}: endpoints are required")
+        for node_kind in self.src_types + self.dst_types:
+            if node_kind not in CONTRACT_NODE_KINDS:
+                raise RegistryError(
+                    f"{self.edge_type}: unknown node kind {node_kind!r}"
+                )
+        if not self.identity:
+            raise RegistryError(f"{self.edge_type}: identity rule is required")
+        if not self.evidence:
+            raise RegistryError(f"{self.edge_type}: evidence is required")
+        for kind in self.evidence:
+            if kind not in EVIDENCE_KINDS:
+                raise RegistryError(
+                    f"{self.edge_type}: unknown evidence kind {kind!r}"
+                )
+        if self.symmetric and not self.directional:
+            raise RegistryError(
+                f"{self.edge_type}: an undirected edge is stored once, once only"
+            )
+
+
+def _edge(
+    edge_type: str,
+    src_types: Sequence[str],
+    dst_types: Sequence[str],
+    identity: Sequence[str],
+    evidence: Sequence[str],
+    scope: str,
+    *,
+    symmetric: bool = False,
+) -> EdgeContract:
+    return EdgeContract(
+        edge_type=edge_type,
+        src_types=tuple(src_types),
+        dst_types=tuple(dst_types),
+        identity=tuple(identity),
+        evidence=tuple(evidence),
+        scope=scope,
+        symmetric=symmetric,
+    )
+
+
+EDGE_CONTRACTS: Dict[str, EdgeContract] = {
+    "FILED": _edge(
+        "FILED", ["Company"], ["Filing"], ["company_id", "filing_id"],
+        ["filing"], SCOPE_COMPANY,
+    ),
+    "HAS_SECTION": _edge(
+        "HAS_SECTION", ["Filing"], ["Section"], ["filing_id", "section_code"],
+        ["chunk"], SCOPE_COMPANY,
+    ),
+    "HAS_CHUNK": _edge(
+        "HAS_CHUNK", ["Section"], ["Chunk"], ["section_id", "source_chunk_id"],
+        ["chunk"], SCOPE_COMPANY,
+    ),
+    "REPORTED_FACT": _edge(
+        "REPORTED_FACT", ["Filing"], ["XbrlFact"], ["filing_id", "assertion_key"],
+        ["xbrl_observation"], SCOPE_COMPANY,
+    ),
+    "INSTANCE_OF": _edge(
+        "INSTANCE_OF", ["XbrlFact"], ["Metric"],
+        ["assertion_key", "metric_id", "mapping_version"],
+        ["mapping_observation"], SCOPE_GLOBAL_TARGET,
+    ),
+    "FOR_PERIOD": _edge(
+        "FOR_PERIOD", ["XbrlFact"], ["Period"],
+        ["assertion_key", "period_id"], ["xbrl_observation"], SCOPE_GLOBAL_TARGET,
+    ),
+    "SOURCED_FROM": _edge(
+        "SOURCED_FROM", ["XbrlFact", "RiskFactor", "Event"], ["Chunk"],
+        ["evidence_id", "source_chunk_id"], ["chunk"], SCOPE_COMPANY,
+    ),
+    "SUPERSEDES": _edge(
+        "SUPERSEDES", ["XbrlFact"], ["XbrlFact"],
+        ["new_assertion_key", "old_assertion_key"], ["xbrl_observation"],
+        SCOPE_COMPANY,
+    ),
+    "AMENDS": _edge(
+        "AMENDS", ["Filing"], ["Filing"],
+        ["amending_accession", "amended_accession"], ["filing"], SCOPE_COMPANY,
+    ),
+    "DISCLOSED_RISK": _edge(
+        "DISCLOSED_RISK", ["Filing"], ["RiskFactor"],
+        ["filing_id", "mention_key"], ["chunk"], SCOPE_COMPANY,
+    ),
+    "REPORTED_EVENT": _edge(
+        "REPORTED_EVENT", ["Filing"], ["Event"],
+        ["filing_id", "mention_key"], ["chunk"], SCOPE_COMPANY,
+    ),
+    "HAS_SEGMENT": _edge(
+        "HAS_SEGMENT", ["Company"], ["Segment"],
+        ["company_id", "segment_key"], ["chunk"], SCOPE_COMPANY,
+    ),
+    "HAS_PRODUCT": _edge(
+        "HAS_PRODUCT", ["Company"], ["Product"],
+        ["company_id", "product_key"], ["chunk"], SCOPE_COMPANY,
+    ),
+    "HAS_CUSTOMER": _edge(
+        "HAS_CUSTOMER", ["Company"], ["Customer"],
+        ["company_id", "customer_key"], ["chunk"], SCOPE_COMPANY,
+    ),
+    "HAS_SECURITY": _edge(
+        "HAS_SECURITY", ["Company"], ["Security"],
+        ["company_id", "security_id"], ["mapping_observation"], SCOPE_COMPANY,
+    ),
+    "LISTED_AS": _edge(
+        "LISTED_AS", ["Security"], ["Instrument"],
+        ["security_id", "instrument_id"], ["mapping_observation"], SCOPE_COMPANY,
+    ),
+    "UNDERLIES": _edge(
+        "UNDERLIES", ["CryptoAsset"], ["Instrument"],
+        ["asset_id", "instrument_id"], ["mapping_observation"], SCOPE_GLOBAL_TARGET,
+    ),
+    "INFERRED_PEER": _edge(
+        "INFERRED_PEER", ["Company"], ["Company"],
+        ["pair", "taxonomy", "code", "basis_date"], ["classification"],
+        SCOPE_CROSS_COMPANY, symmetric=True,
+    ),
+}
+
+
+def get_edge_contract(edge_type: str) -> EdgeContract:
+    key = normalize_unicode(str(edge_type)).upper()
+    try:
+        return EDGE_CONTRACTS[key]
+    except KeyError:
+        raise UnknownEdgeTypeError(
+            f"{edge_type!r} has no edge contract; registered: "
+            f"{tuple(sorted(EDGE_CONTRACTS))}"
+        ) from None
+
+
+def unregistered_v1_edge_types() -> Tuple[str, ...]:
+    """v1 model edge types that the registry does not cover (must be empty)."""
+    return tuple(sorted(set(EDGE_TYPES) - set(EDGE_CONTRACTS)))
+
+
+def validate_edge(
+    edge: Mapping[str, Any], endpoints: Mapping[str, str]
+) -> EdgeContract:
+    """Validate an edge row against its contract and the endpoint node types."""
+    contract = get_edge_contract(str(edge.get("edge_type", "")))
+    for field_name in ("src_id", "dst_id", "edge_type"):
+        if not edge.get(field_name):
+            raise EdgeContractError(f"edge is missing {field_name!r}")
+    src_id = str(edge["src_id"])
+    dst_id = str(edge["dst_id"])
+    if src_id == dst_id:
+        raise EdgeContractError(
+            f"{contract.edge_type}: self edge is not allowed ({src_id})"
+        )
+    for label, node_id, allowed in (
+        ("src", src_id, contract.src_types),
+        ("dst", dst_id, contract.dst_types),
+    ):
+        node_kind = endpoints.get(node_id)
+        if node_kind is None:
+            raise EdgeContractError(
+                f"{contract.edge_type}: unknown {label} endpoint {node_id}"
+            )
+        if node_kind not in allowed:
+            raise EdgeContractError(
+                f"{contract.edge_type}: {label} endpoint type {node_kind!r} is not "
+                f"one of {allowed}"
+            )
+    if contract.symmetric and src_id > dst_id:
+        raise EdgeContractError(
+            f"{contract.edge_type}: symmetric edges are stored once with the "
+            f"lower id first (got {src_id} -> {dst_id})"
+        )
+    evidence = edge.get("evidence") or ()
+    if not evidence:
+        raise EdgeContractError(
+            f"{contract.edge_type}: evidence is required ({contract.evidence})"
+        )
+    for item in evidence:
+        kind = item.get("kind") if isinstance(item, Mapping) else None
+        if kind not in contract.evidence:
+            raise EdgeContractError(
+                f"{contract.edge_type}: evidence kind {kind!r} is not one of "
+                f"{contract.evidence}"
+            )
+    identity_fields = edge.get("identity") or {}
+    for name in contract.identity:
+        if identity_fields.get(name) in (None, ""):
+            raise EdgeContractError(
+                f"{contract.edge_type}: identity field {name!r} is required"
+            )
+    if contract.temporal:
+        for name in ("valid_from", "system_from"):
+            if edge.get(name) in (None, ""):
+                raise EdgeContractError(
+                    f"{contract.edge_type}: temporal field {name!r} is required"
+                )
+    return contract
+
+
+def edge_identity_values(
+    edge: Mapping[str, Any], contract: Optional[EdgeContract] = None
+) -> Tuple[Any, ...]:
+    contract = contract or get_edge_contract(str(edge.get("edge_type", "")))
+    identity = edge.get("identity") or {}
+    missing = [name for name in contract.identity if name not in identity]
+    if missing:
+        raise EdgeContractError(
+            f"{contract.edge_type}: identity is missing {missing}"
+        )
+    return tuple(identity[name] for name in contract.identity)
+
+
+def serialize_edge(edge: Mapping[str, Any]) -> str:
+    """Canonical edge serialization: sorted keys, decimals as strings, nulls.
+
+    Every required field must be present — a missing field is a contract
+    violation, not an implicit ``null``.
+    """
+    missing = [name for name in REQUIRED_EDGE_FIELDS if name not in edge]
+    if missing:
+        raise EdgeContractError(f"edge is missing required fields {missing}")
+    payload = {name: edge[name] for name in REQUIRED_EDGE_FIELDS}
+    properties = edge.get("properties")
+    payload["properties"] = dict(properties) if properties is not None else {}
+    return deterministic_json(payload)

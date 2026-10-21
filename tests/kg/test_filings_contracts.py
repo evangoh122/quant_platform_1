@@ -176,4 +176,3 @@ def test_filing_dedup_equal_ingest_missing_metadata_shuffle():
         filings.FilingRow(accession="", record_key="a", ingest_ts=EQUA)
     with pytest.raises(filings.FilingsError):
         filings.FilingRow(accession=ACCESSION, record_key="", ingest_ts=EQUA)
-
