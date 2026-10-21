@@ -3,7 +3,9 @@
 #
 #   .agents/dispatch.sh <agent> <request-file> [timeout-seconds]
 #
-# agent: mimo | deepseek
+# agent: mimo | deepseek | dsbuild | mimoval
+#   dsbuild = DeepSeek (deepseek/deepseek-flash) implements; mimoval = MiMo validates
+#   (owner-approved role swap, see docs/ui_enhancement/PLAN-C-arch-apple-redesign.md)
 # Writes combined output to .agentlogs/<agent>-<request>.log (gitignored)
 # and returns the agent's exit code.
 
@@ -23,7 +25,7 @@ LOG=".agentlogs/${AGENT}-$(basename "$REQUEST" .md).log"
 
 STAGE="implementation"
 REPORT="BUILD DONE"
-if [ "$AGENT" = "deepseek" ]; then
+if [ "$AGENT" = "deepseek" ] || [ "$AGENT" = "mimoval" ]; then
   STAGE="independent validation"
   REPORT="VALIDATION DONE"
 fi
@@ -48,8 +50,16 @@ case "$AGENT" in
     timeout "$TIMEOUT" opencode run --auto -m deepseek/deepseek-v4-pro \
       --title "qp1-$(basename "$REQUEST" .md)" "$PROMPT" 2>&1 | tee "$LOG"
     ;;
+  dsbuild)
+    timeout "$TIMEOUT" opencode run --auto -m deepseek/deepseek-flash \
+      --title "qp1-$(basename "$REQUEST" .md)" "$PROMPT" 2>&1 | tee "$LOG"
+    ;;
+  mimoval)
+    timeout "$TIMEOUT" opencode run --auto -m xiaomi-token-plan-sgp/mimo-v2.6-pro \
+      --title "qp1-$(basename "$REQUEST" .md)" "$PROMPT" 2>&1 | tee "$LOG"
+    ;;
   *)
-    echo "unknown agent: $AGENT (expected mimo|deepseek)" >&2; exit 2 ;;
+    echo "unknown agent: $AGENT (expected mimo|deepseek|dsbuild|mimoval)" >&2; exit 2 ;;
 esac
 
 RC=${PIPESTATUS[0]}
