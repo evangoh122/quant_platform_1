@@ -1,0 +1,89 @@
+# config/perp_universe.yaml — companies whose equity perpetuals are ingested for weekend research.
+# ONLY tickers listed here are ingested. Owner selection 2026-10-22: all 78 qp1-universe single stocks that have a
+# Hyperliquid HIP-3 perp. Edit this file to add/remove companies. Liquidity numbers are a selection-time snapshot
+# (24h notional volume / open interest in USD, 2026-10-21, weekday) — not used by the pipeline, for review only.
+version: 1
+selected_at: "2026-10-21"
+selection: all_78_qp1_universe_single_stocks
+controls:  # always ingested: market-wide weekend risk proxies
+  - {venue: binance_usdm, symbol: BTCUSDT}
+  - {venue: binance_usdm, symbol: ETHUSDT}
+companies:
+  - {ticker: SNDK, venue: hyperliquid, dex: xyz, symbol: "xyz:SNDK", tier: liquid, vol_24h_usd: 195537518, oi_usd: 121612558, alternates: ["io:SNDK"]}
+  - {ticker: NVDA, venue: hyperliquid, dex: xyz, symbol: "xyz:NVDA", tier: liquid, vol_24h_usd: 167393435, oi_usd: 89889628}
+  - {ticker: GOOGL, venue: hyperliquid, dex: xyz, symbol: "xyz:GOOGL", tier: liquid, vol_24h_usd: 138973147, oi_usd: 111477156}
+  - {ticker: MU, venue: hyperliquid, dex: xyz, symbol: "xyz:MU", tier: liquid, vol_24h_usd: 114330449, oi_usd: 148836518}
+  - {ticker: META, venue: hyperliquid, dex: xyz, symbol: "xyz:META", tier: liquid, vol_24h_usd: 69145806, oi_usd: 125353071}
+  - {ticker: TSLA, venue: hyperliquid, dex: xyz, symbol: "xyz:TSLA", tier: liquid, vol_24h_usd: 64929229, oi_usd: 55500620}
+  - {ticker: INTC, venue: hyperliquid, dex: xyz, symbol: "xyz:INTC", tier: liquid, vol_24h_usd: 55483108, oi_usd: 61745232}
+  - {ticker: NBIS, venue: hyperliquid, dex: xyz, symbol: "xyz:NBIS", tier: liquid, vol_24h_usd: 38509242, oi_usd: 48751850, alternates: ["io:NBIS"]}
+  - {ticker: MRNA, venue: hyperliquid, dex: xyz, symbol: "xyz:MRNA", tier: liquid, vol_24h_usd: 37729388, oi_usd: 30332024}
+  - {ticker: AMD, venue: hyperliquid, dex: xyz, symbol: "xyz:AMD", tier: liquid, vol_24h_usd: 35906251, oi_usd: 18032794}
+  - {ticker: CRCL, venue: hyperliquid, dex: xyz, symbol: "xyz:CRCL", tier: liquid, vol_24h_usd: 34836091, oi_usd: 74795083}
+  - {ticker: MRVL, venue: hyperliquid, dex: xyz, symbol: "xyz:MRVL", tier: liquid, vol_24h_usd: 29529043, oi_usd: 9672251}
+  - {ticker: CRWV, venue: hyperliquid, dex: xyz, symbol: "xyz:CRWV", tier: liquid, vol_24h_usd: 26125890, oi_usd: 17456499}
+  - {ticker: CBRS, venue: hyperliquid, dex: xyz, symbol: "xyz:CBRS", tier: liquid, vol_24h_usd: 25736847, oi_usd: 38411070}
+  - {ticker: AMZN, venue: hyperliquid, dex: xyz, symbol: "xyz:AMZN", tier: liquid, vol_24h_usd: 24805720, oi_usd: 33640979}
+  - {ticker: AAPL, venue: hyperliquid, dex: xyz, symbol: "xyz:AAPL", tier: liquid, vol_24h_usd: 24405106, oi_usd: 60804819}
+  - {ticker: MSFT, venue: hyperliquid, dex: xyz, symbol: "xyz:MSFT", tier: liquid, vol_24h_usd: 22157718, oi_usd: 26681681}
+  - {ticker: MSTR, venue: hyperliquid, dex: xyz, symbol: "xyz:MSTR", tier: liquid, vol_24h_usd: 20388188, oi_usd: 39718078}
+  - {ticker: RKLB, venue: hyperliquid, dex: xyz, symbol: "xyz:RKLB", tier: liquid, vol_24h_usd: 16836090, oi_usd: 6412674}
+  - {ticker: NFLX, venue: hyperliquid, dex: xyz, symbol: "xyz:NFLX", tier: liquid, vol_24h_usd: 15785264, oi_usd: 6522612}
+  - {ticker: DELL, venue: hyperliquid, dex: xyz, symbol: "xyz:DELL", tier: liquid, vol_24h_usd: 8720291, oi_usd: 7819113}
+  - {ticker: IREN, venue: hyperliquid, dex: xyz, symbol: "xyz:IREN", tier: liquid, vol_24h_usd: 8362619, oi_usd: 5353577, alternates: ["para:IREN"]}
+  - {ticker: COIN, venue: hyperliquid, dex: xyz, symbol: "xyz:COIN", tier: liquid, vol_24h_usd: 7089798, oi_usd: 14977195}
+  - {ticker: HOOD, venue: hyperliquid, dex: xyz, symbol: "xyz:HOOD", tier: liquid, vol_24h_usd: 6963729, oi_usd: 19656814}
+  - {ticker: BABA, venue: hyperliquid, dex: xyz, symbol: "xyz:BABA", tier: liquid, vol_24h_usd: 6700117, oi_usd: 11674168}
+  - {ticker: BE, venue: hyperliquid, dex: xyz, symbol: "xyz:BE", tier: liquid, vol_24h_usd: 6048679, oi_usd: 4604097}
+  - {ticker: PLTR, venue: hyperliquid, dex: xyz, symbol: "xyz:PLTR", tier: liquid, vol_24h_usd: 5912506, oi_usd: 13697607}
+  - {ticker: TSM, venue: hyperliquid, dex: xyz, symbol: "xyz:TSM", tier: liquid, vol_24h_usd: 5548121, oi_usd: 8813238}
+  - {ticker: LITE, venue: hyperliquid, dex: xyz, symbol: "xyz:LITE", tier: liquid, vol_24h_usd: 5395098, oi_usd: 6992884}
+  - {ticker: AVGO, venue: hyperliquid, dex: xyz, symbol: "xyz:AVGO", tier: liquid, vol_24h_usd: 5248185, oi_usd: 11524208, alternates: ["para:AVGO"]}
+  - {ticker: ORCL, venue: hyperliquid, dex: xyz, symbol: "xyz:ORCL", tier: liquid, vol_24h_usd: 4931543, oi_usd: 16498879}
+  - {ticker: AAOI, venue: hyperliquid, dex: xyz, symbol: "xyz:AAOI", tier: liquid, vol_24h_usd: 4396651, oi_usd: 5432077, alternates: ["para:AAOI"]}
+  - {ticker: ARM, venue: hyperliquid, dex: xyz, symbol: "xyz:ARM", tier: liquid, vol_24h_usd: 4207703, oi_usd: 5269486}
+  - {ticker: WDC, venue: hyperliquid, dex: xyz, symbol: "xyz:WDC", tier: medium, vol_24h_usd: 3445471, oi_usd: 3057503}
+  - {ticker: CRWD, venue: hyperliquid, dex: xyz, symbol: "xyz:CRWD", tier: medium, vol_24h_usd: 2931375, oi_usd: 898118, alternates: ["para:CRWD"]}
+  - {ticker: BB, venue: hyperliquid, dex: xyz, symbol: "xyz:BB", tier: medium, vol_24h_usd: 2733198, oi_usd: 9473711}
+  - {ticker: GME, venue: hyperliquid, dex: xyz, symbol: "xyz:GME", tier: medium, vol_24h_usd: 2331149, oi_usd: 4783687}
+  - {ticker: AMAT, venue: hyperliquid, dex: xyz, symbol: "xyz:AMAT", tier: medium, vol_24h_usd: 2095209, oi_usd: 1108611}
+  - {ticker: ASML, venue: hyperliquid, dex: xyz, symbol: "xyz:ASML", tier: medium, vol_24h_usd: 2060379, oi_usd: 2675453}
+  - {ticker: BOT, venue: hyperliquid, dex: xyz, symbol: "xyz:BOT", tier: medium, vol_24h_usd: 1899628, oi_usd: 2272023}
+  - {ticker: HIMS, venue: hyperliquid, dex: xyz, symbol: "xyz:HIMS", tier: medium, vol_24h_usd: 1684631, oi_usd: 1814827}
+  - {ticker: LLY, venue: hyperliquid, dex: xyz, symbol: "xyz:LLY", tier: medium, vol_24h_usd: 1009425, oi_usd: 5078531}
+  - {ticker: QCOM, venue: hyperliquid, dex: xyz, symbol: "xyz:QCOM", tier: thin, vol_24h_usd: 865164, oi_usd: 2312296}
+  - {ticker: CRDO, venue: hyperliquid, dex: para, symbol: "para:CRDO", tier: thin, vol_24h_usd: 829216, oi_usd: 571982}
+  - {ticker: NET, venue: hyperliquid, dex: xyz, symbol: "xyz:NET", tier: thin, vol_24h_usd: 780203, oi_usd: 1002180, alternates: ["para:NET"]}
+  - {ticker: SMCI, venue: hyperliquid, dex: para, symbol: "para:SMCI", tier: thin, vol_24h_usd: 761821, oi_usd: 193873}
+  - {ticker: NOK, venue: hyperliquid, dex: xyz, symbol: "xyz:NOK", tier: thin, vol_24h_usd: 504507, oi_usd: 1675410}
+  - {ticker: STRC, venue: hyperliquid, dex: xyz, symbol: "xyz:STRC", tier: thin, vol_24h_usd: 415132, oi_usd: 13152127}
+  - {ticker: BMNR, venue: hyperliquid, dex: xyz, symbol: "xyz:BMNR", tier: thin, vol_24h_usd: 402780, oi_usd: 2348834}
+  - {ticker: IBM, venue: hyperliquid, dex: xyz, symbol: "xyz:IBM", tier: thin, vol_24h_usd: 398157, oi_usd: 1562634}
+  - {ticker: NOW, venue: hyperliquid, dex: xyz, symbol: "xyz:NOW", tier: thin, vol_24h_usd: 313313, oi_usd: 1576965}
+  - {ticker: TTWO, venue: hyperliquid, dex: para, symbol: "para:TTWO", tier: thin, vol_24h_usd: 298815, oi_usd: 1641138}
+  - {ticker: SHAZ, venue: hyperliquid, dex: xyz, symbol: "xyz:SHAZ", tier: thin, vol_24h_usd: 270145, oi_usd: 1396608}
+  - {ticker: TWST, venue: hyperliquid, dex: xyz, symbol: "xyz:TWST", tier: thin, vol_24h_usd: 268231, oi_usd: 73218}
+  - {ticker: COHR, venue: hyperliquid, dex: para, symbol: "para:COHR", tier: thin, vol_24h_usd: 245902, oi_usd: 1202673}
+  - {ticker: GLW, venue: hyperliquid, dex: para, symbol: "para:GLW", tier: thin, vol_24h_usd: 245033, oi_usd: 867949, alternates: ["xyz:GLW"]}
+  - {ticker: RIVN, venue: hyperliquid, dex: xyz, symbol: "xyz:RIVN", tier: thin, vol_24h_usd: 241835, oi_usd: 948785}
+  - {ticker: EBAY, venue: hyperliquid, dex: xyz, symbol: "xyz:EBAY", tier: thin, vol_24h_usd: 194753, oi_usd: 211873}
+  - {ticker: LRCX, venue: hyperliquid, dex: para, symbol: "para:LRCX", tier: thin, vol_24h_usd: 189689, oi_usd: 563852, alternates: ["xyz:LRCX"]}
+  - {ticker: ZM, venue: hyperliquid, dex: xyz, symbol: "xyz:ZM", tier: thin, vol_24h_usd: 185476, oi_usd: 331867}
+  - {ticker: BX, venue: hyperliquid, dex: xyz, symbol: "xyz:BX", tier: thin, vol_24h_usd: 183416, oi_usd: 488099}
+  - {ticker: RDDT, venue: hyperliquid, dex: xyz, symbol: "xyz:RDDT", tier: thin, vol_24h_usd: 176792, oi_usd: 256399, alternates: ["para:RDDT"]}
+  - {ticker: VST, venue: hyperliquid, dex: para, symbol: "para:VST", tier: thin, vol_24h_usd: 167352, oi_usd: 1076540}
+  - {ticker: COST, venue: hyperliquid, dex: xyz, symbol: "xyz:COST", tier: thin, vol_24h_usd: 167291, oi_usd: 418018}
+  - {ticker: IONQ, venue: hyperliquid, dex: io, symbol: "io:IONQ", tier: thin, vol_24h_usd: 159754, oi_usd: 176471}
+  - {ticker: CIFR, venue: hyperliquid, dex: para, symbol: "para:CIFR", tier: thin, vol_24h_usd: 152253, oi_usd: 210391}
+  - {ticker: DKNG, venue: hyperliquid, dex: xyz, symbol: "xyz:DKNG", tier: thin, vol_24h_usd: 139908, oi_usd: 479364}
+  - {ticker: STX, venue: hyperliquid, dex: para, symbol: "para:STX", tier: thin, vol_24h_usd: 131228, oi_usd: 307713}
+  - {ticker: GEV, venue: hyperliquid, dex: xyz, symbol: "xyz:GEV", tier: thin, vol_24h_usd: 74354, oi_usd: 445656}
+  - {ticker: MELI, venue: hyperliquid, dex: para, symbol: "para:MELI", tier: thin, vol_24h_usd: 60448, oi_usd: 104930}
+  - {ticker: SOFI, venue: hyperliquid, dex: para, symbol: "para:SOFI", tier: thin, vol_24h_usd: 45826, oi_usd: 133297}
+  - {ticker: KSTR, venue: hyperliquid, dex: xyz, symbol: "xyz:KSTR", tier: thin, vol_24h_usd: 35876, oi_usd: 140001}
+  - {ticker: GPRO, venue: hyperliquid, dex: io, symbol: "io:GPRO", tier: thin, vol_24h_usd: 34061, oi_usd: 264947}
+  - {ticker: UMC, venue: hyperliquid, dex: xyz, symbol: "xyz:UMC", tier: thin, vol_24h_usd: 25483, oi_usd: 166424}
+  - {ticker: TER, venue: hyperliquid, dex: para, symbol: "para:TER", tier: thin, vol_24h_usd: 19945, oi_usd: 72918}
+  - {ticker: BIRD, venue: hyperliquid, dex: xyz, symbol: "xyz:BIRD", tier: thin, vol_24h_usd: 19593, oi_usd: 82070}
+  - {ticker: CVX, venue: hyperliquid, dex: xyz, symbol: "xyz:CVX", tier: thin, vol_24h_usd: 19175, oi_usd: 226996}
+  - {ticker: CIEN, venue: hyperliquid, dex: para, symbol: "para:CIEN", tier: thin, vol_24h_usd: 16149, oi_usd: 46106}
