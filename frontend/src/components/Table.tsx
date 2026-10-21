@@ -21,6 +21,7 @@ export function Table<T>({ columns, rows, rowKey }: TableProps<T>) {
             {columns.map((col) => (
               <th
                 key={col.key}
+                scope="col"
                 className="data-table-th"
               >
                 {col.header}

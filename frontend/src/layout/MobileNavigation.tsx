@@ -65,7 +65,7 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
         ref={triggerRef}
         data-tour="mobile-menu"
         onClick={onToggle}
-        className="fixed left-4 top-3 z-40 rounded-[var(--radius-sm)] p-2 text-[var(--text-primary)] hover:bg-[var(--surface-raised)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        className="control-target fixed left-4 top-3 z-40 rounded-[var(--radius-sm)] p-2 text-[var(--text-primary)] hover:bg-[var(--surface-raised)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         aria-label={open ? 'Close navigation' : 'Open navigation'}
         aria-expanded={open}
         aria-controls="mobile-nav-drawer"

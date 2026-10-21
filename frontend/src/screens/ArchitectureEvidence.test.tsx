@@ -1,6 +1,21 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { ArchitectureEvidence } from './ArchitectureEvidence';
+
+const PIPELINE_NODES = [
+  'Upstream providers (Massive, SEC, CFTC, FRED)', 'Spark',
+  'Delta bronze/silver/gold', 'FastAPI', 'React',
+  'AI agent', 'Lakebase', 'analytics_outbox',
+  'Spark analytics', 'Delta analytics',
+];
+
+const PLANNED_PERPS_NODE_IDS = [
+  'hyperliquid',
+  'binance',
+  'bronze_perps',
+  'silver_perp',
+  'gold_weekend',
+];
 
 describe('ArchitectureEvidence', () => {
   it('renders the Architecture business workflow and deterministic safety model', () => {
@@ -27,35 +42,56 @@ describe('ArchitectureEvidence', () => {
     expect(screen.getByText('Audit record')).toBeInTheDocument();
   });
 
+  // The diagram repeats these labels as SVG text, so the text-summary queries
+  // are scoped to the ordered list instead of matching ambiguous page text.
   it('renders the technical architecture diagram with all pipeline nodes', () => {
     render(<ArchitectureEvidence />);
 
-    const nodes = [
-      'Upstream providers (Massive, SEC, CFTC, FRED)', 'Spark',
-      'Delta bronze/silver/gold', 'FastAPI', 'React',
-      'AI agent', 'Lakebase', 'analytics_outbox',
-      'Spark analytics', 'Delta analytics',
-    ];
-    for (const node of nodes) {
-      expect(screen.getByText(node)).toBeInTheDocument();
+    const pipelineList = screen.getByLabelText('Technical architecture pipeline nodes');
+    for (const node of PIPELINE_NODES) {
+      expect(within(pipelineList).getByText(node)).toBeInTheDocument();
     }
   });
 
   it('renders pipeline nodes as an ordered list in correct sequence', () => {
     render(<ArchitectureEvidence />);
 
-    const expectedOrder = [
-      'Upstream providers (Massive, SEC, CFTC, FRED)', 'Spark',
-      'Delta bronze/silver/gold', 'FastAPI', 'React',
-      'AI agent', 'Lakebase', 'analytics_outbox',
-      'Spark analytics', 'Delta analytics',
-    ];
     const pipelineList = screen.getByLabelText('Technical architecture pipeline nodes');
     const pipelineItems = pipelineList.querySelectorAll('li');
     expect(pipelineItems).toHaveLength(10);
     pipelineItems.forEach((item, i) => {
-      expect(item).toHaveTextContent(expectedOrder[i]);
+      expect(item).toHaveTextContent(PIPELINE_NODES[i]);
     });
+  });
+
+  it('renders the inline SVG architecture diagram with an accessible name and no raster fallback', () => {
+    const { container } = render(<ArchitectureEvidence />);
+
+    const svg = screen.getByRole('img', { name: /architecture diagram/i });
+    expect(svg.tagName.toLowerCase()).toBe('svg');
+    expect(svg.querySelector('title')?.textContent).toMatch(/architecture diagram/i);
+    expect(svg.querySelector('desc')?.textContent).toMatch(/planned/i);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('image')).toBeNull();
+    expect(container.querySelector('[src$=".gif"]')).toBeNull();
+    expect(container.querySelector('[src$=".png"]')).toBeNull();
+  });
+
+  it('shows the planned perps pipeline in the diagram and labels it planned', () => {
+    const { container } = render(<ArchitectureEvidence />);
+
+    for (const id of PLANNED_PERPS_NODE_IDS) {
+      const group = container.querySelector(`[data-node-id="${id}"]`);
+      expect(group).not.toBeNull();
+      expect(group).toHaveAttribute('data-planned', 'true');
+      expect(group?.querySelector('rect[data-node-shape="true"]')).toHaveAttribute('stroke-dasharray');
+      expect(group?.textContent).toMatch(/planned/i);
+    }
+
+    expect(screen.getByText('Planned (not built)')).toBeInTheDocument();
+    expect(screen.getByText(/not in production/i)).toBeInTheDocument();
+    expect(screen.getByText(/Dashed components are planned/)).toBeInTheDocument();
   });
 
   it('does not use role="img" on the pipeline diagram container', () => {
@@ -85,6 +121,24 @@ describe('ArchitectureEvidence', () => {
     expect(screen.getByText(/DLT.*built but not deployed/)).toBeInTheDocument();
     expect(screen.getByText(/Paper broker scaffold/)).toBeInTheDocument();
     expect(screen.getByText(/Analytics require the.*refresh run/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'MLflow runs in the offline ML ablation lane only; not part of the deployed stack.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('qualifies MLflow as offline and not deployed in the diagram and its description', () => {
+    const { container } = render(<ArchitectureEvidence />);
+
+    const mlflow = container.querySelector('[data-node-id="mlflow"]');
+    expect(mlflow).not.toBeNull();
+    expect(mlflow?.textContent).toMatch(/offline ML lane/i);
+    expect(mlflow?.textContent).toMatch(/not deployed/i);
+
+    const desc = container.querySelector('svg desc')?.textContent ?? '';
+    expect(desc).toMatch(/offline ML ablation lane/i);
+    expect(desc).toMatch(/not part of the deployed stack/i);
   });
 
   it('labels baseline signals as a demonstration with no edge claimed', () => {
@@ -99,7 +153,6 @@ describe('ArchitectureEvidence', () => {
   it('renders safety model in correct order (LLM never executes directly)', () => {
     render(<ArchitectureEvidence />);
 
-    const steps = screen.getAllByRole('listitem', { name: '' });
     const safetyList = screen.getByLabelText('Safety model steps');
     const safetyItems = safetyList.querySelectorAll('li');
 
@@ -112,9 +165,11 @@ describe('ArchitectureEvidence', () => {
   });
 
   it('includes analytics_outbox in the architecture diagram', () => {
-    render(<ArchitectureEvidence />);
+    const { container } = render(<ArchitectureEvidence />);
 
-    expect(screen.getByText('analytics_outbox')).toBeInTheDocument();
+    const pipelineList = screen.getByLabelText('Technical architecture pipeline nodes');
+    expect(within(pipelineList).getByText('analytics_outbox')).toBeInTheDocument();
+    expect(container.querySelector('[data-node-id="outbox"]')).not.toBeNull();
   });
 
   it('renders responsive overflow-safe markup with no React Flow imports', () => {
