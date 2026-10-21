@@ -18,6 +18,7 @@
 [extend]
 useDefault = true
 
-[[allowlists]]
+# CI pins gitleaks 8.24.3, which requires this single [allowlist] table (the [[allowlists]] form needs 8.25).
+[allowlist]
 description = "PostHog project API keys (phc_*) are public client-side identifiers, not secrets."
 regexes = ['''phc_[A-Za-z0-9]{20,}''']
