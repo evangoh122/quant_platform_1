@@ -4,6 +4,26 @@ bundle:
 include:
   - resources/*.yml
 
+# Build everything the deployment needs, so `databricks bundle deploy` alone is
+# enough (no manual `scripts/build_frontend.sh` / `uv export` step).
+# Field names verified against `databricks bundle schema` (CLI v1.16.1):
+# Artifact supports build, path, type (whl/jar/tgz), files, executable.
+# Neither artifact needs a `type`: the outputs are plain directories/files
+# shipped by bundle sync, not wheels/jars/tarballs.
+artifacts:
+  frontend:
+    # Produces frontend/dist/** (gitignored, re-included under sync.include).
+    # Fails the deploy when the SPA build did not emit an index.html.
+    path: frontend
+    build: npm ci && npm run build && test -f dist/index.html
+  python_requirements:
+    # Databricks Apps installs the root requirements.txt when present, and a
+    # requirements.txt always takes precedence over pyproject.toml/uv.lock.
+    # Regenerate it from the committed lock at deploy time so a UI-driven
+    # (non-bundle) deploy still uses the last committed, drift-checked copy.
+    path: .
+    build: ./scripts/export_requirements.sh requirements.txt
+
 variables:
   catalog:
     description: Unity Catalog catalog used by the application and batch jobs.
@@ -14,9 +34,11 @@ variables:
 
 sync:
   # include overrides .gitignore for these paths so that `databricks bundle deploy`
-  # ships frontend/dist even though it is listed in .gitignore.
+  # ships frontend/dist even though it is listed in .gitignore, and ships the
+  # requirements.txt that the `python_requirements` artifact regenerates.
   include:
     - frontend/dist/**
+    - requirements.txt
   exclude:
     - frontend/node_modules
     - .agents

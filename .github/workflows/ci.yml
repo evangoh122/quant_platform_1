@@ -32,31 +32,40 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-          cache-dependency-glob: |
-            requirements*.txt
+          cache-dependency-glob: uv.lock
+
+      - name: Verify the lockfile matches pyproject.toml
+        run: uv lock --check
 
       - name: Install Python dependencies
+        # --frozen: install exactly the committed uv.lock. pyspark is NOT a
+        # dependency, so it stays absent (CI parity with the deployed runtime).
+        # ibapi is not on PyPI and is deliberately absent from the lock;
+        # conftest.py stubs it for the offline suite.
+        run: uv sync --frozen --group dev
+
+      - name: Verify generated requirements.txt is in sync with uv.lock
+        # requirements.txt is a committed export of the runtime group: fail if
+        # it was not regenerated after a dependency change.
+        run: |
+          ./scripts/export_requirements.sh
+          git diff --exit-code -- requirements.txt
+
+      - name: Assert no PyPI-unavailable packages entered the lock
+        # ibapi (IBKR TWS API) is installed manually from IBKR, never from PyPI.
         shell: bash
         run: |
-          grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements.txt > "${RUNNER_TEMP}/requirements-no-ibapi.txt"
-          uv pip install --system -r "${RUNNER_TEMP}/requirements-no-ibapi.txt"
-          if [[ -f requirements-app.txt ]]; then
-            uv pip install --system -r requirements-app.txt
+          if grep -qiE '^name = "ibapi"$' uv.lock; then
+            echo "ibapi must not be in uv.lock (not on PyPI)" >&2
+            exit 1
           fi
-          if [[ -f requirements-dev.txt ]]; then
-            # drop ibapi (not on PyPI) and the '-r requirements.txt' include (already installed above;
-            # relative includes would not resolve from RUNNER_TEMP)
-            grep -viE '^[[:space:]]*(ibapi([<=>~!]|$)|-r[[:space:]])' requirements-dev.txt > "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
-            uv pip install --system -r "${RUNNER_TEMP}/requirements-dev-no-ibapi.txt"
-          fi
-          uv pip install --system pytest pytest-asyncio pytest-timeout httpx numpy pandas polars duckdb scikit-learn pyyaml
 
       - name: Run offline test suite
-        run: pytest -q -m "not spark and not lakebase and not databricks"
+        run: uv run pytest -q -m "not spark and not lakebase and not databricks"
 
       - name: Run streaming bundle tests
         if: ${{ hashFiles('bundles/streaming/tests/**') != '' }}
-        run: pytest -q bundles/streaming/tests
+        run: uv run pytest -q bundles/streaming/tests
 
   frontend:
     name: Frontend
@@ -167,11 +176,12 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-          cache-dependency-glob: |
-            requirements*.txt
+          cache-dependency-glob: uv.lock
 
-      - name: Install pip-audit
-        run: uv pip install --system pip-audit
+      - name: Install audit tooling
+        # pip-audit lives in the dev group so the audited set and the test set
+        # come from the same uv.lock resolution.
+        run: uv sync --frozen --group dev
 
       - name: Build ignore args
         id: ignore
@@ -186,15 +196,24 @@ jobs:
           fi
           echo "args=$args" >> "${GITHUB_OUTPUT}"
 
-      - name: Audit requirements-render.txt
+      - name: Audit the runtime dependency set
+        # Audits the exact runtime set Databricks Apps / the Docker image
+        # installs: the export of the locked runtime group (ibapi is not on
+        # PyPI and never enters the lock).
         shell: bash
         run: |
-          pip-audit -r requirements-render.txt ${{ steps.ignore.outputs.args }}
+          set -o pipefail
+          uv export --frozen --no-dev --no-hashes \
+            | uv run pip-audit -r /dev/stdin ${{ steps.ignore.outputs.args }}
 
-      - name: Audit requirements-app.txt
+      - name: Audit the CI/development dependency set
+        # Previously the retired app requirements file pulled the full runtime
+        # range set; this keeps that coverage and adds the dev tooling.
         shell: bash
         run: |
-          pip-audit -r requirements-app.txt ${{ steps.ignore.outputs.args }}
+          set -o pipefail
+          uv export --frozen --no-hashes \
+            | uv run pip-audit -r /dev/stdin ${{ steps.ignore.outputs.args }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# scripts/build_frontend.sh — Build the React frontend for deployment.
+# scripts/build_frontend.sh — Build the React frontend.
 #
-# Run this before `databricks bundle deploy` so that frontend/dist/ exists
-# and the FastAPI backend can serve the SPA.
+# The PRIMARY path is now `databricks bundle deploy`: databricks.yml declares a
+# `frontend` artifact whose build command is exactly the npm steps below, so no
+# manual pre-build step is needed for a bundle deployment.
 #
-# Usage:
+# This script remains as a thin wrapper for local builds, for the Hugging Face
+# Docker image parity check, and for UI-driven app deployments:
 #   ./scripts/build_frontend.sh
-#   # or from the repo root:
-#   bash scripts/build_frontend.sh
 
 set -euo pipefail
 
@@ -27,8 +27,8 @@ npm ci
 echo "==> Building frontend..."
 npm run build
 
-if [ ! -d "$FRONTEND_DIR/dist" ]; then
-  echo "ERROR: frontend/dist/ was not produced by the build" >&2
+if [ ! -f "$FRONTEND_DIR/dist/index.html" ]; then
+  echo "ERROR: frontend/dist/index.html was not produced by the build" >&2
   exit 1
 fi
 
