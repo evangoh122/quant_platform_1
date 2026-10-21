@@ -1,7 +1,7 @@
 terms:
   ticker:
     definition: "Canonical uppercase exchange symbol used by market tables. Resolve aliases before filtering or joining."
-    aliases: [symbol, stock symbol, underlying, mapped asset]
+    aliases: [symbol, stock symbol, mapped asset]
     examples: {BRK.B: BRK-B}
     note: "GOOG (Class C) and GOOGL (Class A) are distinct securities, not ticker aliases."
   cik:
@@ -85,3 +85,46 @@ terms:
   signal:
     definition: "A model prediction stored in gold_trading_signals with its probability, model version, and feature snapshot lineage."
     aliases: [trading signal, prediction]
+  perpetual_future:
+    definition: "A derivative contract with no expiry that tracks an underlying via a venue oracle (Hyperliquid HIP-3 or Binance USD-M). The traded instrument is the perp, never the underlying equity, ETF, fund, preferred or spot commodity."
+    aliases: [perp, perpetual, perpetual future contract]
+    critical_rule: "Every perps table/row carries instrument_type = perpetual_future and is_derivative = true; never merge a perp into the Security node it tracks."
+  underlying:
+    definition: "The reference asset a perpetual future tracks through the venue oracle (a listed equity/ETF/fund/preferred ticker, a commodity, or BTC/ETH)."
+    aliases: [reference asset, tracked instrument]
+  underlying_type:
+    definition: "Classification of the reference asset: equity, etf, fund, preferred, commodity, or crypto. It labels what the perp tracks and never changes the perp's instrument_type."
+    aliases: [underlying asset class]
+  funding_rate:
+    definition: "Periodic long/short payment on a perpetual future, stored as a decimal per funding interval (not a percentage) with the observed interval recorded per row."
+    aliases: [funding, perp funding rate]
+  open_interest:
+    definition: "Outstanding derivative contracts at a point in time. Hyperliquid's public info API serves current OI only, so historical OI is a forward-capture or S3-backfill series, never a candle-derived proxy."
+    aliases: [OI, open interest notional]
+  mark_price:
+    definition: "The venue's mark price for a perpetual future, used for margining; it is a perp price, not the stock price."
+    aliases: [mark px, perp mark price]
+  oracle_price:
+    definition: "The venue oracle/index price a perpetual future settles against; distinct from the perp mark and trade price."
+    aliases: [oracle px, index price]
+  weekend_window:
+    definition: "Closed-market interval [last NYSE regular-session close before the break, next regular-session open after it). Holiday-aware: a Monday holiday ends the window on Tuesday, a Friday holiday starts it on Thursday, and 13:00 early closes move the start."
+    aliases: [weekend break, closed-market window]
+  closed_market_liquidity:
+    definition: "Notional traded per hour while the NYSE is closed, measured from provider 1h candles; the weekend subset is weekend_usd_per_h and the input to tiers A-D."
+    aliases: [weekend liquidity, closed-hours liquidity]
+  liquidity_tier:
+    definition: "Closed-market liquidity bucket from weekend_usd_per_h: A >= 250k, B >= 50k, C >= 10k, D < 10k USD per hour. A model input/filter, not an ingestion filter."
+    aliases: [tier A-D, weekend liquidity tier]
+  new_flag:
+    definition: "Review flag for a perpetual whose first available bar is after the liquidity measurement window start, so its history is short relative to the window."
+    aliases: [new listing flag, short history flag]
+  sparse_flag:
+    definition: "Review flag for a perpetual with more than 25% of weekend hours showing zero volume; mark coverage must be checked before modelling."
+    aliases: [sparse weekend flag, zero-volume flag]
+  commodity_perp:
+    definition: "A perpetual future on a spot commodity (e.g. xyz:GOLD), paired with one or more Massive ETF wrappers for the Monday-gap target; the wrapper may be physical or futures-based."
+    aliases: [commodity perpetual, perp on commodity]
+  etf_kind:
+    definition: "Structure of the ETF wrapper paired with a commodity perp: physical (metal-backed trust) or futures (futures-based fund with contango/roll). The model must account for the difference."
+    aliases: [ETF structure, physical vs futures ETF]

@@ -50,6 +50,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | Streaming DLT pipeline | Yes | Local validation | Not deployed or run |
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
 | IBKR paper execution | Scaffold | Partial | Not live |
+| Weekend perps research (planned) | Loader, calendar and measurement tooling only | Yes (offline) | Not deployed — no ingestion job, no shared tables, no signals |
 
 Dates are the last recorded verification; this repository does not assert the current state of the app, Lakebase, or the warehouse.
 
@@ -69,6 +70,18 @@ Dates are the last recorded verification; this repository does not assert the cu
 6. Every Lakebase write also lands in `analytics_outbox` in the same transaction; a Delta job merges those events into
    analytics tables that the app's analytics page reads.
 
+## Weekend perps research (planned/in progress)
+
+Research scaffolding only: nothing is ingested on a schedule, no shared tables are written and no signal is published.
+The instruments are **perpetual futures (derivatives)** traded on Hyperliquid HIP-3 and Binance USD-M, not the equities,
+ETFs or spot commodities they track; they are never merged into the equity security. The owner-selected universe is
+[`config/perp_universe.yaml`](config/perp_universe.yaml) (v4: 78 company perps, 8 commodity perps paired with Massive
+ETFs, and BTCUSDT/ETHUSDT controls), validated by `config/perp_universe.py`; closed-market liquidity is measured while
+the NYSE is shut, with the weekend window derived from [`config/market_calendar.py`](config/market_calendar.py).
+Planned sources are the Hyperliquid info API (1h/15m history; 1m only ~3.5 days back, so 1m must be forward-captured
+daily) and Binance Vision archives for the controls; design and schemas are in
+[`docs/data/PERPS_WEEKEND_PLAN.md`](docs/data/PERPS_WEEKEND_PLAN.md).
+
 ## Repository layout
 
 | Path | Purpose |
@@ -82,6 +95,7 @@ Dates are the last recorded verification; this repository does not assert the cu
 | `sec_kg/contracts/` | KG-A executable contracts (identity and ids, bitemporal events, fact linking, join/edge registry, publication CAS, perp Instruments); pure Python with offline tests — no table or job yet |
 | `resources/`, `databricks.yml`, `app.yaml` | Databricks Asset Bundle: jobs, app, resources |
 | `strategies/`, `ml/` | Research code (backtests, evidence, models) |
+| `config/`, `scripts/perps/` | Perp universe/calendar config; probe and closed-market liquidity measurement (research scaffolding) |
 | `evals/` | RAG evaluation harness |
 | `config/` | Environment settings, ticker/universe YAML, and the `data_source` provider vocabulary (`config/data_sources.py`) |
 | `tests/` | Offline test suite |

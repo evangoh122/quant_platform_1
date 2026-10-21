@@ -106,7 +106,7 @@
           <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
         </div>
       </div>
-      <p class="subtitle">P0 plan · Hyperliquid HIP-3 equity perps + Binance USD-M controls · all components planned (dashed)</p>
+      <p class="subtitle">P0 v4 plan · 78 company perps + 8 commodity perps + Binance USD-M controls · perps are derivatives · all downstream components planned (dashed)</p>
     </div>
 
     <div class="diagram-container">
@@ -178,21 +178,21 @@
 
         <rect x="840" y="80" width="300" height="56" rx="6" fill="#0f172a"/>
         <rect x="840" y="80" width="300" height="56" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
-        <text x="990" y="101" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">P0 plan + architecture</text>
-        <text x="990" y="117" fill="#94a3b8" font-size="8" text-anchor="middle">PERPS_WEEKEND_PLAN.md · perps_architecture.html</text>
+        <text x="990" y="101" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">P0 plan + liquidity + diagram</text>
+        <text x="990" y="117" fill="#94a3b8" font-size="8" text-anchor="middle">PERPS_WEEKEND_PLAN.md · measure_closed_liquidity.py</text>
 
         <!-- ================= SOURCES ================= -->
         <rect x="245" y="168" width="230" height="62" rx="6" fill="#0f172a"/>
         <rect x="245" y="168" width="230" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="360" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">Hyperliquid info API</text>
-        <text x="360" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">candleSnapshot · fundingHistory</text>
-        <text x="360" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">metaAndAssetCtxs (current OI only)</text>
+        <text x="360" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">15m/1h history · 1m ~3.5 days only</text>
+        <text x="360" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">current OI only (no history)</text>
 
         <rect x="495" y="168" width="230" height="62" rx="6" fill="#0f172a"/>
         <rect x="495" y="168" width="230" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="610" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">Binance Vision</text>
         <text x="610" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">USD-M monthly + daily archives</text>
-        <text x="610" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">klines 1h · fundingRate · metrics</text>
+        <text x="610" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">full 1m · fundingRate · metrics</text>
 
         <rect x="745" y="168" width="190" height="62" rx="6" fill="#0f172a"/>
         <rect x="745" y="168" width="190" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
@@ -209,8 +209,8 @@
         <!-- ================= INGESTION ================= -->
         <rect x="245" y="278" width="215" height="68" rx="6" fill="#0f172a"/>
         <rect x="245" y="278" width="215" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
-        <text x="352" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ingest_perp_candles</text>
-        <text x="352" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">1h bars · 1d history check</text>
+        <text x="352" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ingest_perp_candles + capture_1m</text>
+        <text x="352" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">15m/1h history · 1m forward-capture daily</text>
         <text x="352" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">startTime paging · append-only</text>
 
         <rect x="475" y="278" width="215" height="68" rx="6" fill="#0f172a"/>
@@ -222,7 +222,7 @@
         <rect x="705" y="278" width="200" height="68" rx="6" fill="#0f172a"/>
         <rect x="705" y="278" width="200" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="805" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ingest_binance_um</text>
-        <text x="805" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">monthly + first daily archive</text>
+        <text x="805" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">klines 1m/1h · funding · metrics</text>
         <text x="805" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">checksum · bounded range</text>
 
         <rect x="920" y="278" width="220" height="68" rx="6" fill="#0f172a"/>
@@ -235,9 +235,9 @@
         <rect x="245" y="394" width="215" height="86" rx="6" fill="#0f172a"/>
         <rect x="245" y="394" width="215" height="86" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="352" y="416" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">bronze_perp_candles</text>
-        <text x="352" y="434" fill="#94a3b8" font-size="7.5" text-anchor="middle">NK venue, symbol, interval, start</text>
-        <text x="352" y="448" fill="#94a3b8" font-size="7.5" text-anchor="middle">payload_hash · ingest_ts</text>
-        <text x="352" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">append-only corrections</text>
+        <text x="352" y="434" fill="#94a3b8" font-size="7.5" text-anchor="middle">NK venue, contract_symbol, start</text>
+        <text x="352" y="448" fill="#94a3b8" font-size="7.5" text-anchor="middle">instrument_type=perpetual_future</text>
+        <text x="352" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">underlying_type · payload_hash</text>
 
         <rect x="475" y="394" width="215" height="86" rx="6" fill="#0f172a"/>
         <rect x="475" y="394" width="215" height="86" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
@@ -265,7 +265,7 @@
         <rect x="245" y="528" width="230" height="66" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="360" y="550" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">silver_perp_bars_1h</text>
         <text x="360" y="566" fill="#94a3b8" font-size="8" text-anchor="middle">info_available = bar_end_ts</text>
-        <text x="360" y="580" fill="#94a3b8" font-size="8" text-anchor="middle">quality_flags · no forward fill</text>
+        <text x="360" y="580" fill="#94a3b8" font-size="8" text-anchor="middle">instrument_type · no forward fill</text>
 
         <rect x="490" y="528" width="215" height="66" rx="6" fill="#0f172a"/>
         <rect x="490" y="528" width="215" height="66" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
@@ -284,8 +284,8 @@
         <rect x="245" y="642" width="575" height="92" rx="8" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="532" y="666" fill="white" font-size="11.5" font-weight="600" text-anchor="middle">gold_weekend_perp_features</text>
         <text x="532" y="685" fill="#94a3b8" font-size="8" text-anchor="middle">Friday close → Monday open window · PIT join · label only at window end</text>
-        <text x="532" y="701" fill="#94a3b8" font-size="8" text-anchor="middle">perp returns · realized vol · drawdown · funding · OI (nullable)</text>
-        <text x="532" y="720" fill="#a78bfa" font-size="7.5" text-anchor="middle">NK weekend_id, security_id · information_available ≤ prediction_ts</text>
+        <text x="532" y="701" fill="#94a3b8" font-size="8" text-anchor="middle">perp_ features · realized vol · funding · OI (nullable)</text>
+        <text x="532" y="720" fill="#a78bfa" font-size="7.5" text-anchor="middle">instrument_type=perpetual_future · NK weekend_id, security_id</text>
 
         <rect x="835" y="642" width="305" height="92" rx="8" fill="#0f172a"/>
         <rect x="835" y="642" width="305" height="92" rx="8" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
@@ -320,7 +320,7 @@
         <rect x="35" y="102" width="165" height="50" rx="6" fill="#0f172a"/>
         <rect x="35" y="102" width="165" height="50" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="117" y="121" fill="white" font-size="9" font-weight="600" text-anchor="middle">perp_universe.yaml</text>
-        <text x="117" y="137" fill="#94a3b8" font-size="7.5" text-anchor="middle">78 companies + 2 controls</text>
+        <text x="117" y="137" fill="#94a3b8" font-size="7.5" text-anchor="middle">78 co + 8 commodities + 2 ctrl</text>
 
         <rect x="35" y="164" width="165" height="50" rx="6" fill="#0f172a"/>
         <rect x="35" y="164" width="165" height="50" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
@@ -388,6 +388,7 @@
           <li>• Friday holiday / Good Friday → Thursday close</li>
           <li>• early close 13:00 ET: day after Thanksgiving, Jul 3, Dec 24</li>
           <li>• 2000-2035 static YAML, DST-correct via zoneinfo</li>
+          <li>• tiers A-D on closed-market USD/hour; new/sparse flags</li>
         </ul>
       </div>
 
@@ -397,11 +398,12 @@
           <h3>Sources and limits</h3>
         </div>
         <ul>
-          <li>• Hyperliquid info API: candles, funding, current OI only</li>
-          <li>• Binance Vision: USD-M klines 1h, fundingRate, metrics</li>
-          <li>• probe: dry-run default, --live, ≤ 2 req/s, backoff</li>
+          <li>• Hyperliquid info API: 15m/1h history, 1m only ~3.5 days</li>
+          <li>• Binance Vision: full 1m history for BTC/ETH controls</li>
+          <li>• 8 commodity perps + physical/futures ETF wrappers</li>
+          <li>• 1m captured forward daily, never backfilled</li>
+          <li>• probe/measure: dry-run default, --live, ≤ 2 req/s</li>
           <li>• no historical OI: forward snapshots or S3 backfill</li>
-          <li>• no pandas / DuckDB in the new code</li>
         </ul>
       </div>
 
@@ -413,6 +415,8 @@
         <ul>
           <li>• feature availability ≤ prediction_ts</li>
           <li>• label known only at the Monday open</li>
+          <li>• perps are derivatives: instrument_type = perpetual_future</li>
+          <li>• never merged into the underlying Security node</li>
           <li>• BTC/ETH controls are mandatory, not optional</li>
           <li>• provider bridge → KG security dimension</li>
           <li>• no signal publication without owner approval</li>
@@ -421,7 +425,7 @@
     </div>
 
     <p class="footer">
-      P0 · perps weekend research · 78 HIP-3 equity perps + BTCUSDT/ETHUSDT controls · all downstream components planned/dashed
+      P0 v4 · perps weekend research · 78 company + 8 commodity perpetual futures + BTCUSDT/ETHUSDT controls · all downstream components planned/dashed
     </p>
   </div>
 

@@ -1,7 +1,15 @@
-# Perps weekend research plan (P0)
+# Perps weekend research plan (P0, v4)
 
-**Status:** design + P0 scaffolding (this PR). No ingestion job is scheduled and no
-signal is published. **Owner:** decision 2026-10-22.
+**Status:** design + research scaffolding (P0, round 2). No ingestion job is
+scheduled, no shared table is written and no signal is published. **Owner:**
+decisions 2026-10-22.
+
+**Instruments are derivatives.** Every row in the universe is a **perpetual
+future** (`instrument_type: perpetual_future`) traded on a crypto venue. The
+listed ticker, ETF or commodity is only the *underlying* it tracks through the
+venue oracle: a perp is never the equity, never the ETF and never spot. Every
+table, Unity Catalog comment/tag, knowledge-graph node and UI label must carry
+that distinction, and perp columns in mixed feature tables use a `perp_` prefix.
 
 **Question.** Do weekend moves in equity perpetuals improve predictions of the
 Monday opening gap beyond (a) Friday equity/options signals and (b) broad crypto
@@ -27,30 +35,43 @@ without separate owner approval.
 
 ## 1. Scope and instrument universe
 
-Perps are ingested **only** for the companies in
-[`config/perp_universe.yaml`](../../config/perp_universe.yaml): all 78
-qp1-universe single stocks with a Hyperliquid HIP-3 perpetual, plus Binance USD-M
-`BTCUSDT` and `ETHUSDT` as mandatory controls. The file is the single source of
-truth; `config/perp_universe.py` validates it (unique tickers, `symbol ==
-"<dex>:<TICKER>"`, venue/dex allowlists, controls present, version field).
+Perps are ingested **only** for the instruments in
+[`config/perp_universe.yaml`](../../config/perp_universe.yaml) (version 4):
+78 company perpetuals on Hyperliquid HIP-3, 8 commodity perpetuals paired with
+Massive ETFs, plus Binance USD-M `BTCUSDT` and `ETHUSDT` as mandatory controls.
+The file is the single source of truth; `config/perp_universe.py` validates it
+(unique tickers/symbols, `symbol == "<dex>:<TICKER>"`, venue/dex allowlists,
+controls present, version, `instrument_type`, `underlying_type`, tiers and
+flags).
 
 | Property | Value |
 |---|---|
-| Equity venue | Hyperliquid HIP-3 (sub-dexes `xyz`, `para`, `io`) |
+| Instrument type | `perpetual_future` (derivative; `is_equity: false`, `is_derivative: true`) |
+| Company venue | Hyperliquid HIP-3 (sub-dexes `xyz`, `para`, `io`) |
 | Companies | 78, selected 2026-10-21 (owner choice) |
-| Controls | Binance USD-M `BTCUSDT`, `ETHUSDT` (always) |
-| Liquidity tiers | `liquid` / `medium` / `thin` (review only; not a filter) |
-| Review-only fields | `vol_24h_usd`, `oi_usd` selection snapshot; never used by jobs |
+| Commodities | 8 (WTI, Brent, silver, gold, natural gas, copper, platinum, palladium) |
+| Commodity wrappers | `etfs: [USO]`, `[BNO]`, `[SLV, SIVR]`, `[GLD, IAU]`, `[UNG]`, `[CPER]`, `[PPLT]`, `[PALL]`; `etf_kind` physical or futures |
+| Controls | Binance USD-M `BTCUSDT`, `ETHUSDT` (always, `underlying_type: crypto`) |
+| Underlying types | company rows: `equity`, `etf`, `fund`, `preferred`; commodities: `commodity`; controls: `crypto` |
+| Liquidity basis | measured **while the NYSE is closed**, from 1h candles (`volume × close`) |
+| Measurement window | 2026-08-26 → 2026-10-21 (8 weeks) |
+| Tiers (`weekend_usd_per_h`) | `A ≥ 250k`, `B ≥ 50k`, `C ≥ 10k`, `D < 10k` |
+| Flags | `new` = first bar after the window start; `sparse` = more than 25% of weekend hours with zero volume |
 
-The ticker review in `scripts/perps/check_universe.py` is report-only. It flags
-ETFs, funds, preferreds and tickers that are unmapped in the **offline** SEC CIK
-files. The checked-in offline map is intentionally sparse
-(`config/sec_cik_overrides.yaml` plus
+Tiers and flags are model inputs and filters, **not** ingestion filters: every
+configured instrument is still ingested. They are re-measured with
+[`scripts/perps/measure_closed_liquidity.py`](../../scripts/perps/measure_closed_liquidity.py),
+which writes a proposal JSON and never edits the config; the owner applies
+changes.
+
+The round-1 ticker review in `scripts/perps/check_universe.py` is report-only.
+It flags ETFs, funds, preferreds and tickers that are unmapped in the **offline**
+SEC CIK files. The owner kept all 78 and set the underlying labels from that
+check: `BOT → fund`, `STRC → preferred`, `KSTR → etf`. The checked-in offline map
+is intentionally sparse (`config/sec_cik_overrides.yaml` plus
 `tests/rag/fixtures/sec/company_tickers.json`), so "unmapped" is a prompt to run
 the check with a full `company_tickers.json` snapshot, not proof that a company
-lacks an SEC registration. Known suspects: `STRC` (preferred), `KSTR` (ETF),
-`BOT` (closed-end fund group), and `BIRD`/`CBRS`/`SHAZ` (unmapped offline).
-The owner decides whether to keep any of them.
+lacks an SEC registration.
 
 ## 2. Sources, endpoints and limits
 
@@ -60,13 +81,20 @@ The owner decides whether to keep any of them.
 
 | Request | Body (abridged) | Use | Limits / notes |
 |---|---|---|---|
-| `candleSnapshot` | `{"type":"candleSnapshot","req":{"coin":"xyz:NVDA","interval":"1h","startTime":<ms>,"endTime":<ms>}}` | 1h bars; 1d for history checks | Public API returns at most 5,000 candles per response; page by `startTime`. `endTime` bounds the page. |
+| `candleSnapshot` | `{"type":"candleSnapshot","req":{"coin":"xyz:NVDA","interval":"1h","startTime":<ms>,"endTime":<ms>}}` | 1h/15m bars for history and measurement; 1m for forward capture | Public API returns at most 5,000 candles per response; page by `startTime`. `endTime` bounds the page. **1m retention is only ~3.5 days** (see below). |
 | `fundingHistory` | `{"type":"fundingHistory","coin":"xyz:NVDA","startTime":<ms>,"endTime":<ms>}` | funding records | Public API caps a page (order of 500 records); page by `startTime`. Interval is recorded per row, not assumed. |
 | `metaAndAssetCtxs` | `{"type":"metaAndAssetCtxs"}` | **current** open interest / mark / oracle | Current snapshot only; there is **no historical OI** in the public info API. |
 | `clearinghouseState` | `{"type":"clearinghouseState","user":...}` | user positions | Not used by this track. |
 
 Operational rules:
 
+- **Minute bars are a forward-capture stream.** The public API serves only
+  roughly the last **3.5 days** of `1m` candles, so a backfill cannot recover
+  older minute data. P2 therefore runs a **daily 1m forward-capture job** for
+  every configured instrument (deduplicated by natural key). `15m` and `1h`
+  candles are retained far enough back to establish history and measure the
+  weekend window; `1d` is used for history checks only. Binance Vision archives
+  for the controls carry full `1m` history (see §2.2).
 - The probe is dry-run by default. `--live` is required to send requests.
 - Polite rate limit: **≤ 2 requests/second**, exponential backoff with jitter on
   network errors/429/5xx and `Retry-After` support. 401/403 fail immediately.
@@ -84,6 +112,7 @@ the P2 job (not by the P0 probe):
 | Dataset | Path template |
 |---|---|
 | USD-M 1h klines | `data/futures/um/monthly/klines/{SYMBOL}/1h/{SYMBOL}-1h-YYYY-MM.zip` (daily under `.../daily/...`) |
+| USD-M 1m klines | `data/futures/um/monthly/klines/{SYMBOL}/1m/{SYMBOL}-1m-YYYY-MM.zip` — **full 1m history** for the controls |
 | Funding rate | `data/futures/um/monthly/fundingRate/{SYMBOL}/{SYMBOL}-fundingRate-YYYY-MM.zip` |
 | Metrics (OI, long/short ratios) | `data/futures/um/monthly/metrics/{SYMBOL}/{SYMBOL}-metrics-YYYY-MM.zip` |
 
@@ -156,10 +185,10 @@ The diagram is [`docs/data/perps_architecture.html`](perps_architecture.html)
 (self-contained HTML + inline SVG, planned components dashed). The flow:
 
 ```text
-Hyperliquid info API ─┐
-Binance Vision ───────┼─> Bronze append-only ─> Silver canonical ─> Gold PIT features ─> Research eval
-Existing equity/options ┘                                     ▲
-NYSE calendar + perp universe config ────────────────────────┘
+Hyperliquid info API (15m/1h; daily 1m forward capture) ─┐
+Binance Vision (full 1m history for controls) ──────────┼─> Bronze append-only ─> Silver canonical ─> Gold PIT features ─> Research eval
+Existing equity/options + Massive ETF wrappers ─────────┘                                     ▲
+NYSE calendar + perp universe config (78 + 8 + 2) ───────────────────────────────────────────┘
 ```
 
 ### 4.1 Bronze schemas (append-only)
@@ -178,8 +207,12 @@ where noted).
 | `venue` | STRING | `hyperliquid` |
 | `dex` | STRING | `xyz` / `para` / `io` |
 | `symbol` | STRING | provider symbol, e.g. `xyz:NVDA` |
-| `ticker` | STRING | equity ticker, e.g. `NVDA` |
-| `interval` | STRING | `1h` / `1d` |
+| `ticker` | STRING | company ticker or commodity label, e.g. `NVDA` |
+| `instrument_type` | STRING | NOT NULL, always `perpetual_future` (derivative) |
+| `underlying_type` | STRING | `equity` / `etf` / `fund` / `preferred` / `commodity` / `crypto` |
+| `underlying_symbol` | STRING | tracked ticker/commodity (e.g. `NVDA`, `gold`) |
+| `contract_symbol` | STRING | venue contract symbol; same value as `symbol` |
+| `interval` | STRING | `1m` / `15m` / `1h` / `1d` |
 | `candle_start_ts` | TIMESTAMP | bar open (UTC) |
 | `candle_end_ts` | TIMESTAMP | bar close (UTC) |
 | `open`,`high`,`low`,`close` | DECIMAL(28,10) | provider values |
@@ -189,7 +222,8 @@ where noted).
 | `payload_hash` | STRING | sha256 of the raw record |
 
 Natural key: `(venue, symbol, interval, candle_start_ts)`. Partition:
-`interval, ingest_date`.
+`interval, ingest_date`. `1m` rows exist only from the daily forward-capture
+job onward (API retention ~3.5 days); `15m`/`1h` carry history.
 
 #### `bronze_perp_funding`
 
@@ -201,6 +235,10 @@ Natural key: `(venue, symbol, interval, candle_start_ts)`. Partition:
 | `dex` | STRING | |
 | `symbol` | STRING | |
 | `ticker` | STRING | |
+| `instrument_type` | STRING | NOT NULL, always `perpetual_future` |
+| `underlying_type` | STRING | see §4.1 candles |
+| `underlying_symbol` | STRING | see §4.1 candles |
+| `contract_symbol` | STRING | same value as `symbol` |
 | `funding_time` | TIMESTAMP | provider `time` |
 | `funding_rate` | DECIMAL(18,10) | decimal, not percent |
 | `premium` | DECIMAL(18,10) | nullable |
@@ -219,6 +257,10 @@ Natural key: `(venue, symbol, funding_time)`. Partition: `ingest_date`.
 | `dex` | STRING | |
 | `symbol` | STRING | |
 | `ticker` | STRING | |
+| `instrument_type` | STRING | NOT NULL, always `perpetual_future` |
+| `underlying_type` | STRING | see §4.1 candles |
+| `underlying_symbol` | STRING | see §4.1 candles |
+| `contract_symbol` | STRING | same value as `symbol` |
 | `open_interest` | DECIMAL(28,10) | base units |
 | `mark_px` | DECIMAL(28,10) | nullable |
 | `oracle_px` | DECIMAL(28,10) | nullable |
@@ -267,8 +309,9 @@ Natural key: `(symbol, create_time)`.
 | Column | Type | Notes |
 |---|---|---|
 | `venue`, `dex`, `symbol`, `ticker` | STRING | |
+| `instrument_type`, `underlying_type`, `underlying_symbol`, `contract_symbol` | STRING | NOT NULL; `instrument_type = perpetual_future`; `contract_symbol = symbol` |
 | `bar_start_ts`, `bar_end_ts` | TIMESTAMP | UTC |
-| `open`,`high`,`low`,`close` | DECIMAL(28,10) | |
+| `open`,`high`,`low`,`close` | DECIMAL(28,10) | perp mark/trade price, **not** the stock price |
 | `volume` | DECIMAL(28,10) | |
 | `trade_count` | BIGINT | |
 | `information_available_ts` | TIMESTAMP | `bar_end_ts` (conservative) |
@@ -282,7 +325,8 @@ dropping rows.
 
 #### `silver_perp_funding`
 
-`venue`, `dex`, `symbol`, `ticker`, `funding_time`, `funding_rate`,
+`venue`, `dex`, `symbol`, `ticker`, `instrument_type`, `underlying_type`,
+`underlying_symbol`, `contract_symbol`, `funding_time`, `funding_rate`,
 `funding_interval_hours`, `information_available_ts` (= `funding_time`),
 `source`, `ingest_ts`, `quality_flags`.
 Natural key: `(venue, symbol, funding_time)`.
@@ -304,12 +348,16 @@ One row per `(weekend_id, security_id)`.
 | Controls | `btc_ret_weekend`, `eth_ret_weekend`, `btc_realized_vol_1h`, `eth_realized_vol_1h` |
 | Equity baselines (PIT) | `friday_adj_close`, `friday_ret_1d`, `friday_ret_5d`, `friday_iv_atm`, `friday_iv_skew`, `friday_options_volume_z`, `equity_features_available_ts` |
 | Label | `monday_open`, `monday_gap`, `label_available_ts` (= `window_end_ts`) |
-| Governance | `mapping_status` (`verified` / `unverified`), `information_available_ts`, `feature_version`, `ingest_ts` |
+| Governance | `instrument_type` (NOT NULL `perpetual_future`), `underlying_type`, `underlying_symbol`, `contract_symbol`, `venue`, `mapping_status` (`verified` / `unverified`), `information_available_ts`, `feature_version`, `ingest_ts` |
 
 Natural key: `(weekend_id, security_id)`. Partition: `weekend_id`.
 `information_available_ts` is the maximum of the component availability
 timestamps and must satisfy `information_available_ts <= prediction_ts`; the
-loader rejects rows that violate it.
+loader rejects rows that violate it. All perp-derived columns use the `perp_`
+prefix, and the table comment starts with "Perpetual futures (derivatives), not
+equities:" with tags `instrument_type=perpetual_future`,
+`asset_class=derivative`; price columns are commented "perp mark/trade price,
+not the stock price".
 
 Feature definitions (all computed from rows with `bar_end_ts <=
 prediction_ts`):
@@ -338,8 +386,9 @@ The provider-symbol bridge is a first-class PIT table (planned
 | `provider_symbol` | `xyz:NVDA` | exact API symbol |
 | `venue` | `hyperliquid_hip3` | |
 | `dex` | `xyz` | null for Binance |
-| `security_id` | `NVDA` | US single-stock security id (repo `symbol` convention) |
-| `asset_class` | `equity` / `crypto` | controls are `crypto` |
+| `security_id` | `NVDA` | US single-stock/ETF/commodity id (repo `symbol` convention) |
+| `asset_class` | `equity` / `etf` / `fund` / `preferred` / `commodity` / `crypto` | underlying class |
+| `instrument_type` | `perpetual_future` | NOT NULL; the bridge maps a derivative, never the security itself |
 | `company_cik` | `0001045810` | nullable; SEC bridge |
 | `valid_from`, `valid_to` | TIMESTAMP | PIT validity |
 | `information_available_ts` | TIMESTAMP | when the mapping was verified |
@@ -351,12 +400,15 @@ Examples:
 ```text
 provider=hyperliquid, symbol=xyz:NVDA  -> security_id=NVDA, asset_class=equity
 provider=hyperliquid, symbol=para:CIEN -> security_id=CIEN, asset_class=equity
+provider=hyperliquid, symbol=xyz:GOLD  -> security_id=gold, asset_class=commodity, etfs=[GLD, IAU]
 provider=binance_usdm, symbol=BTCUSDT  -> security_id=crypto:BTC, asset_class=crypto
 provider=binance_usdm, symbol=ETHUSDT  -> security_id=crypto:ETH, asset_class=crypto
 ```
 
 The KG `Company` node is keyed by CIK, not ticker. The bridge links
-`security_id -> company_cik` using the SEC snapshot;
+`security_id -> company_cik` using the SEC snapshot; a commodity perp links to
+the ETF wrapper's `Security` node via `UNDERLIES` (never merged), and every
+bridge row carries `instrument_type = perpetual_future`.
 `config/sec_cik_overrides.yaml` remains authoritative for multi-CIK issuers. A
 ticker with no verified bridge is **quarantined** in gold (`mapping_status =
 unverified`), not silently dropped. `scripts/perps/check_universe.py` produces
@@ -382,19 +434,20 @@ the review list that drives this table.
 
 | Slice | Scope | Acceptance |
 |---|---|---|
-| **P1 (this PR)** | `config/perp_universe.yaml` + typed loader; static NYSE calendar (`config/xnys_holidays.yaml`, `config/market_calendar.py`); `scripts/perps/check_universe.py`; `scripts/perps/probe_history.py`; this plan; architecture diagram; tests. | `pytest -q -m "not spark and not lakebase and not databricks"` (plain and with pyspark blocked); probe `--dry-run`; no pandas/duckdb imports; calendar `--check`; loader loads 78 companies. |
-| **P2** | Bronze ingestion jobs for Hyperliquid candles/funding and Binance USD-M archives; manifest, idempotency, bounded backfill, archive checksums. No OI history. | Re-running a run id creates zero duplicate Bronze rows; rate limits respected; partial writes retryable; DQ report on missing/duplicate bars. |
+| **P0 (this round)** | `config/perp_universe.yaml` v4 + typed loader (instrument_type, underlying_type, commodities, tiers A-D, flags); static NYSE calendar; `scripts/perps/check_universe.py`; `scripts/perps/probe_history.py`; `scripts/perps/measure_closed_liquidity.py`; this plan; architecture diagram; ontology terms; tests. | `pytest -q -m "not spark and not lakebase and not databricks"` (plain and with pyspark blocked); probe/measure `--dry-run`; no pandas/duckdb imports; calendar `--check`; loader loads 78 companies + 8 commodities + 2 controls; ontology test green. |
+| **P2** | Bronze ingestion jobs for Hyperliquid 15m/1h candles and funding, **daily 1m forward capture** (API retains only ~3.5 days), and Binance USD-M archives (full 1m history); manifest, idempotency, bounded backfill, archive checksums. No OI history. | Re-running a run id creates zero duplicate Bronze rows; rate limits respected; partial writes retryable; 1m capture gap alarms; DQ report on missing/duplicate bars. |
 | **P3** | Silver normalization: 1h bars, funding, QA flags (gaps, DST, stale marks, split suspects), canonical dedupe. | Natural keys unique; `information_available_ts` equals bar close; QA counts match Bronze source counts; no forward fill. |
 | **P4** | OI: forward `metaAndAssetCtxs` snapshots into `bronze_perp_oi_snapshots`; optional S3 archive backfill behind owner approval. | Snapshot cadence documented; no fabricated history; `oi_change_pct` null when endpoints missing. |
 | **P5** | `gold_weekend_perp_features`: weekend windows, PIT joins, equity/options baselines, BTC/ETH controls, label; mapping bridge. | Window boundaries match `market_calendar` fixtures; every row passes `information_available_ts <= prediction_ts`; label never in feature columns; reconciliation counts. |
 | **P6** | Research evaluation: baseline models (Friday equity/options; + crypto; + perps), out-of-time metrics, ablations, notebook, owner review. | Pre-registered metrics; no signal publication; reproducible notebook and data snapshot; honest negative result allowed. |
 
-Dependencies: P2 → P3 → P4/P5 → P6. P1 is standalone. OI is optional for P5;
+Dependencies: P2 → P3 → P4/P5 → P6. P0 is standalone. OI is optional for P5;
 `oi_*` stays nullable until P4.
 
 ## 8. Open interest options (owner decision)
 
-Hyperliquid's public info API exposes **current** OI only. Options:
+Hyperliquid's public info API exposes **current** OI only; there is no
+historical OI series to backfill from the API, and P0 ships no OI data. Options:
 
 1. **Forward snapshots (recommended default):** poll `metaAndAssetCtxs` on a
    schedule (e.g. every 5-15 minutes) into `bronze_perp_oi_snapshots`. No
@@ -411,8 +464,8 @@ not attempt an OI history fetch.
 ## 9. Risks and limitations
 
 - **Survivorship / selection:** the universe is the 2026-10-21 liquid subset;
-  thin perps may have wide spreads and stale marks. Report liquidity flags and
-  run results with/without thin names.
+  tier D / sparse perps may have wide spreads and stale marks. Report liquidity
+  flags and run results with/without the illiquid names.
 - **Short history:** HIP-3 equity perps are recent; the probe establishes the
   true per-instrument start. Do not assume a common start date.
 - **24/7 microstructure:** weekend marks may be noisy or stale; measure bar
@@ -424,6 +477,9 @@ not attempt an OI history fetch.
   review rather than auto-adjust.
 - **Provider instability:** unofficial APIs can change fields or limits; fail
   closed, monitor the probe and ingestion manifest.
+- **Minute-bar retention:** the public API keeps only ~3.5 days of `1m`
+  candles. Historical minute work is impossible without the daily forward
+  capture (P2) or Binance archives (controls only); use `15m`/`1h` for history.
 - **Offline CIK map:** sparse; the ticker review must be rerun with a full SEC
   snapshot before treating "unmapped" as final.
 
@@ -434,13 +490,18 @@ uv venv
 uv pip install -r requirements.txt -r requirements-dev.txt   # drop ibapi as CI does
 pytest -q -m "not spark and not lakebase and not databricks"
 python scripts/perps/probe_history.py --dry-run
+python scripts/perps/measure_closed_liquidity.py --dry-run
 python scripts/perps/check_universe.py
 python -m config.market_calendar --check
 # coordinator only, live network:
 python scripts/perps/probe_history.py --live \
   --out-json docs/data/perps_history_probe.json \
   --out-md docs/data/perps_history_probe.md
+python scripts/perps/measure_closed_liquidity.py --live \
+  --out docs/data/perp_liquidity_tier_proposal.json
 ```
 
 The probe is not run in tests. `--dry-run` is the default and makes zero network
-calls; `--live` enforces ≤ 2 requests/second with retries/backoff.
+calls; `--live` enforces ≤ 2 requests/second with retries/backoff. The liquidity
+tool writes a proposal only (`docs/data/perp_liquidity_tier_proposal.json`);
+applying it to `config/perp_universe.yaml` is an owner edit.

@@ -39,3 +39,8 @@ filters:
   fed_latest_vintage_as_of:
     tables: [bronze_fed_series]
     rule: "Latest value as of t is the row with maximum vintage_date per (series_id, observation_date) among rows where information_available_ts <= t."
+  weekend_window:
+    tables: []
+    calendar: config/market_calendar.py
+    rule: "Weekend/closed-market window = [last regular-session close before the break, next regular-session open after it). Compute it with config/market_calendar.py weekend_window(friday) against the static NYSE calendar: a Monday holiday ends the window at Tuesday 09:30 ET, a Friday holiday (e.g. Good Friday) starts it at Thursday 16:00 ET, and a 13:00 early close moves the start. Half-open interval; a bar is included only when its whole interval is inside the window."
+    critical: true

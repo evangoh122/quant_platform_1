@@ -5,8 +5,8 @@ The probe is **not** part of the test suite and never runs on import.  It is
 dry-run by default: it prints the requests it would make and touches no
 network.  ``--live`` is required to send requests.
 
-Hyperliquid (equity perps, HIP-3)
----------------------------------
+Hyperliquid (company and commodity perps, HIP-3)
+------------------------------------------------
 ``POST https://api.hyperliquid.xyz/info`` with::
 
     {"type": "candleSnapshot",
@@ -19,6 +19,11 @@ Each stream is paged forward by ``startTime``.  Empty windows are skipped in
 ``--coarse-days`` steps; the first non-empty window yields the earliest
 timestamp.  The response is bounded by ``endTime`` so a page cannot silently
 include later data.
+
+Minute bars are the exception: the public API serves only roughly the last
+~3.5 days of ``1m`` candles.  Treat ``1m`` as a forward-capture stream (a daily
+job) and use ``15m`` / ``1h`` for historical measurement; Binance Vision
+archives carry full ``1m`` history for the controls.
 
 Binance USD-M controls
 ----------------------
@@ -138,6 +143,15 @@ def build_targets(universe: PerpUniverse) -> List[ProbeTarget]:
     ]
     targets.extend(
         ProbeTarget(
+            ticker=commodity.commodity,
+            venue=commodity.venue,
+            symbol=commodity.symbol,
+            kind="commodity_perp",
+        )
+        for commodity in universe.commodities
+    )
+    targets.extend(
+        ProbeTarget(
             ticker=control.symbol,
             venue=control.venue,
             symbol=control.symbol,
@@ -220,7 +234,7 @@ def plan_requests(
     end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     plan: List[PlannedRequest] = []
     for target in build_targets(universe):
-        if target.kind == "equity_perp":
+        if target.kind in ("equity_perp", "commodity_perp"):
             for stream in _STREAMS:
                 plan.append(
                     PlannedRequest(
@@ -598,7 +612,11 @@ def probe_live(
             "max_steps": max_steps,
             "rate_limit_rps": rate_limit_rps,
         },
-        "hyperliquid": {"endpoint": HYPERLIQUID_INFO_URL, "instruments": []},
+        "hyperliquid": {
+            "endpoint": HYPERLIQUID_INFO_URL,
+            "instruments": [],
+            "commodities": [],
+        },
         "binance_usdm": {"endpoint": BINANCE_VISION_URL, "instruments": []},
         "notes": {"open_interest": OPEN_INTEREST_NOTE},
     }
@@ -631,6 +649,38 @@ def probe_live(
             except ProbeError as exc:
                 entry["streams"][stream] = {"error": str(exc)}
         result["hyperliquid"]["instruments"].append(entry)
+
+    for commodity in universe.commodities:
+        target = ProbeTarget(
+            ticker=commodity.commodity,
+            venue=commodity.venue,
+            symbol=commodity.symbol,
+            kind="commodity_perp",
+        )
+        entry = {
+            "commodity": commodity.commodity,
+            "venue": commodity.venue,
+            "dex": commodity.dex,
+            "symbol": commodity.symbol,
+            "tier": commodity.tier,
+            "etfs": list(commodity.etfs),
+            "etf_kind": commodity.etf_kind,
+            "streams": {},
+        }
+        for stream in _STREAMS:
+            try:
+                entry["streams"][stream] = find_first_hyperliquid(
+                    client,
+                    target,
+                    stream,
+                    start_ms=start_ms,
+                    now_ms=now_ms,
+                    coarse_days=coarse_days,
+                    max_steps=max_steps,
+                )
+            except ProbeError as exc:
+                entry["streams"][stream] = {"error": str(exc)}
+        result["hyperliquid"]["commodities"].append(entry)
 
     for control in universe.controls:
         entry = {
@@ -689,6 +739,24 @@ def render_markdown(result: Mapping[str, Any]) -> str:
             f"{field('candle_1d')} | {field('funding')} |"
         )
     lines.append("")
+    lines.append("## Hyperliquid HIP-3 commodity perpetuals")
+    lines.append("")
+    lines.append(
+        "| Commodity | Symbol | Tier | ETF wrapper | First 1h candle | First 1d candle | First funding |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
+    for entry in result.get("hyperliquid", {}).get("commodities", []):
+        streams = entry.get("streams", {})
+        def field(stream: str, key: str = "first_iso") -> str:
+            value = (streams.get(stream) or {}).get(key)
+            return _fmt(value)
+        wrapper = ", ".join(entry.get("etfs") or []) or "n/a"
+        lines.append(
+            f"| {entry.get('commodity')} | `{entry.get('symbol')}` | "
+            f"{entry.get('tier')} | {wrapper} ({entry.get('etf_kind')}) | "
+            f"{field('candle_1h')} | {field('candle_1d')} | {field('funding')} |"
+        )
+    lines.append("")
     lines.append("## Binance USD-M controls")
     lines.append("")
     lines.append(
@@ -720,6 +788,7 @@ def _print_plan(plan: Sequence[PlannedRequest], universe: PerpUniverse) -> None:
     print("mode: dry-run (no network; pass --live to probe)")
     print(
         f"targets: {universe.company_count} equity perps + "
+        f"{universe.commodity_count} commodity perps + "
         f"{universe.control_count} Binance controls"
     )
     print(

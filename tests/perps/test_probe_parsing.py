@@ -108,7 +108,7 @@ def test_parse_binance_daily_listing_handles_html_and_absolute_urls():
     ]
 
 
-def test_plan_covers_every_company_and_control():
+def test_plan_covers_every_company_commodity_and_control():
     universe = load_perp_universe()
     plan = probe.plan_requests(universe, start="2025-01-01")
     hyperliquid = [
@@ -117,15 +117,16 @@ def test_plan_covers_every_company_and_control():
     binance = [
         request for request in plan if request.url != probe.HYPERLIQUID_INFO_URL
     ]
-    assert len(hyperliquid) == 3 * universe.company_count == 234
+    hyperliquid_targets = universe.company_count + universe.commodity_count
+    assert len(hyperliquid) == 3 * hyperliquid_targets == 258
     assert len(binance) == 6 * universe.control_count == 12
-    assert len(plan) == 246
+    assert len(plan) == 270
 
     bodies = [request.body for request in hyperliquid]
     candle_bodies = [body for body in bodies if body["type"] == "candleSnapshot"]
     funding_bodies = [body for body in bodies if body["type"] == "fundingHistory"]
-    assert len(candle_bodies) == 2 * universe.company_count
-    assert len(funding_bodies) == universe.company_count
+    assert len(candle_bodies) == 2 * hyperliquid_targets
+    assert len(funding_bodies) == hyperliquid_targets
     assert {body["req"]["interval"] for body in candle_bodies} == {"1h", "1d"}
     assert {
         body["req"]["startTime"] for body in candle_bodies + funding_bodies
@@ -150,7 +151,7 @@ def test_dry_run_makes_zero_network_calls(monkeypatch, capsys):
     assert "fundingHistory" in captured
     assert "BTCUSDT" in captured
     assert "ETHUSDT" in captured
-    assert "planned requests: 246" in captured
+    assert "planned requests: 270" in captured
 
 
 def test_live_and_dry_run_are_mutually_exclusive():
@@ -194,10 +195,17 @@ def test_probe_live_orchestrates_hyperliquid_and_binance(monkeypatch):
     )
     assert result["mode"] == "live"
     assert len(result["hyperliquid"]["instruments"]) == universe.company_count
+    assert len(result["hyperliquid"]["commodities"]) == universe.commodity_count
     first = result["hyperliquid"]["instruments"][0]
     assert first["ticker"] == universe.companies[0].ticker
     assert first["streams"]["candle_1h"]["first_iso"] == "2025-01-01T00:00:00+00:00"
     assert first["streams"]["funding"]["first_ms"] == 1735689600000
+    first_commodity = result["hyperliquid"]["commodities"][0]
+    assert first_commodity["commodity"] == universe.commodities[0].commodity
+    assert first_commodity["etf_kind"] in {"physical", "futures"}
+    assert first_commodity["streams"]["candle_1h"]["first_iso"] == (
+        "2025-01-01T00:00:00+00:00"
+    )
 
     controls = result["binance_usdm"]["instruments"]
     assert [entry["symbol"] for entry in controls] == ["BTCUSDT", "ETHUSDT"]
@@ -217,7 +225,7 @@ def test_render_markdown_tables_and_oi_note():
                 {
                     "ticker": "NVDA",
                     "symbol": "xyz:NVDA",
-                    "tier": "liquid",
+                    "tier": "A",
                     "streams": {
                         "candle_1h": {"first_iso": "2025-10-01T00:00:00+00:00"},
                         "candle_1d": {"first_iso": "2025-10-01T00:00:00+00:00"},
@@ -240,6 +248,6 @@ def test_render_markdown_tables_and_oi_note():
         },
     }
     report = probe.render_markdown(result)
-    assert "| NVDA | `xyz:NVDA` | liquid |" in report
+    assert "| NVDA | `xyz:NVDA` | A |" in report
     assert "2019-09-08" in report
     assert "current open interest only" in report
