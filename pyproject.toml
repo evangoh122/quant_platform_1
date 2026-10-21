@@ -81,8 +81,8 @@ dev = [
     "beautifulsoup4>=4.12.0",
     "lxml>=4.9.2",
     # Optional drift monitoring (ml/monitoring.py) — dev/CI tooling only, imported
-    # lazily; the module and its tests work without it.  Pin carried over from the
-    # parallel chore/evidently-drift-cleanup branch so the two agree.
+    # lazily; the module and its tests work without it.  Pin carried over from
+    # requirements-dev.txt as merged in PR #69.
     "evidently==0.7.23",
     # Dependency audit (CI security-audit job); audits the exported runtime set.
     "pip-audit>=2.7",
