@@ -213,7 +213,6 @@ From `IBKR_workbench/tests/` — adapt DuckDB assertions to Delta queries:
 ### 5.3 Audit trail
 - Migrate `Rag_workbench/api/db/` audit tables (`audit_runs`, `review_decisions`, `calibration`) to Delta or Lakebase
 - Preserve lineage logging from LangGraph engine
-- Connect drift detection (`drift_detection.py`) to Delta tables
 
 ---
 
