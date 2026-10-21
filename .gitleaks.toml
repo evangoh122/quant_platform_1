@@ -1,0 +1,23 @@
+# Gitleaks configuration for this repository.
+#
+# Keep the complete upstream default ruleset and add exactly one narrow
+# exception.
+#
+# Why PostHog project keys are allowlisted: a `phc_...` key is the PostHog
+# *project* API key. PostHog documents it as a public, client-side identifier:
+# it is inlined into the browser bundle, which is exactly what
+# `deploy/hf/Dockerfile` does with the `VITE_POSTHOG_KEY` build argument (the
+# same value is already public in `render.yaml` on main). It is therefore not a
+# credential and must not fail the secret scan.
+#
+# The allowlist is regex-only, targets the detected secret and does NOT cover
+# paths, files or commits. PostHog *personal* API keys (`phx_...`) are real
+# secrets and remain detected by the default rules, as does every other secret
+# type.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "PostHog project API keys (phc_*) are public client-side identifiers, not secrets."
+regexes = ['''phc_[A-Za-z0-9]{20,}''']
