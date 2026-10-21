@@ -1,0 +1,69 @@
+# Research / benchmark universe — configuration-driven symbol groups.
+#
+# Owner decision 2026-10-22 (option D of
+# .agents/requests/SOL-commodity-etfs-advice.txt): commodity ETFs get daily
+# research coverage — split-adjusted silver_ohlcv_day_adjusted plus
+# bronze_corporate_actions so ETF reverse splits are captured — WITHOUT
+# entering the trading universe or the published baseline signals.
+#
+# Consumers (and only these):
+#   - pipelines/run_silver_gold.py      registers the ``research_universe`` temp view
+#   - silver/08_silver_ohlcv_day_adjusted.sql  unions it into the adjusted set
+#   - notebooks/refresh_bronze_corporate_actions.py  unions it into the
+#     corporate-action symbol screen (so USO/UNG reverse splits are fetched)
+#
+# Guarded non-consumers (tests/test_research_symbols_pipeline.py):
+#   - gold/01_gold_ohlcv_features.sql  (minute feature spine, trading ``universe``)
+#   - gold/05_gold_model_features.sql  (model matrix inputs)
+#   - scripts/publish_baseline_signals.py  (published signals)
+#
+# Overlap with config/universe.yaml is a configuration mistake: the loader
+# (config/research_symbols.py) reports it as a warning, not an error, so a
+# deliberate promotion can be staged without breaking a pipeline run.
+#
+# Symbols are YAML mapping keys, so they must be quoted strings. Unquoted
+# scalars such as ON / YES / NO / OFF / Y / N / TRUE / FALSE / NULL parse as
+# booleans or null; the loader rejects non-string keys.
+
+groups:
+  commodity_etfs:
+    # Daily commodity ETF benchmarks paired with the liquid commodity perps in
+    # the weekend-gap research. Daily bars are sufficient for the gap label
+    # (next-session adj_open / previous-session adj_close - 1); minute bars are
+    # a separate ingestion decision and are not part of this group.
+    #
+    # etf_kind:
+    #   physical — backed by the physical commodity (or allocated metal)
+    #   futures  — backed by a futures basket, so the ETF price carries roll
+    #              yield (contango/backwardation) independent of spot
+    symbols:
+      GLD:
+        commodity: gold
+        etf_kind: physical
+      IAU:
+        commodity: gold
+        etf_kind: physical
+      SLV:
+        commodity: silver
+        etf_kind: physical
+      SIVR:
+        commodity: silver
+        etf_kind: physical
+      USO:
+        commodity: crude_oil
+        etf_kind: futures
+      BNO:
+        commodity: brent_crude_oil
+        etf_kind: futures
+      UNG:
+        commodity: natural_gas
+        etf_kind: futures
+      CPER:
+        commodity: copper
+        etf_kind: futures
+      PPLT:
+        commodity: platinum
+        etf_kind: physical
+      PALL:
+        commodity: palladium
+        etf_kind: physical

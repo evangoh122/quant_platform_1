@@ -2,10 +2,13 @@
 
 Reads the MVP universe from config/universe.yaml and registers it as a temp
 view ``universe`` so every silver/gold transform filters symbols from that file
-(no hardcoded ticker lists in transform code). Executes the version-controlled
-transforms under silver/ and gold/ in dependency order via a serverless Spark
-session (databricks-connect). Idempotent: every transform is a MERGE on a
-stable key.
+(no hardcoded ticker lists in transform code). It also registers the research/
+benchmark group from config/research_symbols.yaml as a separate
+``research_universe`` temp view consumed only by the adjusted-silver transform,
+so research symbols get daily coverage without entering the trading universe.
+Executes the version-controlled transforms under silver/ and gold/ in
+dependency order via a serverless Spark session (databricks-connect).
+Idempotent: every transform is a MERGE on a stable key.
 
 Usage:
     python pipelines/run_silver_gold.py --truncate        # clean full backfill
@@ -29,6 +32,7 @@ _p = globals().get("__file__") or sys.argv[0]
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
 from pipelines._runtime import get_spark, repo_root
 
+from config.research_symbols import load_research_symbols  # noqa: E402
 from config.universe import load_universe  # noqa: E402
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
@@ -39,7 +43,12 @@ HERE = str(repo_root())
 # (name, path, kind). Order matters (dependencies).
 #   kind "sql" -> a .sql transform executed via spark.sql (universe temp view).
 #   kind "py"  -> a Python module exposing build(spark, universe) -> row count.
+# gold_tradable_universe is rebuilt FIRST: silver/08_silver_ohlcv_day_adjusted
+# reads it as its symbol filter, so building it after adjusted silver left
+# newly admitted symbols a run behind (and --truncate rebuilt silver from an
+# empty Gold universe).
 STEPS = [
+    ("gold_tradable_universe", "gold/06_gold_tradable_universe.sql", "sql"),
     ("silver_ohlcv", "silver/01_silver_ohlcv.sql", "sql"),
     ("silver_ohlcv_quarantine_batch", "silver/02_silver_ohlcv_quarantine.sql", "sql"),
     ("silver_options_quotes", "silver/03_silver_options_quotes.sql", "sql"),
@@ -55,7 +64,6 @@ STEPS = [
     ("gold_sec_coverage", "gold/07_gold_sec_coverage.sql", "sql"),
     ("gold_cot_features", "gold/04_gold_cot_features.sql", "sql"),
     ("gold_model_features", "gold/05_gold_model_features.sql", "sql"),
-    ("gold_tradable_universe", "gold/06_gold_tradable_universe.sql", "sql"),
     ("gold_regime_features", "gold/07_gold_regime_features.sql", "sql"),
 ]
 
@@ -106,6 +114,21 @@ def register_universe(spark) -> list[str]:
     symbols = load_universe()
     df = spark.createDataFrame([(s,) for s in symbols], schema="symbol string")
     df.createOrReplaceTempView("universe")
+    return symbols
+
+
+def register_research_universe(spark) -> list[str]:
+    """Register the research/benchmark group as a temp view.
+
+    Reads config/research_symbols.yaml. The view is consumed only by
+    silver/08_silver_ohlcv_day_adjusted.sql, so research symbols receive
+    split-adjusted daily history (and corporate actions) without entering the
+    trading ``universe`` view, the minute feature spine, gold_model_features or
+    the published baseline signals.
+    """
+    symbols = load_research_symbols()
+    df = spark.createDataFrame([(s,) for s in symbols], schema="symbol string")
+    df.createOrReplaceTempView("research_universe")
     return symbols
 
 
@@ -426,6 +449,8 @@ def main():
     spark = get_spark()
     symbols = register_universe(spark)
     print(f"universe: {len(symbols)} symbols")
+    research_symbols = register_research_universe(spark)
+    print(f"research universe: {len(research_symbols)} symbols")
 
     if args.truncate:
         print("\n=== truncate targets ===")
