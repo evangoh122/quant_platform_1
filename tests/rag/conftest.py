@@ -307,4 +307,3 @@ def _guard_spark(monkeypatch):
         monkeypatch.setattr(hr, "_get_spark", _spark_guard)
     except (ImportError, AttributeError):
         pass
-

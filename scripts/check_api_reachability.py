@@ -69,6 +69,10 @@ _STRING_REF_RE = re.compile(
     r"""['"](""" + "|".join(sorted(_LOCAL_ROOTS)) + r""")(?:\.[A-Za-z_][A-Za-z0-9_]*)+"""
 )
 
+# A ``.py`` path in a bundle spec: ``python_file: ../pipelines/x.py``,
+# ``notebook_path: ../notebooks/x.py``.  Templated paths are skipped later.
+_RESOURCE_PATH_RE = re.compile(r"""([\w${}./~-]+\.py)\b""")
+
 
 def _module_name(path: pathlib.Path, root: pathlib.Path) -> str:
     rel = path.relative_to(root)
@@ -168,17 +172,46 @@ def scan_repository(root: pathlib.Path):
     return known, graph
 
 
+def _resource_modules(spec: pathlib.Path, root: pathlib.Path) -> set[str]:
+    """Resolve the ``.py`` paths named in one bundle spec to module names.
+
+    Databricks resolves task ``python_file`` / ``notebook_path`` values relative
+    to the bundle root of the spec, i.e. ``resources/jobs.yml`` declaring
+    ``python_file: ../pipelines/x.py`` runs ``<repo>/pipelines/x.py``.  The path
+    therefore has to be joined to ``spec.parent`` (not to the repository root)
+    and must lose its ``.py`` suffix before it can match a scanned module.
+    """
+    try:
+        text = spec.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return set()
+    modules: set[str] = set()
+    for ref in _RESOURCE_PATH_RE.findall(text):
+        if any(marker in ref for marker in ("${", "$(", "*", "?")):
+            continue  # templated / glob path: not resolvable before deployment
+        try:
+            rel = (spec.parent / ref).resolve().relative_to(root)
+        except ValueError:
+            continue
+        parts = list(rel.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts.pop()
+        if parts:
+            modules.add(".".join(parts))
+    return modules
+
+
 def entry_points(root: pathlib.Path, known: dict[str, bool]) -> set[str]:
     """Return the modules production code starts from."""
+    root = pathlib.Path(root).resolve()
     entries = {"api.main"}
     for name in known:
         if name.split(".")[0] in ENTRY_PACKAGES:
             entries.add(name)
-    resources = pathlib.Path(root).resolve() / "resources"
+    resources = root / "resources"
     if resources.is_dir():
-        for spec in resources.glob("*.yml"):
-            for ref in re.findall(r"([\w/]+\.py)", spec.read_text(encoding="utf-8", errors="ignore")):
-                entries.add(ref.replace("/", "."))
+        for spec in sorted(resources.glob("*.yml")):
+            entries |= _resource_modules(spec, root)
     return {name for name in entries if name in known}
 
 

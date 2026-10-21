@@ -24,11 +24,13 @@ package importable (``import api.services.x`` never names ``api.services``).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from scripts.check_api_reachability import (
     ENTRY_PACKAGES,
     analyse,
+    entry_points,
     scan_repository,
     unreachable_api_modules,
 )
@@ -101,6 +103,68 @@ def test_helper_detects_dead_modules_and_exempts_live_package_inits(tmp_path: Pa
 
     # Not reached: an unimported module and a package nothing imports.
     assert dead == ["api.dead", "api.orphan", "api.orphan.gone"]
+
+
+def test_resources_yaml_job_tasks_are_entry_points(tmp_path: Path):
+    """A task named only in ``resources/*.yml`` is a live root.
+
+    Databricks resolves ``python_file`` / ``notebook_path`` relative to the
+    spec's own directory, so ``../db/job_task.py`` in ``resources/jobs.yml``
+    means ``<root>/db/job_task.py``.  ``db`` and ``jobs`` are deliberately not
+    in ``ENTRY_PACKAGES``: only the YAML registration can keep the ``api``
+    modules those tasks import out of the dead list.
+    """
+    _write(tmp_path, "api/__init__.py")
+    _write(tmp_path, "api/main.py")
+    _write(tmp_path, "api/via_spark_task.py")
+    _write(tmp_path, "api/via_notebook_task.py")
+    _write(tmp_path, "db/job_task.py", "import api.via_spark_task\n")
+    _write(tmp_path, "jobs/notebook_task.py", "import api.via_notebook_task\n")
+    _write(
+        tmp_path,
+        "resources/jobs.yml",
+        "resources:\n"
+        "  jobs:\n"
+        "    job:\n"
+        "      tasks:\n"
+        "        - task_key: spark\n"
+        "          spark_python_task:\n"
+        "            python_file: ../db/job_task.py\n"
+        "        - task_key: notebook\n"
+        "          notebook_task:\n"
+        "            notebook_path: ../jobs/notebook_task.py\n",
+    )
+
+    _inventory, reachable, dead = analyse(tmp_path)
+
+    assert "db.job_task" in reachable, "spark_python_task path was not registered"
+    assert "jobs.notebook_task" in reachable, "notebook_task path was not registered"
+    assert "api.via_spark_task" in reachable
+    assert "api.via_notebook_task" in reachable
+    assert dead == []
+
+
+def test_real_bundle_specs_resolve_to_scanned_modules():
+    """Non-vacuity: every job task in ``resources/*.yml`` is a live root."""
+    known, _graph = scan_repository(REPO)
+    entries = entry_points(REPO, known)
+    specs = sorted((REPO / "resources").glob("*.yml"))
+    assert specs, "no resources/*.yml found"
+
+    # Independent, minimal resolution of the declared task paths: Databricks
+    # resolves them against the spec's own directory.
+    expected: set[str] = set()
+    for spec in specs:
+        text = spec.read_text(encoding="utf-8")
+        for raw in re.findall(
+            r"(?:python_file|notebook_path):\s*['\"]?([^'\"\s]+\.py)", text
+        ):
+            rel = (spec.parent / raw).resolve().relative_to(REPO)
+            expected.add(".".join(rel.with_suffix("").parts))
+
+    assert expected, "no job task paths declared in resources/*.yml"
+    assert expected <= set(known), f"declared modules are not scanned: {expected - set(known)}"
+    assert expected <= entries, f"declared job tasks are not entry points: {expected - entries}"
 
 
 def test_tests_and_archives_are_not_scan_roots(tmp_path: Path):
