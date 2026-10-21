@@ -1,0 +1,85 @@
+# Volatility & risk-sizing layer (Phase 1) — every tunable lives here.
+# Nothing in risk/*.py hardcodes a strategy parameter.
+annualization: 252
+epsilon: 1.0e-12
+
+columns:
+  date: date
+  open_a: open_a
+  close_a: close_a
+  open_b: open_b
+  close_b: close_b
+
+estimators:
+  # Log close-to-close returns are the estimator convention.  P&L in
+  # pair_backtest.py is open-to-open (see README: the mix is deliberate).
+  return_type: log
+  ewma_span: 20
+  ewma_min_samples: 10
+  ewma_adjust: false          # recursive weights; no bias toward later bars
+  rolling_windows: [5, 20, 60]
+  rolling_min_samples: 5
+  vol_floor: 0.01             # annualized vol floor, e.g. 1%
+  percentile_window: 252
+  percentile_min_history: 252 # short-history names stay null, never a number
+  overnight_window: 20
+  intraday_window: 20
+
+sizing:
+  method: covariance_aware
+  target_vol: 0.10
+  max_gross: 2.0
+  hedge_clip_low: 0.25
+  hedge_clip_high: 3.0
+  spread_var_floor: 0.0025    # 0.05^2, floored annualized spread variance
+  vol_floor: 0.01
+  equal_dollar_gross: 1.0
+  inverse_vol_gross: 1.0
+  signal_cap: 1.0             # alpha magnitude is clipped to +/- this
+  default_signal: 1.0
+
+signals:
+  mode: momentum_z            # momentum | reversal | momentum_z | constant
+  lookback: 20
+
+costs:
+  bps_per_side: [5.0, 10.0, 15.0]
+  baseline_bps: 10.0
+
+backtest:
+  annualization: 252
+  return_type: simple         # open-to-open simple returns for P&L
+  sharpe_ddof: 0              # matches strategies/backtest.py::_sharpe
+  borrow_bucket: liquid       # key into strategies.cost_model.CostParams
+  cost_mode: flat             # flat | adv
+  book_capital: 1000000.0     # ADV mode only: converts weights to dollars
+
+regimes:
+  percentile_window: 252
+  percentile_min_history: 252
+  low_threshold: 0.33
+  high_threshold: 0.67
+  unknown_label: unknown
+
+compare:
+  methods: [equal_dollar, inverse_vol, covariance_aware, vol_target]
+  oos_fraction: 0.5
+
+experiment:
+  seed: 20261022
+  n_days: 1500
+  start_date: "2019-01-02"
+  rho: 0.8
+  overnight_share: 0.25
+  gap_idio_vol: 0.004
+  garch_a:
+    omega: 0.000007143
+    alpha: 0.08
+    beta: 0.90
+    long_run_vol: 0.30
+  garch_b:
+    omega: 0.000009522
+    alpha: 0.09
+    beta: 0.895
+    long_run_vol: 0.40
+  output: risk/results/p1_compare.md
