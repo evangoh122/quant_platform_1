@@ -719,6 +719,8 @@ def _old_daily_close_labels(features, closes, max_gap_days=5):
     return out
 
 
+# 300 seeds x pandas ops: ~30 s on a shared 2-vCPU host, seconds on CI.
+@pytest.mark.timeout(180)
 def test_daily_close_labels_matches_old_behavior_with_nan_closes():
     """Differential test: current wrapper must match 816e54b behavior on NaN closes.
 

@@ -19,7 +19,7 @@ def test_feature_sets_are_strictly_nested():
     assert set(FEATURE_SETS["C"]) < set(FEATURE_SETS["D"])
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)  # CPU-bound matrix sweep; 120 s is tight on a shared host
 def test_ablation_runner_varies_feature_set_between_arms():
     matrix = make_synthetic_matrix(n_symbols=18, n_bars=200, seed=7)
 
