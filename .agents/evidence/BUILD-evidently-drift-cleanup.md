@@ -242,11 +242,23 @@ ERROR tests/rag/test_edgar_adapter.py::test_adapter_error_is_exception - Fail...
 
 ```text
 $ PYTHONPATH=/tmp/opencode/ci-parity/pyspark-stub /root/quant-platform-1/.venv-write-confirm/venv/bin/python -m pytest -q -m "not spark and not lakebase and not databricks"
-<RESULT-STUB>
+=========================== short test summary info ============================
+FAILED tests/ml/test_ablation.py::test_ablation_runner_varies_feature_set_between_arms
+FAILED tests/ml/test_baseline_labels.py::test_daily_close_labels_matches_old_behavior_with_nan_closes
+FAILED tests/ml/test_hardening.py::test_arm_d_differs_from_arm_c_in_cot_columns
+FAILED tests/ml/test_hardening.py::test_fold_local_classification_unchanged_by_future_data
+FAILED tests/test_hermetic_guard.py::TestResilienceTiming::test_resilience_route_fast_under_guard
+5 failed, 2932 passed, 70 skipped, 24 deselected, 35 warnings in 775.25s (0:12:55)
 ```
 
-(The runner has no `pyspark` installed at all, so this variant is expected to
-match run 1 exactly; the stub only makes the absence explicit.)
+Same picture as run 1: the three pre-existing ML failures are identical to the
+`git archive 151e255` baseline proof, and the two extra failures
+(`test_ablation…varies_feature_set_between_arms`, the hermetic-guard
+`TestResilienceTiming` timing test) are 30 s/120 s budget flakes under
+concurrent load (both pass when re-run without contention). Nothing is
+skipped beyond the suite's 70 pre-existing marker skips; the 15 new tests all
+executed. The runner has no `pyspark` installed at all, so this variant and
+run 1 differ only by the explicit stub.
 
 ### 3. `python ml/run_drift_report.py --help`
 
