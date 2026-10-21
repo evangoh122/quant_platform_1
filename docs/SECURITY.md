@@ -13,7 +13,7 @@ Dependencies are audited for known vulnerabilities using:
 The `security-audit` job in `.github/workflows/ci.yml` runs:
 
 1. `uv export --frozen --no-dev --no-hashes | pip-audit -r /dev/stdin` — the locked runtime set (what Databricks Apps and the Docker image install)
-2. `uv export --frozen --no-hashes | pip-audit -r /dev/stdin` — the locked CI/development set
+2. `uv run pip-audit` — the environment uv built from the lock (runtime + dev)
 3. `npm audit --omit=dev --audit-level=high` — frontend production dependencies
 
 Both audit inputs are exports of the committed `uv.lock`, so the audited set is
@@ -63,9 +63,18 @@ This change supersedes both PRs:
 # Runtime set (what Databricks Apps / the Docker image install):
 uv export --frozen --no-dev --no-hashes | pip-audit -r /dev/stdin
 
-# Full CI set:
-uv export --frozen --no-hashes | pip-audit -r /dev/stdin
+# Full CI set (the environment `uv sync --frozen --group dev` created):
+uv run pip-audit
 ```
+
+`pyproject.toml` carries one `[tool.uv].override-dependencies` entry:
+`certifi>=2026.10.19`. `polygon-api-client` (dev-only) caps certifi at
+`<2026.0.0`, which held the shared lock at 2025.11.12 (PYSEC-2026-4320). certifi
+is a CA-data package with an unchanged API, so the runtime security floor
+overrides that dev-tool cap; a pip re-resolution of the dev export would report
+the conflict, which is why the CI job audits the uv-built environment instead
+of re-resolving the export with pip.
+
 
 `ibapi` is not on PyPI and never enters `uv.lock`, so no filtering is needed
 anymore (CI still asserts it stays out).

@@ -207,13 +207,13 @@ jobs:
             | uv run pip-audit -r /dev/stdin ${{ steps.ignore.outputs.args }}
 
       - name: Audit the CI/development dependency set
-        # Previously the retired app requirements file pulled the full runtime
-        # range set; this keeps that coverage and adds the dev tooling.
+        # Audits the environment uv built from the lock (runtime + dev). This is
+        # the same resolved set as `uv export`, and unlike a pip re-resolution it
+        # honours [tool.uv].override-dependencies. Previously the retired app
+        # requirements file pulled the full runtime range set; coverage is kept.
         shell: bash
         run: |
-          set -o pipefail
-          uv export --frozen --no-hashes \
-            | uv run pip-audit -r /dev/stdin ${{ steps.ignore.outputs.args }}
+          uv run pip-audit ${{ steps.ignore.outputs.args }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

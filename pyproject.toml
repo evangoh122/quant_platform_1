@@ -96,3 +96,10 @@ dev = [
 # not try to build/install the project itself, and `uv export` must not emit it.
 [tool.uv]
 package = false
+
+# Security floor for the CA bundle. `polygon-api-client` (dev-only market-data
+# tooling) caps certifi at `<2026.0.0`, which would hold the single shared lock
+# at 2025.11.12 — flagged by PYSEC-2026-4320, fixed in 2026.10.19. certifi ships
+# CA data only and its API is unchanged across that boundary, so the runtime
+# security floor overrides that unrelated dev-tool cap (see docs/SECURITY.md).
+override-dependencies = ["certifi>=2026.10.19"]
