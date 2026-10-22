@@ -95,6 +95,9 @@ tables:
     adjustment_columns: [adj_open, adj_high, adj_low, adj_close, adj_vwap, adj_volume, cumulative_split_ratio, price_adjustment_factor]
     adjustment_rule: "Prices and VWAP are divided by cumulative_split_ratio; volume is multiplied by it. Stored adj_* levels are global/current-scale and approved for returns, not historical model price-level features."
     critical_rule: "Use return_1d for daily return analytics; it is NULL while a matching data-quality break is masked."
+    research_symbols_note: "Includes the research_universe symbols from config/research_symbols.yaml (the ten commodity ETFs) alongside gold_tradable_universe and the SPY/RSP/QQQ benchmarks; research symbols are coverage only and never enter gold_model_features or published signals."
+    adjustment_scope: "Split adjustment only. Distributions/dividends are NOT adjusted (corporate-action scope is splits from bronze_corporate_actions), so an ETF ex-distribution gap remains in adj_* returns."
+    gap_label_rule: "return_1d and raw_overnight_return are close-to-close (adj_close / LAG(adj_close) - 1) and must not be used as the opening-gap label; the gap label is next-session adj_open / previous-session adj_close - 1."
   data_quality_breaks:
     grain: "One detected daily OHLCV break per (symbol, event_date)"
     keys: [symbol, event_date]

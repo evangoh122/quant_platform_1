@@ -10,6 +10,9 @@ makes this separation explicit; the guard test
 
 Mirrors the loader style of ``config/universe.py``: quoted-string symbols,
 fail-closed on malformed entries, no hardcoded ticker list in transform code.
+Every row must also declare a ``data_source`` from the shared vocabulary in
+``config/data_sources.py`` (owner decision 2026-10-22); a missing or unknown
+code is an error.
 An overlap with ``config/universe.yaml`` is reported as a warning, not an
 error — that is a configuration mistake to fix, not a reason to fail a run.
 """
@@ -23,6 +26,7 @@ from typing import Dict, Iterable, List, Optional
 
 import yaml
 
+from config.data_sources import DATA_SOURCES, validate_data_source
 from config.universe import load_universe
 
 _DEFAULT_YAML = str(Path(__file__).parent / "research_symbols.yaml")
@@ -106,10 +110,11 @@ def load_research_registry(
     path: Optional[str] = None,
     group: str = DEFAULT_GROUP,
 ) -> Dict[str, Dict[str, str]]:
-    """Return ``{symbol: {"commodity": ..., "etf_kind": ...}}`` for ``group``.
+    """Return ``{symbol: {"commodity", "etf_kind", "data_source"}}`` for ``group``.
 
     Validation is fail-closed: every symbol must be a unique upper-case ticker
-    with a non-empty ``commodity`` and an ``etf_kind`` in :data:`ETF_KINDS`.
+    with a non-empty ``commodity``, an ``etf_kind`` in :data:`ETF_KINDS`, and a
+    ``data_source`` drawn from :data:`config.data_sources.DATA_SOURCES`.
     Configuration order is preserved.
     """
     p = path or os.getenv("RESEARCH_SYMBOLS_YAML", _DEFAULT_YAML)
@@ -134,7 +139,7 @@ def load_research_registry(
         if not isinstance(meta, dict):
             raise ValueError(
                 f"{p}: research symbol {symbol!r} needs a metadata mapping "
-                f"with 'commodity' and 'etf_kind'"
+                f"with 'commodity', 'etf_kind' and 'data_source'"
             )
         commodity = meta.get("commodity")
         if not isinstance(commodity, str) or not commodity.strip():
@@ -147,9 +152,19 @@ def load_research_registry(
                 f"{p}: research symbol {symbol!r} has etf_kind {etf_kind!r}; "
                 f"expected one of {sorted(ETF_KINDS)}"
             )
+        if "data_source" not in meta:
+            raise ValueError(
+                f"{p}: research symbol {symbol!r} is missing 'data_source'; "
+                f"expected one of {sorted(DATA_SOURCES)}"
+            )
+        try:
+            data_source = validate_data_source(meta["data_source"])
+        except ValueError as exc:
+            raise ValueError(f"{p}: research symbol {symbol!r}: {exc}") from exc
         registry[symbol] = {
             "commodity": commodity.strip(),
             "etf_kind": etf_kind,
+            "data_source": data_source,
         }
     return registry
 
@@ -186,4 +201,7 @@ if __name__ == "__main__":
     registry = load_research_registry()
     print(f"research group {DEFAULT_GROUP}: {len(registry)} symbols")
     for symbol, meta in registry.items():
-        print(f"  {symbol:6} {meta['commodity']:16} {meta['etf_kind']}")
+        print(
+            f"  {symbol:6} {meta['commodity']:16} {meta['etf_kind']:9} "
+            f"{meta['data_source']}"
+        )

@@ -1,4 +1,24 @@
 
+## Provenance: `data_source`
+
+Every table, view, config row, snapshot record and knowledge-graph row produced by this repository carries a
+non-null `data_source` holding exactly one code from the controlled vocabulary in `config/data_sources.py`
+(`DATA_SOURCES` + `validate_data_source`; unknown, empty or non-string values raise):
+
+| code | meaning |
+|---|---|
+| `massive` | Massive (Polygon) S3 flat files / REST (OHLCV, options, splits, dividends) |
+| `sec_edgar` | SEC EDGAR filings and the submissions API (data.sec.gov/submissions) |
+| `sec_companyfacts` | SEC XBRL Company-Facts API |
+| `hyperliquid` | Hyperliquid info API (HIP-3 perps, funding, candles) |
+| `binance_um` | Binance USD-M futures (data.binance.vision archives / API) |
+| `config` | hand-maintained repository config (e.g. universe YAML) |
+| `derived` | computed in this project from other rows (record the inputs' sources in lineage/docs where a row mixes sources) |
+
+SQL tables use `data_source STRING NOT NULL`; YAML config rows declare `data_source:` and their loader rejects a
+missing or unknown value; Python records carry a required `data_source` field. The research group rows in
+`config/research_symbols.yaml` declare `data_source: massive` because their prices come from Massive.
+
 ### bronze_ohlcv  (14 cols)
   symbol                             string NOT NULL
   event_ts                           timestamp NOT NULL
@@ -637,6 +657,19 @@
   return_1d is the canonical return: NULL when is_data_quality_break = TRUE,
   otherwise adj_close / LAG(adj_close) - 1.  Never zero-filled for masked dates.
   information_available_ts is 16:30 America/New_York on the bar date (daily close).
+
+  Coverage: gold_tradable_universe symbols, the SPY/RSP/QQQ benchmarks, and the
+  research_universe symbols from config/research_symbols.yaml (ten commodity ETFs:
+  GLD, IAU, SLV, SIVR, USO, BNO, UNG, CPER, PPLT, PALL).  Research symbols are
+  research coverage only: they never enter gold_model_features or the published
+  baseline signals, and config/universe.yaml (the trading universe) must stay
+  disjoint from them.
+  Adjustment scope: SPLIT-ONLY.  Distributions/dividends are NOT adjusted (the
+  corporate-action scope is stock splits from bronze_corporate_actions), so an
+  ETF ex-distribution gap remains in adj_* returns and return_1d.
+  Do NOT use return_1d or raw_overnight_return as the opening-gap label: both are
+  close-to-close (adj_close / LAG(adj_close) - 1).  The gap label is
+  next-session adj_open / previous-session adj_close - 1.
 
 ### data_quality_breaks  (14 cols)
   symbol                             string NOT NULL

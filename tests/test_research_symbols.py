@@ -6,9 +6,10 @@ research coverage (split-adjusted silver + corporate actions) WITHOUT entering
 the trading universe or the published baseline signals.
 
 These tests pin the loader contract of ``config/research_symbols.py``:
-config-order symbols, unique upper-case tickers, per-symbol ``commodity`` and
-``etf_kind``, and an overlap with the trading universe reported as a warning
-rather than an error.
+config-order symbols, unique upper-case tickers, per-symbol ``commodity``,
+``etf_kind`` and ``data_source`` (from the shared vocabulary in
+``config/data_sources.py``), and an overlap with the trading universe reported
+as a warning rather than an error.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from config.data_sources import DATA_SOURCES, validate_data_source
 from config.research_symbols import (
     DEFAULT_GROUP,
     ETF_KINDS,
@@ -55,6 +57,7 @@ _VALID_META = """
       {symbol}:
         commodity: gold
         etf_kind: physical
+        data_source: massive
 """
 
 
@@ -88,6 +91,22 @@ class TestDefaultConfiguration:
             assert meta["commodity"], f"{symbol} has no commodity"
             assert meta["etf_kind"] in ETF_KINDS
 
+    def test_every_symbol_declares_a_valid_data_source(self):
+        """RULE-data-source-column: valid code drawn from production vocabulary."""
+        registry = load_research_registry()
+        assert list(registry) == EXPECTED_SYMBOLS
+        for symbol, meta in registry.items():
+            assert "data_source" in meta, f"{symbol} has no data_source"
+            assert meta["data_source"] in DATA_SOURCES
+            assert validate_data_source(meta["data_source"]) == meta["data_source"]
+
+    def test_default_rows_declare_massive_prices(self):
+        """Owner decision: the research group's prices come from Massive."""
+        registry = load_research_registry()
+        assert {s: m["data_source"] for s, m in registry.items()} == {
+            symbol: "massive" for symbol in EXPECTED_SYMBOLS
+        }
+
     def test_etf_kind_matches_the_instrument(self):
         registry = load_research_registry()
         assert {s: m["etf_kind"] for s, m in registry.items()} == EXPECTED_ETF_KIND
@@ -117,7 +136,9 @@ class TestValidation:
     def test_duplicate_symbol_rejected(self, tmp_path):
         body = _config(
             "      GLD:\n        commodity: gold\n        etf_kind: physical\n"
+            "        data_source: massive\n"
             "      GLD:\n        commodity: silver\n        etf_kind: futures\n"
+            "        data_source: massive\n"
         )
         path = _write(tmp_path, body)
         with pytest.raises(ValueError, match="duplicate"):
@@ -135,7 +156,7 @@ class TestValidation:
             tmp_path,
             _config(
                 "      \"GLD'DROP\":\n        commodity: gold\n"
-                "        etf_kind: physical\n"
+                "        etf_kind: physical\n        data_source: massive\n"
             ),
         )
         with pytest.raises(ValueError, match="invalid research symbol"):
@@ -150,7 +171,10 @@ class TestValidation:
     def test_missing_commodity_rejected(self, tmp_path):
         path = _write(
             tmp_path,
-            _config("      GLD:\n        etf_kind: physical\n"),
+            _config(
+                "      GLD:\n        etf_kind: physical\n"
+                "        data_source: massive\n"
+            ),
         )
         with pytest.raises(ValueError, match="missing 'commodity'"):
             load_research_symbols(path=path)
@@ -158,9 +182,32 @@ class TestValidation:
     def test_unknown_etf_kind_rejected(self, tmp_path):
         path = _write(
             tmp_path,
-            _config("      GLD:\n        commodity: gold\n        etf_kind: swap\n"),
+            _config(
+                "      GLD:\n        commodity: gold\n        etf_kind: swap\n"
+                "        data_source: massive\n"
+            ),
         )
         with pytest.raises(ValueError, match="etf_kind"):
+            load_research_symbols(path=path)
+
+    def test_missing_data_source_rejected(self, tmp_path):
+        path = _write(
+            tmp_path,
+            _config("      GLD:\n        commodity: gold\n        etf_kind: physical\n"),
+        )
+        with pytest.raises(ValueError, match="missing 'data_source'"):
+            load_research_symbols(path=path)
+
+    @pytest.mark.parametrize("bad", ["polygon", "Massive", "", 7])
+    def test_unknown_or_invalid_data_source_rejected(self, tmp_path, bad):
+        path = _write(
+            tmp_path,
+            _config(
+                "      GLD:\n        commodity: gold\n        etf_kind: physical\n"
+                f"        data_source: {bad!r}\n"
+            ),
+        )
+        with pytest.raises(ValueError, match="data_source"):
             load_research_symbols(path=path)
 
     def test_metadata_mapping_required(self, tmp_path):
@@ -191,8 +238,9 @@ class TestTradingUniverseOverlap:
         trading_symbol = load_universe()[0]  # read, not hardcoded
         body = _config(
             "      GLD:\n        commodity: gold\n        etf_kind: physical\n"
+            "        data_source: massive\n"
             f"      {trading_symbol}:\n        commodity: gold\n"
-            "        etf_kind: physical\n"
+            "        etf_kind: physical\n        data_source: massive\n"
         )
         path = _write(tmp_path, body)
         with pytest.warns(UserWarning, match="trading universe") as record:
@@ -204,7 +252,7 @@ class TestTradingUniverseOverlap:
         trading_symbol = load_universe()[0]
         body = _config(
             f"      {trading_symbol}:\n        commodity: gold\n"
-            "        etf_kind: physical\n"
+            "        etf_kind: physical\n        data_source: massive\n"
         )
         path = _write(tmp_path, body)
         with pytest.warns(UserWarning, match="trading universe"):

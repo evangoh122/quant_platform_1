@@ -12,6 +12,21 @@
 #   - notebooks/refresh_bronze_corporate_actions.py  unions it into the
 #     corporate-action symbol screen (so USO/UNG reverse splits are fetched)
 #
+# ``data_source`` (owner decision 2026-10-22, RULE-data-source-column.md) names
+# the provider each symbol's prices come from: ``massive`` for every row here.
+# The codes are defined once in config/data_sources.py; the loader
+# (config/research_symbols.py) rejects a missing or unknown value.
+#
+# Two pitfalls that this group's daily bars inherit, documented here because
+# consumers of silver_ohlcv_day_adjusted for these symbols trip over them:
+#   1. Adjustment is split-only. Distributions/dividends are NOT adjusted (the
+#      corporate-action scope is bronze_corporate_actions stock splits), so an
+#      ETF ex-distribution gap stays in adj_* returns.
+#   2. ``return_1d`` and ``raw_overnight_return`` in silver/08 are
+#      close-to-close (adj_close / LAG(adj_close) - 1). They are NOT the
+#      opening-gap label; the gap label is
+#      next-session adj_open / previous-session adj_close - 1.
+#
 # Guarded non-consumers (tests/test_research_symbols_pipeline.py):
 #   - gold/01_gold_ohlcv_features.sql  (minute feature spine, trading ``universe``)
 #   - gold/05_gold_model_features.sql  (model matrix inputs)
@@ -21,7 +36,9 @@
 # (config/research_symbols.py) reports it as a warning, not an error, so a
 # deliberate promotion can be staged without breaking a pipeline run.
 #
-# Symbols are YAML mapping keys, so they must be quoted strings. Unquoted
+# Symbols are YAML mapping keys, so they must be quoted strings. (They are
+# unique upper-case tickers; the loader validates that and rejects non-ticker
+# character sets before any symbol is quoted into SQL.) Unquoted
 # scalars such as ON / YES / NO / OFF / Y / N / TRUE / FALSE / NULL parse as
 # booleans or null; the loader rejects non-string keys.
 
@@ -40,30 +57,40 @@ groups:
       GLD:
         commodity: gold
         etf_kind: physical
+        data_source: massive
       IAU:
         commodity: gold
         etf_kind: physical
+        data_source: massive
       SLV:
         commodity: silver
         etf_kind: physical
+        data_source: massive
       SIVR:
         commodity: silver
         etf_kind: physical
+        data_source: massive
       USO:
         commodity: crude_oil
         etf_kind: futures
+        data_source: massive
       BNO:
         commodity: brent_crude_oil
         etf_kind: futures
+        data_source: massive
       UNG:
         commodity: natural_gas
         etf_kind: futures
+        data_source: massive
       CPER:
         commodity: copper
         etf_kind: futures
+        data_source: massive
       PPLT:
         commodity: platinum
         etf_kind: physical
+        data_source: massive
       PALL:
         commodity: palladium
         etf_kind: physical
+        data_source: massive
