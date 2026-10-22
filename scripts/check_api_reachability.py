@@ -18,10 +18,21 @@ module that only a test imports is dead production code, and archived code is
 not shipped.
 
 Edges come from real ``import`` statements (including deferred, function-local
-imports) plus dotted module names that appear as strings (uvicorn targets,
-``importlib`` lookups).  A *package* ``__init__`` is exempt when at least one of
-its submodules is reachable: ``import api.services.x`` makes the package usable
-without ever naming ``api.services`` itself.
+imports) plus dotted module names that appear as non-docstring string literals
+(uvicorn targets, ``importlib`` lookups).  Comments and docstrings are ignored so
+prose about a retired module cannot keep it "alive".  Importing a submodule also
+executes every parent package ``__init__``, so those edges are followed as well.
+A *package* ``__init__`` is exempt when at least one of its submodules is
+reachable: ``import api.services.x`` makes the package usable without ever
+naming ``api.services`` itself.
+
+Known limits, accepted deliberately so the guard stays cheap and stable:
+
+* Every module in ``ENTRY_PACKAGES`` is a root by definition.  This is lenient:
+  an ``api.*`` module imported only by a retired pipeline still counts as
+  reachable, because the scan cannot tell a live job from a dead one.
+* Computed dynamic imports are invisible: ``importlib.import_module(f"api.{n}")``
+  has no literal module name to read, so the scan cannot follow that edge.
 
 Usage::
 
@@ -58,6 +69,11 @@ ENTRY_PACKAGES = (
 # Never scanned: test-only code and vendored dependencies.
 _EXCLUDED_TOP_LEVEL = frozenset({"tests", "node_modules"})
 
+# Never descend into these at any depth: virtualenvs, installed node packages
+# and every dot-directory (``.venv``, ``.cache``, tool state) hold vendored or
+# generated copies, never production modules.
+_EXCLUDED_ANY_DEPTH = frozenset({"node_modules", ".venv", "venv"})
+
 # Only dotted names starting with one of these roots can be a local module.
 _LOCAL_ROOTS = frozenset(
     {"api", "agent", "pipelines", "gold", "silver", "etl", "bronze", "ml",
@@ -65,8 +81,11 @@ _LOCAL_ROOTS = frozenset(
      "evals", "db", "security", "execution", "ontology"}
 )
 
+# A dotted local module name inside a string literal, e.g. ``"api.main:app"`` or
+# ``importlib.import_module("api.live")``.  The lookbehind stops ``myapi.main``
+# from matching ``api.main``.
 _STRING_REF_RE = re.compile(
-    r"""['"](""" + "|".join(sorted(_LOCAL_ROOTS)) + r""")(?:\.[A-Za-z_][A-Za-z0-9_]*)+"""
+    r"""(?<![\w.])(""" + "|".join(sorted(_LOCAL_ROOTS)) + r""")(?:\.[A-Za-z_][A-Za-z0-9_]*)+"""
 )
 
 # A ``.py`` path in a bundle spec: ``python_file: ../pipelines/x.py``,
@@ -90,6 +109,11 @@ def _iter_sources(root: pathlib.Path):
             continue
         if "archive" in rel.parts:
             continue
+        if any(
+            part in _EXCLUDED_ANY_DEPTH or part.startswith(".")
+            for part in rel.parts[:-1]
+        ):
+            continue
         name = _module_name(path, root)
         if not name:
             continue
@@ -108,6 +132,32 @@ def _resolve_relative(module: str, is_package_init: bool, level: int, base: str)
     return ".".join(parts)
 
 
+def _docstring_ids(tree: ast.AST) -> set[int]:
+    """Return the ``id()`` of every docstring ``Constant`` node in *tree*.
+
+    Only the first statement of a module, class or function can be a docstring;
+    comments never reach the AST, so documentation-only text cannot create a
+    module edge.
+    """
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        body = node.body
+        if not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstrings.add(id(first.value))
+    return docstrings
+
+
 def _imports_of(module: str, path: pathlib.Path, known: dict[str, bool]) -> set[str]:
     """Return local module names imported by *path* (static + string refs)."""
     try:
@@ -117,6 +167,7 @@ def _imports_of(module: str, path: pathlib.Path, known: dict[str, bool]) -> set[
         return set()
 
     is_package_init = path.name == "__init__.py"
+    docstring_ids = _docstring_ids(tree)
     raw: set[str] = set()
 
     for node in ast.walk(tree):
@@ -139,15 +190,21 @@ def _imports_of(module: str, path: pathlib.Path, known: dict[str, bool]) -> set[
                 for alias in node.names:
                     raw.add(alias.name)
 
-    for match in _STRING_REF_RE.finditer(text):
-        raw.add(match.group(0).strip("'\""))
+    # Dotted module names only count where they are executable string literals.
+    for node in ast.walk(tree):
+        if id(node) in docstring_ids:
+            continue
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            raw.update(
+                match.group(0) for match in _STRING_REF_RE.finditer(node.value)
+            )
 
     resolved: set[str] = set()
     for name in raw:
         if name in known:
             resolved.add(name)
-            continue
-        # ``import a.b.c`` also makes a.b and a live when they are modules here.
+        # Importing ``a.b.c`` executes every parent package ``__init__`` whether
+        # or not ``a.b.c`` is itself a scanned module, so add the ancestors.
         parts = name.split(".")
         for i in range(1, len(parts)):
             prefix = ".".join(parts[:i])

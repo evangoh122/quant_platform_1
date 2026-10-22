@@ -27,8 +27,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts import check_api_reachability as reachability
 from scripts.check_api_reachability import (
-    ENTRY_PACKAGES,
     analyse,
     entry_points,
     scan_repository,
@@ -71,12 +71,9 @@ def test_scan_sees_the_live_api_surface():
         assert anchor in reachable, f"{anchor} is not reachable — scan is broken"
     assert "api.main" in inventory
 
-    known, graph = scan_repository(REPO)
-    assert ENTRY_PACKAGES, "entry packages must not be empty"
-    # Every executable package must contribute at least one root when present.
-    for package in ENTRY_PACKAGES:
-        if any(name.startswith(package + ".") for name in known):
-            assert any(name.startswith(package + ".") for name in graph), package
+    # Entry-package leniency itself is covered by a fail-able synthetic tree in
+    # ``test_entry_package_modules_are_live_roots``; a real-repo loop over
+    # ENTRY_PACKAGES could only ever pass.
 
 
 def test_helper_detects_dead_modules_and_exempts_live_package_inits(tmp_path: Path):
@@ -179,3 +176,120 @@ def test_tests_and_archives_are_not_scan_roots(tmp_path: Path):
 
     assert "api.only_tests_import" in dead
     assert "tests.test_only" not in reachable
+
+
+def test_parent_package_initializers_are_followed(tmp_path: Path):
+    """Importing a submodule runs every parent ``__init__``, so follow it.
+
+    ``api.main`` imports only ``api.sub.live``; the ``api.sub`` package
+    initializer imports ``api.required``.  Python executes that initializer, so
+    ``api.required`` is live even though no source statement names ``api.sub``.
+    """
+    _write(tmp_path, "api/__init__.py")
+    _write(tmp_path, "api/main.py", "import api.sub.live\n")
+    _write(tmp_path, "api/sub/__init__.py", "import api.required\n")
+    _write(tmp_path, "api/sub/live.py")
+    _write(tmp_path, "api/required.py")
+
+    _inventory, reachable, dead = analyse(tmp_path)
+
+    assert "api.sub.live" in reachable
+    assert "api.required" in reachable, "parent package __init__ edge was dropped"
+    assert dead == []
+
+
+def test_string_references_ignore_comments_and_docstrings(tmp_path: Path):
+    """Only executable string literals are module references.
+
+    A comment, or a module/class/function docstring that mentions a retired
+    module, must not keep that module alive; a real ``importlib`` argument or a
+    plain string literal in code must.
+    """
+    _write(tmp_path, "api/__init__.py")
+    _write(
+        tmp_path,
+        "api/main.py",
+        '"""Module note: "api.module_doc" was retired."""\n'
+        "import importlib\n"
+        "\n"
+        "\n"
+        "class Widget:\n"
+        '    """Class note: "api.class_doc" was retired."""\n'
+        "\n"
+        "\n"
+        "def load():\n"
+        '    """Function note: "api.func_doc" was retired."""\n'
+        '    importlib.import_module("api.live")\n'
+        '    return "api.live_call"\n'
+        "\n"
+        "\n"
+        '# Comment: "api.comment_only" was retired.\n',
+    )
+    for name in (
+        "api/live.py",
+        "api/live_call.py",
+        "api/module_doc.py",
+        "api/class_doc.py",
+        "api/func_doc.py",
+        "api/comment_only.py",
+    ):
+        _write(tmp_path, name)
+
+    _inventory, reachable, dead = analyse(tmp_path)
+
+    assert "api.live" in reachable, "importlib string argument must create an edge"
+    assert "api.live_call" in reachable, "plain string literal must create an edge"
+    assert dead == [
+        "api.class_doc",
+        "api.comment_only",
+        "api.func_doc",
+        "api.module_doc",
+    ]
+
+
+def test_entry_package_modules_are_live_roots(tmp_path: Path, monkeypatch):
+    """A module in an entry package is a root; drop the package and it dies.
+
+    This is the fail-able version of "entry packages contribute roots", and it
+    documents the deliberate leniency: any module under an entry package is
+    assumed live, so an ``api`` module imported only by a retired pipeline still
+    passes the guard.
+    """
+    _write(tmp_path, "api/__init__.py")
+    _write(tmp_path, "api/main.py")
+    _write(tmp_path, "api/used_by_task.py")
+    _write(tmp_path, "taskpkg/__init__.py")
+    _write(tmp_path, "taskpkg/run.py", "import api.used_by_task\n")
+
+    monkeypatch.setattr(reachability, "ENTRY_PACKAGES", ("taskpkg",))
+    _inventory, reachable, _dead = analyse(tmp_path)
+    assert "taskpkg.run" in reachable, "module in an entry package is not a root"
+    assert "api.used_by_task" in reachable
+
+    monkeypatch.setattr(reachability, "ENTRY_PACKAGES", ())
+    _inventory, reachable, dead = analyse(tmp_path)
+    assert "taskpkg.run" not in reachable, "entry package still treated as a root"
+    assert "api.used_by_task" in dead
+
+
+def test_vendor_and_hidden_directories_are_skipped_at_any_depth(tmp_path: Path):
+    """``node_modules``, ``venv`` and dot-directories never contribute modules."""
+    _write(tmp_path, "api/__init__.py")
+    _write(tmp_path, "api/main.py")
+    _write(tmp_path, "api/only_in_vendor.py")
+    for rel in (
+        ".venv/lib/site-packages/api/vendored.py",
+        "venv/api/vendored.py",
+        "node_modules/pkg/api/vendored.py",
+        "frontend/node_modules/api/vendored.py",
+        "api/.cache/api/vendored.py",
+    ):
+        _write(tmp_path, rel, "import api.only_in_vendor\n")
+
+    inventory, _reachable, dead = analyse(tmp_path)
+
+    assert "api.only_in_vendor" in dead, "a vendor copy kept a module alive"
+    assert not [name for name in inventory if "node_modules" in name]
+    assert not [name for name in inventory if name.startswith(".venv.")]
+    assert not [name for name in inventory if name.startswith("venv.")]
+    assert not [name for name in inventory if ".cache." in name]
