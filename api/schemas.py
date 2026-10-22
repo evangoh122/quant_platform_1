@@ -107,7 +107,12 @@ class SpreadSeries(BaseModel):
 
 
 class SpreadTile(BaseModel):
-    """A single number rendered beside a chart (e.g. the 10s2s spread)."""
+    """A single number rendered beside a chart (e.g. the 10s2s spread).
+
+    ``unit`` labels the number itself: the 10s2s tile is a yield spread, so its
+    unit is ``"pp"`` (percentage points), not ``"%"``.  The chart's own ``unit``
+    stays ``"%"`` because its y-axis holds yield levels.
+    """
     label: str = ""
     value: float | None = None
     as_of: str | None = None
@@ -120,6 +125,8 @@ class SpreadChart(BaseModel):
     title: str = ""
     subtitle: str = ""
     kind: Literal["price", "index", "yield"] = "index"
+    #: Unit of the plotted y values: ``"%"`` (yield levels), ``"USD"`` or
+    #: ``"index"``.  The tile carries its own unit (``"pp"`` for the 10s2s).
     unit: str = ""
     source: str = ""
     freshness: Freshness = Field(default_factory=Freshness)

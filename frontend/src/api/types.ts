@@ -79,6 +79,11 @@ export interface SpreadTile {
   label: string;
   value: number | null;
   as_of: string | null;
+  /**
+   * Unit of the tile value, rendered as-is next to it. A yield spread is in
+   * percentage points (`'pp'`), never percent — the chart's own `unit` is `'%'`
+   * because its y-axis holds yield levels.
+   */
   unit: string;
   points: SpreadPoint[];
 }
@@ -88,6 +93,7 @@ export interface SpreadChart {
   title: string;
   subtitle: string;
   kind: 'price' | 'index' | 'yield';
+  /** Unit of the plotted y values: `'%'` (yield levels), `'USD'` or `'index'`. */
   unit: string;
   source: string;
   freshness: Freshness;

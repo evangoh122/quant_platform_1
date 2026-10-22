@@ -169,13 +169,19 @@ def test_yield_chart_has_two_lines_and_a_10s2s_tile(client, fake_lakebase, monke
     yields = _charts(payload)["treasury_yields"]
 
     assert [series["key"] for series in yields["series"]] == ["DGS10", "DGS2"]
+    # The plotted lines are yield LEVELS, so the chart unit is percent ...
     assert yields["unit"] == "%"
     tile = yields["tile"]
     assert tile["label"] == "10s2s"
+    # ... but the spread is in percentage points, and that is the tile's unit.
+    assert tile["unit"] == "pp"
     assert tile["as_of"] == "2024-01-04"
     # 4.20 - 4.30 = -0.10 on the latest common date
     assert tile["value"] == pytest.approx(-0.10)
     assert len(tile["points"]) == 3
+    # FRED is plotted at observation_date, published the next business day.
+    assert "observation_date" in yields["caption"]
+    assert "next business day" in yields["caption"]
 
 
 def test_freshness_detail_flags_the_weekday_approximation(client, fake_lakebase, monkeypatch):
@@ -212,6 +218,8 @@ def test_fed_failure_degrades_only_the_yield_chart(client, fake_lakebase, monkey
     charts = _charts(response.json())
     assert charts["treasury_yields"]["freshness"]["state"] == "unavailable"
     assert charts["treasury_yields"]["tile"]["value"] is None
+    # The tile keeps its percentage-point unit even when the source degrades.
+    assert charts["treasury_yields"]["tile"]["unit"] == "pp"
     assert charts["uso_price"]["freshness"]["state"] == "fresh"
     assert charts["rsp_spy"]["freshness"]["state"] == "fresh"
 
@@ -357,17 +365,38 @@ def test_real_databricks_read_is_blocked(monkeypatch):
 
 
 def test_route_never_calls_the_warehouse(client, fake_lakebase, monkeypatch):
-    """With readers stubbed, any attempt to touch the warehouse fails the test."""
+    """With readers stubbed, nothing below the retrieval contract may be entered.
+
+    The guard *records* the call before raising: ``read_delta`` swallows
+    exceptions (and on a dev machine with pyspark installed the adapter would
+    take the Spark branch, never ``_warehouse_query``), so a raised exception
+    alone could not prove the Delta/warehouse layer was untouched.  The whole
+    adapter read surface is guarded and the recorded list must stay empty.
+    """
     from db import delta_adapter
 
-    def explode(*args, **kwargs):
-        raise AssertionError("route reached the SQL warehouse")
+    touched: list[str] = []
 
-    monkeypatch.setattr(delta_adapter, "_warehouse_query", explode)
-    monkeypatch.setattr(delta_adapter, "_get_warehouse_connection", explode)
+    def recorder(name):
+        def _call(*args, **kwargs):
+            touched.append(name)
+            raise AssertionError("route reached the Delta/warehouse layer")
+
+        return _call
+
+    for name in (
+        "market_features",
+        "fed_series",
+        "_warehouse_query",
+        "_get_warehouse_connection",
+    ):
+        monkeypatch.setattr(delta_adapter, name, recorder(name))
+    # Take the warehouse branch even where pyspark is installed.
+    monkeypatch.setattr(delta_adapter, "_has_pyspark", False)
     _stub_readers(monkeypatch)
 
     response = client.get("/api/spreads", headers=HEADERS)
 
     assert response.status_code == 200
     assert len(response.json()["charts"]) == 5
+    assert touched == []

@@ -275,7 +275,9 @@ def market_spreads(
             yield_caption = (
                 f"10s2s = DGS10 − DGS2 on {len(curve['spread_points'])} common "
                 f"dates; latest {curve['spread_value']:+.2f} pp on "
-                f"{curve['spread_as_of']}."
+                f"{curve['spread_as_of']}. FRED values are plotted at "
+                f"observation_date; the constant-maturity rate is published the "
+                f"next business day."
             )
         yields_chart = SpreadChart(
             chart_id="treasury_yields",
@@ -302,7 +304,8 @@ def market_spreads(
                 label="10s2s",
                 value=curve["spread_value"],
                 as_of=curve["spread_as_of"],
-                unit="%",
+                # A yield spread is in percentage points, not percent.
+                unit="pp",
                 points=[
                     (str(p[0]), float(p[1]))
                     for p in curve["spread_points"]
@@ -320,7 +323,7 @@ def market_spreads(
             unit="%",
             source=_FED,
             detail="chart computation unavailable",
-            tile=SpreadTile(label="10s2s", unit="%"),
+            tile=SpreadTile(label="10s2s", unit="pp"),
         )
     charts.append(yields_chart)
 

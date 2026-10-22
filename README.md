@@ -152,8 +152,12 @@ counted in the UI), never forward-filled, and fewer than two common points is sh
 
 **Futures spread not included:** `CLZ26.NYM` vs `CLZ27.NYM` is not charted because there is no futures data source in
 the lakehouse yet; the screen names the gap instead of inventing prices. The window options are **1M / 3M / 6M /
-All** (All = 1000 trading days; 252 is the API default), measured in trading days with a weekday approximation —
-exchange holidays are not excluded — and capped at 1000.
+All** = **21 / 63 / 126 / 1000 trading days** (252 is the API default). They are trading days, not calendar days,
+approximated as weekdays — exchange holidays are not excluded — and capped at 1000.
+
+**FRED timing:** the 10Y / 2Y chart plots each value at its `observation_date` (the day the rate was measured); a
+constant-maturity rate is published the next business day. The 10s2s tile is a yield spread, so it is quoted in
+percentage points (`pp`), not percent.
 
 ## Repository layout
 

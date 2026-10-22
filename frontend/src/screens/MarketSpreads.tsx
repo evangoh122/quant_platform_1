@@ -10,10 +10,12 @@ import { ErrorState } from '../components/ErrorState';
 import { LoadingState } from '../components/LoadingState';
 import { LineChart, type LineChartSeries } from '../components/LineChart';
 
+// The requested window is TRADING days (weekday approximation), not calendar
+// days: 21 / 63 / 126 approximate one / three / six months of trading.
 const RANGE_OPTIONS = [
-  { label: '1M', days: 30 },
-  { label: '3M', days: 90 },
-  { label: '6M', days: 180 },
+  { label: '1M', days: 21 },
+  { label: '3M', days: 63 },
+  { label: '6M', days: 126 },
   { label: 'All', days: 1000 },
 ] as const;
 
@@ -39,6 +41,12 @@ function toLines(chart: SpreadChart): LineChartSeries[] {
   }));
 }
 
+/** Tile value plus the API's own unit (`pp` for a yield spread). */
+function fmtTile(value: number | null | undefined, unit: string | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return unit ? `${fmt(value)} ${unit}` : fmt(value);
+}
+
 /** Screen-reader summary: latest value(s), window change and as-of date. */
 function chartSummary(chart: SpreadChart): string {
   if (chart.empty) {
@@ -49,7 +57,7 @@ function chartSummary(chart: SpreadChart): string {
     const two = chart.series[1]?.latest_value;
     return (
       `${chart.title}: 10Y ${fmt(ten)}%, 2Y ${fmt(two)}%, ` +
-      `10s2s ${fmt(chart.tile?.value)} pp as of ${chart.as_of ?? '—'}.`
+      `10s2s ${fmtTile(chart.tile?.value, chart.tile?.unit)} as of ${chart.as_of ?? '—'}.`
     );
   }
   const series = chart.series[0];
@@ -101,7 +109,7 @@ function SpreadChartCard({ chart }: { chart: SpreadChart }) {
             <div className="space-y-2">
               <StatTile
                 label={chart.tile.label}
-                value={chart.tile.value == null ? '—' : `${fmt(chart.tile.value)} pp`}
+                value={fmtTile(chart.tile.value, chart.tile.unit)}
                 hint={chart.tile.as_of ? `as of ${chart.tile.as_of}` : undefined}
               />
             </div>

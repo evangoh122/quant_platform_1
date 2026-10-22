@@ -6,6 +6,7 @@ first common date, short history, FRED vintage dedupe, and the 10s2s spread.
 """
 from __future__ import annotations
 
+import itertools
 import math
 from datetime import date
 from pathlib import Path
@@ -211,12 +212,52 @@ def test_single_symbol_price_series_reports_level_and_change():
 
 
 # ── 4. bronze_fed_series vintage dedupe ─────────────────────────────────────
+# Row order between vintages is UNDEFINED in production: the real read
+# (db/delta_adapter.py) orders only by ``observation_date DESC, series_id``, so
+# two vintages of the same observation can arrive in either order.  Every
+# fixture below is therefore replayed in several orders and must give the same
+# answer.  A fixture that only ever lists the winning row last would pass with
+# the de-vintaging sort removed.
+
+#: DGS2 leg, two observations, so ``yield_curve`` has >= 2 common dates.
+DGS2_BASE = fed_rows(
+    "DGS2",
+    [("2024-01-02", 4.40), ("2024-01-03", 4.20)],
+    vintage="2024-01-05",
+    ingest="2024-01-05T22:00:00Z",
+)
+
+#: A second DGS10 observation with a single vintage (keeps the date count at 2).
+DGS10_EXTRA = fed_rows(
+    "DGS10", [("2024-01-03", 4.30)], vintage="2024-01-04", ingest="2024-01-04T21:00:00Z"
+)
+
+VINTAGE_OLD = fed_rows(
+    "DGS10", [("2024-01-02", 4.00)], vintage="2024-01-03", ingest="2024-01-03T21:00:00Z"
+)
+VINTAGE_NEW = fed_rows(
+    "DGS10", [("2024-01-02", 4.10)], vintage="2024-01-05", ingest="2024-01-05T21:00:00Z"
+)
+
+INGEST_EARLY = fed_rows(
+    "DGS10", [("2024-01-02", 4.00)], vintage="2024-01-05", ingest="2024-01-05T20:00:00Z"
+)
+INGEST_LATE = fed_rows(
+    "DGS10", [("2024-01-02", 4.25)], vintage="2024-01-05", ingest="2024-01-05T22:00:00Z"
+)
+
+
+def _curve(dgs10_rows):
+    """Run the yield curve with the given DGS10 rows and a fixed DGS2 leg."""
+    return yield_curve([*dgs10_rows, *DGS10_EXTRA, *DGS2_BASE])
+
+
 def test_latest_vintage_wins_and_null_or_dot_values_are_dropped():
     rows = [
         # Two vintages for the same observation: the later vintage (4.10) wins.
-        *fed_rows("DGS10", [("2024-01-02", 4.00)], vintage="2024-01-03", ingest="2024-01-03T21:00:00Z"),
-        *fed_rows("DGS10", [("2024-01-02", 4.10)], vintage="2024-01-05", ingest="2024-01-05T21:00:00Z"),
-        *fed_rows("DGS10", [("2024-01-03", 4.05)], vintage="2024-01-04"),
+        *VINTAGE_OLD,
+        *VINTAGE_NEW,
+        *DGS10_EXTRA,
         # FRED missing observation: null and the literal "." are both dropped.
         {
             "series_id": "DGS10",
@@ -232,8 +273,7 @@ def test_latest_vintage_wins_and_null_or_dot_values_are_dropped():
             "vintage_date": "2024-01-06",
             "ingest_ts": "2024-01-06T21:00:00Z",
         },
-        *fed_rows("DGS2", [("2024-01-02", 4.30)], vintage="2024-01-03"),
-        *fed_rows("DGS2", [("2024-01-03", 4.20)], vintage="2024-01-04"),
+        *DGS2_BASE,
     ]
 
     curve = yield_curve(rows)
@@ -247,19 +287,51 @@ def test_latest_vintage_wins_and_null_or_dot_values_are_dropped():
     assert "2024-01-05" not in ten_dates
 
 
-def test_vintage_tie_break_uses_latest_ingest_ts():
-    same_vintage = "2024-01-05"
-    rows = [
-        *fed_rows("DGS10", [("2024-01-02", 4.00)], vintage=same_vintage, ingest="2024-01-05T20:00:00Z"),
-        *fed_rows("DGS10", [("2024-01-02", 4.25)], vintage=same_vintage, ingest="2024-01-05T22:00:00Z"),
-        *fed_rows("DGS10", [("2024-01-03", 4.30)], vintage=same_vintage),
-        *fed_rows("DGS2", [("2024-01-02", 4.40)], vintage=same_vintage),
-        *fed_rows("DGS2", [("2024-01-03", 4.20)], vintage=same_vintage),
-    ]
+@pytest.mark.parametrize(
+    "dgs10_rows",
+    [
+        pytest.param([*VINTAGE_NEW, *VINTAGE_OLD], id="newer-vintage-listed-first"),
+        pytest.param([*VINTAGE_OLD, *VINTAGE_NEW], id="newer-vintage-listed-last"),
+    ],
+)
+def test_latest_vintage_wins_whatever_the_row_order(dgs10_rows):
+    curve = _curve(dgs10_rows)
 
-    curve = yield_curve(rows)
+    assert [p[0] for p in curve["points"]["DGS10"]] == ["2024-01-02", "2024-01-03"]
+    # The 2024-01-05 vintage wins in both orders; a plain keep="last" on the
+    # unsorted rows would return 4.00 when the older row arrives last.
+    assert curve["points"]["DGS10"][0][1] == pytest.approx(4.10)
+
+
+@pytest.mark.parametrize(
+    "dgs10_rows",
+    [
+        # Opus's failing input: the 22:00 ingest (4.25) is listed BEFORE the
+        # 20:00 ingest (4.00) and must still win the tie-break.
+        pytest.param([*INGEST_LATE, *INGEST_EARLY], id="newer-ingest-listed-first"),
+        pytest.param([*INGEST_EARLY, *INGEST_LATE], id="newer-ingest-listed-last"),
+    ],
+)
+def test_vintage_tie_break_uses_the_latest_ingest_ts_in_either_order(dgs10_rows):
+    curve = _curve(dgs10_rows)
 
     assert curve["points"]["DGS10"][0][0] == "2024-01-02"
+    assert curve["points"]["DGS10"][0][1] == pytest.approx(4.25)
+    assert len(curve["points"]["DGS10"]) == 2
+
+
+@pytest.mark.parametrize(
+    "dgs10_rows",
+    [list(order) for order in itertools.permutations([*VINTAGE_OLD, *INGEST_EARLY, *INGEST_LATE])],
+    ids=lambda rows: "|".join(
+        f"{r['vintage_date']}@{r['ingest_ts'][11:16]}" for r in rows
+    ),
+)
+def test_three_vintages_in_any_order_pick_the_latest_vintage_then_ingest(dgs10_rows):
+    curve = _curve(dgs10_rows)
+
+    # Latest vintage_date (2024-01-05) wins, then the latest ingest (22:00) of
+    # that vintage: 4.25, never the 4.00 from 2024-01-03 / 20:00.
     assert curve["points"]["DGS10"][0][1] == pytest.approx(4.25)
     assert len(curve["points"]["DGS10"]) == 2
 

@@ -74,7 +74,7 @@ function makeResponse(): MarketSpreadsResponse {
           label: '10s2s',
           value: -0.1,
           as_of: '2024-01-03',
-          unit: '%',
+          unit: 'pp',
           points: [],
         },
         caption: '10s2s = DGS10 − DGS2 on 2 common dates; latest -0.10 pp on 2024-01-03.',
@@ -227,7 +227,7 @@ describe('MarketSpreads', () => {
     });
   });
 
-  it('changes the requested window when a range button is pressed', async () => {
+  it('requests trading-day windows for every range button', async () => {
     stubFetch(makeResponse());
     const user = userEvent.setup();
     render(<MarketSpreads />);
@@ -240,14 +240,35 @@ describe('MarketSpreads', () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain('/api/spreads?days=1000');
     expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
 
-    await user.click(screen.getByRole('button', { name: '1M' }));
+    // The window is TRADING days, so 1M/3M/6M/All = 21/63/126/1000, never the
+    // calendar-day values 30/90/180.
+    const windows = [
+      ['1M', 21],
+      ['3M', 63],
+      ['6M', 126],
+      ['All', 1000],
+    ] as const;
 
-    await waitFor(() => {
-      const urls = fetchMock.mock.calls.map((call) => String(call[0]));
-      expect(urls.some((url) => url.includes('/api/spreads?days=30'))).toBe(true);
-    });
-    expect(screen.getByRole('button', { name: '1M' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'false');
+    for (const [label, days] of windows) {
+      await user.click(screen.getByRole('button', { name: label }));
+
+      await waitFor(() => {
+        const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+        expect(urls.some((url) => url.includes(`/api/spreads?days=${days}`))).toBe(true);
+      });
+      expect(screen.getByRole('button', { name: label })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByText(new RegExp(`last ${days} trading days`))).toBeInTheDocument();
+      if (label === '1M') {
+        expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute(
+          'aria-pressed',
+          'false',
+        );
+      }
+    }
+
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => /days=(30|90|180)\b/.test(url))).toBe(false);
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('uses evidence language only — no BUY/SELL strings', async () => {
