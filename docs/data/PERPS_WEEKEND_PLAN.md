@@ -186,7 +186,7 @@ probe budget", never "no history".
 
 | Stream | Earliest measured | What it means for the design |
 |---|---|---|
-| Hyperliquid `1d` candles (company perps) | NVDA 2025-11-12; latest instrument 2026-10-06 | Per-instrument start differs. NVDA has ~49 weekends through 2026-10-16; 23 instruments have a first `1d` candle on or after 2026-07-20 (at most 13 weekends). |
+| Hyperliquid `1d` candles (company perps) | NVDA 2025-11-12; latest instrument 2026-10-06 | Per-instrument start differs. NVDA has 49 weekends through 2026-10-16; 23 instruments have a first `1d` candle strictly after 2026-07-20 (24 if LRCX, whose first bar is exactly 2026-07-20, is counted), so at most 13 weekends each. Rule: a weekend counts when its Friday (the `weekend_id`) is on or after the instrument's first `1d` candle date and on or before 2026-10-16. |
 | Hyperliquid funding | NVDA 2025-11-12 21:00 UTC | Funding starts with the listing; no deeper backfill exists. |
 | Hyperliquid `1h` candles | 2026-03-27 09:00 UTC for the oldest instruments | The public API returns at most 5,000 candles per interval (~208 days of `1h`), so `1h` history is a recent window only. |
 | Binance USD-M `1h` klines (controls) | 2020-01 monthly archive | Full control history; archive existence verified 2026-10-21 (the probe records the first month/day once the S3 listing is fixed). |
@@ -507,7 +507,8 @@ the review list that drives this table.
 
 History limits the claim the study can support. Pooled across the 78 company
 perps the measured window gives roughly **1.9k company-weekends** through the
-2026-10-16 weekend (NVDA has at most ~49; 23 instruments have at most 13).
+2026-10-16 weekend (NVDA has 49; 23 instruments have at most 13, counting the
+per-instrument first `1d` candle strictly after 2026-07-20 as stated in §2.5).
 After requiring a complete Friday equity/options baseline, a verified mapping,
 non-sparse weekend bars and the BTC/ETH controls, the effective sample is closer
 to **1.5–2k company-weekends**, and most individual instruments have too few

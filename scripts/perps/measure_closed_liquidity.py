@@ -23,6 +23,9 @@ Method
 * Every proposal row carries ``data_source`` — the provider code from
   ``config/data_sources.py`` (validated; ``hyperliquid`` for this measurement) —
   so a tier proposal is traceable to the source that measured it.
+* Every proposal row also carries ``instrument_type`` from
+  ``config.perp_universe.INSTRUMENT_TYPE`` (``perpetual_future``): the measured
+  instrument is a derivative, never the equity/ETF it tracks.
 
 Safety
 ------
@@ -66,6 +69,7 @@ from config.market_calendar import (  # noqa: E402
     weekend_window,
 )
 from config.perp_universe import (  # noqa: E402
+    INSTRUMENT_TYPE,
     SPARSE_ZERO_VOLUME_SHARE,
     TIER_THRESHOLDS,
     PerpUniverse,
@@ -249,6 +253,7 @@ def _proposal_row(
     *,
     identifier: str,
     symbol: str,
+    instrument_type: str = INSTRUMENT_TYPE,
     underlying_type: str,
     data_source: str,
     current_tier: str,
@@ -256,6 +261,12 @@ def _proposal_row(
     measurement: Mapping[str, Any],
     window_start: date,
 ) -> Dict[str, Any]:
+    if instrument_type != INSTRUMENT_TYPE:
+        raise MeasureError(
+            f"{identifier}: instrument_type must be {INSTRUMENT_TYPE!r} "
+            f"(perps are derivatives, not equities/ETFs), got "
+            f"{instrument_type!r}"
+        )
     try:
         data_source = validate_data_source(data_source)
     except ValueError as exc:
@@ -278,6 +289,7 @@ def _proposal_row(
     return {
         "id": identifier,
         "symbol": symbol,
+        "instrument_type": instrument_type,
         "underlying_type": underlying_type,
         "data_source": data_source,
         "current_tier": current_tier,
@@ -314,6 +326,7 @@ def build_proposal(
             _proposal_row(
                 identifier=company.ticker,
                 symbol=company.symbol,
+                instrument_type=company.instrument_type,
                 underlying_type=company.underlying_type,
                 data_source=company.data_source,
                 current_tier=company.tier,
@@ -330,6 +343,7 @@ def build_proposal(
         row = _proposal_row(
             identifier=commodity.commodity,
             symbol=commodity.symbol,
+            instrument_type=commodity.instrument_type,
             underlying_type=commodity.underlying_type,
             data_source=commodity.data_source,
             current_tier=commodity.tier,

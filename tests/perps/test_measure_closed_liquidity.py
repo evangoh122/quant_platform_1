@@ -13,7 +13,7 @@ from urllib import request as urlrequest
 import pytest
 
 from config.data_sources import DATA_SOURCES, validate_data_source
-from config.perp_universe import load_perp_universe
+from config.perp_universe import INSTRUMENT_TYPE, load_perp_universe
 from scripts.perps import measure_closed_liquidity as measure
 
 UTC = timezone.utc
@@ -219,7 +219,33 @@ def test_proposal_rows_carry_the_universe_data_source():
     for row in rows:
         assert row["data_source"] == expected[row["symbol"]]
         assert validate_data_source(row["data_source"]) == row["data_source"]
+        assert row["instrument_type"] == INSTRUMENT_TYPE
     assert {row["data_source"] for row in rows} == {"hyperliquid"}
+    assert {row["instrument_type"] for row in rows} == {INSTRUMENT_TYPE}
+
+
+def test_proposal_row_rejects_a_non_perp_instrument_type():
+    # Mutation target: dropping instrument_type, or hard-coding a literal while
+    # the universe row says something else, must fail here.
+    universe = load_perp_universe()
+    windows = measure.weekend_windows_for(
+        universe.liquidity_window.start,
+        universe.liquidity_window.end,
+    )
+    measurement = measure.measure_candles(_candles("NVDA"), windows)
+    company = universe.companies[0]
+    with pytest.raises(measure.MeasureError, match="instrument_type"):
+        measure._proposal_row(
+            identifier=company.ticker,
+            symbol=company.symbol,
+            instrument_type="equity",
+            underlying_type=company.underlying_type,
+            data_source=company.data_source,
+            current_tier=company.tier,
+            current_flags=company.flags,
+            measurement=measurement,
+            window_start=universe.liquidity_window.start,
+        )
 
 
 def test_proposal_row_rejects_an_unknown_data_source():

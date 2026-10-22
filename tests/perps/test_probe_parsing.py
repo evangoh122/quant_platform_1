@@ -12,7 +12,7 @@ from urllib import request as urlrequest
 import pytest
 
 from config.data_sources import DATA_SOURCES, validate_data_source
-from config.perp_universe import load_perp_universe
+from config.perp_universe import INSTRUMENT_TYPE, load_perp_universe
 from scripts.perps import probe_history as probe
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "perps"
@@ -440,6 +440,16 @@ def test_probe_live_records_carry_data_source():
     assert all(entry["data_source"] == "binance_um" for entry in controls)
     for entry in instruments + commodities + controls:
         assert entry["data_source"] in DATA_SOURCES
+        assert entry["instrument_type"] == INSTRUMENT_TYPE
+    assert [entry["instrument_type"] for entry in instruments] == [
+        company.instrument_type for company in universe.companies
+    ]
+    assert [entry["instrument_type"] for entry in commodities] == [
+        commodity.instrument_type for commodity in universe.commodities
+    ]
+    assert [entry["instrument_type"] for entry in controls] == [
+        control.instrument_type for control in universe.controls
+    ]
 
 
 def test_render_markdown_carries_data_source_per_record():
@@ -454,6 +464,7 @@ def test_render_markdown_carries_data_source_per_record():
                     "symbol": "xyz:NVDA",
                     "tier": "A",
                     "data_source": "hyperliquid",
+                    "instrument_type": INSTRUMENT_TYPE,
                     "streams": {},
                 }
             ],
@@ -463,6 +474,7 @@ def test_render_markdown_carries_data_source_per_record():
                     "symbol": "xyz:GOLD",
                     "tier": "A",
                     "data_source": "hyperliquid",
+                    "instrument_type": INSTRUMENT_TYPE,
                     "etfs": ["GLD", "IAU"],
                     "etf_kind": "physical",
                     "streams": {},
@@ -471,7 +483,12 @@ def test_render_markdown_carries_data_source_per_record():
         },
         "binance_usdm": {
             "instruments": [
-                {"symbol": "BTCUSDT", "data_source": "binance_um", "streams": {}}
+                {
+                    "symbol": "BTCUSDT",
+                    "data_source": "binance_um",
+                    "instrument_type": INSTRUMENT_TYPE,
+                    "streams": {},
+                }
             ]
         },
     }
@@ -480,3 +497,6 @@ def test_render_markdown_carries_data_source_per_record():
     assert "| NVDA | `xyz:NVDA` | A | hyperliquid |" in report
     assert "| gold | `xyz:GOLD` | A | hyperliquid |" in report
     assert "| BTCUSDT | binance_um |" in report
+    assert "| Instrument type |" in report
+    assert "| hyperliquid | perpetual_future |" in report
+    assert "| binance_um | perpetual_future |" in report

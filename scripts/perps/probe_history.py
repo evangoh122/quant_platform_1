@@ -42,7 +42,10 @@ Every per-instrument record in the JSON and Markdown report carries
 ``data_source`` (``hyperliquid`` for the HIP-3 perps, ``binance_um`` for the
 Binance USD-M controls).  The code comes from the validated universe row and is
 checked against ``config/data_sources.py``, so a report can never label a row
-with an unknown or contradictory provider.
+with an unknown or contradictory provider.  Every record also carries
+``instrument_type`` from the validated universe row
+(``config.perp_universe.INSTRUMENT_TYPE``, i.e. ``perpetual_future``): the
+probed instrument is a derivative, never the equity/ETF/spot it tracks.
 
 Open interest
 -------------
@@ -794,6 +797,7 @@ def probe_live(
         entry: Dict[str, Any] = {
             "ticker": company.ticker,
             "venue": company.venue,
+            "instrument_type": company.instrument_type,
             "data_source": company.data_source,
             "dex": company.dex,
             "symbol": company.symbol,
@@ -826,6 +830,7 @@ def probe_live(
         entry = {
             "commodity": commodity.commodity,
             "venue": commodity.venue,
+            "instrument_type": commodity.instrument_type,
             "data_source": commodity.data_source,
             "dex": commodity.dex,
             "symbol": commodity.symbol,
@@ -853,6 +858,7 @@ def probe_live(
         entry = {
             "ticker": control.symbol,
             "venue": control.venue,
+            "instrument_type": control.instrument_type,
             "data_source": control.data_source,
             "symbol": control.symbol,
             "streams": {},
@@ -893,9 +899,9 @@ def render_markdown(result: Mapping[str, Any]) -> str:
     lines.append("## Hyperliquid HIP-3 equity perpetuals")
     lines.append("")
     lines.append(
-        "| Ticker | Symbol | Tier | Data source | First 1h candle | First 1d candle | First funding |"
+        "| Ticker | Symbol | Tier | Data source | Instrument type | First 1h candle | First 1d candle | First funding |"
     )
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for entry in result.get("hyperliquid", {}).get("instruments", []):
         streams = entry.get("streams", {})
         def field(stream: str, key: str = "first_iso") -> str:
@@ -904,6 +910,7 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         lines.append(
             f"| {entry.get('ticker')} | `{entry.get('symbol')}` | "
             f"{entry.get('tier')} | {_fmt(entry.get('data_source'))} | "
+            f"{_fmt(entry.get('instrument_type'))} | "
             f"{field('candle_1h')} | "
             f"{field('candle_1d')} | {field('funding')} |"
         )
@@ -911,9 +918,9 @@ def render_markdown(result: Mapping[str, Any]) -> str:
     lines.append("## Hyperliquid HIP-3 commodity perpetuals")
     lines.append("")
     lines.append(
-        "| Commodity | Symbol | Tier | Data source | ETF wrapper | First 1h candle | First 1d candle | First funding |"
+        "| Commodity | Symbol | Tier | Data source | Instrument type | ETF wrapper | First 1h candle | First 1d candle | First funding |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for entry in result.get("hyperliquid", {}).get("commodities", []):
         streams = entry.get("streams", {})
         def field(stream: str, key: str = "first_iso") -> str:
@@ -923,6 +930,7 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         lines.append(
             f"| {entry.get('commodity')} | `{entry.get('symbol')}` | "
             f"{entry.get('tier')} | {_fmt(entry.get('data_source'))} | "
+            f"{_fmt(entry.get('instrument_type'))} | "
             f"{wrapper} ({entry.get('etf_kind')}) | "
             f"{field('candle_1h')} | {field('candle_1d')} | {field('funding')} |"
         )
@@ -930,9 +938,9 @@ def render_markdown(result: Mapping[str, Any]) -> str:
     lines.append("## Binance USD-M controls")
     lines.append("")
     lines.append(
-        "| Symbol | Data source | Klines 1h first day | Funding first day | Metrics first day |"
+        "| Symbol | Data source | Instrument type | Klines 1h first day | Funding first day | Metrics first day |"
     )
-    lines.append("|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|")
     for entry in result.get("binance_usdm", {}).get("instruments", []):
         streams = entry.get("streams", {})
         def day(stream: str) -> str:
@@ -940,6 +948,7 @@ def render_markdown(result: Mapping[str, Any]) -> str:
             return _fmt(value)
         lines.append(
             f"| {entry.get('symbol')} | {_fmt(entry.get('data_source'))} | "
+            f"{_fmt(entry.get('instrument_type'))} | "
             f"{day('klines_1h')} | "
             f"{day('funding_rate')} | {day('metrics')} |"
         )

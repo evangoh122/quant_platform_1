@@ -823,9 +823,22 @@ DDL is created yet.
 No perps table exists on this branch yet; the design is in docs/data/PERPS_WEEKEND_PLAN.md §4.
 Every perps table, when it lands, carries:
 
+  instrument_type                    string NOT NULL   -- always 'perpetual_future' (config/perp_universe.INSTRUMENT_TYPE)
+  underlying_type                    string NOT NULL   -- equity | etf | fund | preferred | commodity | crypto
+  underlying_symbol                  string NOT NULL   -- tracked ticker/commodity (e.g. NVDA, gold, BTC)
+  venue                              string NOT NULL   -- hyperliquid | binance_usdm
+  contract_symbol                    string NOT NULL   -- venue contract symbol (same value as symbol)
   data_source                        string NOT NULL   -- one provider code from config/data_sources.py
 
-  Meaning: the upstream system that produced the row; one code per row, never null.
+  Meaning: these rows are perpetual futures (derivatives), so instrument_type is
+    'perpetual_future' on every row and is never inherited from the underlying;
+    underlying_symbol records what the perp tracks (a listed equity/ETF/fund/
+    preferred ticker, a commodity, or BTC/ETH) and contract_symbol is the venue
+    contract, not the underlying's ticker.  A perp is never merged into the
+    Security it tracks.  Required columns and rule: RULE-perps-are-derivatives
+    (owner 2026-10-22); schema detail in docs/data/PERPS_WEEKEND_PLAN.md §4.
+
+  Meaning (data_source): the upstream system that produced the row; one code per row, never null.
     hyperliquid  -> bronze_perp_candles, bronze_perp_funding, bronze_perp_oi_snapshots,
                     silver_perp_bars_1h, silver_perp_funding
     binance_um   -> bronze_binance_um_klines, bronze_binance_um_funding, bronze_binance_um_metrics
@@ -833,3 +846,8 @@ Every perps table, when it lands, carries:
                     record the input sources in lineage)
   Vocabulary (config/data_sources.py): massive, sec_edgar, sec_companyfacts, hyperliquid,
     binance_um, config, derived.  The Unity Catalog column comment names the code and that path.
+
+  Unity Catalog metadata (every perps table):
+    TABLE COMMENT starts "Perpetual futures (derivatives), not equities:"
+    table tags: instrument_type=perpetual_future, asset_class=derivative
+    price column comments: "perp mark/trade price, not the stock price"
