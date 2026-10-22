@@ -838,6 +838,9 @@ def _drive_runner_silver(monkeypatch, *, bronze_exists) -> list[str]:
     spark = _FakeSpark()
     monkeypatch.setattr(runner, "get_spark", lambda: spark)
     monkeypatch.setattr(runner, "register_universe", lambda s: ["AAA"])
+    # Since PR #73 main() also registers the research_universe view; stub it the
+    # same way (this test is about the KG-0 step loop, not view registration).
+    monkeypatch.setattr(runner, "register_research_universe", lambda s: ["GLD"])
     monkeypatch.setattr(
         runner, "run_step", lambda s, name, path, kind, syms: executed.append(name)
     )
