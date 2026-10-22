@@ -241,8 +241,7 @@ never merged into an equity, only linked to it. Perps Gold features that combine
 both sides name perp-derived columns with a `perp_` prefix (for example
 `perp_weekend_return`), Unity Catalog TABLE COMMENTs start "Perpetual futures
 (derivatives), not equities:" with tags `instrument_type=perpetual_future` and
-`asset_class=derivative`, and UI series read "Perpetual (derivative) — tracks
-<TICKER>, not the stock".
+`asset_class=derivative`, and UI series read `Perpetual (derivative) — tracks <TICKER>, not the stock`.
 
 ## Pull requests and authority
 
