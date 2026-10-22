@@ -1,9 +1,13 @@
 
 ## Provenance: `data_source`
 
-Every table, view, config row, snapshot record and knowledge-graph row produced by this repository carries a
-non-null `data_source` holding exactly one code from the controlled vocabulary in `config/data_sources.py`
-(`DATA_SOURCES` + `validate_data_source`; unknown, empty or non-string values raise):
+Under the owner rule of 2026-10-22, every **new** table, view, config row, snapshot record and knowledge-graph row
+produced from that date onward carries a non-null `data_source` holding exactly one code from the controlled
+vocabulary in `config/data_sources.py` (`DATA_SOURCES` + `validate_data_source`; unknown, empty or non-string
+values raise). This is a forward rule, not a description of the current schema: existing tables — for example
+`bronze_ohlcv`, whose provider column is `source` (see its listing below) — and existing config files
+(`config/universe.yaml`, `config/tickers.yaml`) do not carry `data_source` yet, and no table listed in this file
+has one today. The only rows that do are the ten research-symbol rows in `config/research_symbols.yaml`.
 
 | code | meaning |
 |---|---|
@@ -15,9 +19,12 @@ non-null `data_source` holding exactly one code from the controlled vocabulary i
 | `config` | hand-maintained repository config (e.g. universe YAML) |
 | `derived` | computed in this project from other rows (record the inputs' sources in lineage/docs where a row mixes sources) |
 
-SQL tables use `data_source STRING NOT NULL`; YAML config rows declare `data_source:` and their loader rejects a
-missing or unknown value; Python records carry a required `data_source` field. The research group rows in
-`config/research_symbols.yaml` declare `data_source: massive` because their prices come from Massive.
+From 2026-10-22 onward, new SQL tables and views get `data_source STRING NOT NULL`; new YAML config rows declare
+`data_source:` and their loader rejects a missing or unknown value; new Python records get a required `data_source`
+field. Among the existing files, only the research group in `config/research_symbols.yaml` follows this today: its
+ten rows declare `data_source: massive` (their prices come from Massive) and `config/research_symbols.py` rejects a
+missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` predate the rule and have no
+`data_source` yet.
 
 ### bronze_ohlcv  (14 cols)
   symbol                             string NOT NULL

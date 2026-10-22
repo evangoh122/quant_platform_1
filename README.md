@@ -74,7 +74,7 @@ Dates are the last recorded verification; this repository does not assert the cu
 | `agent/` | Agent runtime, tool contracts, retrieval and write tools, guardrails |
 | `db/` | SQL-warehouse adapter, Lakebase client, schema contract, Postgres migrations |
 | `notebooks/`, `pipelines/`, `silver/`, `gold/` | Ingestion jobs and medallion transforms |
-| `config/` | Universe and research-symbol YAML with their loaders, and the shared `data_source` vocabulary (`config/data_sources.py`); every config row names its provider from that vocabulary |
+| `config/` | Universe and research-symbol YAML with their loaders, and the shared `data_source` vocabulary (`config/data_sources.py`); every research-symbol row names its provider from that vocabulary |
 | `resources/`, `databricks.yml`, `app.yaml` | Databricks Asset Bundle: jobs, app, resources |
 | `strategies/`, `ml/` | Research code (backtests, evidence, models) |
 | `evals/` | RAG evaluation harness |
