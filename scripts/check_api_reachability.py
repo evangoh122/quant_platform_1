@@ -11,7 +11,10 @@ Live entry points are the things the application and its jobs really execute:
 * ``api.main`` — the FastAPI app (``app.yaml`` / ``uvicorn`` target).
 * every module under the pipeline/script packages below — they are invoked as
   Databricks job tasks, notebooks or CLIs, so each is a root by definition.
-* every ``.py`` path named in ``resources/*.yml`` — declared job tasks.
+* every ``.py`` path declared as a job task in ``resources/*.yml``.  The spec is
+  parsed as YAML, so a commented-out task is not a task.
+* the package ``__init__`` files Python executes before importing a seed
+  (``api.main`` cannot be imported without running ``api/__init__.py``).
 
 ``tests/`` and any ``archive`` directory are excluded from the source scan: a
 module that only a test imports is dead production code, and archived code is
@@ -20,9 +23,11 @@ not shipped.
 Edges come from real ``import`` statements (including deferred, function-local
 imports) plus dotted module names that appear as non-docstring string literals
 (uvicorn targets, ``importlib`` lookups).  Comments and docstrings are ignored so
-prose about a retired module cannot keep it "alive".  Importing a submodule also
-executes every parent package ``__init__``, so those edges are followed as well.
-A *package* ``__init__`` is exempt when at least one of its submodules is
+prose about a retired module cannot keep it "alive".  Imports under a
+``if TYPE_CHECKING:`` guard never run, so they create no edge; the ``else``
+branch of the same guard does run and is scanned normally.  Importing a submodule
+also executes every parent package ``__init__``, so those edges are followed as
+well.  A *package* ``__init__`` is exempt when at least one of its submodules is
 reachable: ``import api.services.x`` makes the package usable without ever
 naming ``api.services`` itself.
 
@@ -33,6 +38,9 @@ Known limits, accepted deliberately so the guard stays cheap and stable:
   reachable, because the scan cannot tell a live job from a dead one.
 * Computed dynamic imports are invisible: ``importlib.import_module(f"api.{n}")``
   has no literal module name to read, so the scan cannot follow that edge.
+* Task paths are read only from the ``python_file`` / ``notebook_path`` keys of
+  the parsed spec; a templated path (``${var}``, glob) is skipped because it is
+  not resolvable before deployment.
 
 Usage::
 
@@ -47,6 +55,9 @@ import ast
 import pathlib
 import re
 import sys
+from collections.abc import Iterator
+
+import yaml
 
 # Packages whose modules are executable roots (job tasks, notebooks, CLIs).
 ENTRY_PACKAGES = (
@@ -88,9 +99,10 @@ _STRING_REF_RE = re.compile(
     r"""(?<![\w.])(""" + "|".join(sorted(_LOCAL_ROOTS)) + r""")(?:\.[A-Za-z_][A-Za-z0-9_]*)+"""
 )
 
-# A ``.py`` path in a bundle spec: ``python_file: ../pipelines/x.py``,
-# ``notebook_path: ../notebooks/x.py``.  Templated paths are skipped later.
-_RESOURCE_PATH_RE = re.compile(r"""([\w${}./~-]+\.py)\b""")
+# Bundle-spec keys whose value is the path of the code a task runs:
+# ``spark_python_task.python_file: ../pipelines/x.py`` and
+# ``notebook_task.notebook_path: ../notebooks/x.py``.
+_TASK_PATH_KEYS = frozenset({"python_file", "notebook_path"})
 
 
 def _module_name(path: pathlib.Path, root: pathlib.Path) -> str:
@@ -158,6 +170,41 @@ def _docstring_ids(tree: ast.AST) -> set[int]:
     return docstrings
 
 
+def _type_checking_guard(test: ast.expr) -> bool | None:
+    """Classify an ``if`` test as a ``TYPE_CHECKING`` guard.
+
+    ``True`` means the body only exists for type checkers; ``False`` means the
+    guard is negated, so the body runs and the ``else`` branch does not;
+    ``None`` means the test is not such a guard at all.
+    """
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        inner = _type_checking_guard(test.operand)
+        return None if inner is None else not inner
+    if isinstance(test, ast.Name):
+        return True if test.id == "TYPE_CHECKING" else None
+    if isinstance(test, ast.Attribute):
+        return True if test.attr == "TYPE_CHECKING" else None
+    return None
+
+
+def _runtime_nodes(tree: ast.AST) -> Iterator[ast.AST]:
+    """Yield the nodes of *tree* that really execute at runtime.
+
+    A ``if TYPE_CHECKING:`` body is skipped entirely: it never executes, so an
+    import inside it cannot keep a module alive.
+    """
+    yield tree
+    if isinstance(tree, ast.If):
+        guard = _type_checking_guard(tree.test)
+        if guard is not None:
+            branch = tree.orelse if guard else tree.body
+            for child in branch:
+                yield from _runtime_nodes(child)
+            return
+    for child in ast.iter_child_nodes(tree):
+        yield from _runtime_nodes(child)
+
+
 def _imports_of(module: str, path: pathlib.Path, known: dict[str, bool]) -> set[str]:
     """Return local module names imported by *path* (static + string refs)."""
     try:
@@ -170,7 +217,7 @@ def _imports_of(module: str, path: pathlib.Path, known: dict[str, bool]) -> set[
     docstring_ids = _docstring_ids(tree)
     raw: set[str] = set()
 
-    for node in ast.walk(tree):
+    for node in _runtime_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 raw.add(alias.name)
@@ -191,7 +238,7 @@ def _imports_of(module: str, path: pathlib.Path, known: dict[str, bool]) -> set[
                     raw.add(alias.name)
 
     # Dotted module names only count where they are executable string literals.
-    for node in ast.walk(tree):
+    for node in _runtime_nodes(tree):
         if id(node) in docstring_ids:
             continue
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -229,8 +276,24 @@ def scan_repository(root: pathlib.Path):
     return known, graph
 
 
+def _task_paths(node: object) -> Iterator[str]:
+    """Yield every ``python_file`` / ``notebook_path`` value in a parsed spec.
+
+    Walking the *parsed* document is what makes a commented-out task inert: the
+    YAML parser drops comments before they can look like a declaration.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _TASK_PATH_KEYS and isinstance(value, str):
+                yield value
+            yield from _task_paths(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _task_paths(item)
+
+
 def _resource_modules(spec: pathlib.Path, root: pathlib.Path) -> set[str]:
-    """Resolve the ``.py`` paths named in one bundle spec to module names.
+    """Resolve the task paths declared in one bundle spec to module names.
 
     Databricks resolves task ``python_file`` / ``notebook_path`` values relative
     to the bundle root of the spec, i.e. ``resources/jobs.yml`` declaring
@@ -242,8 +305,12 @@ def _resource_modules(spec: pathlib.Path, root: pathlib.Path) -> set[str]:
         text = spec.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return set()
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return set()
     modules: set[str] = set()
-    for ref in _RESOURCE_PATH_RE.findall(text):
+    for ref in _task_paths(document):
         if any(marker in ref for marker in ("${", "$(", "*", "?")):
             continue  # templated / glob path: not resolvable before deployment
         try:
@@ -258,17 +325,35 @@ def _resource_modules(spec: pathlib.Path, root: pathlib.Path) -> set[str]:
     return modules
 
 
+def _with_parent_package_inits(names: set[str], known: dict[str, bool]) -> set[str]:
+    """Add the package initializers Python runs before importing *names*.
+
+    ``import api.main`` executes ``api/__init__.py`` first, so a module imported
+    by that initializer is live even though no source statement names it.
+    """
+    expanded = set(names)
+    for name in names:
+        parts = name.split(".")
+        for i in range(1, len(parts)):
+            prefix = ".".join(parts[:i])
+            if known.get(prefix, False):
+                expanded.add(prefix)
+    return expanded
+
+
 def entry_points(root: pathlib.Path, known: dict[str, bool]) -> set[str]:
     """Return the modules production code starts from."""
     root = pathlib.Path(root).resolve()
-    entries = {"api.main"}
-    for name in known:
-        if name.split(".")[0] in ENTRY_PACKAGES:
-            entries.add(name)
+    seeds = {"api.main"}
     resources = root / "resources"
     if resources.is_dir():
         for spec in sorted(resources.glob("*.yml")):
-            entries |= _resource_modules(spec, root)
+            seeds |= _resource_modules(spec, root)
+    # Importing a seed runs its packages' ``__init__`` files first.
+    entries = _with_parent_package_inits(seeds, known)
+    for name in known:
+        if name.split(".")[0] in ENTRY_PACKAGES:
+            entries.add(name)
     return {name for name in entries if name in known}
 
 

@@ -11,12 +11,16 @@ The module list is **derived** on every run by
 ``scripts/check_api_reachability.py`` — nothing here is a hard-coded inventory.
 The test fails if any ``api.*`` module cannot be reached from:
 
-* ``api.main`` (the FastAPI app),
+* ``api.main`` (the FastAPI app) and the package initializers it executes,
 * every module in the executable packages (``agent/``, ``pipelines/``,
   ``gold/``, ``silver/``, ``etl/``, ``bronze/``, ``ml/``, ``strategies/``,
   ``scripts/``, ``notebooks/``, ``sec_kg/``, ``analytics_nl/``, ``config/``,
   ``evals/``),
-* every ``.py`` named in ``resources/*.yml``.
+* every job task declared in ``resources/*.yml``.
+
+Imports under ``if TYPE_CHECKING:`` never execute, so they are not edges; the
+``else`` branch of such a guard does run.  Job tasks are read from the parsed
+YAML, so a commented-out task is not a task.
 
 Package ``__init__`` modules are exempt only when a live submodule keeps the
 package importable (``import api.services.x`` never names ``api.services``).
@@ -24,8 +28,9 @@ package importable (``import api.services.x`` never names ``api.services``).
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
+
+import yaml
 
 from scripts import check_api_reachability as reachability
 from scripts.check_api_reachability import (
@@ -42,6 +47,22 @@ def _write(root: Path, rel: str, text: str = "") -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _yaml_task_paths(node: object):
+    """Collect task paths from a **parsed** bundle spec.
+
+    Deliberately independent of ``check_api_reachability``: this is the oracle
+    the helper is checked against.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ("python_file", "notebook_path") and isinstance(value, str):
+                yield value
+            yield from _yaml_task_paths(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _yaml_task_paths(item)
 
 
 def test_every_api_module_is_reachable_from_a_live_entry_point():
@@ -141,6 +162,40 @@ def test_resources_yaml_job_tasks_are_entry_points(tmp_path: Path):
     assert dead == []
 
 
+def test_commented_out_task_paths_are_not_entry_points(tmp_path: Path):
+    """A commented-out task declares nothing, so its module must stay dead.
+
+    ``db`` is deliberately not an entry package: only a real YAML task can make
+    ``db.commented_task`` live, and its declaration is commented out.
+    """
+    _write(tmp_path, "api/__init__.py")
+    _write(tmp_path, "api/main.py")
+    _write(tmp_path, "api/only_commented.py")
+    _write(tmp_path, "api/live_task_import.py")
+    _write(tmp_path, "db/commented_task.py", "import api.only_commented\n")
+    _write(tmp_path, "db/live_task.py", "import api.live_task_import\n")
+    _write(
+        tmp_path,
+        "resources/jobs.yml",
+        "resources:\n"
+        "  jobs:\n"
+        "    job:\n"
+        "      tasks:\n"
+        "        # - task_key: disabled\n"
+        "        #   spark_python_task:\n"
+        "        #     python_file: ../db/commented_task.py\n"
+        "        - task_key: live\n"
+        "          notebook_task:\n"
+        "            notebook_path: ../db/live_task.py\n",
+    )
+
+    _inventory, reachable, dead = analyse(tmp_path)
+
+    assert "api.live_task_import" in reachable, "the live task stopped being a root"
+    assert "db.commented_task" not in reachable, "a YAML comment became a task"
+    assert dead == ["api.only_commented"]
+
+
 def test_real_bundle_specs_resolve_to_scanned_modules():
     """Non-vacuity: every job task in ``resources/*.yml`` is a live root."""
     known, _graph = scan_repository(REPO)
@@ -148,14 +203,13 @@ def test_real_bundle_specs_resolve_to_scanned_modules():
     specs = sorted((REPO / "resources").glob("*.yml"))
     assert specs, "no resources/*.yml found"
 
-    # Independent, minimal resolution of the declared task paths: Databricks
-    # resolves them against the spec's own directory.
+    # Independent, minimal resolution of the declared task paths: the spec is
+    # parsed so comments cannot contribute, and Databricks resolves the paths
+    # against the spec's own directory.
     expected: set[str] = set()
     for spec in specs:
-        text = spec.read_text(encoding="utf-8")
-        for raw in re.findall(
-            r"(?:python_file|notebook_path):\s*['\"]?([^'\"\s]+\.py)", text
-        ):
+        document = yaml.safe_load(spec.read_text(encoding="utf-8"))
+        for raw in _yaml_task_paths(document):
             rel = (spec.parent / raw).resolve().relative_to(REPO)
             expected.add(".".join(rel.with_suffix("").parts))
 
@@ -195,6 +249,22 @@ def test_parent_package_initializers_are_followed(tmp_path: Path):
 
     assert "api.sub.live" in reachable
     assert "api.required" in reachable, "parent package __init__ edge was dropped"
+    assert dead == []
+
+
+def test_api_package_init_is_a_live_root(tmp_path: Path):
+    """``import api.main`` runs ``api/__init__.py`` first, so its imports are live.
+
+    ``api.main`` imports nothing from ``api``; only seeding the app's package
+    initializer can keep ``api.helper`` alive.
+    """
+    _write(tmp_path, "api/__init__.py", "import api.helper\n")
+    _write(tmp_path, "api/main.py")
+    _write(tmp_path, "api/helper.py")
+
+    _inventory, reachable, dead = analyse(tmp_path)
+
+    assert "api.helper" in reachable, "api/__init__ was not seeded as a root"
     assert dead == []
 
 
@@ -244,6 +314,53 @@ def test_string_references_ignore_comments_and_docstrings(tmp_path: Path):
         "api.comment_only",
         "api.func_doc",
         "api.module_doc",
+    ]
+
+
+def test_type_checking_imports_are_not_runtime_edges(tmp_path: Path):
+    """An import under ``if TYPE_CHECKING:`` never runs, so it is not an edge.
+
+    The ``else`` branch of the same guard *does* run and must still count.
+    """
+    _write(tmp_path, "api/__init__.py")
+    _write(
+        tmp_path,
+        "api/main.py",
+        "import typing\n"
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    import api.retired_import\n"
+        "    from api import retired_from\n"
+        '    LOADER = "api.retired_string"\n'
+        "else:\n"
+        "    import api.runtime_else\n"
+        "\n"
+        "if typing.TYPE_CHECKING:\n"
+        "    import api.retired_attribute\n"
+        "\n"
+        "if not SOME_FLAG:\n"
+        "    import api.negated_non_guard\n",
+    )
+    for name in (
+        "api/runtime_else.py",
+        "api/retired_import.py",
+        "api/retired_from.py",
+        "api/retired_string.py",
+        "api/retired_attribute.py",
+        "api/negated_non_guard.py",
+    ):
+        _write(tmp_path, name)
+
+    _inventory, reachable, dead = analyse(tmp_path)
+
+    assert "api.runtime_else" in reachable, "the else branch runs at runtime"
+    assert "api.negated_non_guard" in reachable, "`if not X:` is not a guard"
+    assert dead == [
+        "api.retired_attribute",
+        "api.retired_from",
+        "api.retired_import",
+        "api.retired_string",
     ]
 
 
