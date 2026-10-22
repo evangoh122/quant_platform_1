@@ -157,7 +157,7 @@ def test_join_registry_business_time_availability_and_cardinality():
             valid_from=dt(2019, 1, 1),
             valid_to=dt(2021, 6, 1),
             observed_at=dt(2021, 6, 1),
-            data_source=data_sources.CONFIG,
+            data_source="config",
         ),
         registry.SecuritySymbolBridge(
             provider="massive",
@@ -166,7 +166,7 @@ def test_join_registry_business_time_availability_and_cardinality():
             valid_from=dt(2021, 6, 1),
             valid_to=None,
             observed_at=dt(2021, 6, 1),
-            data_source=data_sources.CONFIG,
+            data_source="config",
         ),
     ]
     registry.validate_bridge_rows(bridges)
@@ -217,13 +217,13 @@ def test_join_registry_business_time_availability_and_cardinality():
                     provider="massive", symbol="AAPL", security_id=old_security,
                     valid_from=dt(2019, 1, 1), valid_to=None,
                     observed_at=dt(2019, 1, 1),
-                    data_source=data_sources.CONFIG,
+                    data_source="config",
                 ),
                 registry.SecuritySymbolBridge(
                     provider="massive", symbol="AAPL", security_id=new_security,
                     valid_from=dt(2021, 6, 1), valid_to=None,
                     observed_at=dt(2021, 6, 1),
-                    data_source=data_sources.CONFIG,
+                    data_source="config",
                 ),
             ]
         )
@@ -639,11 +639,11 @@ def test_symbol_bridge_rows_require_a_validated_data_source():
         with pytest.raises(registry.BridgeViolation):
             registry.SecuritySymbolBridge(data_source=broken, **values)
     good = registry.SecuritySymbolBridge(
-        data_source=data_sources.CONFIG, **values
+        data_source="config", **values
     )
-    assert good.data_source == data_sources.CONFIG
+    assert good.data_source == "config"
     assert registry.get_contract("bridge_security_symbol").data_sources == (
-        data_sources.CONFIG,
+        "config",
     )
 
 
@@ -657,7 +657,7 @@ def test_bridge_symbol_is_normalised_before_overlap_validation():
         provider="massive",
         security_id="sec-old",
         observed_at=dt(2020, 1, 1),
-        data_source=data_sources.CONFIG,
+        data_source="config",
     )
     first = registry.SecuritySymbolBridge(
         symbol="AAPL", valid_from=dt(2019, 1, 1), valid_to=None, **common

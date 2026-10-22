@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable, List, Optional, Tuple
 
-from config.data_sources import SEC_EDGAR, validate_data_source
+from config.data_sources import validate_data_source
 from sec_kg.contracts.temporal import at_midnight_utc, day_after
 from sec_kg.model import ensure_utc, normalize_unicode
 
@@ -206,7 +206,7 @@ def build_name_history(
                 valid_to=end,
                 source=NAME_SOURCE_FORMER,
                 rank=RANK_FORMER,
-                data_source=SEC_EDGAR,
+                data_source="sec_edgar",
                 evidence_id=former.evidence_id,
             )
         )
@@ -223,7 +223,7 @@ def build_name_history(
             valid_to=None,
             source=NAME_SOURCE_CURRENT,
             rank=RANK_CURRENT,
-            data_source=SEC_EDGAR,
+            data_source="sec_edgar",
             evidence_id=submissions.evidence_id,
         )
     )

@@ -40,7 +40,7 @@ from typing import (
     Tuple,
 )
 
-from config.data_sources import DERIVED, validate_data_source
+from config.data_sources import validate_data_source
 from sec_kg.model import (
     chunk_id_from_parts,
     company_id as _v1_company_id,
@@ -720,7 +720,7 @@ def migrate_period(
         new_id=entity_id(new_key),
         generation_id=generation_id,
         identity_version=IDENTITY_VERSION_V2,
-        data_source=DERIVED,
+        data_source="derived",
         reason="period_type_explicit",
     )
 
@@ -739,7 +739,7 @@ def migrate_security(
         new_id=entity_id(new_key),
         generation_id=generation_id,
         identity_version=IDENTITY_VERSION_V2,
-        data_source=DERIVED,
+        data_source="derived",
         reason="security_issuer_and_class",
     )
 
@@ -777,7 +777,7 @@ def derive_fact_migration(
         new_id=new_fact,
         generation_id=generation_id,
         identity_version=IDENTITY_VERSION_V2,
-        data_source=DERIVED,
+        data_source="derived",
         reason="fact_embeds_period",
     )
 

@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from config.data_sources import BINANCE_UM, HYPERLIQUID, validate_data_source
+from config.data_sources import validate_data_source
 from sec_kg.contracts import identity
 from sec_kg.model import normalize_unicode
 
@@ -74,7 +74,7 @@ UNDERLYING_KIND_CRYPTO_ASSET = "CryptoAsset"
 UNDERLYING_KIND_COMMODITY = "Commodity"
 
 #: Perpetual futures come from perpetual venues only.
-PERP_DATA_SOURCES: tuple[str, ...] = (HYPERLIQUID, BINANCE_UM)
+PERP_DATA_SOURCES: tuple[str, ...] = ("hyperliquid", "binance_um")
 
 NODE_TYPE_INSTRUMENT = "Instrument"
 

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from config.data_sources import DERIVED, SEC_COMPANYFACTS, validate_data_source
+from config.data_sources import validate_data_source
 from sec_kg.contracts.temporal import TemporalView, normalise_view
 from sec_kg.model import deterministic_json, ensure_utc, normalize_unicode, parse_decimal
 
@@ -42,8 +42,8 @@ SOURCES: Tuple[str, ...] = (SOURCE_COMPANYFACTS, SOURCE_ENTITY_EXTRACTION)
 #: (``RULE-data-source-column``): Company-Facts observations come from the SEC
 #: XBRL API, entity-extraction observations are computed here from SEC text.
 SOURCE_DATA_SOURCES: Mapping[str, str] = {
-    SOURCE_COMPANYFACTS: SEC_COMPANYFACTS,
-    SOURCE_ENTITY_EXTRACTION: DERIVED,
+    SOURCE_COMPANYFACTS: "sec_companyfacts",
+    SOURCE_ENTITY_EXTRACTION: "derived",
 }
 
 ENTRY_HASH_FIELDS: Tuple[str, ...] = (
@@ -534,7 +534,7 @@ class ExtractedFact:
     @property
     def data_source(self) -> str:
         """Extracted from SEC narrative, i.e. computed in this project."""
-        return DERIVED
+        return "derived"
 
 
 @dataclass(frozen=True)

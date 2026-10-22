@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from config.data_sources import SEC_EDGAR, validate_data_source
+from config.data_sources import validate_data_source
 from sec_kg.model import ensure_utc, normalize_accession, normalize_unicode
 
 #: Fields that must always be resolved (missing -> null + quality issue).
@@ -275,7 +275,7 @@ def _resolve_field(
                     accession=accession,
                     field=field_name,
                     kind=ISSUE_MISSING,
-                    data_source=SEC_EDGAR,
+                    data_source="sec_edgar",
                     values=(None,),
                     record_keys=tuple(row.record_key for row in rows),
                 )
@@ -292,7 +292,7 @@ def _resolve_field(
             accession=accession,
             field=field_name,
             kind=ISSUE_CONFLICT,
-            data_source=SEC_EDGAR,
+            data_source="sec_edgar",
             values=tuple(distinct),
             record_keys=tuple(row.record_key for row, _ in candidates),
         )
@@ -326,7 +326,7 @@ def dedupe_filings(rows: Iterable[FilingRow]) -> DedupeResult:
                 accession=accession,
                 record_key=group[0].record_key,
                 source_row_count=len(group),
-                data_source=SEC_EDGAR,
+                data_source="sec_edgar",
                 cik=resolved["cik"],
                 form_type=resolved["form_type"],
                 filing_date=resolved["filing_date"],

@@ -27,16 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from config.data_sources import (
-    BINANCE_UM,
-    CONFIG,
-    DERIVED,
-    HYPERLIQUID,
-    MASSIVE,
-    SEC_COMPANYFACTS,
-    SEC_EDGAR,
-    validate_data_source,
-)
+from config.data_sources import validate_data_source
 from sec_kg.model import (
     EDGE_TYPES,
     NODE_TYPES,
@@ -132,12 +123,12 @@ SCOPES: frozenset = frozenset(
 #: -> Company-Facts, symbol/listing bridges -> hand-maintained config, peer
 #: classification -> derived).  A row that mixes providers is two rows.
 EVIDENCE_DATA_SOURCES: Mapping[str, Tuple[str, ...]] = {
-    "filing": (SEC_EDGAR,),
-    "chunk": (SEC_EDGAR,),
-    "xbrl_observation": (SEC_COMPANYFACTS,),
-    "mapping_observation": (CONFIG,),
-    "classification": (DERIVED,),
-    "calendar": (CONFIG,),
+    "filing": ("sec_edgar",),
+    "chunk": ("sec_edgar",),
+    "xbrl_observation": ("sec_companyfacts",),
+    "mapping_observation": ("config",),
+    "classification": ("derived",),
+    "calendar": ("config",),
 }
 
 
@@ -258,7 +249,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="information_available_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
-        data_sources=(MASSIVE,),
+        data_sources=("massive",),
         availability_evidence="gold/01_gold_ohlcv_features.sql",
         notes=(
             "information_available_ts is stored (bar start + bar interval); "
@@ -275,7 +266,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="information_available_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
-        data_sources=(MASSIVE,),
+        data_sources=("massive",),
         availability_evidence="gold/02_gold_options_features.sql",
     ),
     "gold_model_features": JoinContract(
@@ -288,7 +279,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="prediction_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
-        data_sources=(MASSIVE, DERIVED),
+        data_sources=("massive", "derived"),
         availability_evidence="gold/05_gold_model_features.sql",
         notes=(
             "prediction_ts is the availability timestamp of the last bar of the "
@@ -305,7 +296,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="information_available_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
-        data_sources=(MASSIVE, CONFIG),
+        data_sources=("massive", "config"),
         availability_evidence="gold/06_gold_tradable_universe.sql",
         notes=(
             "information_available_ts = previous session close 16:00 New York "
@@ -322,7 +313,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="accepted_ts <= ?",
         cardinality="1:1",
         bridge="Chunk node by source chunk_id",
-        data_sources=(SEC_EDGAR,),
+        data_sources=("sec_edgar",),
         availability_evidence="silver/05_silver_sec_sections.sql",
     ),
     "gold_sec_chunk_embeddings": JoinContract(
@@ -335,7 +326,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="accepted_ts <= ?",
         cardinality="1:1",
         bridge="Chunk node by source chunk_id",
-        data_sources=(SEC_EDGAR, DERIVED),
+        data_sources=("sec_edgar", "derived"),
         notes=(
             "embeddings carry no availability column; accepted_ts is joined from "
             "silver_sec_sections on chunk_id"
@@ -351,7 +342,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="public_available_at <= ?",
         cardinality="n:1",
         bridge="assertion/observation keys (no symbol join)",
-        data_sources=(SEC_COMPANYFACTS, SEC_EDGAR),
+        data_sources=("sec_companyfacts", "sec_edgar"),
         notes=(
             "public_available_at comes from dim_filing.accepted_ts; when it cannot "
             "be verified the observation is unverified and never eligible in "
@@ -368,7 +359,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="observed_at <= ?",
         cardinality="n:1",
         bridge="security_id (this table *is* the bridge)",
-        data_sources=(CONFIG,),
+        data_sources=("config",),
         notes="half-open [valid_from, valid_to); intervals never overlap per (provider, symbol)",
     ),
     "perps_bars": JoinContract(
@@ -384,7 +375,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
             "bridge_security_symbol(provider IN ('hyperliquid','binance_um'), "
             "symbol) -> instrument -> underlying"
         ),
-        data_sources=(HYPERLIQUID, BINANCE_UM),
+        data_sources=("hyperliquid", "binance_um"),
         notes="bar_close = bar_ts + bar interval; perps ingestion is P1+",
     ),
 }
@@ -811,13 +802,13 @@ def _edge(
 
 
 #: Edges derived from SEC filings (filings, sections, chunks, mentions).
-_EDGAR_EDGE_SOURCES: Tuple[str, ...] = (SEC_EDGAR,)
+_EDGAR_EDGE_SOURCES: Tuple[str, ...] = ("sec_edgar",)
 #: Edges derived from XBRL Company-Facts observations.
-_COMPANYFACTS_EDGE_SOURCES: Tuple[str, ...] = (SEC_COMPANYFACTS,)
+_COMPANYFACTS_EDGE_SOURCES: Tuple[str, ...] = ("sec_companyfacts",)
 #: Edges from hand-maintained symbol/listing/identity bridges.
-_CONFIG_EDGE_SOURCES: Tuple[str, ...] = (CONFIG,)
+_CONFIG_EDGE_SOURCES: Tuple[str, ...] = ("config",)
 #: Edges computed in this project from other rows.
-_DERIVED_EDGE_SOURCES: Tuple[str, ...] = (DERIVED,)
+_DERIVED_EDGE_SOURCES: Tuple[str, ...] = ("derived",)
 
 
 EDGE_CONTRACTS: Dict[str, EdgeContract] = {
@@ -842,7 +833,7 @@ EDGE_CONTRACTS: Dict[str, EdgeContract] = {
         "INSTANCE_OF", ["XbrlFact"], ["Metric"],
         ["assertion_key", "metric_id", "mapping_version"],
         ["mapping_observation"], SCOPE_GLOBAL_TARGET,
-        data_sources=(SEC_COMPANYFACTS, CONFIG),
+        data_sources=("sec_companyfacts", "config"),
     ),
     "FOR_PERIOD": _edge(
         "FOR_PERIOD", ["XbrlFact"], ["Period"],
