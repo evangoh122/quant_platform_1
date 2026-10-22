@@ -4,71 +4,15 @@ from loguru import logger
 from dotenv import load_dotenv
 
 
-def _validate_db_path(path: str) -> str:
-    """Validate DB_PATH against an allowlist of roots (prevents path traversal).
-
-    Allowed: anywhere under the project root, or under the persistent-storage
-    mount (PERSIST_DIR, default /data on HF Spaces) so the DB can live on a
-    volume that survives restarts.
-    """
-    if not path or not path.strip():
-        logger.warning("DB_PATH is empty, falling back to default.")
-        return str(Path(__file__).parent.parent / "data" / "rag.duckdb")
-    resolved = Path(path).resolve()
-    project_root = Path(__file__).parent.parent.resolve()
-    allowed_roots = [str(project_root)]
-    persist_dir = os.getenv("PERSIST_DIR", "/data").strip()
-    if persist_dir:
-        allowed_roots.append(str(Path(persist_dir).resolve()))
-    if not any(str(resolved).startswith(root) for root in allowed_roots):
-        logger.warning(f"DB_PATH '{path}' is outside allowed roots {allowed_roots}. Falling back to default.")
-        return str(project_root / "data" / "rag.duckdb")
-    return str(resolved)
-
-
 class Config:
     def __init__(self):
         # Load .env from the root directory
         load_dotenv(Path(__file__).parent.parent / ".env")
-        self._db_path = None
-        self._review_db_path = None
 
     # ── Unity Catalog schema ────────────────────────────────────────────────
     @property
     def SCHEMA(self) -> str:
         return os.getenv("SCHEMA", "evangoh_capstone")
-
-    @property
-    def DB_PATH(self) -> str:
-        if self._db_path is None:
-            self._db_path = _validate_db_path(os.getenv("DB_PATH", "./data/rag.duckdb"))
-        return self._db_path
-
-    @property
-    def REVIEW_DB_PATH(self) -> str:
-        """Runtime DB holding the audit log + review/testing queue.
-
-        This data is generated at runtime and must SURVIVE container restarts,
-        so it lives on the persistent-storage volume (PERSIST_DIR — e.g. HF
-        Spaces persistent storage mounted at /data) whenever that volume is
-        actually mounted and writable. Falls back to the local project dir for
-        dev. An explicit REVIEW_DB_PATH env var always wins.
-
-        NOTE: keep the MAIN DB_PATH OFF the persistent volume — it is restored
-        fresh from the HF dataset each boot, and persisting it would pin a stale
-        corpus.
-        """
-        if self._review_db_path is None:
-            explicit = os.getenv("REVIEW_DB_PATH")
-            if explicit:
-                self._review_db_path = explicit
-            else:
-                persist = os.getenv("PERSIST_DIR", "/data").strip()
-                if persist and os.path.isdir(persist) and os.access(persist, os.W_OK):
-                    self._review_db_path = str(Path(persist) / "review_queue.duckdb")
-                else:
-                    self._review_db_path = "./data/review_queue.duckdb"
-        return self._review_db_path
 
     # ── LangSmith (tracing & observability) ──────────────────────────────────
     @property

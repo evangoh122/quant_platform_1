@@ -1,7 +1,7 @@
 import sys
 import hashlib
 from types import ModuleType
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -19,8 +19,6 @@ def mock_if_missing(module_names):
 # Only mock modules that are truly problematic or missing in the test environment
 # to allow real unit testing of installed packages.
 problematic_modules = [
-    'langgraph',
-    'langgraph.graph',
     'edgartools', # Can be heavy/network dependent
     'langfuse',
     'langfuse.decorators',
@@ -252,37 +250,6 @@ def fake_pyspark(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_xbrl_client(monkeypatch):
-    """Prevent xbrl_client from making real HTTP calls or reading Databricks secrets.
-
-    - Sets SEC_EDGAR_USER_AGENT so _resolve_user_agent returns immediately
-      without touching the Databricks SDK (WorkspaceClient / dbutils).
-    - Stubs fetch_company_facts to return {} (no real SEC API calls).
-    - Stubs _rate_limited_get as a safety net.
-    - Clears the lru_cache and _USER_AGENT global between tests.
-    """
-    import api.services.xbrl_client as xbrl_mod
-
-    # Force the env var so _resolve_user_agent never reaches the Databricks SDK
-    monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "TestAgent/1.0 (test@example.com)")
-
-    # Clear cached state (keep a handle on the real cached function: the stub
-    # below replaces it, and the lambda has no cache_clear)
-    _real_fetch = xbrl_mod.fetch_company_facts
-    xbrl_mod._USER_AGENT = None
-    _real_fetch.cache_clear()
-
-    # Stub the HTTP layer
-    monkeypatch.setattr(xbrl_mod, "fetch_company_facts", lambda cik: {})
-    monkeypatch.setattr(xbrl_mod, "_rate_limited_get", lambda url: {})
-
-    yield
-
-    xbrl_mod._USER_AGENT = None
-    _real_fetch.cache_clear()
-
-
-@pytest.fixture(autouse=True)
 def _clear_ticker_lru_cache():
     """Clear the per-ticker LRU cache between tests to prevent state leakage."""
     try:
@@ -340,48 +307,3 @@ def _guard_spark(monkeypatch):
         monkeypatch.setattr(hr, "_get_spark", _spark_guard)
     except (ImportError, AttributeError):
         pass
-
-
-# ── Cross-Encoder guard ──────────────────────────────────────────────────────
-
-class _FakeCrossEncoder:
-    """Records CrossEncoder() construction attempts without loading any model."""
-    instances: list["_FakeCrossEncoder"] = []
-
-    def __init__(self, *a, **kw):
-        self._init_args = (a, kw)
-        _FakeCrossEncoder.instances.append(self)
-
-    def predict(self, pairs, **kw):
-        import numpy as _np
-        n = len(pairs) if hasattr(pairs, '__len__') else 1
-        return _np.tile(_np.array([0.1, 0.15, 0.75], dtype=_np.float32), (n, 1))
-
-
-@pytest.fixture(autouse=True)
-def _no_cross_encoder_load(request):
-    """Prevent any sentence_transformers.CrossEncoder model load during tests.
-
-    Patches the real CrossEncoder class so ``Verifier()`` never downloads or
-    loads a HuggingFace model.  The verifier module is reloaded so its
-    module-level singleton picks up the patched class.
-    """
-    import importlib
-    import api.services.verifier as verifier_mod
-
-    _FakeCrossEncoder.instances.clear()
-    orig_ce = verifier_mod.CrossEncoder
-
-    patcher = patch(
-        "sentence_transformers.CrossEncoder",
-        _FakeCrossEncoder,
-    )
-    patcher.start()
-    verifier_mod.CrossEncoder = _FakeCrossEncoder
-    importlib.reload(verifier_mod)
-
-    yield
-
-    patcher.stop()
-    verifier_mod.CrossEncoder = orig_ce
-    importlib.reload(verifier_mod)

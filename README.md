@@ -76,6 +76,15 @@ Dates are the last recorded verification; this repository does not assert the cu
 | `tests/` | Offline test suite |
 | `docs/` | Deployment, runbooks, data schemas, proposal |
 
+The inherited Rag_workbench RAG/DuckDB stack (LangGraph orchestration, DuckDB-backed chat/SQL services and review
+schemas) was deleted because no app or job entry point started it. A dead-code guard now fails the suite if an
+`api.*` module becomes unreachable: `scripts/check_api_reachability.py` derives the reachable set from `api.main`,
+the executable packages and `resources/*.yml` job tasks, and `tests/test_no_dead_api_modules.py` asserts it.
+The guard ignores comments and docstrings, so prose about a retired module cannot keep it alive, and it has two
+known limits: every module in an executable package counts as a live root (lenient — an `api.*` module used only by
+a retired pipeline still passes), and computed dynamic imports (`importlib.import_module(f"api.{name}")`) are
+invisible to the scan.
+
 ## Local development
 
 Python dependencies are managed with [uv](https://docs.astral.sh/uv/).

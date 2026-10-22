@@ -60,7 +60,7 @@ DEFAULT_SECRET_SCOPE = "evangoh_capstone"
 DEFAULT_SECRET_KEY = "sec_edgar_user_agent"
 
 # ── Process-wide SEC rate limiter ───────────────────────────────────────────
-# One singleton limiter shared by sec_rag_ingest and xbrl_client so the
+# One singleton limiter shared by every SEC-ingest task in this process so the
 # aggregate rate stays ≤ MAX_REQUESTS_PER_SECOND across all callers.
 
 _global_limiter: Optional["RateLimiter"] = None
