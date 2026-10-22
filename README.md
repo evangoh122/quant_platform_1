@@ -99,8 +99,11 @@ python scripts/smoke_app.py --base-url <app-url>
 
 ## Engineering process
 
-Changes were implemented by MiMo, independently validated by DeepSeek, then gated by either Codex Sol (routine work)
-or Claude Opus (complex or critical changes) before PR review by CodeRabbit (see root `AGENTS.md` for the full chain).
+Changes are implemented by the scheduled coder — MiMo or DeepSeek, selected by UTC peak hours — and independently
+validated by the other model, then gated by exactly one final reviewer: Codex Sol for routine work or Claude Opus
+for complex or critical changes, followed by CodeRabbit review (see root `AGENTS.md` for the full chain).
+Every PR also updates this README (or states in the PR why no change is needed) and, when it changes tables, terms, joins
+or knowledge-graph node/edge types, its slice of `ontology/` in the same commit (see root `AGENTS.md`).
 Security: dependency audit (`pip-audit`, `npm audit`) and secret scanning run in CI —
 see [`docs/SECURITY.md`](docs/SECURITY.md).
 
