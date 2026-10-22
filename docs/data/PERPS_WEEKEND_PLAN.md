@@ -1332,9 +1332,13 @@ simulates the actual statistic rather than the 1-df heuristic.
   row-set rule, `split_weekend` rows dropped, and the same expanding-origin refit
   per weekend. The effect is injected only through the joint **5-feature block**,
   never through a single coefficient.
-- **Test simulated:** the §6.2 procedure exactly — the Clark-West-adjusted `d_w`,
+- **Test simulated:** the §6.2 procedure — the Clark-West-adjusted `d_w`,
   ΔR²_oot, and the centered wild cluster bootstrap-t with Rademacher weights,
-  G = 18 clusters and **999** bootstrap replications per Monte Carlo replication.
+  G = 18 clusters. The simulation uses **999** bootstrap replications per Monte
+  Carlo replication, not the real test's 9,999: the smaller count keeps 2,000
+  replications × the effect grid feasible, and it only coarsens the simulated
+  p-value granularity to about ±0.003, which the reported Monte Carlo intervals
+  absorb. Nothing else about the statistic or its decision rule changes.
 - **Nominal α:** 0.05, **one-sided** in the pre-registered direction. Size is
   checked at ΔR²_oot = 0.
 - **Effect grid (population ΔR²_oot):** 0, 0.005, 0.01, 0.02, 0.05, 0.10, 0.20.

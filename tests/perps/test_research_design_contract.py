@@ -15,6 +15,10 @@ after-hours confounders and Friday-holiday sensitivity exclusion, the
 not-populated ``dividend_unadjusted`` flag, and the frozen pre-rule probe
 snapshot.
 
+Round 11 (r6 F1, F2) pins the ontology ``open_gap`` wording to the plan's
+not-populated dividend flag and the simulation's 999-draw feasibility count
+against the real test's 9,999.
+
 They are offline and stdlib + PyYAML only. They fail on the pre-round-9 docs.
 """
 from __future__ import annotations
@@ -179,6 +183,11 @@ def test_primary_power_simulation_is_preregistered_and_specific():
     # Replication counts and what is reported.
     assert "2,000" in flat
     assert "999" in flat
+    # F2: 999 is the simulation's feasibility count, not the real test's 9,999,
+    # so the plan must not claim the procedure is reproduced "exactly".
+    assert "the §6.2 procedure exactly" not in flat
+    assert "not the real test's 9,999" in flat
+    assert "±0.003" in flat
     assert "power curve" in flat
     assert "minimum detectable ΔR²_oot at 80% power" in flat
     assert "size at ΔR²_oot = 0" in flat
@@ -214,11 +223,23 @@ def test_clark_west_and_the_friday_holiday_weekends_are_predeclared():
 
 
 def test_dividend_flag_is_not_shipped_all_false():
-    """Opus MINOR 3: the flag exists but is populated only after P1 ingestion."""
+    """Opus MINOR 3 + r6 F1: declared, unpopulated in P0, and honest about it."""
     flat = _flat(_plan())
     assert "not populated in P0" in flat
     assert "no all-false flag shipped silently" in flat
     assert "populated only from that point" in flat
+    # F1: the ontology term must carry the same meaning as the plan. The flag is
+    # populated only from P1 dividend ingestion, so its absence is not evidence
+    # that a weekend had no ex-dividend event.
+    ontology = yaml.safe_load(
+        (ROOT / "ontology" / "business_terms.yaml").read_text(encoding="utf-8")
+    )
+    definition = _flat(ontology["terms"]["open_gap"]["definition"])
+    assert "declared but not populated in P0" in definition
+    assert "populated only from P1 dividend ingestion" in definition
+    assert "absence must not be read as 'no ex-dividend weekend'" in definition
+    # The pre-r11 wording implied the flag was already set for such weekends.
+    assert "ex-dividend weekends are flagged dividend_unadjusted" not in definition
 
 
 
