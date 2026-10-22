@@ -19,6 +19,7 @@ modules are followed transitively, and runtime-provided packages are ignored.
 """
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -30,6 +31,7 @@ from tests.test_silver_gold_job_deps import (
 )
 
 _JOBS_YML = _REPO_ROOT / "resources" / "jobs.yml"
+_PYPROJECT_TOML = _REPO_ROOT / "pyproject.toml"
 _IMPORT_NAME = "yaml"
 _CORPORATE_ACTION_JOB = "corporate_action_refresh"
 _CORPORATE_ACTION_TASK = "refresh_bronze_corporate_actions"
@@ -167,13 +169,29 @@ def test_corporate_action_refresh_declares_pyyaml():
     )
 
 
-def test_declared_pyyaml_reuses_the_requirements_specifier():
-    """The declared line must be the same specifier requirements.txt uses."""
-    requirement_lines = {
-        line.strip()
-        for line in (_REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
+def test_declared_pyyaml_reuses_the_pyproject_specifier():
+    """The declared line must be the same specifier pyproject.toml uses.
+
+    ``pyproject.toml`` ``[project].dependencies`` (with ``uv.lock``) is the
+    source of truth for runtime dependencies; the root ``requirements.txt`` is a
+    generated export whose pyyaml line is an exact transitive pin
+    (``pyyaml==<version>``), so it is deliberately not the comparison target.
+    """
+    runtime_specifiers = {
+        spec.strip()
+        for spec in tomllib.loads(
+            _PYPROJECT_TOML.read_text(encoding="utf-8")
+        )["project"]["dependencies"]
     }
+    pyproject_pyyaml = sorted(
+        spec
+        for spec in runtime_specifiers
+        if _dep_to_import_name(spec) == _IMPORT_NAME
+    )
+    assert pyproject_pyyaml, (
+        "pyproject.toml [project].dependencies declares no pyyaml specifier; "
+        "the declaration check below would pass vacuously"
+    )
     declared = [
         dep
         for _job_key, _task_key, _entry, deps in _yaml_consumers()
@@ -181,10 +199,11 @@ def test_declared_pyyaml_reuses_the_requirements_specifier():
         if _dep_to_import_name(dep) == _IMPORT_NAME
     ]
     assert declared, "no pyyaml declaration found among the yaml consumers"
-    unmatched = set(declared) - requirement_lines
+    unmatched = set(declared) - set(pyproject_pyyaml)
     assert not unmatched, (
-        f"pyyaml declarations {sorted(unmatched)} do not match a "
-        "requirements.txt line"
+        f"pyyaml declarations {sorted(unmatched)} do not match the "
+        "pyproject.toml [project].dependencies specifier(s) "
+        f"{pyproject_pyyaml}"
     )
 
 
