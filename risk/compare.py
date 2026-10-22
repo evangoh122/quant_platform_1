@@ -20,6 +20,7 @@ from risk.config import (
     load_config,
 )
 from risk.estimators import estimate_pair
+from risk.frames import sorted_by_date
 from risk.pair_backtest import backtest_vol_pair, performance_metrics
 from risk.sizing import METHODS, size
 
@@ -34,12 +35,14 @@ def build_signal(
     ``momentum`` is ``sign(close_t / close_{t-lookback} - 1)``; ``reversal`` is
     its negative; ``momentum_z`` is ``tanh(ratio / rolling_std(ratio))`` in
     ``[-1, 1]`` so the alpha magnitude varies; ``constant`` is always long the
-    spread.  This is an experiment input, not a claimed alpha.
+    spread.  This is an experiment input, not a claimed alpha.  The panel is
+    sorted stably by date first and duplicate dates are rejected, because the
+    lookback and rolling scale read row order.
     """
     cfg = load_config()
     p = params or cfg.signals
     cols = columns or cfg.columns
-    frame = panel.sort(cols.date)
+    frame = sorted_by_date(panel, cols.date)
     lookback = int(p.lookback)
     ratio = pl.col(cols.close_a) / pl.col(cols.close_a).shift(lookback) - 1.0
     if p.mode == "momentum":
@@ -78,7 +81,12 @@ def compare_sizers(
     methods: tuple[str, ...] | None = None,
     cost_levels: tuple[float, ...] | None = None,
 ) -> pl.DataFrame:
-    """Compare sizers at several per-side cost levels; metrics are OOS only."""
+    """Compare sizers at several per-side cost levels; metrics are OOS only.
+
+    The panel (and a precomputed ``signals`` frame, when given) is sorted
+    stably by date and duplicate dates are rejected before any estimator,
+    signal or backtest runs.
+    """
     cfg = config or load_config()
     compare = cfg.compare
     selected = tuple(methods) if methods is not None else compare.methods
@@ -86,6 +94,10 @@ def compare_sizers(
     if unknown:
         raise ValueError(f"unknown sizing methods: {sorted(unknown)}")
     costs = tuple(cost_levels) if cost_levels is not None else cfg.costs.bps_per_side
+
+    panel = sorted_by_date(panel, cfg.columns.date)
+    if signals is not None:
+        signals = sorted_by_date(signals, cfg.columns.date)
 
     estimates = estimate_pair(panel, cfg.estimators, cfg.columns)
     signal_frame = signals if signals is not None else build_signal(

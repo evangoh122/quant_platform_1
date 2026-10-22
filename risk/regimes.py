@@ -4,6 +4,11 @@ The percentile at ``t`` ranks the vol estimate dated ``t`` against the trailing
 ``percentile_window`` observations, so no future bar can change a past label.
 A history shorter than ``percentile_min_history`` stays ``unknown`` rather than
 inventing a number — the guard a short-lived instrument needs.
+
+Row order is not trusted: :func:`label_regimes` sorts stably by ``date`` before
+computing and returns rows in date order, so shuffled input cannot make a past
+label read a future observation.  The bare :func:`risk.estimators.vol_percentile`
+expression helper performs no sort and assumes date-ordered input.
 """
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ import polars as pl
 
 from risk.config import RegimeParams, load_config
 from risk.estimators import vol_percentile
+from risk.frames import sorted_by_date
 
 
 def regime_from_percentile(
@@ -35,9 +41,17 @@ def label_regimes(
     params: RegimeParams | None = None,
     vol_column: str = "vol_a",
 ) -> pl.DataFrame:
-    """Attach ``vol_pct`` and ``regime`` to an estimates frame."""
+    """Attach ``vol_pct`` and ``regime`` to an estimates frame.
+
+    The frame is sorted stably by ``date`` before the trailing percentile is
+    computed and is returned in date order, so the label for a date can never
+    be computed from rows that come after it in time.  Duplicate dates are
+    rejected: a trailing-window ranking cannot choose between two observations
+    dated the same day.
+    """
     p = params or load_config().regimes
-    frame = estimates.with_columns(
+    frame = sorted_by_date(estimates, "date")
+    frame = frame.with_columns(
         vol_percentile(
             pl.col(vol_column),
             p.percentile_window,

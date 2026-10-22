@@ -40,6 +40,7 @@ from dataclasses import dataclass
 import polars as pl
 
 from risk.config import BacktestParams, PairColumns, load_config
+from risk.frames import sorted_by_date
 from strategies.cost_model import CostParams, cost_per_trade
 
 
@@ -120,7 +121,10 @@ def performance_metrics(
     """Summary statistics for a daily path (all columns are per-NAV fractions).
 
     ``sharpe``, ``realized_vol_gross`` and ``realized_vol_net`` all use
-    ``params.sharpe_ddof`` as their standard-deviation ``ddof``.
+    ``params.sharpe_ddof`` as their standard-deviation ``ddof``.  The path is
+    sorted stably by its ``pl.Date`` column and duplicate dates are rejected,
+    because cumulative returns and max drawdown read row order: a shuffled
+    daily frame must produce the same statistics as the chronological one.
     """
     p = params or load_config().backtest
     n = daily.height
@@ -142,6 +146,7 @@ def performance_metrics(
     if n == 0:
         return empty
 
+    daily = sorted_by_date(daily)
     net = daily["net_return"]
     gross = daily["gross_return"]
     mean = float(net.mean())
@@ -213,6 +218,10 @@ def backtest_vol_pair(
         cost_params: ``CostParams`` providing the borrow schedule.
         columns: pair column names.
         adv: optional ``date, adv_a, adv_b`` frame for ``cost_mode == "adv"``.
+
+    ``prices``, ``weights`` and ``adv`` are sorted stably by date and duplicate
+    dates are rejected, so the fill lag and the resulting P&L path do not
+    depend on the caller's row order.
     """
     cfg = load_config()
     p = params or cfg.backtest
@@ -224,12 +233,12 @@ def backtest_vol_pair(
     if cols.date not in weights.columns or weights.schema[cols.date] != pl.Date:
         raise TypeError(f"{cols.date!r} must exist and be pl.Date")
 
-    px = prices.sort(cols.date).select(
+    px = sorted_by_date(prices, cols.date).select(
         pl.col(cols.date),
         _open_returns(pl.col(cols.open_a), p.return_type).alias("ret_a"),
         _open_returns(pl.col(cols.open_b), p.return_type).alias("ret_b"),
     )
-    book = weights.sort(cols.date).select(
+    book = sorted_by_date(weights, cols.date).select(
         pl.col(cols.date),
         pl.col("w_a").cast(pl.Float64),
         pl.col("w_b").cast(pl.Float64),
@@ -276,7 +285,7 @@ def backtest_vol_pair(
     if p.cost_mode == "adv":
         if adv is None:
             raise ValueError("cost_mode='adv' requires an adv frame")
-        adv_frame = adv.sort(cols.date).select(
+        adv_frame = sorted_by_date(adv, cols.date).select(
             pl.col(cols.date),
             pl.col("adv_a").cast(pl.Float64),
             pl.col("adv_b").cast(pl.Float64),

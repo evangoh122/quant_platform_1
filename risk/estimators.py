@@ -3,7 +3,10 @@
 Conventions
 -----------
 * Every function takes and returns Polars expressions or frames.  There is no
-  index: a ``date`` column carries time order and every entry point sorts it.
+  index: a ``date`` column carries time order.  The expression helpers are bare
+  ``pl.Expr`` builders and assume the caller already ordered rows by date; the
+  frame-level entry point (:func:`estimate_pair`) sorts stably by date itself
+  and rejects duplicate dates.
 * Returns are computed from **adjusted** price columns.  Adjusted *levels* are
   never used as features; only ratios of adjusted levels are.
 * ``ewm_var``/``ewm_std`` are pinned to ``bias=False`` (the sample / ``ddof=1``
@@ -26,6 +29,7 @@ from risk.config import (
     PairColumns,
     load_config,
 )
+from risk.frames import sorted_by_date
 
 # ── Returns ───────────────────────────────────────────────────────────────────
 
@@ -209,15 +213,6 @@ def floor_vol(vol: pl.Expr, floor: float) -> pl.Expr:
 
 # ── Frame-level helpers ─────────────────────────────────────────────────────
 
-def _require_date(frame: pl.DataFrame, column: str) -> None:
-    if column not in frame.columns:
-        raise KeyError(f"missing date column {column!r}")
-    if frame.schema[column] != pl.Date:
-        raise TypeError(
-            f"column {column!r} must be pl.Date, got {frame.schema[column]!r}"
-        )
-
-
 def estimate_pair(
     panel: pl.DataFrame,
     params: EstimatorParams | None = None,
@@ -226,17 +221,18 @@ def estimate_pair(
     """Estimate pair volatilities, correlation and regime inputs.
 
     ``panel`` is a long frame with ``date`` (``pl.Date``) and the four adjusted
-    price columns named by ``columns``.  The returned frame keeps ``date`` and
-    adds returns, EWMA vols/correlation/covariance, rolling vols for every
-    configured window, overnight/intraday vols and the past-only vol
-    percentile of leg A.
+    price columns named by ``columns``.  The frame is sorted stably by date
+    before any expression is built and duplicate dates are rejected, so a
+    shuffled frame produces exactly the same estimates as the chronological
+    one.  The returned frame keeps ``date`` and adds returns, EWMA
+    vols/correlation/covariance, rolling vols for every configured window,
+    overnight/intraday vols and the past-only vol percentile of leg A.
     """
     cfg = load_config()
     p = params or cfg.estimators
     cols = columns or cfg.columns
-    _require_date(panel, cols.date)
 
-    frame = panel.sort(cols.date)
+    frame = sorted_by_date(panel, cols.date)
     ret_a = price_returns(pl.col(cols.close_a), p)
     ret_b = price_returns(pl.col(cols.close_b), p)
 

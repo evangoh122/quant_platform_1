@@ -29,6 +29,16 @@ table = compare_sizers(panel, cfg)                            # all four sizers
 `close_a`, `open_b`, `close_b` columns. Run the experiment with
 `python -m risk.run_compare`; it writes `risk/results/p1_compare.md`.
 
+Row order is not trusted. Every frame-level entry point (`estimate_pair`,
+`label_regimes`, `size`, `build_signal`, `compare_sizers`,
+`backtest_vol_pair`, `performance_metrics`) sorts its input stably by `date`
+and rejects duplicate dates with a clear error, so a shuffled frame produces
+exactly the chronological result and a past label can never read a future
+observation. The bare `pl.Expr` helpers (`vol_percentile`, `rolling_vol`,
+`ewma_*`, `price_returns`, ...) are builders, not entry points: they perform
+no sort and assume the caller already ordered rows by date. The shared guard
+lives in `risk/frames.py`.
+
 ## What is estimated
 
 * EWMA volatility, covariance and correlation (`span`, `adjust=False`,

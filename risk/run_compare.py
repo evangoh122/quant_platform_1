@@ -43,6 +43,12 @@ def _fmt(value: object) -> str:
 
 
 def render_markdown(table: pl.DataFrame, config: RiskConfig) -> str:
+    """Render the comparison table in the row order produced by the analysis.
+
+    This is pure formatting: the table has no date column and no trailing
+    window, so the date-order guards used by the analysis entry points do not
+    apply here.
+    """
     lines = [
         "# Phase 1 — volatility-aware sizing vs fixed sizing (synthetic)",
         "",

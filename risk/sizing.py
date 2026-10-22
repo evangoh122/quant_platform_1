@@ -38,6 +38,7 @@ import polars as pl
 
 from risk.config import SizingParams, load_config
 from risk.estimators import floor_vol
+from risk.frames import sorted_by_date
 
 METHODS: Final[tuple[str, ...]] = (
     "equal_dollar",
@@ -160,7 +161,8 @@ def size(
         estimates: long frame ``[date, vol_a, vol_b, corr]`` of annualized
             volatilities and correlation.  A null, NaN or infinite value in any
             of the three yields zero weight for every method (see the module
-            docstring's estimate contract).
+            docstring's estimate contract).  The frame is sorted stably by
+            date and duplicate dates are rejected before any arithmetic.
         params: sizing parameters; ``params.method`` selects the sizer.
     """
     p = params or load_config().sizing
@@ -172,11 +174,14 @@ def size(
     if missing:
         raise KeyError(f"estimates missing columns: {sorted(missing)}")
 
-    est = estimates.select(
-        pl.col("date"),
-        pl.col("vol_a").cast(pl.Float64),
-        pl.col("vol_b").cast(pl.Float64),
-        pl.col("corr").cast(pl.Float64),
+    est = sorted_by_date(
+        estimates.select(
+            pl.col("date"),
+            pl.col("vol_a").cast(pl.Float64),
+            pl.col("vol_b").cast(pl.Float64),
+            pl.col("corr").cast(pl.Float64),
+        ),
+        "date",
     )
     if signal_or_pair is None:
         signal_frame = est.select(
@@ -186,12 +191,17 @@ def size(
     else:
         if "signal" not in signal_or_pair.columns:
             raise KeyError("signal_or_pair must contain a 'signal' column")
-        signal_frame = signal_or_pair.select(
-            pl.col("date"),
-            pl.col("signal").cast(pl.Float64),
+        signal_frame = sorted_by_date(
+            signal_or_pair.select(
+                pl.col("date"),
+                pl.col("signal").cast(pl.Float64),
+            ),
+            "date",
         )
 
-    frame = est.join(signal_frame, on="date", how="left").sort("date")
+    frame = est.join(signal_frame, on="date", how="left").sort(
+        "date", maintain_order=True
+    )
     frame = frame.with_columns(
         floor_vol(pl.col("vol_a"), p.vol_floor).alias("_vol_a"),
         floor_vol(pl.col("vol_b"), p.vol_floor).alias("_vol_b"),
