@@ -17,7 +17,8 @@ the validator is never the model that wrote the code.
 3. **One final gate, chosen by complexity**, runs on the exact SHA after
    the validator approves: **Codex Sol** for simple/routine changes, **Opus 5.5**
    (`claude-opus-5-5`) for complex changes or any escalation trigger (see
-   "Reviewer selection and escalation"). Exactly one final gate per head SHA.
+   "Reviewer selection and escalation"). Exactly one final gate per head SHA,
+   unless the owner asks for both (see "Final gate: both Sol and Opus" below).
 4. Open or update the PR (CodeRabbit is requested per the CodeRabbit rules
    below).
 5. Valid CodeRabbit findings return to the coder and restart steps 2–3.
@@ -98,6 +99,7 @@ validates), `dsbuild` (DeepSeek builds) and `mimoval` (MiMo validates). All
 four roles live in `.agents/dispatch.sh` on `main`.
 
 ### Model identification (record it in every PR)
+
 | Role | opencode model | Notes |
 | --- | --- | --- |
 | MiMo | `xiaomi-token-plan-sgp/mimo-v2.6-pro` | builder or validator |
@@ -240,8 +242,7 @@ both sides name perp-derived columns with a `perp_` prefix (for example
 `perp_weekend_return`), Unity Catalog TABLE COMMENTs start "Perpetual futures
 (derivatives), not equities:" with tags `instrument_type=perpetual_future` and
 `asset_class=derivative`, and UI series read "Perpetual (derivative) — tracks
-<TICKER>, not the stock". Full rule:
-`.agents/requests/RULE-perps-are-derivatives.md`.
+<TICKER>, not the stock".
 
 ## Pull requests and authority
 

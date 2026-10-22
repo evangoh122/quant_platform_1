@@ -6,8 +6,17 @@
 # off-peak -> DeepSeek codes. So: MiMo codes only while DeepSeek is in peak.
 # The other model validates.
 # Override: QP1_CODER=mimo|deepseek (the owner can force a coder).
-H=$((10#${1:-$(date -u +%H)}))
-mimo_peak=0;  [ "$H" -ge 0 ] && [ "$H" -lt 16 ] && mimo_peak=1
+# The hour must be an integer 0-23; anything else is a usage error (exit 2).
+if [ "$#" -ge 1 ]; then RAW=$1; else RAW=$(date -u +%H); fi
+if ! [[ $RAW =~ ^[0-9]{1,2}$ ]]; then
+  printf 'pick-roles.sh: UTC hour must be an integer 0-23 (got: %s)\n' "${RAW:-<empty>}" >&2
+  exit 2
+fi
+H=$((10#$RAW))
+if [ "$H" -gt 23 ]; then
+  printf 'pick-roles.sh: UTC hour must be an integer 0-23 (got: %s)\n' "$RAW" >&2
+  exit 2
+fi
 ds_peak=0
 { [ "$H" -ge 1 ] && [ "$H" -lt 4 ]; } || { [ "$H" -ge 6 ] && [ "$H" -lt 10 ]; } && ds_peak=1
 CODER=deepseek

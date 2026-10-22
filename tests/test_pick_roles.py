@@ -39,3 +39,15 @@ def test_owner_override_wins(hour):
 
 def test_leading_zero_hours_are_not_octal():
     assert _pick("08") == MIMO_CODES and _pick("09") == MIMO_CODES
+
+
+@pytest.mark.parametrize("bad_hour", ["abc", "24", "-1", "7x", "", "1.5"])
+def test_invalid_hour_is_a_usage_error(bad_hour):
+    """Only an integer 0-23 is a UTC hour; everything else exits 2 with no role line."""
+    e = {k: v for k, v in os.environ.items() if k != "QP1_CODER"}
+    out = subprocess.run(
+        ["bash", str(SCRIPT), bad_hour], capture_output=True, text=True, env=e
+    )
+    assert out.returncode == 2
+    assert out.stdout.strip() == ""
+    assert out.stderr.strip() != ""
