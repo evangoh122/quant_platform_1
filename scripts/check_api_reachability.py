@@ -46,7 +46,9 @@ Usage::
 
     python scripts/check_api_reachability.py [repo_root]
 
-Exit code 0 when every ``api.*`` module is reachable, 1 when some are not.
+Exit codes: 0 when every ``api.*`` module is reachable, 1 when some are not,
+2 when no ``api.*`` module was found at all (an empty or wrong root, which must
+not be mistaken for a clean scan).
 """
 
 from __future__ import annotations
@@ -103,6 +105,23 @@ _STRING_REF_RE = re.compile(
 # ``spark_python_task.python_file: ../pipelines/x.py`` and
 # ``notebook_task.notebook_path: ../notebooks/x.py``.
 _TASK_PATH_KEYS = frozenset({"python_file", "notebook_path"})
+
+# Markers that make a declared task path unresolvable from the repository alone:
+# bundle template variables (``${var}``, ``$(var)``) and glob wildcards are only
+# expanded after deployment, so no file can be named before that.
+_UNRESOLVABLE_PATH_MARKERS = ("${", "$(", "*", "?")
+
+
+def is_resolvable_task_path(ref: str) -> bool:
+    """Return whether a declared task path names a file before deployment.
+
+    ``python_file: ${workspace.file_path}/pipelines/x.py`` or a glob such as
+    ``../notebooks/task_*.py`` cannot be mapped to a module name by reading the
+    repository, so every consumer of ``python_file`` / ``notebook_path`` skips
+    it.  The predicate lives here — used by the scanner and by the test oracle —
+    so the two can never drift apart on what counts as resolvable.
+    """
+    return not any(marker in ref for marker in _UNRESOLVABLE_PATH_MARKERS)
 
 
 def _module_name(path: pathlib.Path, root: pathlib.Path) -> str:
@@ -311,7 +330,7 @@ def _resource_modules(spec: pathlib.Path, root: pathlib.Path) -> set[str]:
         return set()
     modules: set[str] = set()
     for ref in _task_paths(document):
-        if any(marker in ref for marker in ("${", "$(", "*", "?")):
+        if not is_resolvable_task_path(ref):
             continue  # templated / glob path: not resolvable before deployment
         try:
             rel = (spec.parent / ref).resolve().relative_to(root)
@@ -402,8 +421,20 @@ def unreachable_api_modules(root: pathlib.Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry point; returns 0 clean, 1 dead modules, 2 nothing scanned.
+
+    Exit code 2 means the inventory of ``api.*`` modules was empty, i.e. *root*
+    is empty or is not the repository root.  Returning 0 there would report a
+    vacuous "nothing is dead" result for a scan that read no code at all.
+    """
     root = pathlib.Path(argv[1]) if len(argv) > 1 else pathlib.Path(__file__).resolve().parent.parent
     inventory, seen, dead = analyse(root)
+    if not inventory:
+        print(
+            f"error: no api.* modules found under {root}; pass the repository root",
+            file=sys.stderr,
+        )
+        return 2
     live_api = [name for name in seen if name.startswith("api.")]
     print(f"api modules: {len(inventory)} | reachable: {len(live_api)} | unreachable: {len(dead)}")
     for name in dead:
