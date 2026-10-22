@@ -41,6 +41,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run on 2026-10-05; as measured 2026-10-06, 230 of 558 tickers had SEC chunks (see docs/BUSINESS_CASE.md) |
 | SEC knowledge graph + governed NL analytics contracts | Yes | Yes | Merged |
 | SEC registrant identity from the submissions API (KG-0) | Yes | Yes (offline suite) | Not deployed or run; job `sec_submissions_ingest` is unscheduled and dry-run by default |
+| SEC knowledge-graph contracts (KG-A, `sec_kg/contracts/`) | Yes | Yes (offline tests) | **Not deployed — contracts and tests only**: no Spark job, table or DDL yet (KG-C ships the builder) |
 | Databricks App (FastAPI + React), warehouse data path, health/trace | Yes | Yes | **Deployed and verified 2026-10-05** — `/api/health`: Lakebase ok, SQL warehouse ok |
 | Lakebase writes from the app | Yes | Yes | **Verified 2026-10-05** — app service principal has `CAN_USE` + a least-privilege Postgres role |
 | LLM-directed agent (research → save note) | Yes (minimal) | Offline + live | **Live run on 2026-10-05**: `search_sec_filings(NVDA)` → `save_research_note` written to Lakebase, logged in `agent_actions` |
@@ -78,6 +79,7 @@ Dates are the last recorded verification; this repository does not assert the cu
 | `db/` | SQL-warehouse adapter, Lakebase client, schema contract, Postgres migrations |
 | `notebooks/`, `pipelines/`, `silver/`, `gold/` | Ingestion jobs and medallion transforms |
 | `config/` | Universe and research-symbol YAML with their loaders, and the shared `data_source` vocabulary (`config/data_sources.py`); every research-symbol row names its provider from that vocabulary |
+| `sec_kg/contracts/` | KG-A executable contracts (identity and ids, bitemporal events, fact linking, join/edge registry, publication CAS, perp Instruments); pure Python with offline tests — no table or job yet |
 | `resources/`, `databricks.yml`, `app.yaml` | Databricks Asset Bundle: jobs, app, resources |
 | `strategies/`, `ml/` | Research code (backtests, evidence, models) |
 | `evals/` | RAG evaluation harness |

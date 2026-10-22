@@ -14,6 +14,12 @@ Two registries, both executable rather than documentation:
 
 Requirements are anchored to the SQL that produces each column through
 ``availability_evidence``; a test asserts the anchor really contains it.
+
+Every produced row also declares its provider through the one vocabulary in
+``config/data_sources.py``: join contracts list the providers of the external
+table, edge contracts the provider(s) that may stamp an edge, and every
+evidence row carries its own validated ``data_source``
+(``.agents/requests/RULE-data-source-column.md``).
 """
 from __future__ import annotations
 
@@ -21,6 +27,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
+from config.data_sources import (
+    BINANCE_UM,
+    CONFIG,
+    DERIVED,
+    HYPERLIQUID,
+    MASSIVE,
+    SEC_COMPANYFACTS,
+    SEC_EDGAR,
+    validate_data_source,
+)
 from sec_kg.model import (
     EDGE_TYPES,
     NODE_TYPES,
@@ -58,8 +74,11 @@ GLOBAL_NODE_KINDS: frozenset = frozenset(
     {"Metric", "Period", "Concept", "CryptoAsset"}
 )
 
-#: Venue contracts are shared by every issuer that lists on the venue, so a
-#: subset build neither owns nor deletes them (``UNDERLIES`` is global).
+#: Venue contracts are shared by every issuer that lists on the venue; their
+#: ownership is *not* blanket-global: ``publication.row_owner`` derives it from
+#: the underlying (a contract on a Security belongs to that security's company,
+#: a contract on a CryptoAsset is global).  Kept here as the documented set of
+#: venue product kinds.
 VENUE_NODE_KINDS: frozenset = frozenset({"Instrument"})
 
 NAMESPACES: frozenset = frozenset(
@@ -108,6 +127,32 @@ SCOPES: frozenset = frozenset(
     {SCOPE_COMPANY, SCOPE_GLOBAL_TARGET, SCOPE_CROSS_COMPANY}
 )
 
+#: Providers an evidence row of each kind may come from
+#: (``RULE-data-source-column``: filing/section/chunk -> SEC EDGAR, XBRL facts
+#: -> Company-Facts, symbol/listing bridges -> hand-maintained config, peer
+#: classification -> derived).  A row that mixes providers is two rows.
+EVIDENCE_DATA_SOURCES: Mapping[str, Tuple[str, ...]] = {
+    "filing": (SEC_EDGAR,),
+    "chunk": (SEC_EDGAR,),
+    "xbrl_observation": (SEC_COMPANYFACTS,),
+    "mapping_observation": (CONFIG,),
+    "classification": (DERIVED,),
+    "calendar": (CONFIG,),
+}
+
+
+def _validated_data_sources(values: Iterable[str], label: str) -> Tuple[str, ...]:
+    """Validate and canonicalise a provider-code collection."""
+    sources = tuple(values)
+    if not sources:
+        raise RegistryError(f"{label}: data_sources must not be empty")
+    for value in sources:
+        try:
+            validate_data_source(value)
+        except ValueError as error:
+            raise RegistryError(f"{label}: {error}") from error
+    return tuple(sorted(set(sources)))
+
 
 class RegistryError(ValueError):
     """Base class for registry-contract violations."""
@@ -150,6 +195,7 @@ class JoinContract:
     as_of_predicate: str
     cardinality: str
     bridge: str
+    data_sources: Tuple[str, ...]
     availability_evidence: Optional[str] = None
     notes: str = ""
 
@@ -162,6 +208,11 @@ class JoinContract:
             raise RegistryError(
                 f"{self.table}: unknown namespace {self.namespace!r}"
             )
+        object.__setattr__(
+            self,
+            "data_sources",
+            _validated_data_sources(self.data_sources, self.table),
+        )
         if not self.business_time:
             raise RegistryError(f"{self.table}: business_time is required")
         if not self.availability:
@@ -207,6 +258,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="information_available_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
+        data_sources=(MASSIVE,),
         availability_evidence="gold/01_gold_ohlcv_features.sql",
         notes=(
             "information_available_ts is stored (bar start + bar interval); "
@@ -223,6 +275,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="information_available_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
+        data_sources=(MASSIVE,),
         availability_evidence="gold/02_gold_options_features.sql",
     ),
     "gold_model_features": JoinContract(
@@ -235,6 +288,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="prediction_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
+        data_sources=(MASSIVE, DERIVED),
         availability_evidence="gold/05_gold_model_features.sql",
         notes=(
             "prediction_ts is the availability timestamp of the last bar of the "
@@ -251,6 +305,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="information_available_ts <= ?",
         cardinality="n:1",
         bridge="bridge_security_symbol(provider='massive', symbol)",
+        data_sources=(MASSIVE, CONFIG),
         availability_evidence="gold/06_gold_tradable_universe.sql",
         notes=(
             "information_available_ts = previous session close 16:00 New York "
@@ -267,6 +322,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="accepted_ts <= ?",
         cardinality="1:1",
         bridge="Chunk node by source chunk_id",
+        data_sources=(SEC_EDGAR,),
         availability_evidence="silver/05_silver_sec_sections.sql",
     ),
     "gold_sec_chunk_embeddings": JoinContract(
@@ -279,6 +335,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="accepted_ts <= ?",
         cardinality="1:1",
         bridge="Chunk node by source chunk_id",
+        data_sources=(SEC_EDGAR, DERIVED),
         notes=(
             "embeddings carry no availability column; accepted_ts is joined from "
             "silver_sec_sections on chunk_id"
@@ -294,6 +351,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="public_available_at <= ?",
         cardinality="n:1",
         bridge="assertion/observation keys (no symbol join)",
+        data_sources=(SEC_COMPANYFACTS, SEC_EDGAR),
         notes=(
             "public_available_at comes from dim_filing.accepted_ts; when it cannot "
             "be verified the observation is unverified and never eligible in "
@@ -310,6 +368,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
         as_of_predicate="observed_at <= ?",
         cardinality="n:1",
         bridge="security_id (this table *is* the bridge)",
+        data_sources=(CONFIG,),
         notes="half-open [valid_from, valid_to); intervals never overlap per (provider, symbol)",
     ),
     "perps_bars": JoinContract(
@@ -325,6 +384,7 @@ JOIN_CONTRACTS: Dict[str, JoinContract] = {
             "bridge_security_symbol(provider IN ('hyperliquid','binance_um'), "
             "symbol) -> instrument -> underlying"
         ),
+        data_sources=(HYPERLIQUID, BINANCE_UM),
         notes="bar_close = bar_ts + bar interval; perps ingestion is P1+",
     ),
 }
@@ -557,6 +617,7 @@ REQUIRED_EDGE_FIELDS: Tuple[str, ...] = (
     "src_id",
     "edge_type",
     "dst_id",
+    "data_source",
     "valid_from",
     "valid_to",
     "system_from",
@@ -578,6 +639,7 @@ class EdgeContract:
     identity: Tuple[str, ...]
     evidence: Tuple[str, ...]
     scope: str
+    data_sources: Tuple[str, ...]
     directional: bool = True
     symmetric: bool = False
     temporal: bool = True
@@ -589,6 +651,11 @@ class EdgeContract:
             raise RegistryError(
                 f"{self.edge_type}: unknown scope {self.scope!r}"
             )
+        object.__setattr__(
+            self,
+            "data_sources",
+            _validated_data_sources(self.data_sources, self.edge_type),
+        )
         if not self.src_types or not self.dst_types:
             raise RegistryError(f"{self.edge_type}: endpoints are required")
         for node_kind in self.src_types + self.dst_types:
@@ -619,6 +686,7 @@ def _edge(
     evidence: Sequence[str],
     scope: str,
     *,
+    data_sources: Sequence[str],
     symmetric: bool = False,
 ) -> EdgeContract:
     return EdgeContract(
@@ -628,85 +696,109 @@ def _edge(
         identity=tuple(identity),
         evidence=tuple(evidence),
         scope=scope,
+        data_sources=tuple(data_sources),
         symmetric=symmetric,
     )
+
+
+#: Edges derived from SEC filings (filings, sections, chunks, mentions).
+_EDGAR_EDGE_SOURCES: Tuple[str, ...] = (SEC_EDGAR,)
+#: Edges derived from XBRL Company-Facts observations.
+_COMPANYFACTS_EDGE_SOURCES: Tuple[str, ...] = (SEC_COMPANYFACTS,)
+#: Edges from hand-maintained symbol/listing/identity bridges.
+_CONFIG_EDGE_SOURCES: Tuple[str, ...] = (CONFIG,)
+#: Edges computed in this project from other rows.
+_DERIVED_EDGE_SOURCES: Tuple[str, ...] = (DERIVED,)
 
 
 EDGE_CONTRACTS: Dict[str, EdgeContract] = {
     "FILED": _edge(
         "FILED", ["Company"], ["Filing"], ["company_id", "filing_id"],
-        ["filing"], SCOPE_COMPANY,
+        ["filing"], SCOPE_COMPANY, data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "HAS_SECTION": _edge(
         "HAS_SECTION", ["Filing"], ["Section"], ["filing_id", "section_code"],
-        ["chunk"], SCOPE_COMPANY,
+        ["chunk"], SCOPE_COMPANY, data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "HAS_CHUNK": _edge(
         "HAS_CHUNK", ["Section"], ["Chunk"], ["section_id", "source_chunk_id"],
-        ["chunk"], SCOPE_COMPANY,
+        ["chunk"], SCOPE_COMPANY, data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "REPORTED_FACT": _edge(
         "REPORTED_FACT", ["Filing"], ["XbrlFact"], ["filing_id", "assertion_key"],
         ["xbrl_observation"], SCOPE_COMPANY,
+        data_sources=_COMPANYFACTS_EDGE_SOURCES,
     ),
     "INSTANCE_OF": _edge(
         "INSTANCE_OF", ["XbrlFact"], ["Metric"],
         ["assertion_key", "metric_id", "mapping_version"],
         ["mapping_observation"], SCOPE_GLOBAL_TARGET,
+        data_sources=(SEC_COMPANYFACTS, CONFIG),
     ),
     "FOR_PERIOD": _edge(
         "FOR_PERIOD", ["XbrlFact"], ["Period"],
         ["assertion_key", "period_id"], ["xbrl_observation"], SCOPE_GLOBAL_TARGET,
+        data_sources=_COMPANYFACTS_EDGE_SOURCES,
     ),
     "SOURCED_FROM": _edge(
         "SOURCED_FROM", ["XbrlFact", "RiskFactor", "Event"], ["Chunk"],
         ["evidence_id", "source_chunk_id"], ["chunk"], SCOPE_COMPANY,
+        data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "SUPERSEDES": _edge(
         "SUPERSEDES", ["XbrlFact"], ["XbrlFact"],
         ["new_assertion_key", "old_assertion_key"], ["xbrl_observation"],
-        SCOPE_COMPANY,
+        SCOPE_COMPANY, data_sources=_COMPANYFACTS_EDGE_SOURCES,
     ),
     "AMENDS": _edge(
         "AMENDS", ["Filing"], ["Filing"],
         ["amending_accession", "amended_accession"], ["filing"], SCOPE_COMPANY,
+        data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "DISCLOSED_RISK": _edge(
         "DISCLOSED_RISK", ["Filing"], ["RiskFactor"],
         ["filing_id", "mention_key"], ["chunk"], SCOPE_COMPANY,
+        data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "REPORTED_EVENT": _edge(
         "REPORTED_EVENT", ["Filing"], ["Event"],
         ["filing_id", "mention_key"], ["chunk"], SCOPE_COMPANY,
+        data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "HAS_SEGMENT": _edge(
         "HAS_SEGMENT", ["Company"], ["Segment"],
         ["company_id", "segment_key"], ["chunk"], SCOPE_COMPANY,
+        data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "HAS_PRODUCT": _edge(
         "HAS_PRODUCT", ["Company"], ["Product"],
         ["company_id", "product_key"], ["chunk"], SCOPE_COMPANY,
+        data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "HAS_CUSTOMER": _edge(
         "HAS_CUSTOMER", ["Company"], ["Customer"],
         ["company_id", "customer_key"], ["chunk"], SCOPE_COMPANY,
+        data_sources=_EDGAR_EDGE_SOURCES,
     ),
     "HAS_SECURITY": _edge(
         "HAS_SECURITY", ["Company"], ["Security"],
         ["company_id", "security_id"], ["mapping_observation"], SCOPE_COMPANY,
+        data_sources=_CONFIG_EDGE_SOURCES,
     ),
     "LISTED_AS": _edge(
         "LISTED_AS", ["Security"], ["Instrument"],
         ["security_id", "instrument_id"], ["mapping_observation"], SCOPE_COMPANY,
+        data_sources=_CONFIG_EDGE_SOURCES,
     ),
     "UNDERLIES": _edge(
         "UNDERLIES", ["CryptoAsset"], ["Instrument"],
         ["asset_id", "instrument_id"], ["mapping_observation"], SCOPE_GLOBAL_TARGET,
+        data_sources=_CONFIG_EDGE_SOURCES,
     ),
     "INFERRED_PEER": _edge(
         "INFERRED_PEER", ["Company"], ["Company"],
         ["pair", "taxonomy", "code", "basis_date"], ["classification"],
-        SCOPE_CROSS_COMPANY, symmetric=True,
+        SCOPE_CROSS_COMPANY, data_sources=_DERIVED_EDGE_SOURCES, symmetric=True,
     ),
 }
 
@@ -727,6 +819,42 @@ def unregistered_v1_edge_types() -> Tuple[str, ...]:
     return tuple(sorted(set(EDGE_TYPES) - set(EDGE_CONTRACTS)))
 
 
+def validate_evidence_row(
+    evidence: Mapping[str, Any],
+    contract: Optional[EdgeContract] = None,
+) -> str:
+    """Validate one evidence row; returns its evidence kind.
+
+    Every evidence row carries its own validated ``data_source`` and that code
+    must be one its kind can come from (``EVIDENCE_DATA_SOURCES``); when an edge
+    contract is supplied the code must also be one the contract allows.
+    """
+    if not isinstance(evidence, Mapping):
+        raise EdgeContractError(
+            f"evidence row must be a mapping, got {type(evidence).__name__}"
+        )
+    kind = evidence.get("kind")
+    if kind not in EVIDENCE_KINDS:
+        raise EdgeContractError(f"unknown evidence kind {kind!r}")
+    try:
+        data_source = validate_data_source(evidence.get("data_source"))
+    except ValueError as error:
+        raise EdgeContractError(f"evidence {kind!r}: {error}") from error
+    allowed = EVIDENCE_DATA_SOURCES[kind]
+    if data_source not in allowed:
+        raise EdgeContractError(
+            f"evidence {kind!r}: data_source {data_source!r} is not one of "
+            f"{list(allowed)}"
+        )
+    if contract is not None:
+        if data_source not in contract.data_sources:
+            raise EdgeContractError(
+                f"{contract.edge_type}: evidence data_source {data_source!r} is "
+                f"not one of {list(contract.data_sources)}"
+            )
+    return kind
+
+
 def validate_edge(
     edge: Mapping[str, Any], endpoints: Mapping[str, str]
 ) -> EdgeContract:
@@ -735,6 +863,15 @@ def validate_edge(
     for field_name in ("src_id", "dst_id", "edge_type"):
         if not edge.get(field_name):
             raise EdgeContractError(f"edge is missing {field_name!r}")
+    try:
+        data_source = validate_data_source(edge.get("data_source"))
+    except ValueError as error:
+        raise EdgeContractError(f"{contract.edge_type}: {error}") from error
+    if data_source not in contract.data_sources:
+        raise EdgeContractError(
+            f"{contract.edge_type}: data_source {data_source!r} is not one of "
+            f"{list(contract.data_sources)}"
+        )
     src_id = str(edge["src_id"])
     dst_id = str(edge["dst_id"])
     if src_id == dst_id:
@@ -766,7 +903,7 @@ def validate_edge(
             f"{contract.edge_type}: evidence is required ({contract.evidence})"
         )
     for item in evidence:
-        kind = item.get("kind") if isinstance(item, Mapping) else None
+        kind = validate_evidence_row(item, contract)
         if kind not in contract.evidence:
             raise EdgeContractError(
                 f"{contract.edge_type}: evidence kind {kind!r} is not one of "
@@ -804,11 +941,16 @@ def serialize_edge(edge: Mapping[str, Any]) -> str:
     """Canonical edge serialization: sorted keys, decimals as strings, nulls.
 
     Every required field must be present — a missing field is a contract
-    violation, not an implicit ``null``.
+    violation, not an implicit ``null`` — and ``data_source`` must be one known
+    provider code, so an untyped edge can never be exported.
     """
     missing = [name for name in REQUIRED_EDGE_FIELDS if name not in edge]
     if missing:
         raise EdgeContractError(f"edge is missing required fields {missing}")
+    try:
+        validate_data_source(edge["data_source"])
+    except ValueError as error:
+        raise EdgeContractError(f"edge data_source: {error}") from error
     payload = {name: edge[name] for name in REQUIRED_EDGE_FIELDS}
     properties = edge.get("properties")
     payload["properties"] = dict(properties) if properties is not None else {}

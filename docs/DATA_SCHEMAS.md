@@ -796,3 +796,21 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   aborting the refresh under ANSI mode (NULL means "not a date", never "no
   interval date").  data_source is always 'sec_edgar'
   (config/data_sources.py).
+## data_source vocabulary (owner rule 2026-10-22)
+
+Every table, view, config row, snapshot record and KG node/edge/evidence row
+produced by this project carries `data_source STRING NOT NULL` (Python/JSON: a
+required `data_source` field) holding exactly one code from
+`config/data_sources.py`:
+
+    massive          Massive (Polygon) S3 flat files / REST
+    sec_edgar        SEC EDGAR filings and the submissions API
+    sec_companyfacts SEC XBRL Company-Facts API
+    hyperliquid      Hyperliquid info API (HIP-3 perps, funding, candles)
+    binance_um       Binance USD-M futures (data.binance.vision / API)
+    config           hand-maintained repository config
+    derived          computed in this project from other rows
+
+`validate_data_source` rejects an empty, unknown or non-string code, and a row
+that mixes providers is two rows. This PR adds contracts only: no table, view or
+DDL is created yet.

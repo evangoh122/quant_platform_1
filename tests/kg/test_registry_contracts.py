@@ -12,7 +12,8 @@ from decimal import Decimal
 
 import pytest
 
-from sec_kg.contracts import publication, registry
+from config import data_sources
+from sec_kg.contracts import instruments, publication, registry
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -35,6 +36,9 @@ def test_join_registry_business_time_availability_and_cardinality():
         assert contract.grain
         assert contract.cardinality in registry.CARDINALITIES
         assert contract.namespace in registry.NAMESPACES
+        # Every table declares the provider(s) whose rows it carries.
+        assert contract.data_sources, table
+        assert set(contract.data_sources) <= data_sources.DATA_SOURCES, table
         # Every stored availability column must be anchored by evidence in the
         # SQL that produces it — no invented columns.
         if contract.availability_kind == registry.AVAILABILITY_VIA_JOIN:
@@ -231,6 +235,7 @@ def _edge_row(**overrides) -> dict:
         "src_id": "c1",
         "edge_type": "FILED",
         "dst_id": "f1",
+        "data_source": "sec_edgar",
         "valid_from": dt(2024, 1, 2),
         "valid_to": None,
         "system_from": dt(2024, 1, 2),
@@ -241,12 +246,29 @@ def _edge_row(**overrides) -> dict:
         "extraction_method": "structural",
         "evidence_count": 1,
         "build_generation_id": "gen-1",
-        "evidence": [{"kind": "filing", "evidence_id": "ev-1"}],
+        "evidence": [
+            {"kind": "filing", "evidence_id": "ev-1", "data_source": "sec_edgar"}
+        ],
         "identity": {"company_id": "c1", "filing_id": "f1"},
         "properties": {"b": 1, "a": Decimal("0.10"), "c": None},
     }
     row.update(overrides)
     return row
+
+
+def _instrument_fixture(company_id="c1", **overrides) -> dict:
+    """A Hyperliquid perpetual-future node row (perps are derivatives, v4 §J)."""
+    values = {
+        "venue": "hyperliquid",
+        "dex_or_market": "xyz",
+        "contract_symbol": "NVDA-USD",
+        "instrument_type": "perpetual_future",
+        "underlying_type": "equity",
+        "underlying": "NVDA",
+        "data_source": "hyperliquid",
+    }
+    values.update(overrides)
+    return instruments.Instrument(**values).as_node_row(company_id=company_id)
 
 
 def test_edge_registry_endpoints_identity_and_serialization():
@@ -260,6 +282,13 @@ def test_edge_registry_endpoints_identity_and_serialization():
         assert set(contract.src_types + contract.dst_types) <= (
             registry.CONTRACT_NODE_KINDS
         )
+        # Every edge declares provider codes that its evidence kinds can carry.
+        assert contract.data_sources, edge_type
+        assert set(contract.data_sources) <= data_sources.DATA_SOURCES
+        evidence_sources = set()
+        for kind in contract.evidence:
+            evidence_sources.update(registry.EVIDENCE_DATA_SOURCES[kind])
+        assert set(contract.data_sources) & evidence_sources, edge_type
 
     # Mention edges have explicit endpoints; peers are symmetric and stored
     # once; amendment edges are Filing -> Filing only.
@@ -275,20 +304,106 @@ def test_edge_registry_endpoints_identity_and_serialization():
     assert registry.get_edge_contract("INFERRED_PEER").scope == (
         registry.SCOPE_CROSS_COMPANY
     )
+    assert registry.get_edge_contract("INFERRED_PEER").data_sources == ("derived",)
+    # Perpetual futures are Instrument nodes linked to the equity, never merged.
+    assert registry.get_edge_contract("LISTED_AS").src_types == ("Security",)
+    assert registry.get_edge_contract("LISTED_AS").dst_types == ("Instrument",)
+    assert registry.get_edge_contract("UNDERLIES").src_types == ("CryptoAsset",)
+    assert registry.get_edge_contract("UNDERLIES").dst_types == ("Instrument",)
     with pytest.raises(registry.UnknownEdgeTypeError):
         registry.get_edge_contract("NOT_AN_EDGE")
 
+    # Instrument fixtures: one equity-underlying perp and one crypto perp.
+    perp = _instrument_fixture()
+    crypto_perp = _instrument_fixture(
+        company_id=None,
+        venue="binance_um",
+        dex_or_market=None,
+        contract_symbol="BTCUSDT",
+        underlying_type="crypto",
+        underlying="BTC",
+        data_source="binance_um",
+    )
+    assert perp["node_type"] == "Instrument"
+    assert perp["instrument_type"] == "perpetual_future"
+    assert perp["underlying_type"] == "equity"
+    assert crypto_perp["underlying_kind"] == "CryptoAsset"
     endpoints = {
         "c1": "Company",
         "c2": "Company",
         "f1": "Filing",
         "r1": "RiskFactor",
         "s1": "Security",
+        "s2": "Security",
+        perp["node_id"]: "Instrument",
+        crypto_perp["node_id"]: "Instrument",
     }
     good = _edge_row()
     contract = registry.validate_edge(good, endpoints)
     assert contract.edge_type == "FILED"
     assert registry.edge_identity_values(good, contract) == ("c1", "f1")
+
+    # A perp is reachable only through LISTED_AS / UNDERLIES, never as a Security.
+    listed = {
+        "edge_type": "LISTED_AS",
+        "src_id": "s1",
+        "dst_id": perp["node_id"],
+        "data_source": "config",
+        "evidence": [
+            {"kind": "mapping_observation", "evidence_id": "ev-map",
+             "data_source": "config"}
+        ],
+        "identity": {"security_id": "s1", "instrument_id": perp["node_id"]},
+        "valid_from": dt(2024, 1, 2),
+        "system_from": dt(2024, 1, 2),
+    }
+    registry.validate_edge(listed, endpoints)
+    with pytest.raises(registry.EdgeContractError):
+        registry.validate_edge(
+            dict(listed, dst_id="s2",
+                 identity={"security_id": "s1", "instrument_id": "s2"}),
+            endpoints,
+        )
+    second_perp = _instrument_fixture(contract_symbol="NVDA-USD-2")
+    endpoints[second_perp["node_id"]] = "Instrument"
+    with pytest.raises(registry.EdgeContractError):
+        registry.validate_edge(
+            dict(listed, src_id=perp["node_id"],
+                 dst_id=second_perp["node_id"],
+                 identity={"security_id": perp["node_id"],
+                           "instrument_id": second_perp["node_id"]}),
+            endpoints,
+        )
+    underlies = {
+        "edge_type": "UNDERLIES",
+        "src_id": "ca1",
+        "dst_id": crypto_perp["node_id"],
+        "data_source": "config",
+        "evidence": [
+            {"kind": "mapping_observation", "evidence_id": "ev-map",
+             "data_source": "config"}
+        ],
+        "identity": {"asset_id": "ca1", "instrument_id": crypto_perp["node_id"]},
+        "valid_from": dt(2024, 1, 2),
+        "system_from": dt(2024, 1, 2),
+    }
+    endpoints["ca1"] = "CryptoAsset"
+    registry.validate_edge(underlies, endpoints)
+    # A Security on the Instrument end of UNDERLIES is rejected.
+    with pytest.raises(registry.EdgeContractError):
+        registry.validate_edge(
+            dict(underlies, dst_id="s1",
+                 identity={"asset_id": "ca1", "instrument_id": "s1"}),
+            endpoints,
+        )
+    with pytest.raises(registry.EdgeContractError):
+        registry.validate_edge(
+            dict(underlies, src_id=crypto_perp["node_id"],
+                 dst_id=perp["node_id"],
+                 identity={"asset_id": crypto_perp["node_id"],
+                           "instrument_id": perp["node_id"]}),
+            endpoints,
+        )
 
     # Wrong destination type.
     with pytest.raises(registry.EdgeContractError):
@@ -301,7 +416,12 @@ def test_edge_registry_endpoints_identity_and_serialization():
         registry.validate_edge(_edge_row(evidence=[]), endpoints)
     with pytest.raises(registry.EdgeContractError):
         registry.validate_edge(
-            _edge_row(evidence=[{"kind": "chunk", "evidence_id": "ev-1"}]),
+            _edge_row(
+                evidence=[
+                    {"kind": "chunk", "evidence_id": "ev-1",
+                     "data_source": "sec_edgar"}
+                ]
+            ),
             endpoints,
         )
     with pytest.raises(registry.EdgeContractError):
@@ -315,7 +435,11 @@ def test_edge_registry_endpoints_identity_and_serialization():
         "edge_type": "INFERRED_PEER",
         "src_id": "c1",
         "dst_id": "c2",
-        "evidence": [{"kind": "classification", "evidence_id": "ev-cls"}],
+        "data_source": "derived",
+        "evidence": [
+            {"kind": "classification", "evidence_id": "ev-cls",
+             "data_source": "derived"}
+        ],
         "identity": {
             "pair": "c1|c2",
             "taxonomy": "sic",
@@ -343,12 +467,22 @@ def test_edge_registry_endpoints_identity_and_serialization():
     assert payload["public_available_at"] == dt(2024, 1, 2).isoformat()
     assert payload["properties"] == {"a": "0.10", "b": 1, "c": None}
     assert payload["edge_type"] == "FILED"
-    # A missing required field is a contract violation, not an implicit null.
-    for missing in ("valid_to", "confidence", "system_to", "build_generation_id"):
+    assert payload["data_source"] == "sec_edgar"
+    # A missing (or unknown) required field is a contract violation, not an
+    # implicit null.
+    for missing in (
+        "valid_to",
+        "confidence",
+        "system_to",
+        "build_generation_id",
+        "data_source",
+    ):
         broken = dict(row)
         broken.pop(missing)
         with pytest.raises(registry.EdgeContractError):
             registry.serialize_edge(broken)
+    with pytest.raises(registry.EdgeContractError):
+        registry.serialize_edge(dict(row, data_source="polygon"))
 
     # The registry agrees with the publication ownership scope for edges.
     assert publication.row_owner({"edge_type": "FILED", "company_id": "c1"}) == (

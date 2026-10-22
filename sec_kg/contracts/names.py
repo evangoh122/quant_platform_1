@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable, List, Optional, Tuple
 
+from config.data_sources import SEC_EDGAR, validate_data_source
 from sec_kg.contracts.temporal import at_midnight_utc, day_after
 from sec_kg.model import ensure_utc, normalize_unicode
 
@@ -132,7 +133,13 @@ class NameInterval:
     valid_to: Optional[datetime]
     source: str
     rank: int
+    data_source: str
     evidence_id: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "data_source", validate_data_source(self.data_source)
+        )
 
     def covers(self, at: datetime) -> bool:
         moment = ensure_utc(at)
@@ -147,6 +154,7 @@ class NameInterval:
             "valid_to": None if self.valid_to is None else self.valid_to.isoformat(),
             "source": self.source,
             "rank": self.rank,
+            "data_source": self.data_source,
             "evidence_id": self.evidence_id,
         }
 
@@ -189,6 +197,7 @@ def build_name_history(
                 valid_to=end,
                 source=NAME_SOURCE_FORMER,
                 rank=RANK_FORMER,
+                data_source=SEC_EDGAR,
                 evidence_id=former.evidence_id,
             )
         )
@@ -205,6 +214,7 @@ def build_name_history(
             valid_to=None,
             source=NAME_SOURCE_CURRENT,
             rank=RANK_CURRENT,
+            data_source=SEC_EDGAR,
             evidence_id=submissions.evidence_id,
         )
     )

@@ -11,6 +11,10 @@ warehouse:
 ``publication``  generation manifest and compare-and-swap publication
 ``names``        SEC-submissions company-name precedence
 ``filings``      accession de-duplication of bronze filing rows
+``instruments``  venue contracts (perpetual futures) as typed derivatives
+
+Every produced node, edge and evidence row carries a ``data_source`` from the
+one vocabulary in ``config/data_sources.py``.
 
 Nothing here imports pandas, DuckDB, Spark, Databricks or the network.
 """
@@ -20,6 +24,7 @@ from sec_kg.contracts import (
     facts,
     filings,
     identity,
+    instruments,
     names,
     publication,
     registry,
@@ -30,6 +35,7 @@ __all__ = [
     "facts",
     "filings",
     "identity",
+    "instruments",
     "names",
     "publication",
     "registry",

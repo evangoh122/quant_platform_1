@@ -23,8 +23,9 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from config.data_sources import DERIVED, SEC_COMPANYFACTS, validate_data_source
 from sec_kg.contracts.temporal import TemporalView, normalise_view
 from sec_kg.model import deterministic_json, ensure_utc, normalize_unicode, parse_decimal
 
@@ -33,6 +34,14 @@ DIMENSIONS_HASH_ABSENT = "∅"
 SOURCE_COMPANYFACTS = "companyfacts"
 SOURCE_ENTITY_EXTRACTION = "entity_extraction"
 SOURCES: Tuple[str, ...] = (SOURCE_COMPANYFACTS, SOURCE_ENTITY_EXTRACTION)
+
+#: Provider code carried by every observation row of each source
+#: (``RULE-data-source-column``): Company-Facts observations come from the SEC
+#: XBRL API, entity-extraction observations are computed here from SEC text.
+SOURCE_DATA_SOURCES: Mapping[str, str] = {
+    SOURCE_COMPANYFACTS: SEC_COMPANYFACTS,
+    SOURCE_ENTITY_EXTRACTION: DERIVED,
+}
 
 ENTRY_HASH_FIELDS: Tuple[str, ...] = (
     "value_raw",
@@ -81,6 +90,17 @@ def _required(label: str, value: Any) -> str:
 def _normalise_dimensions_hash(value: Optional[str]) -> str:
     text = normalize_unicode(str(value)) if value is not None else ""
     return text or DIMENSIONS_HASH_ABSENT
+
+
+def source_data_source(source: str) -> str:
+    """Provider code for an observation source (``RULE-data-source-column``)."""
+    key = normalize_unicode(str(source)).lower()
+    try:
+        return validate_data_source(SOURCE_DATA_SOURCES[key])
+    except KeyError:
+        raise FactError(
+            f"unknown observation source {source!r}; expected one of {SOURCES}"
+        ) from None
 
 
 # ── Keys ────────────────────────────────────────────────────────────────────
@@ -228,6 +248,41 @@ class Observation:
     @property
     def is_amendment(self) -> bool:
         return self.form_type.upper().endswith(AMENDED_FORM_SUFFIX)
+
+    @property
+    def data_source(self) -> str:
+        """Provider of this observation row (Company-Facts -> sec_companyfacts)."""
+        return source_data_source(self.key.source)
+
+    def as_row(self) -> Dict[str, Any]:
+        """Row contract, including the required ``data_source``."""
+        return {
+            "company_id": self.key.assertion.series.company_id,
+            "concept_id": self.key.assertion.series.concept_id,
+            "unit": self.key.assertion.series.unit,
+            "period_id": self.key.assertion.series.period_id,
+            "dimensions_hash": self.key.assertion.series.dimensions_hash,
+            "filing_id": self.key.assertion.filing_id,
+            "source": self.key.source,
+            "entry_hash": self.key.entry_hash,
+            "value_raw": self.value_raw,
+            "value_decimal": (
+                None if self.value_decimal is None else str(self.value_decimal)
+            ),
+            "form_type": self.form_type,
+            "public_available_at": (
+                None
+                if self.public_available_at is None
+                else self.public_available_at.isoformat()
+            ),
+            "system_from": self.system_from.isoformat(),
+            "system_to": (
+                None if self.system_to is None else self.system_to.isoformat()
+            ),
+            "conflict_flag": self.conflict_flag,
+            "evidence_id": self.evidence_id,
+            "data_source": self.data_source,
+        }
 
     def with_conflict(self, flag: bool = True) -> "Observation":
         return Observation(
@@ -441,6 +496,11 @@ class ExtractedFact:
             "dimensions_hash",
             _normalise_dimensions_hash(self.dimensions_hash),
         )
+
+    @property
+    def data_source(self) -> str:
+        """Extracted from SEC narrative, i.e. computed in this project."""
+        return DERIVED
 
 
 @dataclass(frozen=True)

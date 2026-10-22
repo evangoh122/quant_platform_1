@@ -22,12 +22,24 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Tuple
 
+from config.data_sources import validate_data_source
+from sec_kg.contracts import identity
+from sec_kg.contracts.instruments import (
+    INSTRUMENT_ONLY_NODE_FIELDS,
+    NODE_TYPE_INSTRUMENT,
+    SECURITY_ONLY_NODE_FIELDS,
+    UNDERLYING_KIND_CRYPTO_ASSET,
+    UNDERLYING_KIND_SECURITY,
+    Instrument,
+    InstrumentError,
+    underlying_kind as _underlying_kind,
+)
 from sec_kg.contracts.registry import (
     COMPANY_SCOPED_NODE_KINDS,
+    CONTRACT_NODE_KINDS,
     GLOBAL_NODE_KINDS,
     SCOPE_CROSS_COMPANY,
     SCOPE_GLOBAL_TARGET,
-    VENUE_NODE_KINDS,
     get_edge_contract,
 )
 from sec_kg.model import deterministic_json, ensure_utc, normalize_unicode
@@ -266,7 +278,25 @@ def _replace_manifest(executor: PointerExecutor, generation: Generation) -> None
 # ── Ownership ──────────────────────────────────────────────────────────────
 
 def row_owner(row: Mapping[str, Any]) -> str:
-    """Return ``global``, ``cross-company`` or ``company:<company_id>``."""
+    """Return ``global``, ``cross-company`` or ``company:<company_id>``.
+
+    ``owner_company_id`` (evidence rows) always wins.  Otherwise ownership is
+    derived from the row kind (``KG_DATA_MODEL_v4`` §G, refined by review item
+    O3 which is implemented here):
+
+    * ``Metric`` / ``Period`` / ``Concept`` / ``CryptoAsset`` nodes are global;
+    * ``Instrument`` nodes are **derivatives** and inherit their underlying's
+      ownership: a contract on an equity/ETF/fund/preferred ``Security`` is
+      owned by that security's company (the row's ``company_id``), a contract
+      on a ``CryptoAsset`` is global, and a commodity-underlying contract must
+      carry an explicit ``owner_company_id`` until KG-F defines a commodity
+      node — it is never silently global;
+    * the other node kinds and company-scoped edges belong to ``company_id``;
+    * ``INFERRED_PEER`` edges are cross-company.
+
+    A subset build therefore replaces a member's Instruments together with its
+    securities, while crypto contracts survive as global rows.
+    """
     explicit = row.get("owner_company_id")
     if explicit is not None:
         owner = normalize_unicode(str(explicit))
@@ -296,9 +326,9 @@ def row_owner(row: Mapping[str, Any]) -> str:
 
     node_kind = row.get("node_type")
     if node_kind is not None:
+        if node_kind == NODE_TYPE_INSTRUMENT:
+            return _instrument_row_owner(row)
         if node_kind in GLOBAL_NODE_KINDS:
-            return OWNER_GLOBAL
-        if node_kind in VENUE_NODE_KINDS:
             return OWNER_GLOBAL
         if node_kind in COMPANY_SCOPED_NODE_KINDS:
             company = row.get("company_id")
@@ -310,6 +340,34 @@ def row_owner(row: Mapping[str, Any]) -> str:
         raise PublicationError(f"unknown node_type {node_kind!r}")
 
     raise PublicationError("row has neither node_type nor edge_type")
+
+
+def _instrument_row_owner(row: Mapping[str, Any]) -> str:
+    """Ownership of an Instrument node: derived from what it tracks."""
+    underlying_type = row.get("underlying_type")
+    if underlying_type is None:
+        raise PublicationError(
+            "Instrument: underlying_type is required to determine ownership"
+        )
+    try:
+        kind = _underlying_kind(str(underlying_type))
+    except InstrumentError as error:
+        raise PublicationError(f"Instrument: {error}") from error
+    if kind == UNDERLYING_KIND_SECURITY:
+        company = row.get("company_id")
+        if company is None or not normalize_unicode(str(company)):
+            raise PublicationError(
+                "Instrument: a contract on a Security belongs to that "
+                "security's company; company_id is required"
+            )
+        return OWNER_COMPANY_PREFIX + normalize_unicode(str(company))
+    if kind == UNDERLYING_KIND_CRYPTO_ASSET:
+        return OWNER_GLOBAL
+    raise PublicationError(
+        "Instrument: ownership of an "
+        f"{normalize_unicode(str(underlying_type))!r} underlying is not defined "
+        "yet; supply owner_company_id"
+    )
 
 
 def _row_identity(row: Mapping[str, Any]) -> str:
@@ -333,6 +391,143 @@ def _row_identity(row: Mapping[str, Any]) -> str:
 def row_identity(row: Mapping[str, Any]) -> str:
     """Public name for the row identity used to merge subset and full builds."""
     return _row_identity(row)
+
+
+# ── Node-row contract (typed nodes, never cross-kind) ──────────────────────
+
+def _row_data_source(row: Mapping[str, Any], label: str) -> str:
+    """Validate a row's required ``data_source`` (``RULE-data-source-column``)."""
+    try:
+        return validate_data_source(row.get("data_source"))
+    except ValueError as error:
+        raise PublicationError(f"{label}: {error}") from error
+
+
+def validate_node_row(row: Mapping[str, Any]) -> str:
+    """Validate one node row before publication; return its ``node_type``.
+
+    Every node row must carry a valid ``data_source``.  ``Instrument`` rows are
+    re-validated as typed perpetual futures and re-derive their id from the
+    venue natural key ``(venue, dex_or_market, contract_symbol)``, so a contract
+    can never be published under a Security id; ``Security`` rows refuse
+    Instrument-only attributes and re-derive their issuer+class id, so a perp
+    can never be published as the equity it tracks (``KG_DATA_MODEL_v4`` §J).
+    """
+    if not isinstance(row, Mapping):
+        raise PublicationError(
+            f"node row must be a mapping, got {type(row).__name__}"
+        )
+    node_type = row.get("node_type")
+    if node_type not in CONTRACT_NODE_KINDS:
+        raise PublicationError(f"unknown node_type {node_type!r}")
+    node_type = str(node_type)
+    node_id = normalize_unicode(str(row.get("node_id") or ""))
+    if not node_id:
+        raise PublicationError(f"{node_type}: node_id is required")
+    _row_data_source(row, node_type)
+    if node_type == NODE_TYPE_INSTRUMENT:
+        _validate_instrument_node(row, node_id)
+    elif node_type == "Security":
+        _validate_security_node(row, node_id)
+    elif node_type in COMPANY_SCOPED_NODE_KINDS:
+        if not normalize_unicode(str(row.get("company_id") or "")):
+            raise PublicationError(
+                f"{node_type}: company-scoped node is missing company_id"
+            )
+    return node_type
+
+
+def _validate_instrument_node(row: Mapping[str, Any], node_id: str) -> None:
+    for field_name in SECURITY_ONLY_NODE_FIELDS:
+        if row.get(field_name) not in (None, ""):
+            raise PublicationError(
+                f"Instrument rows must not carry Security identity field "
+                f"{field_name!r}: a perpetual future is never the equity "
+                "it tracks"
+            )
+    try:
+        instrument = Instrument(
+            venue=row.get("venue"),
+            dex_or_market=row.get("dex_or_market"),
+            contract_symbol=row.get("contract_symbol"),
+            instrument_type=row.get("instrument_type"),
+            underlying_type=row.get("underlying_type"),
+            underlying=row.get("underlying"),
+            data_source=row.get("data_source"),
+        )
+    except (InstrumentError, ValueError) as error:
+        raise PublicationError(f"Instrument: {error}") from error
+    if instrument.node_id != node_id:
+        raise PublicationError(
+            f"Instrument: node_id {node_id!r} does not match its venue identity "
+            f"{instrument.node_id!r}; an Instrument can never take a Security id"
+        )
+    if instrument.underlying_kind == UNDERLYING_KIND_SECURITY:
+        if not normalize_unicode(str(row.get("company_id") or "")):
+            raise PublicationError(
+                "Instrument: a Security-underlying contract requires the "
+                "underlying security's company_id"
+            )
+
+
+def _validate_security_node(row: Mapping[str, Any], node_id: str) -> None:
+    for field_name in INSTRUMENT_ONLY_NODE_FIELDS:
+        if row.get(field_name) not in (None, ""):
+            raise PublicationError(
+                f"Security rows must not carry Instrument attribute "
+                f"{field_name!r}: perpetual futures are derivatives, never "
+                "equities"
+            )
+    try:
+        expected = identity.security_id(
+            str(row.get("issuer_company_id") or ""),
+            str(row.get("share_class_code") or ""),
+        )
+    except identity.IdentityError as error:
+        raise PublicationError(f"Security: {error}") from error
+    if expected != node_id:
+        raise PublicationError(
+            f"Security: node_id {node_id!r} does not match its issuer+class "
+            f"identity {expected!r}; an Instrument id can never be published "
+            "as a Security"
+        )
+    if not normalize_unicode(str(row.get("company_id") or "")):
+        raise PublicationError("Security: company_id (owner) is required")
+
+
+def merge_node_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    aliases: Optional[Mapping[str, str]] = None,
+) -> Tuple[Dict[str, Any], ...]:
+    """Merge node rows for publication, keyed by ``(node_type, node_id)``.
+
+    Rows are never merged across kinds: an id alias that would fold an
+    Instrument id into a Security id (or the reverse) is rejected, because a
+    perpetual future is a derivative and must stay a separate node from the
+    equity it tracks (``KG_DATA_MODEL_v4`` §J).  A duplicate row of the same
+    kind is a contract violation, not a silent overwrite.
+    """
+    alias_map = dict(aliases or {})
+    merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    kind_by_id: Dict[str, str] = {}
+    for row in rows:
+        node_type = validate_node_row(row)
+        original = normalize_unicode(str(row["node_id"]))
+        resolved = identity.resolve_alias(alias_map, original)
+        previous_kind = kind_by_id.setdefault(resolved, node_type)
+        if previous_kind != node_type:
+            raise PublicationError(
+                f"node id {resolved!r} is both {previous_kind} and {node_type}: "
+                "an Instrument is never merged into the Security it tracks"
+            )
+        key = (node_type, resolved)
+        if key in merged:
+            raise PublicationError(
+                f"duplicate {node_type} node row for {resolved!r}"
+            )
+        merged[key] = dict(row, node_id=resolved)
+    return tuple(merged[key] for key in sorted(merged))
 
 
 def plan_subset(
