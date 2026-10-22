@@ -904,6 +904,15 @@ Every perps table, when it lands, carries:
     (secondary; mon_0900 may be claimed only with ES/NQ futures + overnight ATS + pre-market in
     its baseline).
 
+    Primary evaluation statistic (docs/data/PERPS_WEEKEND_PLAN.md §6.2). The Clark-West-adjusted
+    loss differential (with the squared forecast difference added back) decides SIGNIFICANCE ONLY.
+    The effect size reported next to it is the UNADJUSTED out-of-time R² gain
+    mean(MSE_base - MSE_full) / mean(MSE_base) over the 18 evaluation weekends, with weekend means
+    weighted equally; the Clark-West ratio is never reported as the effect size. The
+    pre-registered power simulation (§6.2.1) estimates its DGP only on the 12 pinned training
+    weekends (2026-03-27..2026-06-12) and treats population ΔR² in {0.005, 0.01, 0.02} as the
+    plausible set.
+
   Buildable panel (docs/data/PERPS_WEEKEND_PLAN.md §2.5, §6.1):
     1h API-only lower bound 1,538 company-weekends / 30 weekends (measured 2026-10-21);
     upper bound 1,871 / 49 weekends only if fills cover HIP-3 from listing (UNVERIFIED).

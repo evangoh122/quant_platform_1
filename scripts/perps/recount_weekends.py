@@ -49,13 +49,13 @@ is converted back with ``tanh``: at N_eff = 30 the bound is r ≈ 0.49, not 0.54
 as the increment to the model's multiple R²: the increment is
 ``partial_r2 * (1 - R2_base)`` and shrinks as the baseline explains more.
 
-This is an approximation, not a substitute for a simulation, but it is enough to
-show that the study cannot detect a small incremental R².  ``n_eff`` is the
-weekend count; the pooled row count is printed only as the wrong (anticonservative)
+This is an approximation, not a substitute for a simulation, and it says nothing
+about the power of the pre-registered primary test.  ``n_eff`` is the weekend
+count; the pooled row count is printed only as the wrong (anticonservative)
 comparison it is.  The pre-registered primary test uses only its evaluation
-weekends (docs/data/PERPS_WEEKEND_PLAN.md §6.2); applying the same 1-df heuristic
-to those 18 weekends is an illustrative bound, not that test's power, which is
-undetermined until the plan's pre-registered simulation (§6.2.1) runs.
+weekends (docs/data/PERPS_WEEKEND_PLAN.md §6.2); its power is undetermined until
+the plan's pre-registered simulation (§6.2.1) runs.  The 1-df heuristic is
+not that test's power, and neither bounds nor orders it.
 
 Usage::
 

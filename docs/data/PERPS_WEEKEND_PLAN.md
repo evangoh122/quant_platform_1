@@ -1176,14 +1176,13 @@ than the block's partial R² whenever the baseline already explains variance:
 
 **These are illustrative correlation bounds, not the power of the primary test.**
 Each number is what a **1-df heuristic** (Fisher-z, 80% power, two-sided 5%)
-would give a *single* coefficient; the pre-registered test is a **joint
+would give a *single* coefficient. The pre-registered test is a **joint
 5-feature block** with a Clark-West-adjusted loss differential and a
-wild-cluster bootstrap-t, so it needs a **larger** effect than these numbers, not
-a smaller one — a joint block buys no precision per coefficient. Because the
-pre-registered alternative is one-sided, even these illustrative bounds are
-conservative for the direction tested. N_eff is the **18 evaluation weekends**
-(not 1,538 rows and not the 30-weekend panel), but that only says which row of an
-illustrative table applies.
+wild-cluster bootstrap-t, and the 1-df heuristic says nothing about that
+statistic's sampling distribution in either direction: no ordering of the
+illustrative numbers against the primary test's detectable effect is implied.
+N_eff is the **18 evaluation weekends** (not 1,538 rows and not the 30-weekend
+panel), but that only says which row of an illustrative table applies.
 
 **The primary test's power is UNDETERMINED.** No number in this section is a
 power calculation for it: the sampling distribution of a joint-block bootstrap-t
@@ -1246,31 +1245,38 @@ extended-hours window does not exist in its usual form, §9) and is reported
 alongside — never instead of — the primary. Any other holiday exclusion is
 exploratory.
 
-**One primary statistic.** For each evaluation weekend `w` compute the mean
-squared error of each model over that weekend's rows, `MSE_base,w` and
-`MSE_full,w`. The full model **nests** the baseline, so the pre-declared loss
-differential is **Clark-West adjusted** (Clark & West 2007): the squared
-difference between the two forecasts is added back, so the larger model is
-charged for the extra noise rather than credited with it:
+**One significance statistic and one reported effect size.** For each evaluation
+weekend `w` compute the mean squared error of each model over that weekend's
+rows, `MSE_base,w` and `MSE_full,w`. The full model **nests** the baseline, so
+the pre-declared loss differential is **Clark-West adjusted** (Clark & West
+2007): the squared difference between the two forecasts is added back, so the
+larger model is charged for the extra noise rather than credited with it:
 
 ```text
 d_w = MSE_base,w − MSE_full,w + mean_{rows in w}(ŷ_base − ŷ_full)²
 ```
 
-The unadjusted `MSE_base,w − MSE_full,w` is reported as a sensitivity, never as
-the primary; choosing Clark-West now avoids the conservatism argument being made
-after a result is seen. The primary statistic is the **out-of-time ΔR²**:
+The **Clark-West ratio** normalises that differential and decides
+**significance only**:
 
 ```text
-ΔR²_oot = mean_w(d_w) / mean_w(MSE_base,w)
+ΔR²_cw = mean_w(d_w) / mean_w(MSE_base,w)
+```
+
+The effect size P6 reports is **not** the Clark-West ratio: it is the
+**unadjusted out-of-time R² gain**
+
+```text
+ΔR²_oot = mean_w(MSE_base,w − MSE_full,w) / mean_w(MSE_base,w)
 ```
 
 Weekend means are weighted equally (not pooled rows), so a weekend with fewer
-eligible instruments cannot dominate. Positive values mean the perp block
-improves out-of-time accuracy; **H1 is one-sided — ΔR²_oot > 0 at the 5%
-level** — matching H1's "raises ... by more than zero". A negative point
-estimate is reported as-is and is never re-labelled as an edge in the other
-direction. This is the only confirmatory statistic.
+eligible instruments cannot dominate. `ΔR²_oot` is the reported effect and
+carries no decision rule; the one-sided test below runs on the Clark-West-adjusted
+`d_w`. A negative point estimate is reported as-is and is never re-labelled as an
+edge in the other direction. **H1 is one-sided: `mean_w(d_w) > 0` at the 5%
+level** (so `ΔR²_cw > 0`), matching H1's "raises ... by more than zero", and the
+one-sided bootstrap p-value is the only confirmatory decision.
 
 **Inference — weekend-clustered, small-cluster corrected.** The 18 `d_w` values
 are the clusters. Primary inference is a **wild cluster bootstrap-t**
@@ -1288,9 +1294,10 @@ is confirmatory.
 **Power is UNDETERMINED until the simulation in §6.2.1 runs.** N_eff is the
 **18 evaluation weekends** (not 1,538 rows and not the 30-weekend panel), and the
 panel-level 30/49 rows in §6.1 are context, not this test's power — the §6.1
-numbers are illustrative 1-df correlation bounds for a single coefficient, and a
-joint 5-feature block needs a larger effect. No power figure for the primary test
-is claimed before §6.2.1 is run, and a null is uninformative until then.
+numbers are illustrative 1-df correlation bounds for a single coefficient and do
+not bound the primary test's power in either direction. No power figure for the
+primary test is claimed before §6.2.1 is run, and a null is uninformative until
+then.
 
 - **Secondary family:** all other comparisons (other cutoffs, per-instrument
   runs, single-feature ablations, commodity perps, static-tier subsets). They
@@ -1313,47 +1320,109 @@ is claimed before §6.2.1 is run, and a null is uninformative until then.
 
 The primary test's power is **UNDETERMINED** (§6.1). This simulation fixes it. It
 is specified now, run in P6 **before** any evaluation loss is inspected, and it
-simulates the actual statistic rather than the 1-df heuristic.
+simulates the actual statistic rather than the 1-df heuristic. Every input below
+is fixed before the run; the seed is the only free parameter and is recorded.
 
-- **Data-generating process, from the training window.** Fit the primary
-  baseline OLS (the same pre-declared columns) on the **training window**: the
-  12 pinned training weekends for the first evaluation origin, and every
-  buildable weekend strictly before `w` for the later origins (§6.2). The DGP
-  keeps the observed baseline design for the 18 evaluation weekends and draws
-  `open_gap` as the fitted baseline plus innovations resampled in **weekend
-  blocks** from the training-window residuals (a stationary weekend block
-  bootstrap, so weekend clustering and heteroskedasticity survive). The five perp
-  features are drawn the same way, in weekend blocks from the training window, so
-  their within-weekend correlation and their correlation with the baseline
-  features are preserved; the block is then rescaled so the injected effect has a
-  known population ΔR²_oot.
+- **Training-only data-generating process.** Estimate the DGP **once, from the 12
+  pinned training weekends only**: 2026-03-27, 2026-04-03, 2026-04-10,
+  2026-04-17, 2026-04-24, 2026-05-01, 2026-05-08, 2026-05-15, 2026-05-22,
+  2026-05-29, 2026-06-05 and 2026-06-12. Fit the primary baseline OLS (the same
+  pre-declared columns) on those 12 weekends and keep its coefficient vector
+  `β̂`, its per-row residual `ε̂`, the baseline design and the five perp
+  features. **No label, residual, fitted value or feature row from any
+  evaluation weekend — and no weekend earlier than 2026-03-27 — enters the DGP
+  for any origin.** Evaluation weekends contribute **availability only**: which
+  instruments have a row, hence the row count of a simulated weekend. The
+  expanding-origin refits inside a Monte Carlo replication use the simulated
+  labels for earlier evaluation weekends, never their real labels.
+- **Joint circular block bootstrap of whole rows.** The training DGP is one row
+  per (weekend, instrument) carrying **all columns together**: the baseline
+  features, the five perp features and the baseline residual `ε̂`. Resample
+  **whole weekend-instrument rows by weekend blocks**: draw blocks of `b = 4`
+  consecutive training weekends, wrapping circularly from 2026-06-12 back to
+  2026-03-27, until the 12 synthetic training weekend slots and the 18 synthetic
+  evaluation weekend slots are filled in calendar order. Because every column of
+  a row moves together, the within-weekend cross-sectional correlation between
+  the baseline features, the five perp features and the residuals is preserved;
+  no row is ever spliced from two source weekends. `b = 4` is **fixed** rather
+  than estimated because a Politis–White automatic block length is unreliable on
+  12 blocks; four weekends span about one month of macro/crypto conditions and
+  leave three disjoint blocks. Sensitivity runs at `b = 2` and `b = 6` are
+  reported alongside the pre-registered `b = 4`, never instead of it.
+- **Instrument alignment.** Each synthetic weekend is assigned the **actual
+  instrument set of the calendar weekend it represents** (the 12 pinned training
+  sets, then the 18 pinned evaluation sets; availability only, no labels). A
+  drawn weekend is accepted only when it contains every instrument in that set;
+  otherwise the **whole weekend block draw is rejected and redrawn**, so a
+  simulated weekend takes all of its rows from one source weekend and the
+  instrument set is identical across Monte Carlo replications. The rejection
+  count is recorded per weekend. If 100 consecutive draws fail, the weekend uses
+  the **intersection** of the target set and the drawn weekend and the shortfall
+  is reported; a missing instrument is never forward-filled, interpolated or
+  borrowed from another weekend.
+- **Labels and effect injection.** For each synthetic row the label is
+
+  ```text
+  open_gap* = x'β̂ + κ · (u'z) + ε
+  ```
+
+  where `x` is the drawn baseline vector, `z` the drawn five perp features
+  standardized with the 12-week training means and standard deviations, `ε` the
+  drawn baseline residual, `u = (1/√5, …, 1/√5)'` the **fixed, pre-registered
+  equal-weight direction**, and `κ` the effect scale. The effect is injected only
+  through the joint **5-feature block**, never through a single coefficient.
+- **Effect calibration (population unadjusted out-of-time R² gain).** The effect
+  grid refers to the **population unadjusted out-of-time R² gain of the true
+  model**, with `q = u'Σ_Z u` the variance of the standardized injected index,
+  `s = u'E[Zε]` its covariance with the training residual, and
+  `σ²_ε = E[ε²]`:
+
+  ```text
+  ΔR²(κ) = (E[MSE_base] − E[MSE_full]) / E[MSE_base]
+          = (κ²q + 2κs) / (κ²q + 2κs + σ²_ε)
+  ```
+
+  so a target `ΔR²` maps to the scale factor
+
+  ```text
+  κ = [−s + sqrt(s² + q · ΔR² · σ²_ε / (1 − ΔR²))] / q
+  ```
+
+  with `q`, `s` and `σ²_ε` estimated on the 12 training weekends from the same
+  joint row matrix. The positive root is used, so `κ ≥ 0` and the injected effect
+  is in the pre-registered positive direction. If `q` is not finite and positive
+  the replication fails loudly; the direction is never re-chosen.
 - **Design simulated:** the **18 evaluation weekends**, with the panel's actual
   per-weekend instrument counts (availability only — no labels), the identical
   row-set rule, `split_weekend` rows dropped, and the same expanding-origin refit
-  per weekend. The effect is injected only through the joint **5-feature block**,
-  never through a single coefficient.
-- **Test simulated:** the §6.2 procedure — the Clark-West-adjusted `d_w`,
-  ΔR²_oot, and the centered wild cluster bootstrap-t with Rademacher weights,
-  G = 18 clusters. The simulation uses **999** bootstrap replications per Monte
+  per weekend.
+- **Test simulated:** the §6.2 procedure — the Clark-West-adjusted `d_w` and its
+  centered wild cluster bootstrap-t with Rademacher weights, G = 18 clusters,
+  which decide significance, plus the **unadjusted** `ΔR²_oot`, which is the
+  reported effect. The simulation uses **999** bootstrap replications per Monte
   Carlo replication, not the real test's 9,999: the smaller count keeps 2,000
   replications × the effect grid feasible, and it only coarsens the simulated
   p-value granularity to about ±0.003, which the reported Monte Carlo intervals
   absorb. Nothing else about the statistic or its decision rule changes.
 - **Nominal α:** 0.05, **one-sided** in the pre-registered direction. Size is
-  checked at ΔR²_oot = 0.
-- **Effect grid (population ΔR²_oot):** 0, 0.005, 0.01, 0.02, 0.05, 0.10, 0.20.
+  checked at population `ΔR² = 0`.
+- **Effect grid (population unadjusted `ΔR²`):** 0, 0.005, 0.01, 0.02, 0.05,
+  0.10, 0.20. The plan declares **plausible = {0.005, 0.01, 0.02}** for an
+  incremental five-feature weekend block; the larger grid points trace the power
+  curve only and are not claims of plausibility.
 - **Replications:** **2,000** Monte Carlo replications per grid point; the seed,
   the code path and the data snapshot are recorded.
-- **Reported before any loss is inspected:** the size at ΔR²_oot = 0 with its
-  Monte Carlo interval; the **power curve** over the grid with 95% Monte Carlo
-  intervals; the **minimum detectable ΔR²_oot at 80% power** (interpolated on the
-  grid); the Monte Carlo standard error of each power estimate; and the fraction
-  of replications with a positive point estimate. These results become the
-  design's power statement; §6.1 stays the illustrative bounds it is.
-- **Decision rule, fixed now:** if power at every ΔR²_oot the plan treats as
-  plausible is below 80%, P6 reports the primary test as **underpowered** and a
-  null as uninformative. The plan is not re-tuned and no evaluation weekend is
-  added, dropped or re-weighted after a loss is seen.
+- **Reported before any loss is inspected:** the size at population `ΔR² = 0`
+  with its Monte Carlo interval; the **power curve** over the grid with 95%
+  Monte Carlo intervals; the **minimum detectable `ΔR²` at 80% power**
+  (interpolated on the grid); the Monte Carlo standard error of each power
+  estimate; and the fraction of replications with a positive point estimate.
+  These results become the design's power statement; §6.1 stays the illustrative
+  bounds it is.
+- **Decision rule, fixed now:** if power at every **plausible** `ΔR²`
+  (0.005, 0.01, 0.02) is below 80%, P6 reports the primary test as
+  **underpowered** and a null as uninformative. The plan is not re-tuned and no
+  evaluation weekend is added, dropped or re-weighted after a loss is seen.
 
 ## 7. PR slices
 

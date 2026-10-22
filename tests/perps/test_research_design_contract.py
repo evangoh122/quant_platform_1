@@ -19,6 +19,12 @@ Round 11 (r6 F1, F2) pins the ontology ``open_gap`` wording to the plan's
 not-populated dividend flag and the simulation's 999-draw feasibility count
 against the real test's 9,999.
 
+Round 12 pins the executable pre-registered simulation (training-only DGP over
+the 12 pinned weekends, joint circular block bootstrap of whole rows, the effect
+calibration equation and the plausible ΔR² set), bans the unsupported "larger
+effect" ordering against the Fisher-z heuristic, and separates the Clark-West
+significance decision from the unadjusted effect size P6 reports.
+
 They are offline and stdlib + PyYAML only. They fail on the pre-round-9 docs.
 """
 from __future__ import annotations
@@ -59,6 +65,20 @@ EVALUATION_WEEKENDS = (
     "2026-10-02",
     "2026-10-09",
     "2026-10-16",
+)
+TRAINING_WEEKENDS = (
+    "2026-03-27",
+    "2026-04-03",
+    "2026-04-10",
+    "2026-04-17",
+    "2026-04-24",
+    "2026-05-01",
+    "2026-05-08",
+    "2026-05-15",
+    "2026-05-22",
+    "2026-05-29",
+    "2026-06-05",
+    "2026-06-12",
 )
 
 
@@ -156,7 +176,12 @@ def test_illustrative_correlation_bounds_are_not_the_primary_tests_power():
     assert "illustrative correlation bounds, not the power of the primary test." in flat
     assert "1-df heuristic" in flat
     assert "joint 5-feature block" in flat
-    assert "needs a **larger** effect" in flat
+    # Round 12 (Codex Sol P2): the unsupported ordering against the heuristic is
+    # gone in both places that carried it.
+    assert "larger effect" not in flat
+    assert "needs a **larger** effect" not in flat
+    assert "joint block buys no precision" not in flat
+    assert "conservative for the direction tested" not in flat
     # The primary test's power is explicitly undetermined until §6.2.1 runs.
     assert "The primary test's power is UNDETERMINED." in flat
     # The round-9 claim, and the heading that carried it, must be gone.
@@ -167,13 +192,35 @@ def test_illustrative_correlation_bounds_are_not_the_primary_tests_power():
 
 
 def test_primary_power_simulation_is_preregistered_and_specific():
-    """The plan must state the simulation that replaces the heuristic."""
+    """The simulation is executable, training-only and fully pre-registered."""
     flat = _flat(_plan())
     assert "#### 6.2.1 Pre-registered power simulation" in flat
-    # Data-generating process from the training window.
-    assert "Data-generating process, from the training window." in flat
-    assert "12 pinned training weekends" in flat
-    assert "stationary weekend block bootstrap" in flat
+    # DGP source: the 12 pinned training weekends only.
+    assert "Training-only data-generating process." in flat
+    assert "12 pinned training weekends only" in flat
+    for weekend in TRAINING_WEEKENDS:
+        assert weekend in flat, weekend
+    # No evaluation weekend appears in the DGP window: mutating the window to
+    # include one fails this test.
+    dgp = flat.split("Training-only data-generating process.", 1)[1]
+    dgp = dgp.split("Joint circular block bootstrap", 1)[0]
+    for weekend in EVALUATION_WEEKENDS:
+        assert weekend not in dgp, weekend
+    # Joint resampling of whole rows, with a stated block-length rule.
+    assert "whole weekend-instrument rows by weekend blocks" in flat
+    assert "b = 4" in flat
+    assert "circularly" in flat
+    assert "Politis–White" in flat
+    # Instrument alignment: one source weekend per simulated weekend.
+    assert "actual instrument set of the calendar weekend it represents" in flat
+    assert "whole weekend block draw is rejected and redrawn" in flat
+    assert "intersection" in flat
+    # Fixed direction and the effect-calibration equation.
+    assert "u = (1/√5, …, 1/√5)'" in flat
+    assert "κ = [−s + sqrt(s² + q · ΔR² · σ²_ε / (1 − ΔR²))] / q" in flat
+    assert "population unadjusted out-of-time R² gain" in flat
+    # The plausible set is declared explicitly.
+    assert "plausible = {0.005, 0.01, 0.02}" in flat
     # Design: the 18 evaluation weekends and the joint block.
     assert "18 evaluation weekends" in flat
     assert "5-feature block" in flat
@@ -189,24 +236,45 @@ def test_primary_power_simulation_is_preregistered_and_specific():
     assert "not the real test's 9,999" in flat
     assert "±0.003" in flat
     assert "power curve" in flat
-    assert "minimum detectable ΔR²_oot at 80% power" in flat
-    assert "size at ΔR²_oot = 0" in flat
+    assert "minimum detectable `ΔR²` at 80% power" in flat
+    assert "size at population `ΔR² = 0`" in flat
     assert "Monte Carlo standard error" in flat
     assert "seed" in flat
     # The simulation runs before any P6 loss is inspected.
     assert "P6 **before** any evaluation loss is inspected" in flat
 
 
+def test_reported_effect_is_unadjusted_and_cw_decides_significance_only():
+    """Round 12 (Opus MINOR 2): significance and effect size are separate."""
+    flat = _flat(_plan())
+    assert "decides **significance only**" in flat
+    assert "ΔR²_cw = mean_w(d_w) / mean_w(MSE_base,w)" in flat
+    assert "unadjusted out-of-time R² gain" in flat
+    assert (
+        "ΔR²_oot = mean_w(MSE_base,w − MSE_full,w) / mean_w(MSE_base,w)"
+        in flat
+    )
+    assert "The effect size P6 reports is **not** the Clark-West ratio" in flat
+    # The schema doc and README describe the same split.
+    schemas = _flat(SCHEMAS.read_text(encoding="utf-8"))
+    assert "decides SIGNIFICANCE ONLY" in schemas
+    assert "UNADJUSTED out-of-time R² gain" in schemas
+    assert "mean(MSE_base - MSE_full) / mean(MSE_base)" in schemas
+    readme = _flat(README.read_text(encoding="utf-8"))
+    assert "decides **significance only**" in readme
+    assert "**unadjusted** out-of-time ratio" in readme
+
+
 def test_clark_west_and_the_friday_holiday_weekends_are_predeclared():
     """Opus MINOR 1 and 2: the baseline's edge and the nested-model adjustment."""
     text = _plan()
     flat = _flat(text)
-    # Clark-West replaces the unadjusted d_w as the primary.
+    # Clark-West decides significance; the reported effect is unadjusted.
     assert "Clark-West adjusted" in flat
     assert "mean_{rows in w}(ŷ_base − ŷ_full)²" in flat
-    assert "unadjusted `MSE_base,w − MSE_full,w` is reported as a sensitivity" in flat
+    assert "decides **significance only**" in flat
     # One-sided alternative, matching H1.
-    assert "H1 is one-sided — ΔR²_oot > 0 at the 5% level" in flat
+    assert "H1 is one-sided: `mean_w(d_w) > 0` at the 5% level" in flat
     # The claim is only "beyond the Friday regular-session close + crypto".
     assert "Friday regular-session close + crypto" in flat
     assert "16:00-20:00 ET" in flat
