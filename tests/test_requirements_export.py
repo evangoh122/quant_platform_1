@@ -73,6 +73,35 @@ def test_lockfile_and_declared_runtime_dependencies_exist():
         assert dist in exported, f"{dist} declared in pyproject but missing from the export"
 
 
+EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_requirements.sh"
+
+
+def test_export_script_verifies_the_lock_before_exporting():
+    """A stale uv.lock must fail the deploy-time export loudly.
+
+    `uv export --frozen` refuses to re-lock but still exports whatever the
+    committed lock contains, so a lock that no longer matches pyproject.toml
+    would silently ship the old resolution through `bundle deploy`. The script
+    therefore runs `uv lock --check` first and prints a clear message. The exit
+    codes on a stale and an unchanged tree are exercised on a git-archive copy
+    in the build evidence; this test pins the ordering offline.
+    """
+    script = EXPORT_SCRIPT.read_text(encoding="utf-8")
+    code = [
+        line.strip()
+        for line in script.splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    check = [i for i, line in enumerate(code) if "uv lock --check" in line]
+    export = [i for i, line in enumerate(code) if "uv export --frozen" in line]
+    assert len(check) == 1, "the export script must run `uv lock --check` exactly once"
+    assert len(export) == 1, "the export script must run `uv export --frozen` exactly once"
+    assert check[0] < export[0], "`uv lock --check` must run before the export"
+    assert "uv.lock is out of date with pyproject.toml" in script, (
+        "a stale lock must fail with an explicit message naming pyproject.toml"
+    )
+
+
 def test_dev_group_carries_the_evidently_pin_from_the_parallel_branch():
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     dev = data["dependency-groups"]["dev"]

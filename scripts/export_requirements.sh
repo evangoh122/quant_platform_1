@@ -25,6 +25,16 @@ trap 'rm -f "$TMP"' EXIT
 
 cd "$REPO_ROOT"
 
+# Fail LOUDLY when pyproject.toml and uv.lock disagree. `bundle deploy`
+# regenerates requirements.txt through this script, so a stale lock must break
+# the deploy instead of shipping an old resolution. `--frozen` alone is not
+# enough: it refuses to re-lock but still exports whatever the lock contains.
+if ! uv lock --check; then
+  echo "error: uv.lock is out of date with pyproject.toml" >&2
+  echo "       run 'uv lock', then './scripts/export_requirements.sh', and commit both" >&2
+  exit 1
+fi
+
 # --frozen: fail instead of silently re-locking; the committed uv.lock wins.
 # --no-dev: runtime group only (what Databricks Apps needs).
 uv export --frozen --no-dev --no-hashes > "$TMP"

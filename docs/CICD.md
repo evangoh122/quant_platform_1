@@ -46,8 +46,9 @@ generated file that CI drift-checks. Never edit it by hand; the DAB
 It is intentionally absent from `pyproject.toml`, `uv.lock` and
 `requirements.txt` so `uv sync` always succeeds. `conftest.py` installs a stub
 for the offline suite; live paper trading (`etl/ibkr_client.py`) needs a manual
-`pip install` of that zip into the active environment, and CI has an explicit
-step asserting `ibapi` never enters the lock.
+`uv pip install <ibapi zip>` into the active environment (uv-managed virtual
+environments do not ship `pip`), and CI has an explicit step asserting `ibapi`
+never enters the lock.
 
 
 ## Manual deployment
