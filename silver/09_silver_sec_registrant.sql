@@ -107,11 +107,23 @@ ALTER TABLE {catalog}.{schema}.silver_sec_registrant
 -- rows and is never collapsed into one.
 --
 -- The SEC publishes formerNames[].from / .to as ISO-8601 midnight-UTC
--- timestamps ("2001-04-02T00:00:00.000Z").  The to_date(substring(..., 1, 10))
--- expressions below take the published calendar date and keep the SEC's
--- inclusive bounds exactly — never shifted by a day or made exclusive.  Also
--- excludes 404 misses (payload IS NULL).  data_source is always 'sec_edgar',
--- from the controlled vocabulary in config/data_sources.py.
+-- timestamps ("2001-04-02T00:00:00.000Z").  The expressions below take the
+-- published calendar date, substring(..., 1, 10), and keep the SEC's inclusive
+-- bounds exactly — never shifted by a day or made exclusive.
+--
+-- try_to_date, not to_date: under ANSI mode a bare to_date raises on a string
+-- it cannot parse, and one malformed SEC value would then abort the whole
+-- shared silver refresh.  try_to_date returns NULL instead, so a published
+-- value that is not a calendar date lands as NULL — meaning "the published
+-- value is not a date", never "the interval has no date".  The pure parser
+-- (sec_kg/submissions.py, _sec_date) keeps the same published-calendar-date
+-- rule, i.e. ISO-8601 timestamps are date-truncated and the bounds stay
+-- inclusive, but it keeps a non-ISO value verbatim on the Python record.  A
+-- DATE column cannot hold that text, so NULL is the documented projection of
+-- "unparseable" here.
+--
+-- Also excludes 404 misses (payload IS NULL).  data_source is always
+-- 'sec_edgar', from the controlled vocabulary in config/data_sources.py.
 
 CREATE OR REPLACE TABLE {catalog}.{schema}.silver_sec_registrant_former_names AS
 WITH deduped AS (
@@ -142,13 +154,13 @@ parsed AS (
 ),
 exploded AS (
   SELECT
-    p.cik                                   AS cik,
-    p.payload_sha256                        AS payload_sha256,
-    p.fetched_at                            AS fetched_at,
-    p.ingest_run_id                         AS ingest_run_id,
-    fn.name                                 AS former_name,
-    to_date(substring(fn.`from`, 1, 10))    AS from_date,
-    to_date(substring(fn.`to`, 1, 10))      AS to_date
+    p.cik                                    AS cik,
+    p.payload_sha256                         AS payload_sha256,
+    p.fetched_at                             AS fetched_at,
+    p.ingest_run_id                          AS ingest_run_id,
+    fn.name                                  AS former_name,
+    try_to_date(substring(fn.`from`, 1, 10)) AS from_date,
+    try_to_date(substring(fn.`to`, 1, 10))   AS to_date
   FROM parsed p
   LATERAL VIEW explode(p.j.formerNames) t AS fn
 )

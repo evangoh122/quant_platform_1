@@ -790,6 +790,9 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   reuse a name across two periods (A -> B -> A); the same name published for
   two periods yields two rows.  The SEC publishes the bounds as ISO-8601
   midnight-UTC timestamps ("2001-04-02T00:00:00.000Z"); from_date/to_date keep
-  the published calendar date (to_date(substring(..., 1, 10))) and stay
-  inclusive as published (no +/- 1 day adjustment).  data_source is always
-  'sec_edgar' (config/data_sources.py).
+  the published calendar date (try_to_date(substring(..., 1, 10))) and stay
+  inclusive as published (no +/- 1 day adjustment).  try_to_date, not to_date:
+  a published value that is not a calendar date becomes NULL instead of
+  aborting the refresh under ANSI mode (NULL means "not a date", never "no
+  interval date").  data_source is always 'sec_edgar'
+  (config/data_sources.py).

@@ -718,12 +718,37 @@ def test_silver_former_names_is_exploded_and_inclusive(silver_sql):
     # The SEC publishes formerNames[].from/.to as ISO-8601 midnight-UTC
     # timestamps ("2001-04-02T00:00:00.000Z"); the calendar date is taken
     # explicitly instead of relying on a raw string -> date cast.
-    assert "to_date(substring(fn.`from`, 1, 10))" in window
-    assert "to_date(substring(fn.`to`, 1, 10))" in window
+    assert "try_to_date(substring(fn.`from`, 1, 10))" in window
+    assert "try_to_date(substring(fn.`to`, 1, 10))" in window
     # Inclusive as published: no +/- 1 day adjustment anywhere.
     assert "DATE_SUB" not in window.upper()
     assert "DATE_ADD" not in window.upper()
     assert "- 1 DAY" not in window.upper()
+
+
+def test_silver_former_name_dates_are_null_safe(silver_sql):
+    """A malformed SEC date must become NULL, not abort the shared refresh.
+
+    ANSI mode makes a bare ``to_date`` raise on a string it cannot parse, so a
+    single bad published value would fail every table in the silver/gold
+    refresh.  ``try_to_date`` returns NULL instead (the file header documents
+    what NULL means).  Mutation: reverting either projection to ``to_date(``
+    makes the bare-cast assertion below fail.
+    """
+    window = " ".join(silver_sql.split())
+
+    assert "try_to_date(substring(fn.`from`, 1, 10))" in window
+    assert "try_to_date(substring(fn.`to`, 1, 10))" in window
+
+    # No bare to_date( anywhere in this file (the only dates it produces are
+    # SEC-published strings), and no CAST(... AS DATE) either.
+    assert not re.search(r"(?<!try_)\bto_date\s*\(", window), (
+        "silver/09_silver_sec_registrant.sql still calls to_date( directly; "
+        "use try_to_date so an unparseable SEC date becomes NULL"
+    )
+    assert not re.search(r"\bAS\s+DATE\b", window, re.IGNORECASE), (
+        "silver/09_silver_sec_registrant.sql casts to DATE; use try_to_date"
+    )
 
 
 def test_silver_former_names_key_includes_from_date(silver_sql):

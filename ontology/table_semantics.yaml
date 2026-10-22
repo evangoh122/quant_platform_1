@@ -169,8 +169,8 @@ tables:
     data_source: sec_edgar
     column_meanings:
       former_name: "A former legal name of the registrant"
-      from_date: "First day the former name applied, inclusive as published; a published ISO-8601 timestamp is reduced to its calendar date"
-      to_date: "Last day the former name applied, inclusive as published; never shifted to an exclusive bound"
+      from_date: "First day the former name applied, inclusive as published; a published ISO-8601 timestamp is reduced to its calendar date, and a value that is not a calendar date is NULL (never a failed refresh)"
+      to_date: "Last day the former name applied, inclusive as published; never shifted to an exclusive bound, and NULL when the published value is not a calendar date"
       observed_at: "Fetch time of the payload this row was parsed from"
       processed_ts: "Transform run time; lineage only, never an availability time"
     interval_rule: "from_date and to_date are inclusive exactly as the SEC publishes them; no date arithmetic is applied. from_date is part of the key because one name can be reused across two periods."

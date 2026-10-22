@@ -146,6 +146,16 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+            # No dependency is imported at module scope, but --live imports
+            # pipelines/_http_adapter.py lazily inside run_ingest_submissions,
+            # and that adapter imports requests.  A serverless environment
+            # installs only what is declared here, so a live run without this
+            # line dies with ModuleNotFoundError: No module named 'requests'.
+            # Declared with the pyproject.toml [project].dependencies specifier
+            # verbatim (no re-pinning here); tests/test_sec_submissions_job_deps.py
+            # traces the import closure and compares both.
+            dependencies:
+              - "requests>=2.33.0"
 
     sec_knowledge_graph_build:
       name: quant-platform-sec-kg-build-${bundle.target}
