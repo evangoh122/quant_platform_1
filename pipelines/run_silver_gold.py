@@ -34,7 +34,7 @@ _p = globals().get("__file__") or sys.argv[0]
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
 from pipelines._runtime import get_spark, repo_root
 
-from config.research_symbols import load_research_symbols  # noqa: E402
+from config.research_symbols import load_research_rows  # noqa: E402
 from config.universe import load_universe  # noqa: E402
 
 CATALOG = os.getenv("CATALOG", "bootcamp_students")
@@ -108,6 +108,15 @@ GOLD_OHLCV_LOG_RETURN_COLUMNS = {
 
 
 
+# DDL of the research_universe temp view. Owner rule: every new view carries
+# ``data_source``, taken from the loader's validated records rather than
+# re-read from YAML. NOT NULL on both columns makes a provenance-less row fail
+# at registration instead of silently entering the view. A DDL string (not a
+# StructType) keeps pyspark out of this module's import graph, which CI imports
+# with pyspark blocked.
+RESEARCH_UNIVERSE_SCHEMA = "symbol STRING NOT NULL, data_source STRING NOT NULL"
+
+
 def register_universe(spark) -> list[str]:
     """Register the expanded SEC universe as a temp view.
 
@@ -124,16 +133,20 @@ def register_universe(spark) -> list[str]:
 def register_research_universe(spark) -> list[str]:
     """Register the research/benchmark group as a temp view.
 
-    Reads config/research_symbols.yaml. The view is consumed only by
-    silver/08_silver_ohlcv_day_adjusted.sql, so research symbols receive
-    split-adjusted daily history (and corporate actions) without entering the
-    trading ``universe`` view, the minute feature spine, gold_model_features or
-    the published baseline signals.
+    Reads config/research_symbols.yaml through the validated loader and
+    registers its ``(symbol, data_source)`` rows as ``research_universe``:
+    every row carries the provider its prices come from (owner rule: every new
+    view carries ``data_source``), and both columns are NOT NULL. The view is
+    consumed only by silver/08_silver_ohlcv_day_adjusted.sql, which selects
+    ``symbol`` alone, so research symbols receive split-adjusted daily history
+    (and corporate actions) without entering the trading ``universe`` view, the
+    minute feature spine, gold_model_features or the published baseline
+    signals.
     """
-    symbols = load_research_symbols()
-    df = spark.createDataFrame([(s,) for s in symbols], schema="symbol string")
+    rows = load_research_rows()
+    df = spark.createDataFrame(rows, schema=RESEARCH_UNIVERSE_SCHEMA)
     df.createOrReplaceTempView("research_universe")
-    return symbols
+    return [symbol for symbol, _data_source in rows]
 
 
 _NO_TRUNCATE = {"data_quality_breaks"}  # preserves manual break reviews

@@ -24,6 +24,7 @@ from config.research_symbols import (
     DEFAULT_GROUP,
     ETF_KINDS,
     load_research_registry,
+    load_research_rows,
     load_research_symbols,
     normalize_symbol,
 )
@@ -229,6 +230,32 @@ class TestValidation:
         path = _write(tmp_path, "symbols:\n  - \"GLD\"\n")
         with pytest.raises(ValueError, match="top-level 'groups'"):
             load_research_symbols(path=path)
+
+
+class TestRowsContract:
+    """``load_research_rows`` is the ``research_universe`` view contract."""
+
+    def test_rows_are_symbol_data_source_pairs_in_config_order(self):
+        assert load_research_rows() == [
+            (symbol, "massive") for symbol in EXPECTED_SYMBOLS
+        ]
+
+    def test_rows_reuse_the_validated_registry(self):
+        registry = load_research_registry()
+        assert load_research_rows() == [
+            (symbol, meta["data_source"]) for symbol, meta in registry.items()
+        ]
+
+    def test_rows_emit_the_same_overlap_warning(self, tmp_path):
+        trading_symbol = load_universe()[0]  # read, not hardcoded
+        body = _config(
+            f"      {trading_symbol}:\n        commodity: gold\n"
+            "        etf_kind: physical\n        data_source: massive\n"
+        )
+        path = _write(tmp_path, body)
+        with pytest.warns(UserWarning, match="trading universe"):
+            rows = load_research_rows(path=path)
+        assert rows == [(trading_symbol, "massive")]
 
 
 class TestTradingUniverseOverlap:

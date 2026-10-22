@@ -267,6 +267,137 @@ class TestPipelineOrder:
 
 
 # ---------------------------------------------------------------------------
+# research_universe temp view carries data_source (owner rule: every new view)
+# ---------------------------------------------------------------------------
+
+_RESEARCH_DATA_SOURCE = "massive"
+_RESEARCH_VIEW_SCHEMA_COLUMNS = (
+    "SYMBOL STRING NOT NULL",
+    "DATA_SOURCE STRING NOT NULL",
+)
+
+
+@pytest.fixture(scope="module")
+def runner_module():
+    """The production runner, importable without pyspark (CI blocks it)."""
+    import pipelines.run_silver_gold
+
+    return pipelines.run_silver_gold
+
+
+class _RecordingDataFrame:
+    """DataFrame stand-in that records the temp view it registered."""
+
+    def __init__(self, spark: "_RecordingSpark") -> None:
+        self._spark = spark
+
+    def createOrReplaceTempView(self, name: str) -> None:
+        self._spark.view_name = name
+
+
+class _RecordingSpark:
+    """Fake SparkSession that records ``createDataFrame`` arguments."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.view_name = None
+
+    def createDataFrame(self, rows, schema=None):
+        self.calls.append({"rows": list(rows), "schema": schema})
+        return _RecordingDataFrame(self)
+
+
+def _research_view_problems(rows, schema) -> list[str]:
+    """Invariants of the research_universe registration (empty == healthy)."""
+    problems = []
+    if not rows:
+        problems.append("research_universe has no rows")
+    for row in rows:
+        if not isinstance(row, tuple) or len(row) != 2:
+            problems.append(f"row {row!r} is not (symbol, data_source)")
+            continue
+        symbol, data_source = row
+        if not isinstance(symbol, str) or not symbol:
+            problems.append(f"row {row!r} has no symbol")
+        if not isinstance(data_source, str) or not data_source:
+            problems.append(f"row {row!r} has no data_source")
+    if not isinstance(schema, str):
+        problems.append(f"schema is not a DDL string: {schema!r}")
+        return problems
+    normalized = " ".join(schema.upper().split())
+    for column in _RESEARCH_VIEW_SCHEMA_COLUMNS:
+        if column not in normalized:
+            problems.append(f"schema lacks the NOT NULL column {column!r}")
+    return problems
+
+
+class TestResearchUniverseView:
+    def _register(self, runner_module):
+        spark = _RecordingSpark()
+        returned = runner_module.register_research_universe(spark)
+        assert len(spark.calls) == 1, (
+            f"expected exactly one createDataFrame call, got {len(spark.calls)}"
+        )
+        return returned, spark, spark.calls[0]["rows"], spark.calls[0]["schema"]
+
+    def test_rows_carry_the_validated_data_source(self, runner_module):
+        returned, _spark, rows, schema = self._register(runner_module)
+        assert returned == list(_RESEARCH_SYMBOLS)
+        assert rows == [
+            (symbol, _RESEARCH_DATA_SOURCE) for symbol in _RESEARCH_SYMBOLS
+        ], f"research_universe rows lost data_source: {rows}"
+        assert _research_view_problems(rows, schema) == []
+
+    def test_schema_is_ddl_with_both_not_null_columns(self, runner_module):
+        _returned, _spark, rows, schema = self._register(runner_module)
+        assert isinstance(schema, str), (
+            f"createDataFrame must receive the DDL string, got {schema!r}"
+        )
+        normalized = " ".join(schema.upper().split())
+        for column in _RESEARCH_VIEW_SCHEMA_COLUMNS:
+            assert column in normalized, f"schema lacks {column!r}: {schema!r}"
+        assert _research_view_problems(rows, schema) == []
+
+    def test_view_is_registered_under_research_universe(self, runner_module):
+        _returned, spark, _rows, _schema = self._register(runner_module)
+        assert spark.view_name == "research_universe"
+
+    def test_rows_match_the_loader_registry(self, runner_module):
+        """Rows come from the validated loader, not an ad-hoc YAML re-read."""
+        from config.research_symbols import load_research_registry
+
+        registry = load_research_registry()
+        _returned, _spark, rows, _schema = self._register(runner_module)
+        assert rows == [
+            (symbol, meta["data_source"]) for symbol, meta in registry.items()
+        ]
+
+    def test_mutation_dropping_data_source_from_the_rows_is_detected(
+        self, runner_module
+    ):
+        """Mutation proof: a symbol-only view fails the invariant."""
+        _returned, _spark, rows, schema = self._register(runner_module)
+        mutated = [(symbol,) for symbol, _data_source in rows]
+        assert mutated != rows, "mutation must drop data_source"
+        problems = _research_view_problems(mutated, schema)
+        assert any("(symbol, data_source)" in p for p in problems), (
+            f"guard did not detect the dropped data_source: {problems}"
+        )
+
+    def test_mutation_stripping_not_null_from_the_schema_is_detected(
+        self, runner_module
+    ):
+        """Mutation proof: a nullable schema fails the invariant."""
+        _returned, _spark, rows, schema = self._register(runner_module)
+        mutated = schema.replace(" NOT NULL", "")
+        assert mutated != schema, "mutation must strip NOT NULL"
+        problems = _research_view_problems(rows, mutated)
+        assert any("NOT NULL" in p for p in problems), (
+            f"guard did not detect the lost NOT NULL: {problems}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Signals guard: research symbols never reach the model matrix publication
 # ---------------------------------------------------------------------------
 

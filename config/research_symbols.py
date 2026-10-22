@@ -15,7 +15,9 @@ Mirrors the loader style of ``config/universe.py``: quoted-string symbols,
 fail-closed on malformed entries, no hardcoded ticker list in transform code.
 Every row must also declare a ``data_source`` from the shared vocabulary in
 ``config/data_sources.py`` (owner decision 2026-10-22); a missing or unknown
-code is an error.
+code is an error. :func:`load_research_rows` exposes those validated
+``(symbol, data_source)`` rows — the ``research_universe`` temp view contract —
+so a consumer never re-reads the YAML to recover provenance.
 An overlap with ``config/universe.yaml`` is reported as a warning, not an
 error — that is a configuration mistake to fix, not a reason to fail a run.
 """
@@ -25,7 +27,7 @@ import os
 import re
 import warnings
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -183,11 +185,40 @@ def load_research_symbols(
     contracts, so the overlap is a configuration mistake, not a runtime error.
     """
     symbols = list(load_research_registry(path=path, group=group))
+    _warn_on_overlap(symbols)
+    return symbols
+
+
+def load_research_rows(
+    path: Optional[str] = None,
+    group: str = DEFAULT_GROUP,
+) -> List[Tuple[str, str]]:
+    """Return validated ``(symbol, data_source)`` rows in configuration order.
+
+    This is the ``research_universe`` temp-view contract used by
+    ``pipelines/run_silver_gold.py``: every row carries the provenance code its
+    prices come from (owner rule: every new view carries ``data_source``). The
+    values come from the same validated registry as :func:`load_research_symbols`
+    so a consumer never re-reads the YAML to recover provenance, and the
+    trading-universe overlap warning is emitted exactly as there.
+    """
+    registry = load_research_registry(path=path, group=group)
+    _warn_on_overlap(list(registry))
+    return [(symbol, meta["data_source"]) for symbol, meta in registry.items()]
+
+
+def _warn_on_overlap(symbols: List[str]) -> None:
+    """Warn when a research symbol is also in the trading universe.
+
+    ``stacklevel=3`` points at the caller of the public loader, keeping the
+    warning location unchanged now that both loaders share this helper.
+    """
     trading = set(_trading_universe())
     overlap = sorted(s for s in symbols if s in trading)
     if overlap:
-        warnings.warn(_OVERLAP_WARNING.format(overlap=overlap), UserWarning, stacklevel=2)
-    return symbols
+        warnings.warn(
+            _OVERLAP_WARNING.format(overlap=overlap), UserWarning, stacklevel=3
+        )
 
 
 def _trading_universe() -> Iterable[str]:
