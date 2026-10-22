@@ -87,17 +87,24 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
             aria-modal="true"
             aria-label="Navigation"
             onKeyDown={handleTrapFocus}
-            className="absolute inset-y-0 left-0 w-[min(80vw,320px)] overflow-y-auto bg-[var(--surface)] shadow-xl"
+            className="absolute inset-y-0 left-0 w-[min(80vw,320px)] max-w-full overflow-y-auto bg-[var(--surface)] shadow-xl"
           >
             <div className="border-b border-[var(--border)] px-4 py-4 pl-14">
-              <div className="text-sm font-bold text-[var(--text-primary)]">QP1</div>
-              <div className="text-xs text-[var(--text-muted)]">Quant Trading Platform</div>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="brand-tile" aria-hidden="true">
+                  Q
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-[var(--text-primary)]">QP1</div>
+                  <div className="truncate text-xs text-[var(--text-muted)]">Quant Trading Platform</div>
+                </div>
+              </div>
             </div>
 
             <nav className="p-2">
               {groups.map((group) => (
                 <div key={group.label} className="mb-2">
-                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {group.label}
                   </div>
                   {group.items.map((item) => {
