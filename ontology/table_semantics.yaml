@@ -97,7 +97,8 @@ tables:
     critical_rule: "Use return_1d for daily return analytics; it is NULL while a matching data-quality break is masked."
     research_symbols_note: "Includes the research_universe symbols from config/research_symbols.yaml (the ten commodity ETFs) alongside gold_tradable_universe and the SPY/RSP/QQQ benchmarks; research symbols are coverage only and never enter gold_model_features or published signals."
     adjustment_scope: "Split adjustment only. Distributions/dividends are NOT adjusted (corporate-action scope is splits from bronze_corporate_actions), so an ETF ex-distribution gap remains in adj_* returns."
-    gap_label_rule: "return_1d and raw_overnight_return are close-to-close (adj_close / LAG(adj_close) - 1) and must not be used as the opening-gap label; the gap label is next-session adj_open / previous-session adj_close - 1."
+    return_formulas: "adjusted_return_1d_unmasked = adj_close / NULLIF(LAG(adj_close) OVER (PARTITION BY symbol ORDER BY event_date), 0) - 1, where adj_close = close * (1.0 / NULLIF(COALESCE(cumulative_split_ratio, 1.0), 0)); return_1d = adjusted_return_1d_unmasked, NULL while a masked data-quality break exists on the row; raw_overnight_return = raw_gross_return - 1.0 = close / NULLIF(LAG(close) OVER (PARTITION BY symbol ORDER BY event_date), 0) - 1, built from UNADJUSTED closes, so it jumps on splits (a 1-for-4 reverse split shows about +300% raw against 0% adjusted)."
+    gap_label_rule: "Neither return_1d nor raw_overnight_return is the opening-gap label; the gap label is next-session adj_open / previous-session adj_close - 1."
   data_quality_breaks:
     grain: "One detected daily OHLCV break per (symbol, event_date)"
     keys: [symbol, event_date]

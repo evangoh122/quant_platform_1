@@ -674,8 +674,24 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   Adjustment scope: SPLIT-ONLY.  Distributions/dividends are NOT adjusted (the
   corporate-action scope is stock splits from bronze_corporate_actions), so an
   ETF ex-distribution gap remains in adj_* returns and return_1d.
-  Do NOT use return_1d or raw_overnight_return as the opening-gap label: both are
-  close-to-close (adj_close / LAG(adj_close) - 1).  The gap label is
+  Return formulas, copied from silver/08_silver_ohlcv_day_adjusted.sql:
+    adjusted_return_1d_unmasked
+        = adj_close / NULLIF(LAG(adj_close) OVER (PARTITION BY symbol
+                                                   ORDER BY event_date), 0) - 1
+      where adj_close = close * (1.0 / NULLIF(COALESCE(cumulative_split_ratio,
+                                                       1.0), 0)).
+    return_1d = adjusted_return_1d_unmasked, but NULL while a masked
+      data-quality break exists on the row.
+    raw_overnight_return
+        = raw_gross_return - 1.0
+        = close / NULLIF(LAG(close) OVER (PARTITION BY symbol
+                                          ORDER BY event_date), 0) - 1
+      i.e. built from UNADJUSTED closes.
+  The two return columns therefore use different price inputs.  Because
+  raw_overnight_return is unadjusted, it jumps on splits: a 1-for-4 reverse
+  split shows about +300% raw (the price multiplies by 4) against 0% adjusted.
+  Do NOT use return_1d or raw_overnight_return as the opening-gap label:
+  neither is the opening gap.  The gap label is
   next-session adj_open / previous-session adj_close - 1.
 
 ### data_quality_breaks  (14 cols)

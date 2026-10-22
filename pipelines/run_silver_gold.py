@@ -5,7 +5,9 @@ view ``universe`` so every silver/gold transform filters symbols from that file
 (no hardcoded ticker lists in transform code). It also registers the research/
 benchmark group from config/research_symbols.yaml as a separate
 ``research_universe`` temp view consumed only by the adjusted-silver transform,
-so research symbols get daily coverage without entering the trading universe.
+so research symbols get daily coverage without joining the 39-symbol
+``config/universe.yaml`` universe (``gold_tradable_universe`` is a separate ADV
+screen and is not changed by this group).
 Executes the version-controlled transforms under silver/ and gold/ in
 dependency order via a serverless Spark session (databricks-connect).
 Idempotent: every transform is a MERGE on a stable key.
@@ -46,7 +48,9 @@ HERE = str(repo_root())
 # gold_tradable_universe is rebuilt FIRST: silver/08_silver_ohlcv_day_adjusted
 # reads it as its symbol filter, so building it after adjusted silver left
 # newly admitted symbols a run behind (and --truncate rebuilt silver from an
-# empty Gold universe).
+# empty Gold universe). This ordering holds for full runs; a partial run such
+# as `--only silver` skips the gold steps and therefore does not rebuild the
+# gold universe — it reuses whatever gold_tradable_universe already holds.
 STEPS = [
     ("gold_tradable_universe", "gold/06_gold_tradable_universe.sql", "sql"),
     ("silver_ohlcv", "silver/01_silver_ohlcv.sql", "sql"),

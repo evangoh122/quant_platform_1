@@ -2,10 +2,13 @@
 
 Research symbols get daily research coverage (split-adjusted
 ``silver_ohlcv_day_adjusted`` and ``bronze_corporate_actions``) but never enter
-the trading universe, the minute feature spine, the model matrix
-(``gold_model_features``) or published baseline signals. The owning decision,
-option D of ``.agents/requests/SOL-commodity-etfs-advice.txt`` (2026-10-22),
-makes this separation explicit; the guard test
+the 39-symbol trading/model universe in ``config/universe.yaml``, the minute
+feature spine, the model matrix (``gold_model_features``) or published baseline
+signals. ``gold_tradable_universe`` is a separate ADV screen rather than
+``config/universe.yaml`` membership, so some of these ETFs (GLD, SLV, IAU, USO)
+can enter it independently by ADV; this change does not add them there. The
+owning decision, option D of ``.agents/requests/SOL-commodity-etfs-advice.txt``
+(2026-10-22), makes this separation explicit; the guard test
 ``tests/test_research_symbols_pipeline.py`` enforces it.
 
 Mirrors the loader style of ``config/universe.py``: quoted-string symbols,

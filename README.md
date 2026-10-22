@@ -37,7 +37,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 |---|---|---|---|
 | Batch Spark ingestion + medallion | Yes | Yes | Run on 2026-10-05 (287M rows) |
 | Split-adjusted daily prices (Massive corporate actions) | Yes | Yes | Run on 2026-10-05 |
-| Commodity ETF research group (10 ETFs from `config/research_symbols.yaml` → adjusted silver + corporate actions) | Yes | Yes | Configuration only; not run against the warehouse. Research coverage — never enters the trading universe, model matrix or published signals |
+| Commodity ETF research group (10 ETFs from `config/research_symbols.yaml` → adjusted silver + corporate actions) | Yes | Yes | Configuration only; not run against the warehouse. Research coverage — not in the 39-symbol trading universe (`config/universe.yaml`); some may still enter `gold_tradable_universe` by ADV, and this change does not add them there |
 | SEC hybrid retrieval (BM25 + dense + rerank, point-in-time) | Yes | Yes | Run on 2026-10-05; as measured 2026-10-06, 230 of 558 tickers had SEC chunks (see docs/BUSINESS_CASE.md) |
 | SEC knowledge graph + governed NL analytics contracts | Yes | Yes | Merged |
 | Databricks App (FastAPI + React), warehouse data path, health/trace | Yes | Yes | **Deployed and verified 2026-10-05** — `/api/health`: Lakebase ok, SQL warehouse ok |
@@ -57,7 +57,9 @@ Dates are the last recorded verification; this repository does not assert the cu
 2. **Silver** cleans, deduplicates, split-adjusts prices and stamps `information_available_ts` for point-in-time joins.
    Split-adjusted daily silver also carries the configuration-driven research group (`config/research_symbols.yaml`:
    ten commodity ETFs GLD, IAU, SLV, SIVR, USO, BNO, UNG, CPER, PPLT, PALL, plus their corporate-action splits) for
-   research only; those symbols never enter the trading universe, `gold_model_features` or published signals.
+   research only; those symbols are not in the 39-symbol trading universe (`config/universe.yaml`) and never enter
+   `gold_model_features` or published signals. Some may still enter `gold_tradable_universe` independently by ADV;
+   this change does not add them there.
 3. **Gold** builds features, the tradable universe, COT positioning and SEC chunk embeddings.
 4. The **Databricks App** reads gold through a bounded, parameterised SQL-warehouse adapter and serves the React UI.
 5. The **agent** retrieves SEC passages and market features (as data, never as instructions) and can save a research note
@@ -137,8 +139,10 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 - Macro (Fed) series are revised values, not first-release vintages.
 - Price adjustment is split-only: distributions/dividends are not adjusted, so an ETF ex-distribution gap stays in
   returns. This matters for the commodity ETF research group (`config/research_symbols.yaml`).
-- `return_1d` and `raw_overnight_return` in `silver_ohlcv_day_adjusted` are close-to-close and must not be used as an
-  opening-gap label; the gap label is next-session `adj_open` / previous-session `adj_close` - 1.
+- `return_1d` in `silver_ohlcv_day_adjusted` is close-to-close on adjusted prices (`adj_close` / `LAG(adj_close)` - 1);
+  `raw_overnight_return` is close-to-close on **unadjusted** prices (`close` / `LAG(close)` - 1), so splits jump it
+  (a 1-for-4 reverse split shows about +300% raw against 0% adjusted). Neither is the opening-gap label; the gap label
+  is next-session `adj_open` / previous-session `adj_close` - 1.
 - Futures-backed commodity ETFs (USO, BNO, UNG, CPER) carry roll yield, so contango/backwardation price moves are not
   spot commodity moves; physical ETFs (GLD, IAU, SLV, SIVR, PPLT, PALL) do not.
 - Strategy research reports are descriptive; several are marked `BLOCKED_DATA` (fewer than two complete out-of-sample years).

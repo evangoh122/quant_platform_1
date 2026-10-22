@@ -18,10 +18,10 @@ terms:
     definition: "Point-in-time eligible liquid US equities and ETFs represented in gold_tradable_universe; membership must be evaluated as of the requested date."
     aliases: [tradable universe, eligible symbols, coverage universe]
   research_universe:
-    definition: "Configuration-driven research/benchmark symbols from config/research_symbols.yaml that receive split-adjusted daily silver_ohlcv_day_adjusted coverage and corporate actions (splits) but are NOT members of the trading universe and are never published as trading signals or model features."
+    definition: "Configuration-driven research/benchmark symbols from config/research_symbols.yaml that receive split-adjusted daily silver_ohlcv_day_adjusted coverage and corporate actions (splits) but are NOT members of the 39-symbol trading/model universe in config/universe.yaml and are never published as trading signals or model features."
     aliases: [research symbols, research coverage group]
     distinct_from: universe
-    note: "Currently the ten commodity ETFs in config/research_symbols.yaml. They are omitted from gold_model_features, gold_ohlcv_features and scripts/publish_baseline_signals.py by design, and tests/test_research_symbols_pipeline.py guards that separation."
+    note: "Currently the ten commodity ETFs in config/research_symbols.yaml. They are omitted from gold_model_features, gold_ohlcv_features and scripts/publish_baseline_signals.py by design, and tests/test_research_symbols_pipeline.py guards that separation. Membership in config/universe.yaml is the line this group never crosses; gold_tradable_universe is a separate ADV screen, so some of these ETFs (e.g. GLD, SLV, IAU, USO) can enter gold_tradable_universe independently by ADV when they are present in bronze_ohlcv_day. This PR does not add them there."
   commodity_etf:
     definition: "ETF whose value tracks a physical commodity or a commodity futures basket; the research group covers GLD, IAU, SLV, SIVR, USO, BNO, UNG, CPER, PPLT and PALL."
     aliases: [commodity ETF]

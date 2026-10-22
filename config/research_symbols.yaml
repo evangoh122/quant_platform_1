@@ -4,7 +4,10 @@
 # .agents/requests/SOL-commodity-etfs-advice.txt): commodity ETFs get daily
 # research coverage — split-adjusted silver_ohlcv_day_adjusted plus
 # bronze_corporate_actions so ETF reverse splits are captured — WITHOUT
-# entering the trading universe or the published baseline signals.
+# joining the 39-symbol trading universe in config/universe.yaml or the
+# published baseline signals. gold_tradable_universe is a separate ADV screen,
+# so some of these ETFs can enter it independently by ADV; this group does not
+# add them there.
 #
 # Consumers (and only these):
 #   - pipelines/run_silver_gold.py      registers the ``research_universe`` temp view
@@ -22,9 +25,13 @@
 #   1. Adjustment is split-only. Distributions/dividends are NOT adjusted (the
 #      corporate-action scope is bronze_corporate_actions stock splits), so an
 #      ETF ex-distribution gap stays in adj_* returns.
-#   2. ``return_1d`` and ``raw_overnight_return`` in silver/08 are
-#      close-to-close (adj_close / LAG(adj_close) - 1). They are NOT the
-#      opening-gap label; the gap label is
+#   2. The two return columns in silver/08 use different price inputs.
+#      ``return_1d`` (= adjusted_return_1d_unmasked) is close-to-close on
+#      ADJUSTED prices: adj_close / LAG(adj_close) - 1.
+#      ``raw_overnight_return`` is close-to-close on UNADJUSTED prices:
+#      close / LAG(close) - 1, so a split jumps it — a 1-for-4 reverse split
+#      shows about +300% raw against 0% adjusted. Neither is the opening-gap
+#      label; the gap label is
 #      next-session adj_open / previous-session adj_close - 1.
 #
 # Guarded non-consumers (tests/test_research_symbols_pipeline.py):

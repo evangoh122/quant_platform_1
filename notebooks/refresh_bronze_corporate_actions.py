@@ -178,9 +178,10 @@ def build_universe_sql(fqn: str, research_symbols=()) -> str:
 
     Historical ``gold_tradable_universe`` members plus the SPY/RSP/QQQ
     benchmarks, plus the configured research/benchmark symbols
-    (config/research_symbols.yaml). Research symbols never enter the trading
-    universe, so without this union their reverse splits (USO, UNG) would never
-    be fetched and ``silver_ohlcv_day_adjusted`` would show false price gaps.
+    (config/research_symbols.yaml). Research symbols are not in the 39-symbol
+    trading universe (``config/universe.yaml``), so without this union their
+    reverse splits (USO, UNG) would never be fetched and
+    ``silver_ohlcv_day_adjusted`` would show false price gaps.
 
     Every research symbol is validated by ``normalize_symbol`` before being
     quoted into the literal — configuration cannot inject SQL here.
