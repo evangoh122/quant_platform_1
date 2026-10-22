@@ -294,18 +294,36 @@ def test_templated_glob_and_out_of_repo_task_paths_are_skipped(tmp_path: Path):
     assert dead == []
 
 
-def test_tests_and_archives_are_not_scan_roots(tmp_path: Path):
-    """A module only tests import is dead production code, so it must be flagged."""
+def test_tests_and_archives_are_not_scan_roots(tmp_path: Path, monkeypatch):
+    """A module only tests or archives import is dead production code.
+
+    Both fixtures sit inside an entry package so that this fails when either
+    exclusion is removed: ``tests`` is patched into ``ENTRY_PACKAGES`` and the
+    archive lives under the real entry package ``pipelines``.  Without the
+    ``tests/`` skip, ``tests/test_only.py`` becomes a live root; without the
+    ``archive`` skip, ``pipelines/archive/old.py`` does — each keeping its own
+    ``api`` module out of the dead list.
+    """
+    monkeypatch.setattr(reachability, "ENTRY_PACKAGES", ("tests", "pipelines"))
     _write(tmp_path, "api/__init__.py")
     _write(tmp_path, "api/main.py")
     _write(tmp_path, "api/only_tests_import.py")
+    _write(tmp_path, "api/only_in_archive.py")
     _write(tmp_path, "tests/test_only.py", "import api.only_tests_import\n")
-    _write(tmp_path, "docs/archive/old.py", "import api.only_tests_import\n")
+    _write(tmp_path, "pipelines/archive/old.py", "import api.only_in_archive\n")
 
     _inventory, reachable, dead = analyse(tmp_path)
 
-    assert "api.only_tests_import" in dead
+    assert "api.only_tests_import" in dead, "a test-only import kept a module alive"
+    assert "api.only_in_archive" in dead, "an archived import kept a module alive"
     assert "tests.test_only" not in reachable
+    assert "pipelines.archive.old" not in reachable
+
+    known, _graph = scan_repository(tmp_path)
+    assert "tests.test_only" not in known, "tests/ was scanned as production code"
+    assert "pipelines.archive.old" not in known, (
+        "archive/ was scanned as production code"
+    )
 
 
 def test_parent_package_initializers_are_followed(tmp_path: Path):
@@ -492,27 +510,41 @@ def test_entry_package_modules_are_live_roots(tmp_path: Path, monkeypatch):
     assert "api.used_by_task" in dead
 
 
-def test_vendor_and_hidden_directories_are_skipped_at_any_depth(tmp_path: Path):
-    """``node_modules``, ``venv`` and dot-directories never contribute modules."""
+def test_vendor_and_hidden_directories_are_skipped_at_any_depth(
+    tmp_path: Path, monkeypatch
+):
+    """``node_modules``, ``venv`` and dot-directories never contribute modules.
+
+    Every fixture lives under the entry package ``pipelines`` and imports its own
+    ``api`` module, so removing the vendor/dot-directory skip turns that fixture
+    into a live root and revives the ``api`` module it names.
+    """
+    monkeypatch.setattr(reachability, "ENTRY_PACKAGES", ("pipelines",))
     _write(tmp_path, "api/__init__.py")
     _write(tmp_path, "api/main.py")
-    _write(tmp_path, "api/only_in_vendor.py")
-    for rel in (
-        ".venv/lib/site-packages/api/vendored.py",
-        "venv/api/vendored.py",
-        "node_modules/pkg/api/vendored.py",
-        "frontend/node_modules/api/vendored.py",
-        "api/.cache/api/vendored.py",
-    ):
-        _write(tmp_path, rel, "import api.only_in_vendor\n")
+    fixtures = {
+        "pipelines/.venv/lib/vendored_dot_venv.py": "api.only_in_dot_venv",
+        "pipelines/venv/lib/vendored_venv.py": "api.only_in_venv",
+        "pipelines/node_modules/pkg/vendored_node_modules.py": (
+            "api.only_in_node_modules"
+        ),
+        "pipelines/.cache/vendored_dot_cache.py": "api.only_in_dot_cache",
+    }
+    for rel, imported in fixtures.items():
+        _write(tmp_path, f"api/{imported.split('.')[-1]}.py")
+        _write(tmp_path, rel, f"import {imported}\n")
 
-    inventory, _reachable, dead = analyse(tmp_path)
+    _inventory, _reachable, dead = analyse(tmp_path)
 
-    assert "api.only_in_vendor" in dead, "a vendor copy kept a module alive"
-    assert not [name for name in inventory if "node_modules" in name]
-    assert not [name for name in inventory if name.startswith(".venv.")]
-    assert not [name for name in inventory if name.startswith("venv.")]
-    assert not [name for name in inventory if ".cache." in name]
+    for imported in fixtures.values():
+        assert imported in dead, f"{imported} stayed alive through a vendor/hidden copy"
+
+    known, _graph = scan_repository(tmp_path)
+    excluded_modules = {".".join(Path(rel).with_suffix("").parts) for rel in fixtures}
+    assert not excluded_modules & set(known), (
+        "vendor/hidden files were scanned as production modules: "
+        f"{sorted(excluded_modules & set(known))}"
+    )
 
 
 def test_cli_distinguishes_clean_dead_and_empty_inventory(tmp_path: Path, capsys):
