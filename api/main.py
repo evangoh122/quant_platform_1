@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.demo import is_hosted_public
 from api.deps import FRONTEND_DIST
 from api.routes import analytics, health, market, notes, sec, signals
 
@@ -39,7 +40,8 @@ _RATE_LIMIT_GLOBAL = int(os.getenv("RATE_LIMIT_GLOBAL", "600"))
 _MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(1024 * 1024)))
 _REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 _LRU_MAX_KEYS = int(os.getenv("RATE_LIMIT_LRU_MAX", "10000"))
-_IS_RENDER = bool(os.environ.get("RENDER", "").strip())
+# Hosted public platform: Render (RENDER) or a Hugging Face Space (SPACE_ID).
+_IS_HOSTED_PUBLIC = is_hosted_public()
 _RATE_LIMIT_DEBUG = os.environ.get("RATE_LIMIT_DEBUG", "").strip() in ("1", "true", "yes", "on")
 
 _VALID_CLIENT_IP_SOURCES = frozenset({"xff_leftmost", "cf_connecting_ip", "peer"})
@@ -48,15 +50,16 @@ _VALID_CLIENT_IP_SOURCES = frozenset({"xff_leftmost", "cf_connecting_ip", "peer"
 def _resolve_client_ip_source() -> str:
     """Return the active ``CLIENT_IP_SOURCE`` value.
 
-    On Render the default is ``xff_leftmost``; outside Render the default is
-    ``peer``.  An unrecognised value raises :class:`PublicDemoConfigurationError`
-    at startup so a misconfiguration never silently falls through.
+    On a hosted public platform (Render / Hugging Face Space) the default is
+    ``xff_leftmost``; elsewhere it is ``peer``.  An unrecognised value raises
+    :class:`PublicDemoConfigurationError` at startup so a misconfiguration never
+    silently falls through.
     """
     from api.demo import PublicDemoConfigurationError
 
     raw = os.environ.get("CLIENT_IP_SOURCE", "").strip().lower()
     if not raw:
-        return "xff_leftmost" if _IS_RENDER else "peer"
+        return "xff_leftmost" if _IS_HOSTED_PUBLIC else "peer"
     if raw not in _VALID_CLIENT_IP_SOURCES:
         raise PublicDemoConfigurationError(
             f"CLIENT_IP_SOURCE has unrecognised value {raw!r}; "
@@ -103,15 +106,22 @@ class _TokenBucket:
     rather than a hard minute-long outage.
     """
 
-    def __init__(self, capacity: int, refill_rate: float):
+    def __init__(
+        self,
+        capacity: int,
+        refill_rate: float,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._capacity = capacity
         self._refill_rate = refill_rate
+        # Injectable monotonic clock (test hook): production uses time.monotonic.
+        self._clock = clock
         self._tokens = float(capacity)
-        self._last_refill = time.monotonic()
+        self._last_refill = self._clock()
 
     def consume(self) -> tuple[bool, int]:
         """Try to consume one token.  ``(allowed, retry_after_seconds)``."""
-        now = time.monotonic()
+        now = self._clock()
         elapsed = now - self._last_refill
         self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
         self._last_refill = now
@@ -125,7 +135,7 @@ class _TokenBucket:
 
     def reset(self) -> None:
         self._tokens = float(self._capacity)
-        self._last_refill = time.monotonic()
+        self._last_refill = self._clock()
 
 
 class _FixedWindowLimiter:
@@ -136,6 +146,11 @@ class _FixedWindowLimiter:
     no parallel dicts can drift apart.  Aggregate load is governed by a
     :class:`_TokenBucket` instead of a hard ceiling, so bursts cause brief
     429s that self-recover within seconds.
+
+    ``clock`` is an injectable monotonic source (default :func:`time.monotonic`)
+    used for the window index, cleanup and the token bucket.  Tests freeze it so
+    a burst of N requests can be pinned inside one window instead of straddling
+    a wall-clock boundary.
     """
 
     def __init__(
@@ -144,14 +159,20 @@ class _FixedWindowLimiter:
         window: int = 60,
         global_limit: int = _RATE_LIMIT_GLOBAL,
         lru_max: int = _LRU_MAX_KEYS,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self._limit = limit
         self._window = window
         self._maxsize = lru_max
+        self._clock = clock
         self._counts: OrderedDict[str, tuple[int, int]] = OrderedDict()
-        self._last_cleanup = time.monotonic()
+        self._last_cleanup = self._clock()
         # Token bucket: capacity = global_limit, refills at global_limit/60 per second.
-        self._bucket = _TokenBucket(capacity=global_limit, refill_rate=global_limit / 60.0)
+        self._bucket = _TokenBucket(
+            capacity=global_limit,
+            refill_rate=global_limit / 60.0,
+            clock=clock,
+        )
 
     def _cleanup(self, now: float) -> None:
         if now - self._last_cleanup < self._window:
@@ -164,7 +185,7 @@ class _FixedWindowLimiter:
 
     def check(self, ip: str) -> tuple[bool, int]:
         """Return ``(allowed, retry_after)``."""
-        now = time.monotonic()
+        now = self._clock()
         self._cleanup(now)
         window_ts = int(now) // self._window
 
@@ -194,7 +215,7 @@ class _FixedWindowLimiter:
         """Reset all counters (for testing)."""
         self._counts.clear()
         self._bucket.reset()
-        self._last_cleanup = time.monotonic()
+        self._last_cleanup = self._clock()
 
     @property
     def key_count(self) -> int:
@@ -243,22 +264,23 @@ def _get_client_ip(request: Request) -> str:
 
     Source is controlled by ``CLIENT_IP_SOURCE`` (resolved at startup):
 
-    - ``xff_leftmost`` (default on Render): the leftmost ``X-Forwarded-For``
+    - ``xff_leftmost`` (default on a hosted public platform): the leftmost
+      ``X-Forwarded-For``
       entry if it is a valid IP; otherwise ``request.client.host``.  The
       ``CF-Connecting-IP`` and ``True-Client-IP`` headers are **never** read
       in this mode, so a client cannot spoof them.
     - ``cf_connecting_ip`` (opt-in): only ``CF-Connecting-IP`` (valid IP);
       otherwise ``request.client.host``.  Use when Cloudflare is verified in
       front of the service.
-    - ``peer`` (default outside Render): ``request.client.host`` only; all
-      headers are ignored.
+    - ``peer`` (default outside a hosted public platform): ``request.client.host``
+      only; all headers are ignored.
 
     Each candidate is validated as a real IPv4/IPv6 address; invalid values
     fall through to ``request.client.host``.
     """
     peer = request.client.host if request.client else "unknown"
 
-    if not _IS_RENDER:
+    if not _IS_HOSTED_PUBLIC:
         return peer
 
     if _CLIENT_IP_SOURCE == "peer":
@@ -314,18 +336,23 @@ def create_app() -> FastAPI:
     market, analytics) and applies security middleware.  Non-demo mode
     preserves the full route set and existing CORS behaviour.
 
-    On Render (``RENDER`` set), refuses to start without ``PUBLIC_DEMO=1``.
+    On a hosted public platform (``RENDER`` on Render, ``SPACE_ID`` on a
+    Hugging Face Space), refuses to start without ``PUBLIC_DEMO=1``.
     """
     from api.demo import (
         is_public_demo,
+        validate_hosted_public_environment,
         validate_public_demo_environment,
-        validate_render_environment,
     )
     from api.diagnostics import stage
 
     with stage("startup_config_load"):
-        validate_render_environment()
-        _log.info("client_ip_source=%s (render=%s)", _CLIENT_IP_SOURCE, _IS_RENDER)
+        validate_hosted_public_environment()
+        _log.info(
+            "client_ip_source=%s (hosted_public=%s)",
+            _CLIENT_IP_SOURCE,
+            _IS_HOSTED_PUBLIC,
+        )
         demo = is_public_demo()
         if demo:
             validate_public_demo_environment()
@@ -430,7 +457,7 @@ def create_app() -> FastAPI:
                     return FileResponse(FRONTEND_DIST / "index.html")
                 return FileResponse(FRONTEND_DIST / "index.html")
         else:
-            _is_app_env = bool(os.environ.get("DATABRICKS_APP_PORT") or _IS_RENDER)
+            _is_app_env = bool(os.environ.get("DATABRICKS_APP_PORT") or _IS_HOSTED_PUBLIC)
             if _is_app_env:
                 _log.warning(
                     "frontend/dist not found — run scripts/build_frontend.sh before deploy"
@@ -458,8 +485,9 @@ def _register_demo_middleware(application: FastAPI) -> None:
     - Security headers on every response
     - No CORS in demo
 
-    ``/api/health`` is NOT exempt from rate limiting; Render's health check
-    uses a small number of requests that won't exceed the per-IP limit.
+    ``/api/health`` is NOT exempt from rate limiting; platform health checks
+    (Render, HF Spaces) use a small number of requests that won't exceed the
+    per-IP limit.
     """
 
     @application.middleware("http")

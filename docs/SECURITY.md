@@ -12,9 +12,12 @@ Dependencies are audited for known vulnerabilities using:
 
 The `security-audit` job in `.github/workflows/ci.yml` runs:
 
-1. `pip-audit -r requirements-render.txt` — the Render deploy lockfile (exact pins)
-2. `pip-audit -r requirements-app.txt` — the app runtime dependencies
+1. `uv export --frozen --no-dev --no-hashes | pip-audit -r /dev/stdin` — the locked runtime set (what Databricks Apps and the Docker image install)
+2. `uv run pip-audit` — the environment uv built from the lock (runtime + dev)
 3. `npm audit --omit=dev --audit-level=high` — frontend production dependencies
+
+Both audit inputs are exports of the committed `uv.lock`, so the audited set is
+exactly the resolved set — it cannot drift from `pyproject.toml`.
 
 Any vulnerability without an accepted-risk entry in `security/pip-audit-ignore.txt`
 will **fail the build**.
@@ -41,23 +44,40 @@ langsmith<0.2 but pins langsmith==0.10.9; lxml==4.9.1 fails to build on CI).
 
 This change supersedes both PRs:
 
-- **requirements-render.txt**: fastapi bumped to 0.142.2 (pulls starlette 1.7.0),
-  resolving all 14 starlette CVEs. Exact pins retained as the deploy lockfile.
+- **requirements-render.txt** (retired with Render): fastapi bumped to 0.142.2
+  (pulls starlette 1.7.0), resolving all 14 starlette CVEs. That exact-pin
+  deploy set is superseded by `uv.lock` + the generated `requirements.txt`.
 - **requirements.txt**: lower bounds raised for all Aikido-flagged packages to
   first non-vulnerable versions (langchain>=1.0.0, langchain-core>=1.0.0,
   langchain-community>=0.3.0, langsmith>=0.2.0, lxml>=4.9.2, requests>=2.32.0,
-  fastapi>=0.142.2, uvicorn>=0.54.0).
+  fastapi>=0.142.2, uvicorn>=0.54.0). These floors now live in
+  `pyproject.toml`; `requirements.txt` is generated from `uv.lock`. Lower bounds
+  do not force an upgrade, so the audit also runs against the resolved lock —
+  `uv lock --upgrade-package <name>` is how a flagged floor is actually raised.
 - **oauthlib**: documented as accepted risk (transitive via
   databricks-sql-connector).
 
 ## Manual audit
 
 ```bash
-pip-audit -r requirements-render.txt
-pip-audit -r requirements-app.txt
-# exclude ibapi (not on PyPI):
-grep -viE '^[[:space:]]*ibapi([<=>~!]|$)' requirements.txt | pip-audit -r /dev/stdin
+# Runtime set (what Databricks Apps / the Docker image install):
+uv export --frozen --no-dev --no-hashes | pip-audit -r /dev/stdin
+
+# Full CI set (the environment `uv sync --frozen --group dev` created):
+uv run pip-audit
 ```
+
+`pyproject.toml` carries one `[tool.uv].override-dependencies` entry:
+`certifi>=2026.10.19`. `polygon-api-client` (dev-only) caps certifi at
+`<2026.0.0`, which held the shared lock at 2025.11.12 (PYSEC-2026-4320). certifi
+is a CA-data package with an unchanged API, so the runtime security floor
+overrides that dev-tool cap; a pip re-resolution of the dev export would report
+the conflict, which is why the CI job audits the uv-built environment instead
+of re-resolving the export with pip.
+
+
+`ibapi` is not on PyPI and never enters `uv.lock`, so no filtering is needed
+anymore (CI still asserts it stays out).
 
 ## Starlette CVEs resolved by this change
 

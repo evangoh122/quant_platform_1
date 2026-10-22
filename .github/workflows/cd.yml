@@ -34,35 +34,45 @@ jobs:
       DATABRICKS_AUTH_TYPE: github-oidc
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+      # Inlined by Vite at build time. Public PostHog project key - safe to
+      # expose client-side (same as any product-analytics tracking id). Unset ->
+      # analytics stays disabled (the app guards on this). Consumed by the
+      # bundle's `frontend` artifact during `databricks bundle deploy`.
+      VITE_POSTHOG_KEY: ${{ vars.VITE_POSTHOG_KEY }}
+      VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
+      - name: Set up Databricks CLI
+        uses: databricks/setup-cli@095d26a91ccd1ff8860b6832b0739d71f21ced75 # v0.276.0
+
+      - name: Set up uv
+        # `bundle deploy` builds the python_requirements artifact with
+        # `uv export` (databricks.yml); the runner image does not ship uv.
+        # Same pinned action and inputs as the CI Python job.
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: Set up Node.js
+        # `bundle deploy` builds the frontend artifact with the package manager;
+        # keep the same Node version and lockfile cache key as the CI Frontend
+        # job.
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Build frontend
-        working-directory: frontend
-        env:
-          # Public PostHog project key - safe to expose client-side (same
-          # as any product-analytics tracking id), inlined by Vite at build
-          # time. Unset -> analytics stays disabled (app guards on this).
-          VITE_POSTHOG_KEY: ${{ vars.VITE_POSTHOG_KEY }}
-          VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
-        run: |
-          npm ci
-          npm run build
-
-      - name: Set up Databricks CLI
-        uses: databricks/setup-cli@095d26a91ccd1ff8860b6832b0739d71f21ced75 # v0.276.0
-
       - name: Deploy bundle
+        # `bundle deploy` builds the bundle artifacts itself:
+        #   * frontend            -> npm clean install + production build (frontend/dist)
+        #   * python_requirements -> uv export of the runtime group (requirements.txt)
+        # Both are declared in databricks.yml; no manual pre-build step.
         run: databricks bundle deploy -t "${{ inputs.target }}"
 
       - name: Start app

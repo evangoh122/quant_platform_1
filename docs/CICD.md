@@ -6,16 +6,54 @@ This repository separates validation from deployment. Nothing deploys or runs au
 
 The `CI` workflow runs for every pull request and for pushes to `main`. Superseded runs for the same ref are cancelled.
 
-- **Python tests** use Python 3.12 and run the offline suite with `pytest -q -m "not spark and not lakebase and not databricks"`. CI installs Python packages with [uv](https://docs.astral.sh/uv/) (`uv pip install --system`) for faster installs; `setup-uv` caches the uv download cache keyed on `requirements*.txt`. Because `ibapi` is unavailable from PyPI and is stubbed by `conftest.py`, CI filters that one entry from `requirements.txt`. If `requirements-app.txt` exists, CI installs it too. If `bundles/streaming/tests` exists, CI runs those tests as a separate step. Render and Databricks Apps continue to use pip with the same requirement files.
+- **Python tests** use Python 3.12 and run the offline suite with `uv run pytest -q -m "not spark and not lakebase and not databricks"`. [uv](https://docs.astral.sh/uv/) installs the committed lockfile (`uv sync --frozen --group dev`); `pyproject.toml` + `uv.lock` are the single source of truth and `setup-uv` caches the download cache keyed on `uv.lock`. CI fails when the lock is stale (`uv lock --check`) or when the committed `requirements.txt` was not regenerated after a dependency change (export drift). `pyspark` is not a dependency, so the CI interpreter never has it. `ibapi` is not on PyPI and is deliberately absent from the lock; `conftest.py` stubs it for the offline suite. If `bundles/streaming/tests` exists, CI runs those tests as a separate step. Databricks Apps and the Hugging Face Docker image install from the same lock (see "Dependency workflow" below).
 - **Frontend** uses Node 20 to run `npm ci`, TypeScript checking, and the production build. The job is skipped when `frontend/package.json` is absent.
 - **Bundle validation** validates the root development target and, if present, the separate streaming bundle. Workspace-backed validation steps are skipped cleanly when `DATABRICKS_HOST` is not configured or when OIDC credentials (client ID) or a PAT token are missing.
 - **Secret scanning** runs Gitleaks against the checked-out history.
+- **Dependency audit** exports the locked runtime and dev groups and audits both with `pip-audit` (see `docs/SECURITY.md`).
 
 CI never deploys any bundle.
 
+## Dependency workflow (uv)
+
+`pyproject.toml` declares the dependencies; `uv.lock` pins the full resolution.
+Every entry point installs from the lock:
+
+| Consumer | Install command |
+| :--- | :--- |
+| Developers / CI | `uv sync --frozen --group dev` |
+| Databricks Apps | root `requirements.txt` (generated, pip) — see below |
+| Hugging Face Space | `uv sync --frozen --no-dev` during `docker build` |
+
+Common commands:
+
+```bash
+uv lock                      # after editing pyproject.toml
+uv sync --frozen --group dev # install exactly the lock
+uv run pytest -q             # run commands in the project environment
+./scripts/export_requirements.sh   # regenerate the committed requirements.txt
+```
+
+**`requirements.txt` is a generated artifact.** Databricks Apps installs the
+root `requirements.txt` when it exists, and a `requirements.txt` always takes
+precedence over `pyproject.toml`/`uv.lock` (Databricks docs, "Define Python
+dependencies with uv"). Keeping it committed therefore preserves the existing
+pip install path for bundle *and* UI-driven deployments, at the cost of one
+generated file that CI drift-checks. Never edit it by hand; the DAB
+`python_requirements` artifact regenerates it before `bundle deploy`.
+
+**ibapi** is not published on PyPI (IBKR ships it as a zip on their website).
+It is intentionally absent from `pyproject.toml`, `uv.lock` and
+`requirements.txt` so `uv sync` always succeeds. `conftest.py` installs a stub
+for the offline suite; live paper trading (`etl/ibkr_client.py`) needs a manual
+`uv pip install <ibapi zip>` into the active environment (uv-managed virtual
+environments do not ship `pip`), and CI has an explicit step asserting `ibapi`
+never enters the lock.
+
+
 ## Manual deployment
 
-The `Deploy Databricks bundle` workflow has only a `workflow_dispatch` trigger. An operator chooses `dev` or `prod`; the workflow builds `frontend/dist` and runs `databricks bundle deploy` for that target. An optional `start_app` boolean input (default false) restarts the app after deploy by running `databricks bundle run quant_platform -t <target>`. It does not run any job or pipeline.
+The `Deploy Databricks bundle` workflow has only a `workflow_dispatch` trigger. An operator chooses `dev` or `prod`; the workflow runs `databricks bundle deploy` for that target, and the bundle's `artifacts` section builds `frontend/dist` (`npm ci && npm run build`) and regenerates `requirements.txt` (`uv export` of the locked runtime group) as part of that command. The deploying machine therefore needs `npm`/`node` and `uv` on `PATH`. An optional `start_app` boolean input (default false) restarts the app after deploy by running `databricks bundle run quant_platform -t <target>`. It does not run any job or pipeline.
 
 The selected target is also the GitHub Environment name. Configure two repository environments:
 

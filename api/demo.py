@@ -4,10 +4,11 @@ When ``PUBLIC_DEMO`` is set to a truthy value the application runs in
 public-demo mode: anonymous read-only access, no Lakebase, no broker,
 no write tools, and startup refuses unsafe credential configuration.
 
-Fail-closed semantics: on Render (``RENDER`` is set) the app refuses to start
-with write routes unless ``PUBLIC_DEMO`` is explicitly enabled.  An
-unrecognised non-empty ``PUBLIC_DEMO`` value (e.g. ``"t"``, ``"1.0"``,
-``"0"``) raises — only unset or empty means off.
+Fail-closed semantics: on a hosted public deployment (Render sets ``RENDER``;
+Hugging Face Spaces set ``SPACE_ID``) the app refuses to start with write
+routes unless ``PUBLIC_DEMO`` is explicitly enabled.  An unrecognised non-empty
+``PUBLIC_DEMO`` value (e.g. ``"t"``, ``"1.0"``, ``"0"``) raises — only unset or
+empty means off.
 """
 from __future__ import annotations
 
@@ -20,6 +21,11 @@ PUBLIC_DEMO_ROLE = "viewer"
 
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _ALL_KNOWN_DEMO_VALUES = _TRUTHY_VALUES | {"", "0", "false", "no", "off"}
+
+# Environment variables that identify a *hosted public* deployment.  Render
+# sets RENDER for every service; Hugging Face Spaces set SPACE_ID (and
+# SPACE_HOST) for every Space.  Both must activate the fail-closed gate.
+_HOSTED_PUBLIC_MARKERS = ("RENDER", "SPACE_ID")
 
 
 def is_public_demo() -> bool:
@@ -39,6 +45,17 @@ def is_public_demo() -> bool:
             f"expected one of: {', '.join(sorted(_ALL_KNOWN_DEMO_VALUES))} (or unset/empty)"
         )
     return raw in _TRUTHY_VALUES
+
+
+def is_hosted_public() -> bool:
+    """Return ``True`` on a hosted public platform (Render or HF Spaces).
+
+    Render sets ``RENDER``; Hugging Face Spaces set ``SPACE_ID`` (see
+    https://huggingface.co/docs/hub/en/spaces-overview#built-in-environment-variables).
+    Either marker activates the fail-closed demo gate and the proxy-aware
+    client-IP defaults.
+    """
+    return any(os.environ.get(marker, "").strip() for marker in _HOSTED_PUBLIC_MARKERS)
 
 
 class PublicDemoConfigurationError(RuntimeError):
@@ -80,13 +97,31 @@ _SECRET_EXACT = frozenset({
     "AUTHORIZATION", "BASIC_AUTH", "SESSION_COOKIE",
 })
 
-# Render-injected env vars that are harmless and allowed.
-_RENDER_ALLOW_LIST = frozenset({
+# Host-injected env vars that are harmless and allowed in public-demo mode.
+# Render's names are kept so existing deployments do not change behaviour.
+# Hugging Face Spaces inject the following at runtime (verified against
+# https://huggingface.co/docs/hub/en/spaces-overview#built-in-environment-variables):
+# ACCELERATOR, CPU_CORES, MEMORY, SPACE_AUTHOR_NAME, SPACE_REPO_NAME,
+# SPACE_TITLE, SPACE_ID, SPACE_HOST, SPACE_CREATOR_USER_ID, SPACE_SIGNING_SECRET.
+# HF_HOME is the hub cache location documented at
+# https://huggingface.co/docs/hub/en/spaces-config-reference (preload_from_hub).
+# SPACE_SIGNING_SECRET is HF-managed and Space-local (a random per-Space key for
+# signing cookies/state); it grants no access to Lakebase, Databricks or a
+# broker, and this app never reads it.  It must be allowed or the Space could
+# never boot in demo mode.  Real credentials stay rejected: HF_TOKEN is a
+# deployment token and remains in _SECRET_EXACT.
+_HOSTED_ALLOW_LIST = frozenset({
+    # Render
     "RENDER", "RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_SERVICE_TYPE",
     "RENDER_GIT_BRANCH", "RENDER_GIT_COMMIT", "RENDER_GIT_REPO_SLUG",
     "RENDER_GIT_OWNER", "RENDER_GIT_PROVIDER", "RENDER_GIT_PR_NUMBER",
     "RENDER_INSTANCE_ID", "RENDER_REGION", "RENDER_EXTERNAL_URL",
     "RENDER_EXTERNAL_HOSTNAME", "RENDER_DISK_MOUNT_PATH",
+    # Hugging Face Spaces
+    "SPACE_ID", "SPACE_HOST", "SPACE_AUTHOR_NAME", "SPACE_REPO_NAME",
+    "SPACE_TITLE", "SPACE_CREATOR_USER_ID", "SPACE_SIGNING_SECRET",
+    "CPU_CORES", "MEMORY", "ACCELERATOR", "HF_HOME",
+    # Shared / generic
     "CLIENT_IP_SOURCE", "RATE_LIMIT_DEBUG",
     "PORT", "PYTHON_VERSION", "NODE_VERSION", "PATH", "HOME",
 })
@@ -114,7 +149,7 @@ def _is_unsafe_key(key: str, value: str) -> bool:
     """Return ``True`` if *key* with a non-empty *value* is rejected in demo."""
     if not value:
         return False
-    if key in _RENDER_ALLOW_LIST:
+    if key in _HOSTED_ALLOW_LIST:
         return False
     if key.startswith(_LAKEBASE_PREFIX) or key.startswith(_DATABRICKS_PREFIX):
         return True
@@ -159,18 +194,28 @@ def validate_public_demo_environment(
         )
 
 
-def validate_render_environment() -> None:
-    """Fail-closed guard for Render deployments.
+def validate_hosted_public_environment() -> None:
+    """Fail-closed guard for hosted public deployments (Render / HF Spaces).
 
-    On Render (``RENDER`` is set to any non-empty value), the app must run in
-    public-demo mode.  Refuse to start with write routes if ``PUBLIC_DEMO`` is
-    not active.  This prevents the insecure default where ``PUBLIC_DEMO``
-    absent means "full write surface" from silently shipping on Render.
+    On a hosted public platform (``RENDER`` or ``SPACE_ID`` set to any
+    non-empty value), the app must run in public-demo mode.  Refuse to start
+    with write routes if ``PUBLIC_DEMO`` is not active.  This prevents the
+    insecure default where ``PUBLIC_DEMO`` absent means "full write surface"
+    from silently shipping on Render or a Hugging Face Space.
     """
-    render = os.environ.get("RENDER", "").strip()
-    if not render:
+    if not is_hosted_public():
         return
     if not is_public_demo():
         raise PublicDemoConfigurationError(
-            "refusing to start with write routes on Render; set PUBLIC_DEMO=1"
+            "refusing to start with write routes on a hosted public deployment "
+            "(Render or Hugging Face Space); set PUBLIC_DEMO=1"
         )
+
+
+def validate_render_environment() -> None:
+    """Deprecated alias for :func:`validate_hosted_public_environment`.
+
+    Kept so existing imports keep working; the gate itself now covers both
+    Render (``RENDER``) and Hugging Face Spaces (``SPACE_ID``).
+    """
+    validate_hosted_public_environment()

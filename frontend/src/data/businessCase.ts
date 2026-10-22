@@ -1784,7 +1784,7 @@ export const RUBRIC_AI: RubricAI = {
         category: 'Deployed Application',
         pointsPossible: 5,
         whatTheGraderLooksFor:
-          'A stable deployment on Databricks Apps or Render that supports the core workflow, with documented setup, environment configuration, secrets handling and reliable access. A local-only application falls short.',
+          'A stable deployment on Databricks Apps or a hosted public Space that supports the core workflow, with documented setup, environment configuration, secrets handling and reliable access. A local-only application falls short.',
         ourPlan:
           'Deploy as a Databricks App after the analytics and agent rounds. Round three covered portable configuration, service-principal grants and a deployed-URL smoke test, each live step in an owner-approved window.',
         whatWeBuilt:

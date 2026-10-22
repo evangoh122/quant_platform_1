@@ -291,6 +291,8 @@ def test_non_numeric_columns_excluded(caplog):
     assert not result["numeric_feat"].equals(frame["numeric_feat"])
 
 
+# CPU-bound: ~30 s on a shared 2-vCPU host, seconds on CI.
+@pytest.mark.timeout(180)
 def test_cot_features_nonzero_after_neutralisation():
     """COT (market-wide) features must survive neutralisation with non-zero values."""
     from ml.features import COT_FEATURES
@@ -316,6 +318,8 @@ def test_cot_features_nonzero_after_neutralisation():
         )
 
 
+# CPU-bound: ~30 s on a shared 2-vCPU host, seconds on CI.
+@pytest.mark.timeout(180)
 def test_arm_d_differs_from_arm_c_in_cot_columns():
     """Arm D's matrix must differ from arm C's in COT columns after neutralisation."""
     from ml.features import COT_FEATURES
@@ -479,6 +483,8 @@ def test_insufficient_coverage_columns_reported():
     assert "all_nan_feat" not in detected
 
 
+# CPU-bound: ~30 s on a shared 2-vCPU host, seconds on CI.
+@pytest.mark.timeout(180)
 def test_fold_local_classification_unchanged_by_future_data():
     """Fold k's training features (and thus its out-of-fold predictions) must not
     change when data after its training window is altered.

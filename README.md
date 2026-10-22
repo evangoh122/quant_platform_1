@@ -78,12 +78,22 @@ Dates are the last recorded verification; this repository does not assert the cu
 
 ## Local development
 
+Python dependencies are managed with [uv](https://docs.astral.sh/uv/).
+`pyproject.toml` + `uv.lock` are the source of truth; the committed
+`requirements.txt` is a generated export (never edit it by hand).
+
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest -q -m "not spark and not lakebase and not databricks"   # offline suite
+uv sync --frozen --group dev      # installs runtime + dev/test tooling (Python 3.12)
+uv run pytest -q -m "not spark and not lakebase and not databricks"   # offline suite
 cd frontend && npm ci && npm test -- --run && npm run build
-uvicorn api.main:app --reload
+uv run uvicorn api.main:app --reload
 ```
+
+After changing dependencies in `pyproject.toml`, run `uv lock`, then
+`./scripts/export_requirements.sh` to refresh the committed runtime export.
+CI fails when either the lock or the export is stale. See
+[`docs/CICD.md`](docs/CICD.md#dependency-workflow-uv) for the full workflow
+(including why `ibapi` is installed manually and never locked).
 
 Configuration comes from environment variables / bundle variables (`CATALOG`, `SCHEMA`, `DATABRICKS_WAREHOUSE_ID`,
 `LAKEBASE_INSTANCE`, `AGENT_MODEL_ENDPOINT`); no credentials are committed. Secrets live in a Databricks secret scope.
@@ -92,10 +102,18 @@ Configuration comes from environment variables / bundle variables (`CATALOG`, `S
 
 ```bash
 databricks bundle validate -t dev
-databricks bundle deploy -t dev
+databricks bundle deploy -t dev    # builds frontend/dist + requirements.txt via bundle artifacts
 # Then Deploy the app in Databricks Apps; grant the app service principal Lakebase access (docs/DEPLOYMENT.md)
 python scripts/smoke_app.py --base-url <app-url>
 ```
+
+## Public demo (Hugging Face Space)
+
+The public showcase runs as a Docker Space built from
+[`deploy/hf/Dockerfile`](deploy/hf/Dockerfile) in read-only demo mode. Publish
+notes (and the `<HF_NAMESPACE>/<HF_SPACE>` placeholder) are in
+[`docs/HF_SPACE_DEPLOY.md`](docs/HF_SPACE_DEPLOY.md); `scripts/publish_hf_space.sh`
+is dry-run by default and requires `--yes` to upload. Render is retired.
 
 ## Engineering process
 

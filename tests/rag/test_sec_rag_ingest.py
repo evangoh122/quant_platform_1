@@ -2744,7 +2744,15 @@ class TestNoPlaceholderUserAgent:
             for path in repo_root.rglob(ext):
                 rel = path.relative_to(repo_root)
                 parts = rel.parts
-                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive") for p in parts):
+                if any(
+                    p in (
+                        "tests", ".agents", ".git", "__pycache__", "archive",
+                        # `uv sync` creates a repo-root .venv; it is not production
+                        # code and scanning site-packages blows the timeout.
+                        ".venv", "venv", "node_modules", ".pytest_cache",
+                    )
+                    for p in parts
+                ):
                     continue
                 try:
                     content = path.read_text(encoding="utf-8")
@@ -2808,7 +2816,15 @@ class TestNotebookThinWrapper:
             for path in repo_root.rglob(ext):
                 rel = path.relative_to(repo_root)
                 parts = rel.parts
-                if any(p in ("tests", ".agents", ".git", "__pycache__", "archive") for p in parts):
+                if any(
+                    p in (
+                        "tests", ".agents", ".git", "__pycache__", "archive",
+                        # `uv sync` creates a repo-root .venv; it is not production
+                        # code and scanning site-packages blows the timeout.
+                        ".venv", "venv", "node_modules", ".pytest_cache",
+                    )
+                    for p in parts
+                ):
                     continue
                 try:
                     text = path.read_text(encoding="utf-8")

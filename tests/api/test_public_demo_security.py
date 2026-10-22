@@ -10,7 +10,7 @@ These tests prove that the public-demo mode:
 - Normalises /api prefix (//api, /%2fapi, /API)
 - Adds security headers on every response including 405/413/429/504
 - Has no CORS middleware
-- Fails closed on Render without PUBLIC_DEMO
+- Fails closed on Render AND on a Hugging Face Space (SPACE_ID) without PUBLIC_DEMO
 - Rejects unrecognised PUBLIC_DEMO values
 """
 from __future__ import annotations
@@ -64,6 +64,47 @@ def _client(app):
     from fastapi.testclient import TestClient
 
     return TestClient(app)
+
+
+class _FrozenClock:
+    """A monotonic clock the test controls, for rate-limiter determinism.
+
+    ``_FixedWindowLimiter`` derives its window index from ``int(now) // 60``.
+    With the real clock, a burst of 61 requests can straddle a window boundary
+    and the counter resets mid-burst, so the "61st request is 429" assertions
+    would depend on wall-clock timing.  Freezing the clock pins the whole burst
+    inside one window without changing any assertion.
+    """
+
+    def __init__(self, start: float) -> None:
+        self.now = float(start)
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += float(seconds)
+
+
+def _freeze_limiter_clock(monkeypatch, main_mod, **limiter_kwargs) -> _FrozenClock:
+    """Install a fresh limiter frozen 40s into its 60s window.
+
+    Every "the 61st request in a minute is a 429" assertion below charges 60
+    requests to one fixed window.  With the real monotonic clock the burst can
+    straddle a window boundary, the per-IP counter resets mid-burst and the
+    assertion fails intermittently under suite load.  Freezing the clock pins
+    each burst inside one window; no assertion or limit is relaxed.
+    """
+    frozen = _FrozenClock(1_000_000.0)  # 40s into the window -> Retry-After 20
+    # Keep the old "start from a clean limiter" contract for the shared instance
+    # too: it is restored after the test and must not carry a burst forward.
+    main_mod._limiter.reset()
+    monkeypatch.setattr(
+        main_mod,
+        "_limiter",
+        main_mod._FixedWindowLimiter(clock=frozen, **limiter_kwargs),
+    )
+    return frozen
 
 
 def _get_api_get_routes(app):
@@ -270,7 +311,7 @@ def test_unsafe_variable_rejected_at_construction(monkeypatch, key):
     assert "super-secret-value-12345" not in error_text
 
 
-# ── test 5b: Render allow-listed vars are not rejected ────────────────────────
+# ── test 5b: host-injected allow-listed vars are not rejected ────────────────
 
 @pytest.mark.parametrize("key", [
     "RENDER",
@@ -281,14 +322,25 @@ def test_unsafe_variable_rejected_at_construction(monkeypatch, key):
     "RENDER_GIT_COMMIT",
     "RENDER_GIT_REPO_SLUG",
     "RENDER_EXTERNAL_URL",
+    "SPACE_ID",
+    "SPACE_HOST",
+    "SPACE_AUTHOR_NAME",
+    "SPACE_REPO_NAME",
+    "SPACE_TITLE",
+    "SPACE_CREATOR_USER_ID",
+    "SPACE_SIGNING_SECRET",
+    "CPU_CORES",
+    "MEMORY",
+    "ACCELERATOR",
+    "HF_HOME",
     "PORT",
     "PYTHON_VERSION",
     "NODE_VERSION",
     "PATH",
     "HOME",
 ])
-def test_render_allowlisted_vars_not_rejected(monkeypatch, key):
-    """Render-injected env vars are harmless and must not be rejected."""
+def test_hosted_allowlisted_vars_not_rejected(monkeypatch, key):
+    """Host-injected env vars (Render + HF Spaces) are harmless and allowed."""
     monkeypatch.setenv("PUBLIC_DEMO", "1")
     monkeypatch.setenv(key, "some-value")
 
@@ -324,7 +376,7 @@ def test_rate_limit_61st_read_gives_429(monkeypatch):
     """The 61st GET in the same minute returns 429 with Retry-After."""
     import api.main as main_mod
 
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -395,7 +447,7 @@ def test_security_headers_on_429(monkeypatch):
     """A rate-limited response carries all security headers."""
     import api.main as main_mod
 
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -462,6 +514,72 @@ def test_render_without_public_demo_refuses(monkeypatch):
 
     with pytest.raises(PublicDemoConfigurationError, match="refusing to start"):
         validate_render_environment()
+
+
+# ── test 12b: SPACE_ID without PUBLIC_DEMO refuses to start ──────────────────
+# Regression guard for the HF Spaces move: Render's RENDER var is never set on
+# a Space, so keying the gate on RENDER alone would silently disable it.
+
+def test_hf_space_without_public_demo_refuses_to_start(monkeypatch):
+    """SPACE_ID (Hugging Face Space) without PUBLIC_DEMO → create_app() refuses."""
+    monkeypatch.setenv("SPACE_ID", "<HF_NAMESPACE>/<HF_SPACE>")
+    monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+
+    from api.demo import PublicDemoConfigurationError
+    from api.main import create_app
+
+    with pytest.raises(PublicDemoConfigurationError, match="refusing to start"):
+        create_app()
+
+
+@pytest.mark.parametrize("key", ["LAKEBASE_HOST", "DATABRICKS_HOST", "IBKR_HOST", "BROKER_API_KEY"])
+def test_hf_space_with_credentials_refuses_to_start(monkeypatch, key):
+    """SPACE_ID + PUBLIC_DEMO=1 + a credential family → create_app() refuses."""
+    monkeypatch.setenv("SPACE_ID", "<HF_NAMESPACE>/<HF_SPACE>")
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.setenv(key, "injected-value")
+
+    from api.demo import PublicDemoConfigurationError
+    from api.main import create_app
+
+    with pytest.raises(PublicDemoConfigurationError) as exc_info:
+        create_app()
+    assert key in str(exc_info.value)
+    assert "injected-value" not in str(exc_info.value)
+
+
+HF_SPACE_ENV = {
+    "SPACE_ID": "<HF_NAMESPACE>/<HF_SPACE>",
+    "SPACE_HOST": "<hf-namespace>-<hf-space>.hf.space",
+    "SPACE_AUTHOR_NAME": "<HF_NAMESPACE>",
+    "SPACE_REPO_NAME": "<HF_SPACE>",
+    "SPACE_TITLE": "Quant Platform demo",
+    "SPACE_CREATOR_USER_ID": "6032802e1f993496bc14d9e3",
+    "SPACE_SIGNING_SECRET": "space-local-signing-key",
+    "CPU_CORES": "2",
+    "MEMORY": "16Gi",
+    "ACCELERATOR": "none",
+    "HF_HOME": "/home/user/.cache/huggingface",
+}
+
+
+def test_hf_injected_vars_alone_do_not_refuse_startup(monkeypatch):
+    """HF-injected variables are not credentials: demo mode still starts.
+
+    The Space sets SPACE_ID and friends itself; refusing them would make every
+    public demo unbootable.  No LAKEBASE_*/DATABRICKS_*/broker var is present.
+    """
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    monkeypatch.delenv("RENDER", raising=False)
+    for key, value in HF_SPACE_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    from api.demo import is_hosted_public
+    from api.main import create_app
+
+    assert is_hosted_public() is True
+    assert create_app() is not None
 
 
 # ── test 12: RENDER=true PUBLIC_DEMO=1 starts ─────────────────────────────────
@@ -543,9 +661,9 @@ def test_spoofed_rightmost_xff_does_not_evade(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -576,9 +694,9 @@ def test_different_leftmost_ips_get_separate_buckets(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -842,10 +960,7 @@ def test_global_rate_ceiling(monkeypatch):
     request is rejected with a short retry-after."""
     import api.main as main_mod
 
-    main_mod._limiter.reset()
-    monkeypatch.setattr(main_mod, "_limiter", main_mod._FixedWindowLimiter(
-        limit=1000, global_limit=10
-    ))
+    _freeze_limiter_clock(monkeypatch, main_mod, limit=1000, global_limit=10)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -877,9 +992,11 @@ def test_default_xff_leftmost_ignores_cf_connecting_ip(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    # Frozen clock: all 61 requests share one fixed window, so the 429 cannot be
+    # lost to a wall-clock boundary crossing mid-burst.
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -926,9 +1043,9 @@ def test_no_cf_header_leftmost_xff_used(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -960,7 +1077,7 @@ def test_invalid_xff_leftmost_falls_back_to_client_host(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
@@ -1014,9 +1131,9 @@ def test_outside_render_headers_ignored(monkeypatch):
     are completely ignored — only request.client.host is used."""
     import api.main as main_mod
 
-    monkeypatch.setattr(main_mod, "_IS_RENDER", False)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", False)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch)
     client = _client(app)
@@ -1083,9 +1200,9 @@ def test_xff_leftmost_fixed_xff_rotating_cf_61st_gives_429(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -1164,7 +1281,7 @@ def test_cf_connecting_ip_mode_uses_cf(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "cf_connecting_ip")
     main_mod._limiter.reset()
 
@@ -1212,9 +1329,9 @@ def test_cf_connecting_ip_mode_61st_gives_429(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "cf_connecting_ip")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -1248,7 +1365,7 @@ def test_peer_mode_ignores_all_headers(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
     main_mod._limiter.reset()
 
@@ -1274,9 +1391,9 @@ def test_peer_mode_single_bucket(monkeypatch):
     import api.main as main_mod
 
     monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "peer")
-    main_mod._limiter.reset()
+    _freeze_limiter_clock(monkeypatch, main_mod)
 
     app = _make_demo_app(monkeypatch, extra_env={"RENDER": "true"})
     client = _client(app)
@@ -1327,8 +1444,8 @@ def test_unknown_client_ip_source_raises(monkeypatch):
 def test_client_ip_source_in_render_allow_list():
     """CLIENT_IP_SOURCE is in the Render allow-list so it is not rejected
     as a secret in demo mode."""
-    from api.demo import _RENDER_ALLOW_LIST
-    assert "CLIENT_IP_SOURCE" in _RENDER_ALLOW_LIST
+    from api.demo import _HOSTED_ALLOW_LIST
+    assert "CLIENT_IP_SOURCE" in _HOSTED_ALLOW_LIST
 
 
 # ── test 42: RATE_LIMIT_DEBUG in Render allow-list ───────────────────────────
@@ -1336,8 +1453,8 @@ def test_client_ip_source_in_render_allow_list():
 def test_rate_limit_debug_in_render_allow_list():
     """RATE_LIMIT_DEBUG is in the Render allow-list so it is not rejected
     as a secret in demo mode."""
-    from api.demo import _RENDER_ALLOW_LIST
-    assert "RATE_LIMIT_DEBUG" in _RENDER_ALLOW_LIST
+    from api.demo import _HOSTED_ALLOW_LIST
+    assert "RATE_LIMIT_DEBUG" in _HOSTED_ALLOW_LIST
 
 
 # ── test 43: RATE_LIMIT_DEBUG off → no per-request log line ──────────────────
@@ -1374,7 +1491,7 @@ def test_rate_limit_debug_on_logs_redacted_key(monkeypatch, caplog):
     import logging
 
     monkeypatch.setattr(main_mod, "_RATE_LIMIT_DEBUG", True)
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
@@ -1439,7 +1556,7 @@ def test_rate_limit_debug_no_full_ip_in_any_line(monkeypatch, caplog):
     import logging
 
     monkeypatch.setattr(main_mod, "_RATE_LIMIT_DEBUG", True)
-    monkeypatch.setattr(main_mod, "_IS_RENDER", True)
+    monkeypatch.setattr(main_mod, "_IS_HOSTED_PUBLIC", True)
     monkeypatch.setattr(main_mod, "_CLIENT_IP_SOURCE", "xff_leftmost")
     main_mod._limiter.reset()
 
