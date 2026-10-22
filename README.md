@@ -151,8 +151,9 @@ show price return (splits adjusted, dividends not), not total return. Dates miss
 counted in the UI), never forward-filled, and fewer than two common points is shown as empty rather than zero.
 
 **Futures spread not included:** `CLZ26.NYM` vs `CLZ27.NYM` is not charted because there is no futures data source in
-the lakehouse yet; the screen names the gap instead of inventing prices. The window is the last 1/3/6/12 months of
-trading days (weekday approximation, holidays not excluded; default 252, capped at 1000).
+the lakehouse yet; the screen names the gap instead of inventing prices. The window options are **1M / 3M / 6M /
+All** (All = 1000 trading days; 252 is the API default), measured in trading days with a weekday approximation —
+exchange holidays are not excluded — and capped at 1000.
 
 ## Repository layout
 

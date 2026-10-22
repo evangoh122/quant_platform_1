@@ -21,9 +21,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
+from loguru import logger
 
 from api.deps import AppUser, get_current_user, read_delta
 from api.schemas import (
@@ -49,6 +50,17 @@ _WEEKDAY_DETAIL = "weekday approximation (calendar_limited)"
 
 _EQUITY_SYMBOLS = ("USO", "RSP", "SPY", "MAGS", "SOXX", "SMH")
 
+_USO_TITLE = "USO — split-adjusted close"
+_USO_SUBTITLE = (
+    "current-scale split-adjusted close "
+    "(silver_ohlcv_day_adjusted.adj_close); a price level, not a rebased index"
+)
+_YIELD_TITLE = "US 10Y and 2Y Treasury yields"
+_YIELD_SUBTITLE = (
+    "constant-maturity yields (%), latest vintage per observation; "
+    "tile = 10s2s spread (DGS10 − DGS2) on dates present in both"
+)
+
 #: (chart_id, title, leg A, leg B) — the index is A / B rebased to 100.
 _PAIRS = (
     ("rsp_spy", "RSP / SPY relative performance", "RSP", "SPY"),
@@ -67,6 +79,41 @@ def _join_detail(*parts: str) -> str:
 def _combined_state(*states: str) -> str:
     """Worst of the leg states: unavailable > empty > stale > fresh."""
     return max(states or ("empty",), key=lambda s: _STATE_PRIORITY.get(s, 0))
+
+
+def _unavailable_chart(
+    *,
+    chart_id: str,
+    title: str,
+    subtitle: str,
+    kind: Literal["price", "index", "yield"],
+    unit: str,
+    source: str,
+    detail: str,
+    tile: SpreadTile | None = None,
+) -> SpreadChart:
+    """One chart whose computation failed unexpectedly: empty, not a 500.
+
+    Only the fixed public ``detail`` text is returned; the exception itself goes
+    to the server log and never into the response.
+    """
+    return SpreadChart(
+        chart_id=chart_id,
+        title=title,
+        subtitle=subtitle,
+        kind=kind,
+        unit=unit,
+        source=source,
+        freshness=Freshness(
+            state="unavailable",
+            table=source,
+            detail=_join_detail(detail, _WEEKDAY_DETAIL),
+        ),
+        empty=True,
+        series=[],
+        tile=tile,
+        caption="",
+    )
 
 
 def _series_from(
@@ -143,24 +190,20 @@ def market_spreads(
 
     # ── 1. USO split-adjusted close ──────────────────────────────────────────
     uso_rows, uso_state, uso_detail = equity["USO"]
-    uso = price_series(uso_rows, window_start=window_start)
-    uso_caption = ""
-    if not uso["empty"]:
-        uso_caption = (
-            f"Split-adjusted close {uso['latest_value']:.2f} USD on "
-            f"{uso['as_of']}."
-        )
-        if uso["window_pct_change"] is not None:
-            uso_caption += f" Window change {uso['window_pct_change']:+.2f}%."
-    charts.append(
-        SpreadChart(
+    try:
+        uso = price_series(uso_rows, window_start=window_start)
+        uso_caption = ""
+        if not uso["empty"]:
+            uso_caption = (
+                f"Split-adjusted close {uso['latest_value']:.2f} USD on "
+                f"{uso['as_of']}."
+            )
+            if uso["window_pct_change"] is not None:
+                uso_caption += f" Window change {uso['window_pct_change']:+.2f}%."
+        uso_chart = SpreadChart(
             chart_id="uso_price",
-            title="USO — split-adjusted close",
-            subtitle=(
-                "current-scale split-adjusted close "
-                "(silver_ohlcv_day_adjusted.adj_close); a price level, not a "
-                "rebased index"
-            ),
+            title=_USO_TITLE,
+            subtitle=_USO_SUBTITLE,
             kind="price",
             unit="USD",
             source=_SILVER,
@@ -185,47 +228,59 @@ def market_spreads(
             as_of=uso["as_of"],
             caption=uso_caption,
         )
-    )
+    except Exception:  # noqa: BLE001 - one bad chart must not fail the response
+        logger.exception("market spreads: uso_price computation failed")
+        uso_chart = _unavailable_chart(
+            chart_id="uso_price",
+            title=_USO_TITLE,
+            subtitle=_USO_SUBTITLE,
+            kind="price",
+            unit="USD",
+            source=_SILVER,
+            detail="chart computation unavailable",
+        )
+    charts.append(uso_chart)
 
     # ── 2. US 10Y / 2Y yields + 10s2s spread ─────────────────────────────────
-    curve = yield_curve(fed_rows, window_start=window_start)
-    yield_series = [
-        _series_from(
-            "DGS10",
-            "10Y Treasury yield (DGS10)",
-            curve["points"]["DGS10"],
-            latest_value=(
-                curve["points"]["DGS10"][-1][1] if curve["points"]["DGS10"] else None
+    try:
+        curve = yield_curve(fed_rows, window_start=window_start)
+        yield_series = [
+            _series_from(
+                "DGS10",
+                "10Y Treasury yield (DGS10)",
+                curve["points"]["DGS10"],
+                latest_value=(
+                    curve["points"]["DGS10"][-1][1]
+                    if curve["points"]["DGS10"]
+                    else None
+                ),
+                latest_date=curve["as_of"],
+                window_pct_change=None,
             ),
-            latest_date=curve["as_of"],
-            window_pct_change=None,
-        ),
-        _series_from(
-            "DGS2",
-            "2Y Treasury yield (DGS2)",
-            curve["points"]["DGS2"],
-            latest_value=(
-                curve["points"]["DGS2"][-1][1] if curve["points"]["DGS2"] else None
+            _series_from(
+                "DGS2",
+                "2Y Treasury yield (DGS2)",
+                curve["points"]["DGS2"],
+                latest_value=(
+                    curve["points"]["DGS2"][-1][1]
+                    if curve["points"]["DGS2"]
+                    else None
+                ),
+                latest_date=curve["as_of"],
+                window_pct_change=None,
             ),
-            latest_date=curve["as_of"],
-            window_pct_change=None,
-        ),
-    ]
-    yield_caption = ""
-    if not curve["empty"]:
-        yield_caption = (
-            f"10s2s = DGS10 − DGS2 on {len(curve['spread_points'])} common "
-            f"dates; latest {curve['spread_value']:+.2f} pp on "
-            f"{curve['spread_as_of']}."
-        )
-    charts.append(
-        SpreadChart(
+        ]
+        yield_caption = ""
+        if not curve["empty"]:
+            yield_caption = (
+                f"10s2s = DGS10 − DGS2 on {len(curve['spread_points'])} common "
+                f"dates; latest {curve['spread_value']:+.2f} pp on "
+                f"{curve['spread_as_of']}."
+            )
+        yields_chart = SpreadChart(
             chart_id="treasury_yields",
-            title="US 10Y and 2Y Treasury yields",
-            subtitle=(
-                "constant-maturity yields (%), latest vintage per observation; "
-                "tile = 10s2s spread (DGS10 − DGS2) on dates present in both"
-            ),
+            title=_YIELD_TITLE,
+            subtitle=_YIELD_SUBTITLE,
             kind="yield",
             unit="%",
             source=_FED,
@@ -255,21 +310,38 @@ def market_spreads(
             ),
             caption=yield_caption,
         )
-    )
+    except Exception:  # noqa: BLE001 - one bad chart must not fail the response
+        logger.exception("market spreads: treasury_yields computation failed")
+        yields_chart = _unavailable_chart(
+            chart_id="treasury_yields",
+            title=_YIELD_TITLE,
+            subtitle=_YIELD_SUBTITLE,
+            kind="yield",
+            unit="%",
+            source=_FED,
+            detail="chart computation unavailable",
+            tile=SpreadTile(label="10s2s", unit="%"),
+        )
+    charts.append(yields_chart)
 
     # ── 3-5. Rebased relative performance ────────────────────────────────────
     for chart_id, title, symbol_a, symbol_b in _PAIRS:
         rows_a, state_a, detail_a = equity[symbol_a]
         rows_b, state_b, detail_b = equity[symbol_b]
-        rel = rebased_relative_index(
-            rows_a,
-            rows_b,
-            symbol_a=symbol_a,
-            symbol_b=symbol_b,
-            window_start=window_start,
+        leg_detail = _join_detail(
+            f"{symbol_a}: {detail_a}",
+            f"{symbol_b}: {detail_b}",
+            _WEEKDAY_DETAIL,
         )
-        charts.append(
-            SpreadChart(
+        try:
+            rel = rebased_relative_index(
+                rows_a,
+                rows_b,
+                symbol_a=symbol_a,
+                symbol_b=symbol_b,
+                window_start=window_start,
+            )
+            pair_chart = SpreadChart(
                 chart_id=chart_id,
                 title=title,
                 subtitle=INDEX_LABEL,
@@ -279,11 +351,7 @@ def market_spreads(
                 freshness=Freshness(
                     state=_combined_state(state_a, state_b),
                     table=_SILVER,
-                    detail=_join_detail(
-                        f"{symbol_a}: {detail_a}",
-                        f"{symbol_b}: {detail_b}",
-                        _WEEKDAY_DETAIL,
-                    ),
+                    detail=leg_detail,
                 ),
                 empty=rel["empty"],
                 series=[
@@ -301,7 +369,18 @@ def market_spreads(
                 as_of=rel["as_of"],
                 caption=_outperformance_caption(rel, symbol_a, symbol_b),
             )
-        )
+        except Exception:  # noqa: BLE001 - one bad chart must not fail the response
+            logger.exception("market spreads: %s computation failed", chart_id)
+            pair_chart = _unavailable_chart(
+                chart_id=chart_id,
+                title=title,
+                subtitle=INDEX_LABEL,
+                kind="index",
+                unit="index",
+                source=_SILVER,
+                detail=_join_detail(leg_detail, "chart computation unavailable"),
+            )
+        charts.append(pair_chart)
 
     return MarketSpreadsResponse(
         days=days,

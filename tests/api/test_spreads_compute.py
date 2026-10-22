@@ -6,6 +6,7 @@ first common date, short history, FRED vintage dedupe, and the 10s2s spread.
 """
 from __future__ import annotations
 
+import math
 from datetime import date
 from pathlib import Path
 
@@ -68,6 +69,59 @@ def test_dropped_dates_counts_dates_missing_from_either_leg():
 
     assert result["dropped_dates"] == 2  # 01-03 (A only) + 01-04 (B only)
     assert [p[0] for p in result["points"]] == ["2024-01-02", "2024-01-05"]
+
+
+# ── 1b. an undefined base is empty, never an exception (fix round 1, F1) ────
+BASE_DATES = ["2026-10-19", "2026-10-20", "2026-10-21"]
+
+
+@pytest.mark.parametrize(
+    ("a_values", "b_values", "case"),
+    [
+        ([10.0, 12.0, 13.0], [0.0, 5.0, 6.0], "zero denominator (MiMo fixture)"),
+        ([0.0, 12.0, 13.0], [5.0, 5.0, 6.0], "zero numerator"),
+        ([0.0, 12.0, 13.0], [0.0, 5.0, 6.0], "both legs zero"),
+        ([10.0, 12.0, 13.0], [-1.0, 5.0, 6.0], "negative denominator"),
+        ([-10.0, 12.0, 13.0], [5.0, 5.0, 6.0], "negative numerator"),
+    ],
+)
+def test_undefined_base_returns_empty_instead_of_raising(a_values, b_values, case):
+    """A zero/negative close at the first common date is empty, not a 500."""
+    a = bars(list(zip(BASE_DATES, a_values)))
+    b = bars(list(zip(BASE_DATES, b_values)))
+
+    result = rebased_relative_index(a, b, symbol_a="A", symbol_b="B")
+
+    assert result["empty"] is True, case
+    assert result["points"] == [], case
+    assert result["first_common_date"] == BASE_DATES[0], case
+    assert result["latest_value"] is None, case
+    assert result["window_pct_change"] is None, case
+
+
+def test_nan_close_at_the_base_is_dropped_not_divided_by():
+    # NaN never survives coercion: the date leaves leg A, the base moves to the
+    # next common date and every emitted value stays finite.
+    a = bars([(BASE_DATES[0], float("nan")), (BASE_DATES[1], 12.0), (BASE_DATES[2], 13.0)])
+    b = bars(list(zip(BASE_DATES, [5.0, 5.0, 6.0])))
+
+    result = rebased_relative_index(a, b, symbol_a="A", symbol_b="B")
+
+    assert result["empty"] is False
+    assert result["first_common_date"] == BASE_DATES[1]
+    assert [p[0] for p in result["points"]] == BASE_DATES[1:]
+    assert result["points"][0][1] == pytest.approx(100.0)
+    assert result["dropped_dates"] == 1
+    assert all(math.isfinite(p[1]) for p in result["points"])
+
+
+def test_price_series_with_a_zero_first_close_reports_no_window_change():
+    uso = bars([("2024-01-02", 0.0), ("2024-01-03", 5.0)])
+
+    result = price_series(uso)
+
+    assert result["empty"] is False
+    assert result["window_pct_change"] is None
 
 
 # ── 2. rebasing at the first COMMON date ─────────────────────────────────────

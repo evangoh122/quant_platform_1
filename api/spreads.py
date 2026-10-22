@@ -82,6 +82,27 @@ def _as_float(value: Any) -> float | None:
     return number
 
 
+def _positive_base(value: Any) -> float | None:
+    """Return ``value`` as a finite, strictly positive float, else ``None``.
+
+    A price level at or below zero cannot anchor a rebased index: dividing by it
+    either raises (zero denominator) or gives a sign-flipped index (negative
+    level).  Callers treat ``None`` as "no usable base" and return the empty
+    result instead of raising.
+    """
+    number = _as_float(value)
+    if number is None or number <= 0:
+        return None
+    return number
+
+
+def _first_date(frame: pl.DataFrame) -> date | None:
+    """First ``event_date`` of a non-empty frame, defensively coerced."""
+    if frame.height == 0 or "event_date" not in frame.columns:
+        return None
+    return _as_date(frame["event_date"][0])
+
+
 def _sort_key(value: Any) -> str:
     """Return a lexicographically sortable ISO text key for a date/timestamp."""
     if value is None:
@@ -214,7 +235,7 @@ def price_series(
     points = [[d.isoformat(), v] for d, v in zip(dates, values)]
     first_value = values[0]
     pct_change = None
-    if first_value:
+    if _positive_base(first_value) is not None:
         pct_change = round((values[-1] / first_value - 1.0) * 100.0, 4)
     return {
         "points": points,
@@ -250,15 +271,22 @@ def rebased_relative_index(
     result["dropped_dates"] = dropped
 
     common = left.join(right, on="event_date", how="inner").sort("event_date")
-    if common.height == 0:
+    first_common = _first_date(common)
+    if first_common is None:
         return result
 
-    result["first_common_date"] = common["event_date"][0].isoformat()
+    result["first_common_date"] = first_common.isoformat()
     if common.height < 2:
         return result
 
-    base_ratio = float(common["value_a"][0]) / float(common["value_b"][0])
-    if base_ratio == 0 or not math.isfinite(base_ratio):
+    # Validate BOTH legs before dividing.  Dividing by the unguarded denominator
+    # raised ZeroDivisionError for a zero close and 500'd the whole route.
+    base_a = _positive_base(common["value_a"][0])
+    base_b = _positive_base(common["value_b"][0])
+    if base_a is None or base_b is None:
+        return result
+    base_ratio = base_a / base_b
+    if not math.isfinite(base_ratio):
         return result
 
     indexed = common.with_columns(
@@ -315,17 +343,22 @@ def yield_curve(
     result["dropped_dates"] = dropped
 
     common = ten.join(two, on="event_date", how="inner").sort("event_date")
-    if common.height == 0:
+    first_common = _first_date(common)
+    if first_common is None:
         return result
 
-    result["first_common_date"] = common["event_date"][0].isoformat()
+    result["first_common_date"] = first_common.isoformat()
     if common.height < 2:
         return result
 
     dates = common["event_date"].to_list()
     tens = [round(float(v), 6) for v in common["value_10"].to_list()]
     twos = [round(float(v), 6) for v in common["value_2"].to_list()]
+    if not all(math.isfinite(v) for v in (*tens, *twos)):
+        return result
     spreads = [[d.isoformat(), round(t - w, 6)] for d, t, w in zip(dates, tens, twos)]
+    if not all(math.isfinite(point[1]) for point in spreads):
+        return result
 
     result.update(
         {

@@ -41,13 +41,6 @@ CLOSES = {
 HEADERS = {"x-forwarded-email": "trader@example.com"}
 
 
-def _equity_rows(symbol: str) -> list[dict]:
-    return [
-        {"symbol": symbol, "event_date": day, "close": close}
-        for day, close in zip(DATES, CLOSES[symbol])
-    ]
-
-
 def _fed_fixture() -> list[dict]:
     rows = []
     for series_id, values in (
@@ -69,11 +62,21 @@ def _fed_fixture() -> list[dict]:
     return rows
 
 
-def _stub_readers(monkeypatch, *, failing: str | None = None) -> None:
+def _stub_readers(
+    monkeypatch,
+    *,
+    failing: str | None = None,
+    closes: dict[str, list[float]] | None = None,
+) -> None:
+    closes = CLOSES if closes is None else closes
+
     def fake_market(symbol, start_time, end_time, *, limit=5000):
         if symbol == failing:
             raise RuntimeError("simulated source failure")
-        return _equity_rows(symbol)
+        return [
+            {"symbol": symbol, "event_date": day, "close": close}
+            for day, close in zip(DATES, closes[symbol])
+        ]
 
     def fake_fed(series_ids, start_time, end_time, *, limit=5000):
         if failing == "fed":
@@ -211,6 +214,63 @@ def test_fed_failure_degrades_only_the_yield_chart(client, fake_lakebase, monkey
     assert charts["treasury_yields"]["tile"]["value"] is None
     assert charts["uso_price"]["freshness"]["state"] == "fresh"
     assert charts["rsp_spy"]["freshness"]["state"] == "fresh"
+
+
+# ── 1b. a zero base degrades one chart, never the route (fix round 1, F1) ───
+def test_zero_spy_close_at_the_first_common_date_degrades_only_that_chart(
+    client, fake_lakebase, monkeypatch
+):
+    # RSP / SPY divides by SPY: a zero first close used to raise and 500 the API.
+    closes = {symbol: list(values) for symbol, values in CLOSES.items()}
+    closes["SPY"] = [0.0, 50.0, 50.0]
+    _stub_readers(monkeypatch, closes=closes)
+
+    response = client.get("/api/spreads?days=30", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert "ZeroDivisionError" not in response.text
+    assert "Traceback" not in response.text
+
+    charts = _charts(response.json())
+    assert len(charts) == 5
+    assert charts["rsp_spy"]["empty"] is True
+    assert charts["rsp_spy"]["series"][0]["points"] == []
+    assert charts["rsp_spy"]["first_common_date"] == "2024-01-02"
+    for chart_id in ("uso_price", "treasury_yields", "mags_soxx", "mags_smh"):
+        assert charts[chart_id]["empty"] is False
+        assert charts[chart_id]["freshness"]["state"] == "fresh"
+        if chart_id != "treasury_yields":
+            assert charts[chart_id]["series"][0]["points"]
+
+
+def test_unexpected_chart_error_degrades_only_that_chart_without_leaking(
+    client, fake_lakebase, monkeypatch
+):
+    _stub_readers(monkeypatch)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("internal-only detail: warehouse password rotation")
+
+    monkeypatch.setattr("api.routes.spreads.price_series", explode)
+
+    response = client.get("/api/spreads", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert "internal-only detail" not in response.text
+    assert "Traceback" not in response.text
+    assert "ZeroDivisionError" not in response.text
+
+    charts = _charts(response.json())
+    assert len(charts) == 5
+    uso = charts["uso_price"]
+    assert uso["empty"] is True
+    assert uso["series"] == []
+    assert uso["freshness"]["state"] == "unavailable"
+    assert "chart computation unavailable" in uso["freshness"]["detail"]
+    for chart_id in ("treasury_yields", "rsp_spy", "mags_soxx", "mags_smh"):
+        assert charts[chart_id]["empty"] is False
+        assert charts[chart_id]["freshness"]["state"] == "fresh"
+    assert charts["mags_smh"]["series"][0]["points"]
 
 
 # ── adapter contract ────────────────────────────────────────────────────────
