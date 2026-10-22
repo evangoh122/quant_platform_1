@@ -86,27 +86,38 @@ Hyperliquid info API stays a probe/measurement tool. Design and schemas are in
 [`docs/data/PERPS_WEEKEND_PLAN.md`](docs/data/PERPS_WEEKEND_PLAN.md), including the
 `scripts/perps/hl_flat_files.py` reader design (streaming lz4, dry-run cost print before any download, `--live`
 required, credentials only from the AWS profile chain) — design only, no implementation in P0.
-Archive caveats are carried verbatim: uploads are **roughly monthly** with "no guarantee of timely updates and data may
-be missing", and **HIP-3 (`xyz`/`para`/`io`) coverage is unverified** until a sample object is checked (owner-approved,
-requester-pays).
+Archive caveats are carried verbatim: uploads are **roughly monthly** with "no guarantee of timely updates and data may be
+missing", and **HIP-3 (`xyz`/`para`/`io`) coverage is unverified** until a sample object is checked (owner-approved,
+requester-pays). Fill records are deduplicated on the trade id (`tid`), because one trade can be emitted once per
+counterparty; the P1 gate verifies that on a sample and reconciles aggregated volume against `candleSnapshot` over an
+overlapping window.
 Every universe row, probe/liquidity record and planned perps table carries one `data_source` provider code
 (`hyperliquid`, `binance_um`, …) defined once in [`config/data_sources.py`](config/data_sources.py); the loader
 rejects a missing, unknown or venue-contradicting code, and every perps table carries the derivative column set
 (`instrument_type`, `underlying_type`, `underlying_symbol`, `venue`, `contract_symbol`).
-The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12). Its
-`1h` recount is an **API-only lower bound**: the public API serves at most 5,000 candles per interval, so `1h` reaches
-back only to 2026-03-27 on the oldest instruments and the window rolls forward
-([`scripts/perps/recount_weekends.py`](scripts/perps/recount_weekends.py) gives 1,871 company-weekends on `1d`
-history but **1,538 company-weekends over 30 distinct weekends** on API-only `1h` coverage; 19 weekends / 333
-company-weekends are `1d`-only). If the fills archive covers HIP-3 from listing — unverified — the buildable panel
-returns to the daily-history **upper bound of ~1,871 company-weekends over 49 weekends**, still weekend-clustered.
-Binance Vision archives still carry the control klines/funding from 2020-01 and metrics from 2021-12. With 30-49
-weekend clusters the effective N is the weekend count, not the row count: at 80% power the design can only detect a
-large effect (partial r ≈ 0.54, ΔR² ≈ 0.29 at N_eff = 30; r ≈ 0.41, ΔR² ≈ 0.17 at the N_eff = 49 upper bound). The plan
-records that power ceiling and a pre-registered primary comparison, so any result is reported as small-sample
-evidence, not an edge. Liquidity tiers are descriptive only (measured 2026-08-26..2026-10-21, i.e. look-ahead): any
-model input uses trailing point-in-time liquidity, and the gap label is the raw official open over the raw
-previous-session close with the explicit split/dividend factor effective at that open.
+The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12); its public
+output is committed as [`docs/data/perps_history_probe.json`](docs/data/perps_history_probe.json) and
+`tests/perps/test_recount_weekends.py` asserts the recount in CI. Its `1h` recount is an **API-only lower bound**: the
+public API serves at most 5,000 candles per interval, so `1h` reaches back only to 2026-03-27 on the oldest instruments
+and the window rolls forward ([`scripts/perps/recount_weekends.py`](scripts/perps/recount_weekends.py) gives 1,871
+company-weekends on `1d` history but **1,538 company-weekends over 30 distinct weekends** on API-only `1h` coverage;
+19 weekends / 333 company-weekends are `1d`-only). If the fills archive covers HIP-3 from listing — unverified — the
+buildable panel returns to the daily-history **upper bound of ~1,871 company-weekends over 49 weekends**, still
+weekend-clustered. Binance Vision archives still carry the control klines/funding from 2020-01 and metrics from 2021-12.
+With 30-49 weekend clusters the effective N is the weekend count, not the row count, and the Fisher-z bound is converted
+back with `tanh`: at 80% power the panel can detect partial r ≈ 0.49 (partial r² 0.24) at N_eff = 30 and r ≈ 0.39
+(partial r² 0.15) at N_eff = 49, not the 0.54/0.41 the untransformed z suggested. The **pre-registered primary test** is
+fixed in the plan (§6.2): cutoff `sun_1800` (before CME ES/NQ futures and overnight equity ATS sessions reopen), an
+expanding-origin walk-forward over the 18 evaluation weekends left after a 12-weekend training allocation, one statistic
+(out-of-time ΔR² of the joint five-feature perp block) and a wild-cluster-bootstrap-t on the 18 weekend loss
+differentials. Its own MDE is partial r ≈ 0.62 (ΔR² at most 0.38), so a null is the expected outcome; the later cutoffs
+(`mon_0400`, `mon_0900`) stay exploratory until ES/NQ futures, overnight ATS and pre-market bars are in their baseline.
+Liquidity tiers are descriptive only (measured 2026-08-26..2026-10-21, i.e. look-ahead): any model input uses trailing
+point-in-time liquidity, and the denominator counts every eligible post-listing weekend break — an empty weekend is
+missing data, not full coverage. The opening-gap label uses one formula,
+`open_gap = session_open * label_split_factor / prev_session_close - 1`, with the new/old split ratio as the factor;
+`session_open` is the **consolidated** first regular-session print, not the listing-exchange opening auction. It is
+**split-adjusted only**: `bronze_corporate_actions` has no dividend amounts, so dividend ingestion is a P1 prerequisite.
 
 ## Repository layout
 

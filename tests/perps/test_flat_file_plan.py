@@ -68,7 +68,8 @@ def test_plan_has_the_p1_flat_file_ingestion_design():
     assert "Required to download" in text
     assert "Never implied by any other flag" in text
     assert "AWS_PROFILE" in text
-    assert "zero `GET`" in text
+    assert "ListObjectsV2" in text
+    assert "no object downloads" in text
     assert "streaming" in text.lower()
     assert "no full-file loads" in text.lower()
 
@@ -77,7 +78,13 @@ def test_plan_requires_trade_time_bucketing_dedupe_and_append_only_corrections()
     text = _plan()
     assert "trade time in UTC" in text
     assert "floor(trade_ts / interval)" in text
-    assert "fill id/hash" in text
+    # Fill dedupe is by trade id because a trade may appear once per counterparty.
+    assert "trade id" in text
+    assert "tid" in text
+    assert "counterparty" in text
+    assert "fill_hash" in text
+    assert "reconcile" in text.lower()
+    assert "candleSnapshot" in text
     assert "append-only correction" in text
     assert "information_available_ts = bar_end_ts" in text
     assert "No interpolation, no forward fill" in text

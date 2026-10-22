@@ -5,7 +5,16 @@
 #   holiday-extended; a missing hour counts as zero, notional = volume x close, bars must be fully inside the break);
 #   closed_usd_per_h = bars fully outside every session. A tier proposal is withheld below 80% expected-hour coverage.
 #   window 2026-08-26 -> 2026-10-21 (8 weeks). Tiers on weekend_usd_per_h: A >= 250k, B >= 50k, C >= 10k, D < 10k.
-#   flags: new = first bar after window start (short history); sparse = >25% of expected weekend hours with zero volume.
+#   flags: new = first bar after window start (short history); sparse = >25% of expected weekend hours with zero volume,
+#   where missing hours count as zero volume (an empty weekend is missing data, not full coverage).
+#   Denominator = expected hours of EVERY eligible post-listing weekend break (bars are the numerator, the calendar the
+#   denominator; pre-listing breaks are not expected).
+# OPEN-GAP LABEL (one executable formula, identical in docs/data/PERPS_WEEKEND_PLAN.md, docs/DATA_SCHEMAS.md and
+# ontology/README.md; split_ratio is new shares / old shares):
+#   label_split_factor = product of split_ratio for splits with ex_date = session_date (1.0 when none)
+#   open_gap = session_open * label_split_factor / prev_session_close - 1
+# session_open is the raw consolidated open (not the listing-exchange auction print); the label is SPLIT-ADJUSTED ONLY
+# until dividend ingestion lands (P1 prerequisite: bronze_corporate_actions has no dividend amounts).
 # Re-measure monthly (scripts/perps/measure_closed_liquidity.py, P1). Tiers/flags are DESCRIPTIVE stratification only: the
 # static values were measured after most study weekends (look-ahead), so any model input/filter must use trailing point-in-time
 # liquidity computed only from data before each window start. They are never ingestion filters.
@@ -102,7 +111,8 @@ companies:
   - {ticker: GLW, instrument_type: perpetual_future, underlying_type: equity, underlying: GLW, venue: hyperliquid, data_source: hyperliquid, dex: para, symbol: "para:GLW", tier: D, weekend_usd_per_h: 904, closed_usd_per_h: 1898, zero_volume_weekend_share: 0.605, first_bar: "2026-08-26", flags: [sparse]}
   - {ticker: TWST, instrument_type: perpetual_future, underlying_type: equity, underlying: TWST, venue: hyperliquid, data_source: hyperliquid, dex: xyz, symbol: "xyz:TWST", tier: D, weekend_usd_per_h: 788, closed_usd_per_h: 1758, zero_volume_weekend_share: 0.576, first_bar: "2026-10-06", flags: [new, sparse]}
   - {ticker: UMC, instrument_type: perpetual_future, underlying_type: equity, underlying: UMC, venue: hyperliquid, data_source: hyperliquid, dex: xyz, symbol: "xyz:UMC", tier: D, weekend_usd_per_h: 513, closed_usd_per_h: 1919, zero_volume_weekend_share: 0.629, first_bar: "2026-10-06", flags: [new, sparse]}
-commodities:  # owner 2026-10-22: commodity perps paired with Massive ETFs (open-gap label = ETF official open / prev_session_close - 1, raw prints + the split/dividend factor effective at that open)
+commodities:  # owner 2026-10-22: commodity perps paired with Massive ETFs (open-gap label = the one formula in the header
+  # comment: open_gap = session_open * label_split_factor / prev_session_close - 1, split ratio new/old, split-only for now)
   # etf_kind: physical = metal-backed trust; futures = futures-based fund (contango/roll; perp is spot-like) - model must account for it.
   - {commodity: wti_crude, instrument_type: perpetual_future, underlying_type: commodity, venue: hyperliquid, data_source: hyperliquid, dex: xyz, symbol: "xyz:CL", etfs: [USO], etf_kind: futures, tier: A, weekend_usd_per_h: 4314581, zero_volume_weekend_share: 0.0, first_bar: "2026-08-26"}
   - {commodity: brent_crude, instrument_type: perpetual_future, underlying_type: commodity, venue: hyperliquid, data_source: hyperliquid, dex: xyz, symbol: "xyz:BRENTOIL", etfs: [BNO], etf_kind: futures, tier: A, weekend_usd_per_h: 2770674, zero_volume_weekend_share: 0.0, first_bar: "2026-08-26"}

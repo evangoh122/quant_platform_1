@@ -616,6 +616,10 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   split_ratio is new-shares / old-shares (20.0 for AMZN 20:1, 0.1 for 1:10 reverse).
   information_available_ts is ex-date 09:30 America/New_York converted to naive UTC.
   A same-key correction with different split_ratio is a conflict and is not silently applied.
+  NO dividend amounts are stored: the table has no dividend amount/currency column, so a
+  consumer that needs a total-return adjustment is split-adjusted only until dividend
+  ingestion is added (P1 prerequisite for the perps open-gap label; see
+  docs/data/PERPS_WEEKEND_PLAN.md §Target).
 
   Source: Massive REST API only (source='massive').  Key via Databricks secret scope
           evangoh_capstone/massive_s3_secret_key or env var MASSIVE_API_KEY.
@@ -877,14 +881,27 @@ Every perps table, when it lands, carries:
   Scope applies to the Binance control tables too: bronze_binance_um_klines/funding/metrics
     carry venue=binance_usdm, instrument_type=perpetual_future, underlying_type=crypto,
     underlying_symbol=BTC/ETH and contract_symbol=symbol, so no control row can be read as spot.
-    Binance Vision monthly archives are uploaded approximately monthly with "no guarantee of
-    timely updates and data may be missing"; a missing month is a recorded gap, not an empty month.
+    Binance Vision monthly archives are uploaded approximately monthly; this repository carries
+    no sourced Binance statement about update timeliness or completeness, so a missing month is
+    a recorded gap, not an empty month.
 
-  Weekend label (gold_weekend_perp_features, docs/data/PERPS_WEEKEND_PLAN.md §4.3):
-    open_gap = session_open / prev_session_close - 1 on RAW official prints, with the explicit
-    split/dividend factor effective at that open (bronze_corporate_actions) stored as
-    label_split_factor; prev_session_close is Thursday's close on a Friday-holiday weekend.
-    Prediction cutoffs are rows: sun_1800, sun_2000, mon_0400, mon_0900.
+  Weekend label (gold_weekend_perp_features, docs/data/PERPS_WEEKEND_PLAN.md §Target/§4.3).
+    ONE executable formula, identical to the plan and config/perp_universe.yaml:
+      label_split_factor = Π split_ratio for splits with ex_date = session_date   (new shares / old shares; 1.0 when none)
+      open_gap = session_open * label_split_factor / prev_session_close - 1
+    session_open is the raw CONSOLIDATED open of the first regular session after the break
+    (silver_ohlcv_day_adjusted.open, from the Massive daily aggregate) — the first trade on any
+    US venue, NOT the primary-listing (NYSE/Nasdaq) opening auction print; the two can differ.
+    prev_session_close is the raw consolidated close of the prior session (Thursday's on a
+    Friday-holiday weekend). A 2:1 split (split_ratio 2.0) with prev close 100.00 and open 50.00
+    gives 50.00 * 2.0 / 100.00 - 1 = 0.00%.
+    The label is SPLIT-ADJUSTED ONLY: bronze_corporate_actions has no dividend amounts, so
+    dividend ingestion is a P1 prerequisite and ex-dividend weekends are flagged
+    dividend_unadjusted. A split effective at the open flags split_weekend and is excluded from
+    the primary evaluation.
+    Prediction cutoffs are rows: sun_1800 (PRIMARY confirmatory), sun_2000, mon_0400, mon_0900
+    (secondary; mon_0900 may be claimed only with ES/NQ futures + overnight ATS + pre-market in
+    its baseline).
 
   Buildable panel (docs/data/PERPS_WEEKEND_PLAN.md §2.5, §6.1):
     1h API-only lower bound 1,538 company-weekends / 30 weekends (measured 2026-10-21);

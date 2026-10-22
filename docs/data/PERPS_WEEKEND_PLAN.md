@@ -1,7 +1,7 @@
-# Perps weekend research plan (P0, v5)
+# Perps weekend research plan (P0, v6)
 
-**Status:** design + research scaffolding (P0, round 7: history source changed to
-flat-file backfill after the owner decision of 2026-10-22, "use flat file"). No
+**Status:** design + research scaffolding (P0, round 9: pre-registered primary
+test, overnight confounders, one label formula after the round-2 review). No
 ingestion job is scheduled, no shared table is written and no signal is
 published. The flat-file reader in `scripts/perps/hl_flat_files.py` is **design
 only** in P0; no new code path touches the network. **Owner:** decisions
@@ -22,47 +22,90 @@ prediction cutoff? The claim is therefore **"beyond the Friday close *and* the
 information available at that cutoff"**, not "beyond everything the market
 knows".
 
-**Target (one definition).** For each underlying in the configured universe:
+**Target (one definition).** For each underlying in the configured universe the
+label is the split-adjusted opening gap, with exactly one executable formula:
 
 ```text
-open_gap = session_open / prev_session_close - 1
+label_split_factor = Π split_ratio for splits with ex_date = session_date   (new shares / old shares; 1.0 when none)
+open_gap = session_open * label_split_factor / prev_session_close - 1
 ```
 
-* `session_open` — the **official opening print** of the first regular session
-  after the weekend break (the exchange opening auction/print), not the
-  pre-market price and not the 09:30 quote.
-* `prev_session_close` — the **official closing print** of the last regular
-  session before the break. On a Friday-holiday weekend (Good Friday, July 4
-  observed, Christmas observed) this is **Thursday's** close.
-* Both prices are **raw** (unadjusted). The ratio is made split/dividend
-  consistent by multiplying `prev_session_close` by the **explicit factor
-  effective at that open**, taken from `bronze_corporate_actions` (splits,
-  reverse splits and cash dividends between the close and the open); the factor
-  is stored on the row so the label is reproducible. No implicit vendor
-  back-adjustment is used.
-* The label is known at the opening print and is never a feature. `label_available_ts`
-  is that print time, and `information_available_ts <= prediction_ts < label_available_ts`.
+The same line is used verbatim in §4.3, §6.3, `config/perp_universe.yaml` and
+`docs/DATA_SCHEMAS.md`; there is no second, equivalent-ish definition.
+
+* `session_open` — the **raw `open`** of the first regular session after the
+  weekend break, from the Massive daily aggregate row
+  (`silver_ohlcv_day_adjusted.open` / `bronze_ohlcv_day.open`). That column is
+  the **consolidated** first regular-session print (the first trade on any US
+  venue), **not** the primary-listing exchange (NYSE/Nasdaq) opening auction
+  print: the consolidated print may come from another venue or an off-exchange
+  report, can differ by cents from the listing exchange's auction price, and is
+  not the auction clearing price used for index/NAV calculations. The label is
+  therefore "gap to the consolidated open", and the source column is named on
+  the gold row (`session_open`, from `silver_ohlcv_day_adjusted.open`).
+* `prev_session_close` — the **raw consolidated closing print** of the last regular
+  session before the break (`silver_ohlcv_day_adjusted.close`). On a
+  Friday-holiday weekend (Good Friday, July 4 observed, Christmas observed) this
+  is **Thursday's** close.
+* `label_split_factor` — the product of `bronze_corporate_actions.split_ratio`
+  (**new shares / old shares**, the repo convention in
+  [`ontology/README.md`](../../ontology/README.md)) over splits whose `ex_date`
+  is the session date, i.e. splits effective between the close and the open.
+  Multiplying the raw open by the new/old ratio restates it on the raw close's
+  pre-split share basis.
+* **Worked example (2:1 split).** `split_ratio = 2.0` (new/old), raw
+  `prev_session_close = 100.00`, raw `session_open = 50.00` →
+  `50.00 × 2.0 / 100.00 − 1 = 0.00%`, a zero gap. A 1:10 reverse split
+  (`split_ratio = 0.1`) with prev close 100.00 and open 1000.00 gives
+  `1000.00 × 0.1 / 100.00 − 1 = 0.00%`.
+* **Dividends are not in the label yet.** `bronze_corporate_actions` stores
+  `split_ratio` and **no dividend amounts**
+  (`docs/DATA_SCHEMAS.md §bronze_corporate_actions`), so the label is
+  **split-adjusted only**. Dividend ingestion (amount, currency, ex-date, source)
+  is a **P1 prerequisite**; until it lands, an ex-dividend opening biases
+  `open_gap` downward by the dividend/price ratio and those weekends carry the
+  `dividend_unadjusted` weekend flag. When dividends land, the same formula gains
+  one explicit dividend term and the factor stays stored on the row — one change
+  in one place.
+* The factor is stored on the row as `label_split_factor`, so the label is
+  reproducible from the stored raw prints and factor. No implicit vendor
+  back-adjustment and no adjusted levels are used (adjusted levels are
+  current-scale, §6.3).
+* The label is known at the opening print and is never a feature.
+  `label_available_ts` is that print time, and
+  `information_available_ts <= prediction_ts < label_available_ts`.
 
 **Hypotheses.**
 
 - **H1 (primary, pre-registered — the only confirmatory test):** at the
-  **Monday 09:00 ET cutoff**, adding the perp block
+  **Sunday 18:00 ET cutoff** (`sun_1800`), adding the perp block
   (`perp_ret_weekend`, `perp_implied_gap`, `perp_friday_close_basis`,
   `funding_sum`, `perp_realized_vol_1h`) to the Friday equity/options + BTC/ETH
-  control baseline raises the out-of-time partial R² for `open_gap` by more than
-  zero. The exact comparison, metric, split and correction are fixed in §6.2
-  before any result is inspected.
+  control baseline raises the out-of-time ΔR² for `open_gap` by more than zero.
+  The one primary statistic, the expanding-origin evaluation, the 18 evaluation
+  weekends and the inference are fixed in §6.2 before any result is inspected.
+  The block is five features and is tested **jointly**; there is no per-feature
+  primary test.
 - **H2 (secondary, exploratory):** any apparent perp signal is explained by
   BTC/ETH weekend returns (equity perps trade 24/7 alongside crypto), so every
   secondary comparison must control for them.
 - **H0:** no incremental lift; the honest default. A null result is reported as
   the result, not as a tuning problem.
 
-H1's "beyond" clause includes the **pre-market/overnight baseline** at the same
-cutoff (see §3.2): where the repository cannot yet observe that baseline
-(pre-market equity bars and CME Globex futures are not ingested as of
-2026-10-22), the claim is narrowed to "beyond Friday close and the observable
-controls" and the unmodelled pre-market information is listed as a confounder.
+`sun_1800` is deliberate: the CME equity-index futures week (ES/NQ) reopens at
+Sunday 18:00 ET and overnight equity ATS sessions resume on Sunday evening, so a
+bar ending at or before 18:00 ET precedes both. The primary comparison is
+therefore **not** confounded by post-reopen futures or overnight equity prices.
+The later cutoffs are confounded by those sessions and stay secondary until
+ES/NQ futures and overnight ATS bars are in their baseline (§3.2).
+
+H1's "beyond" clause includes the **pre-market/overnight baseline** where it
+exists (see §3.2): as of 2026-10-22 this repository ingests neither US
+pre-market equity bars, overnight ATS equity sessions, nor CME equity-index
+futures (ES/NQ), so the H1 baseline is Friday equity/options features + BTC/ETH
+controls and the unmodelled overnight information is listed as a confounder
+(§9). That narrowing is honest for `sun_1800` (those sessions have not reopened
+yet at the cutoff) and is a real limitation for `mon_0400`/`mon_0900`.
 
 The research claim is predictive lift in an out-of-time evaluation, not trading
 profitability. No signal is published to `gold_trading_signals` by this track
@@ -91,7 +134,7 @@ flags).
 | Liquidity basis | measured **while the NYSE is closed**, from 1h candles (`volume × close`) |
 | Measurement window | 2026-08-26 → 2026-10-21 (8 weeks) |
 | Tiers (`weekend_usd_per_h`) | `A ≥ 250k`, `B ≥ 50k`, `C ≥ 10k`, `D < 10k` |
-| Flags | `new` = first bar after the window start; `sparse` = more than 25% of **expected** weekend hours with zero volume |
+| Flags | `new` = first bar after the window start; `sparse` = more than 25% of the **expected** weekend hours with zero volume, where missing hours count as zero |
 | Tier use | **descriptive stratification only** — a model input/filter must use trailing point-in-time liquidity (§1.2) |
 | Survivorship | universe selected 2026-10-21 from the names then listed and liquid; delisted/never-selected perps are a P1 audit, not a proven absence |
 | Data source | one provider code per row from [`config/data_sources.py`](../../config/data_sources.py): `hyperliquid` for HIP-3 perps, `binance_um` for the Binance USD-M controls |
@@ -99,25 +142,14 @@ flags).
 Tiers and flags are descriptive stratification, **never** ingestion filters:
 every configured instrument is still ingested. They are re-measured with
 [`scripts/perps/measure_closed_liquidity.py`](../../scripts/perps/measure_closed_liquidity.py),
-which writes a proposal JSON (with `weekend_coverage`, `expected_hours` and
-`tier_withheld_reason`, and no tier when coverage is below 80% of the expected
-hours) and never edits the config; the owner applies changes.
-
-### 1.2 Static tiers are look-ahead — use trailing liquidity instead
-
-The tiers in the config were measured over **2026-08-26 → 2026-10-21**, i.e.
-*after* almost every weekend in the study window. Using them as a model input
-or a sample filter would leak future liquidity into the past. Therefore:
-
-* the static tier/flag values are used only to **describe** the universe and to
-  stratify reported results;
-* every model input or filter uses **trailing point-in-time liquidity** computed
-  only from data strictly before each `window_start` (for example the mean
-  closed-market notional per hour over the previous N weekends, with a minimum
-  observation count, and `null` + a flag when the history is too short);
-* sensitivity tables may re-run the headline model on the static tier subsets
-  (A/B only, excluding `sparse`), but those runs are descriptive, not the
-  pre-registered test.
+which writes a proposal JSON (with `weekend_coverage`, `expected_hours`,
+`missing_weekends`, `pre_listing_weekends` and `tier_withheld_reason`, and no
+tier when coverage is below 80% of the expected hours) and never edits the
+config; the owner applies changes. Its denominator is **every eligible
+post-listing weekend break in the window**, including a weekend with no bars:
+bars are the numerator, the calendar is the denominator. Breaks that end before
+the instrument's first observed bar are pre-listing and are not expected at all;
+the first bar is only a lower bound on the listing.
 
 **Survivorship.** The universe is the 2026-10-21 liquid subset. Perps that were
 delisted, never selected, or too thin to appear in that snapshot are missing by
@@ -125,6 +157,15 @@ construction, so any result is conditional on "still listed on 2026-10-21".
 Listing the delisted/never-selected HIP-3 perps (and recording why each was
 excluded) is a **P1** task; until it is done the plan must not claim the
 universe is representative.
+
+The round-1 ticker review in `scripts/perps/check_universe.py` is report-only.
+It flags ETFs, funds, preferreds and tickers that are unmapped in the **offline**
+SEC CIK files. The owner kept all 78 and set the underlying labels from that
+check: `BOT → fund`, `STRC → preferred`, `KSTR → etf`. The checked-in offline map
+is intentionally sparse (`config/sec_cik_overrides.yaml` plus
+`tests/rag/fixtures/sec/company_tickers.json`), so "unmapped" is a prompt to run
+the check with a full `company_tickers.json` snapshot, not proof that a company
+lacks an SEC registration.
 
 ### 1.1 The `data_source` provider code
 
@@ -152,15 +193,21 @@ and a code that contradicts the row's venue (`hyperliquid → hyperliquid`,
 `binance_usdm → binance_um`). Python records (probe and liquidity outputs) carry
 a required `data_source` validated against the same vocabulary.
 
+### 1.2 Static tiers are look-ahead — use trailing liquidity instead
 
-The round-1 ticker review in `scripts/perps/check_universe.py` is report-only.
-It flags ETFs, funds, preferreds and tickers that are unmapped in the **offline**
-SEC CIK files. The owner kept all 78 and set the underlying labels from that
-check: `BOT → fund`, `STRC → preferred`, `KSTR → etf`. The checked-in offline map
-is intentionally sparse (`config/sec_cik_overrides.yaml` plus
-`tests/rag/fixtures/sec/company_tickers.json`), so "unmapped" is a prompt to run
-the check with a full `company_tickers.json` snapshot, not proof that a company
-lacks an SEC registration.
+The tiers in the config were measured over **2026-08-26 → 2026-10-21**, i.e.
+*after* almost every weekend in the study window. Using them as a model input
+or a sample filter would leak future liquidity into the past. Therefore:
+
+* the static tier/flag values are used only to **describe** the universe and to
+  stratify reported results;
+* every model input or filter uses **trailing point-in-time liquidity** computed
+  only from data strictly before each `window_start` (for example the mean
+  closed-market notional per hour over the previous N weekends, with a minimum
+  observation count, and `null` + a flag when the history is too short);
+* sensitivity tables may re-run the headline model on the static tier subsets
+  (A/B only, excluding `sparse`), but those runs are descriptive, not the
+  pre-registered test.
 
 ## 2. Sources, endpoints and limits
 
@@ -173,7 +220,7 @@ archive is the durable source; the info API stays a probe/measurement tool
 
 | Dataset | Object prefix | Use | Notes |
 |---|---|---|---|
-| Trades (fills) | `s3://hl-mainnet-node-data/node_fills_by_block` (older API-format `node_fills`; non-API `node_trades`) | **Primary trade history.** We aggregate fills into our own `1m`/`15m`/`1h` trade-price bars, so the 5,000-candle API window stops being a limit. | Requester-pays bucket. Block-partitioned objects; dedupe on fill id/hash. Field names must be verified on a sample object before the loader is written. |
+| Trades (fills) | `s3://hl-mainnet-node-data/node_fills_by_block` (older API-format `node_fills`; non-API `node_trades`) | **Primary trade history.** We aggregate fills into our own `1m`/`15m`/`1h` trade-price bars, so the 5,000-candle API window stops being a limit. | Requester-pays bucket. Block-partitioned objects; dedupe on the trade id (`tid`), one record per trade, because a node fill record can be emitted once per counterparty; field names and that multiplicity must be verified on a sample object before the loader is written. |
 | Asset contexts | `s3://hyperliquid-archive/asset_ctxs/<date>.csv.lz4` | Funding, open interest, mark and oracle history (`funding`, `openInterest`, `markPx`, `oraclePx`) — **field list TO VERIFY** on one sample file. | Requester-pays bucket. One object per date, `.csv.lz4`. |
 | Funding events | `s3://hl-mainnet-node-data/misc_events_by_block` | Funding events (cross-check/fallback for `fundingHistory`) | Requester-pays bucket. Same block-object shape as fills. |
 | L2 snapshots (optional) | `s3://hyperliquid-archive/market_data/<date>/<hour>/l2Book/<coin>.lz4` | Optional depth features (P4+); not needed for the weekend feature set. | Largest objects in the archive; bounded sample only. |
@@ -250,11 +297,12 @@ files are downloaded by the P1/P2 job (not by the P0 probe):
 | Funding rate | `data/futures/um/monthly/fundingRate/{SYMBOL}/{SYMBOL}-fundingRate-YYYY-MM.zip` |
 | Metrics (OI, long/short ratios) | `data/futures/um/monthly/metrics/{SYMBOL}/{SYMBOL}-metrics-YYYY-MM.zip` |
 
-Caveats carried from the provider's docs:
+Caveats for the Binance Vision archives:
 
 - the monthly archives are uploaded **approximately monthly** (daily files more
-  often), and Binance states **"no guarantee of timely updates and data may be
-  missing"**;
+  often); this repository carries no sourced Binance statement about update
+  timeliness or completeness, so the archive is treated as an as-published
+  snapshot and the previous quote is not attributed to Binance;
 - a missing month/day is a recorded gap; the control series is never
   forward-filled and a partial month is not treated as complete;
 - downloads must be bounded, checksummed (the archive publishes `.CHECKSUM`
@@ -285,10 +333,9 @@ does not re-ingest them. The `friday_*` columns in §4.3 are the new gold output
 names; the parenthesised source columns above are the existing schema.
 
 The **baselines** are the back-adjusted features above, but the **label** is not:
-`prev_session_close` and `session_open` are the raw official prints plus the
-explicit factor effective at the open (§Target). Mixing the two bases (a
-back-adjusted close over a raw open) is what produced the previous ambiguous
-definition and is forbidden.
+it uses the raw prints and the explicit split factor on the open (§Target).
+Mixing the two bases (a back-adjusted close over a raw open) is what produced the
+previous ambiguous definition and is forbidden.
 
 ### 2.4 What is not available
 
@@ -304,9 +351,17 @@ definition and is forbidden.
   row.
 - Corporate-action semantics for HIP-3 perps (splits, index changes). Treat a
   discontinuity as a data-quality event until verified; never silently adjust.
-- **Pre-market/overnight equity bars and CME Globex futures** (needed for the
-  baseline at the `mon_0400`/`mon_0900` cutoffs). Not ingested as of 2026-10-22;
-  see §3.2 and the P1 decision.
+- **Pre-market, overnight ATS and CME equity-index futures bars.** US pre-market
+  equity prints (04:00-09:30 ET), overnight equity ATS sessions (from Sunday
+  evening; exact session hours **TO VERIFY** per venue), CME equity-index
+  futures (ES/NQ, weekly reopen Sunday 18:00 ET — **TO VERIFY** against CME's
+  calendar, holiday exceptions apply) and CME Globex commodity futures are
+  needed for the `mon_0400`/`mon_0900` baselines. Not ingested as of 2026-10-22;
+  see §3.2 and the P1 decision. The primary cutoff `sun_1800` precedes the
+  futures and ATS reopen, so the primary comparison does not depend on them.
+- **Dividend amounts.** `bronze_corporate_actions` stores split ratios only and
+  has no cash-dividend amount, so the opening-gap label is split-adjusted only
+  until dividend ingestion lands as a **P1 prerequisite** (§Target, §4.3).
 - **Per-dex HIP-3 oracle/mark documentation** (§2.6). Unknown, not unavailable:
   each deployer defines it and the public endpoints do not describe it.
 
@@ -355,10 +410,15 @@ The commodity perps are part of the same probe run and are reported in their
 own section; the 2026-10-21 measurement above covers the company perps because
 that run predates the commodity section.
 
-Every per-instrument record in `docs/data/perps_history_probe.json` /
-`docs/data/perps_history_probe.md` and every row of the liquidity proposal
-carries `data_source` (`hyperliquid` for HIP-3 perps, `binance_um` for the
-Binance controls), validated against `config/data_sources.py` (§1.1).
+The 2026-10-21 probe output is committed as
+[`docs/data/perps_history_probe.json`](perps_history_probe.json) (public
+Hyperliquid/Binance archive metadata only — no credentials or account data).
+`tests/perps/test_recount_weekends.py` recounts it in CI and asserts the
+1,871 / 1,538 company-weekends above, so the numbers quoted here cannot drift
+from the committed measurement. Every per-instrument record in that file and
+every row of the liquidity proposal carries `data_source` (`hyperliquid` for
+HIP-3 perps, `binance_um` for the Binance controls), validated against
+`config/data_sources.py` (§1.1).
 
 ### 2.6 Oracle, mark and funding prices while the underlying is closed
 
@@ -470,31 +530,41 @@ at cutoff `T` may use only bars with `bar_end_ts <= T`; `information_available_t
 
 Instead of one implicit "end of the break" timestamp, the study defines four
 cutoffs per weekend. Each cutoff is its own prediction row (same label, different
-information set):
+information set), but **only `sun_1800` is confirmatory**:
 
-| Cutoff id | Wall time | What it can see | Label |
+| Cutoff id | Wall time | What it can see | Role |
 |---|---|---|---|
-| `sun_1800` | Sunday 18:00 ET (the CME Globex futures week reopens around then) | perp + BTC/ETH bars with `bar_end_ts <= cutoff`; Friday equity/options features | `open_gap` at the next official open |
-| `sun_2000` | Sunday 20:00 ET | same, one more evening of perp/crypto bars | same |
-| `mon_0400` | Monday 04:00 ET (US pre-market opens) | same + any pre-market bars if ingested | same |
-| `mon_0900` | Monday 09:00 ET (pre-market complete, last complete 1h bar) | same + pre-market/overnight information available at 09:00 | same |
+| `sun_1800` | Sunday 18:00 ET — before CME equity-index futures (ES/NQ) reopen and before overnight equity ATS sessions resume | perp + BTC/ETH bars with `bar_end_ts <= cutoff`; Friday equity/options features | **PRIMARY confirmatory** (H1, §6.2) |
+| `sun_2000` | Sunday 20:00 ET | same, one more evening of perp/crypto bars (still before Monday pre-market) | secondary |
+| `mon_0400` | Monday 04:00 ET (US pre-market opens) | same + any pre-market/overnight bars if ingested | secondary |
+| `mon_0900` | Monday 09:00 ET (pre-market still open and running to 09:30; the last complete 1h bar ends at 09:00) | same + pre-market/overnight information available at 09:00 | secondary; may be claimed only with ES/NQ futures **and** overnight ATS **and** pre-market in its baseline |
 
 Rules:
 
-- `prediction_ts` is the cutoff itself; the label's `label_available_ts` is the
-  official opening print, so `prediction_ts < label_available_ts` and the
-  09:30-10:00 ET partial bar is never used.
-- **Pre-market/overnight baseline.** At `mon_0400` and `mon_0900` the honest
-  baseline includes what the market already knows: US pre-market equity prints
-  (04:00-09:30 ET) and, for commodities, the CME Globex session. As of
-  2026-10-22 this repository ingests neither pre-market equity bars nor CME
-  Globex futures, so the usable baselines are Friday equity/options features +
-  BTC/ETH controls. Until those inputs are ingested (P1), H1 is explicitly
-  narrowed to "beyond Friday close **and the observable controls**", and the
-  unmodelled pre-market information is a listed confounder (§9) — not a claim
-  that perps beat the pre-market.
+- `prediction_ts` is the cutoff itself; a feature may use only rows with
+  `information_available_ts <= prediction_ts`. The label's `label_available_ts`
+  is the consolidated opening print, so `prediction_ts < label_available_ts` and
+  the 09:30-10:00 ET partial bar is never used.
+- **Primary cutoff.** `sun_1800` is pre-registered because the CME equity-index
+  futures week reopens at Sunday 18:00 ET and overnight equity ATS sessions
+  resume on Sunday evening: a bar ending at or before 18:00 ET precedes those
+  sessions, so the primary comparison is not confounded by post-reopen futures
+  or overnight equity prices. The reopening time is **TO VERIFY** against CME's
+  calendar (holiday exceptions apply) and the ATS session hours are **TO VERIFY**
+  per venue before any P1 ingestion.
+- **Overnight baseline.** At `mon_0400` and `mon_0900` the honest baseline
+  includes what the market already knows: US pre-market equity prints
+  (04:00-09:30 ET), overnight equity ATS sessions (from Sunday evening) and CME
+  equity-index futures (ES/NQ, weekly reopen Sunday 18:00 ET; for commodities,
+  the CME Globex session). As of 2026-10-22 this repository ingests none of
+  them, so those cutoffs' usable baseline is Friday equity/options features +
+  BTC/ETH controls and their unmodelled overnight information is a listed
+  confounder (§9). A `mon_0900` claim of "beyond pre-market/overnight" is
+  allowed **only** once ES/NQ futures, overnight ATS bars and pre-market bars
+  are all in its baseline; until then `mon_0900` is exploratory and cannot
+  support the H1 claim.
 - Each cutoff is evaluated separately (no pooling of cutoffs into one test
-  family; the pre-registered test in §6.2 is `mon_0900`).
+  family; the pre-registered test in §6.2 is `sun_1800`).
 
 ## 4. Architecture
 
@@ -542,10 +612,11 @@ maps them explicitly and fails closed on a missing field.
 | `underlying_symbol` | STRING | tracked ticker/commodity |
 | `contract_symbol` | STRING | venue contract symbol; same value as `symbol` |
 | `trade_ts` | TIMESTAMP | fill/trade time (UTC), not the block time |
-| `fill_id` | STRING | provider fill id (or `tid`); nullable when the archive has none |
-| `fill_hash` | STRING | dedupe fallback: sha256 of the canonical fill tuple |
+| `trade_id` | STRING | provider trade id (`tid`) — the **primary dedupe key**, one trade once per venue |
+| `fill_id` | STRING | provider fill id when it differs from `tid`; nullable when the archive has none |
+| `fill_hash` | STRING | dedupe fallback only: sha256 of the canonical fill tuple when neither id exists |
 | `price` | DECIMAL(28,10) | traded price on the perp book |
-| `size` | DECIMAL(28,10) | traded size in base units |
+| `size` | DECIMAL(28,10) | traded size in base units (never summed twice per `trade_id`) |
 | `notional` | DECIMAL(28,10) | `price * size`, derived at ingest |
 | `side` | STRING | provider side/direction, normalised |
 | `block_time` | TIMESTAMP | provider block timestamp |
@@ -553,10 +624,17 @@ maps them explicitly and fails closed on a missing field.
 | `archive_key` | STRING | object key the fill came from |
 | `payload_hash` | STRING | sha256 of the raw record |
 
-Natural key: `(venue, symbol, trade_ts, fill_id)` when `fill_id` exists,
-otherwise `(venue, symbol, trade_ts, fill_hash)`. Dedupe on fill id/hash is
-mandatory: the same fill can appear in more than one block object or in both the
-`node_fills_by_block` and `node_fills` formats.
+Natural key: `(venue, symbol, trade_id)`; `(venue, symbol, trade_ts, fill_hash)`
+only when the archive carries no trade id. **Dedupe on the trade id (`tid`), not
+on the raw record**: a node fill record can be emitted once per counterparty
+(maker and taker rows for the same trade), so a raw-record hash would count the
+same trade twice and double `size`/`notional`. Collapse rows sharing a `tid` to
+one row, record the duplicate count in the manifest, and never sum both sides.
+The same trade can also appear in more than one block object or in both the
+`node_fills_by_block` and `node_fills` formats. The counterparty multiplicity is
+**TO VERIFY** on a sample object (P1 gate, §4.4) and the collapse is reconciled
+against `candleSnapshot` volume over an overlapping window before the rebuild is
+trusted.
 
 #### `bronze_perp_candles`
 
@@ -772,8 +850,8 @@ One row per `(weekend_id, security_id, prediction_cutoff)`.
 | OI (P4, nullable) | `oi_start`, `oi_end`, `oi_change_pct`, `mark_px_at_cutoff`, `oracle_px_at_cutoff` (nullable; `s3_backfill` from verified `asset_ctxs`, otherwise forward snapshots) |
 | Controls | `btc_ret_weekend`, `eth_ret_weekend`, `btc_realized_vol_1h`, `eth_realized_vol_1h` |
 | Equity baselines (PIT) | `friday_adj_close`, `friday_ret_1d`, `friday_ret_5d`, `friday_iv_atm`, `friday_iv_skew`, `friday_options_volume_z`, `equity_features_available_ts` |
-| Label | `prev_session_close` (raw official close of the prior session; Thursday on Friday-holiday weekends), `session_open` (raw official opening print), `label_split_factor` (factor effective at that open from `bronze_corporate_actions`), `open_gap`, `label_available_ts` (= session open print time) |
-| Weekend flags | `weekend_flags` (ARRAY<STRING>): `holiday_extended` (Monday/Friday holiday), `early_close_start` (13:00 Friday close), `good_friday`, `nfp_on_good_friday` (Good Friday that is also a US payrolls release), `month_end`, `quarter_end` |
+| Label | `prev_session_close` (raw consolidated close of the prior session; Thursday on Friday-holiday weekends, from `silver_ohlcv_day_adjusted.close`), `session_open` (raw consolidated open of the first session after the break, from `silver_ohlcv_day_adjusted.open` — not the listing-exchange auction print), `label_split_factor` (product of `bronze_corporate_actions.split_ratio`, new/old, for splits with `ex_date` = session date; 1.0 when none), `open_gap`, `label_available_ts` (= consolidated open print time) |
+| Weekend flags | `weekend_flags` (ARRAY<STRING>): `holiday_extended` (Monday/Friday holiday), `early_close_start` (13:00 Friday close), `good_friday`, `nfp_on_good_friday` (Good Friday that is also a US payrolls release), `month_end`, `quarter_end`, `split_weekend` (a split effective at that open; excluded from the primary evaluation), `dividend_unadjusted` (ex-dividend opening: the label has no dividend term yet) |
 | Governance | `instrument_type` (NOT NULL `perpetual_future`), `underlying_type`, `underlying_symbol`, `contract_symbol`, `venue`, `data_source` (NOT NULL; `derived` for this feature row — perp/funding inputs are `hyperliquid`, equity/options inputs are `massive`, recorded in lineage), `mapping_status` (`verified` / `unverified`), `information_available_ts`, `feature_version`, `ingest_ts` |
 
 Natural key: `(weekend_id, security_id, prediction_cutoff)`. Partition:
@@ -786,20 +864,37 @@ starts with "Perpetual futures (derivatives), not equities:" with tags
 `instrument_type=perpetual_future`, `asset_class=derivative`; price columns are
 commented "perp trade (last) price, not the stock price".
 
-The label is one point-in-time-safe, same-basis definition:
+The label is one point-in-time-safe, split-adjusted definition — the same
+executable formula as §Target, §6.3, `config/perp_universe.yaml` and
+`docs/DATA_SCHEMAS.md`:
 
 ```text
-open_gap = session_open / prev_session_close - 1
+label_split_factor = Π split_ratio for splits with ex_date = session_date   (new shares / old shares; 1.0 when none)
+open_gap = session_open * label_split_factor / prev_session_close - 1
 ```
 
-* `session_open` — raw official opening print of the first session after the
-  break (the opening auction/print, not the pre-market price).
-* `prev_session_close` — raw official closing print of the last session before
-  the break (Thursday when Friday is the observed holiday).
-* `label_split_factor` — explicit split/dividend factor effective at that open
-  from `bronze_corporate_actions`, applied to `prev_session_close` (raw prices
-  on both sides, one explicit adjustment). The stored factor makes the row
-  reproducible; vendor back-adjusted columns are not used.
+* `session_open` — the raw `open` of the first session after the break from
+  `silver_ohlcv_day_adjusted.open` (Massive daily aggregate). This is the
+  **consolidated** first regular-session print, **not** the primary-listing
+  (NYSE/Nasdaq) opening auction print: it may come from another venue or an
+  off-exchange report, can differ by cents from the listing exchange auction,
+  and is not the auction clearing price used for index/NAV calculations.
+* `prev_session_close` — the raw `close` of the last session before the break
+  (Thursday when Friday is the observed holiday).
+* `label_split_factor` — product of the new/old `split_ratio` from
+  `bronze_corporate_actions` for splits effective at that open. Multiplying the
+  raw open by the new/old ratio restates it on the raw close's pre-split share
+  basis. Worked 2:1 example: ratio 2.0, prev close 100.00, open 50.00 →
+  `50.00 × 2.0 / 100.00 − 1 = 0.00%`. Reverse 1:10: ratio 0.1, prev close
+  100.00, open 1000.00 → `1000.00 × 0.1 / 100.00 − 1 = 0.00%`.
+* **No dividend term yet.** `bronze_corporate_actions` has split ratios but no
+  dividend amounts, so the label is **split-adjusted only** until dividend
+  ingestion lands as a **P1 prerequisite**; an ex-dividend weekend carries
+  `dividend_unadjusted` and is reported separately.
+* A split effective at the open flags the weekend `split_weekend` and excludes
+  it from the primary evaluation: the perp basis features below use the raw
+  `prev_session_close` (no factor), so they are not comparable across a split.
+  That exclusion is declared now, before any result, and is not a post-hoc drop.
 
 Feature definitions (all computed from rows with `bar_end_ts <=
 prediction_ts`):
@@ -810,7 +905,10 @@ prediction_ts`):
 - `perp_friday_close_basis`: the trade price of the last 1h bar whose
   `bar_end_ts` is at or before the Friday regular-session close, divided by
   `prev_session_close`, minus 1 — how far the perp traded from the equity's
-  official close when the cash market shut.
+  consolidated close when the cash market shut. On a split weekend this raw
+  ratio is not comparable across the split, which is why `split_weekend` rows are
+  excluded from the primary evaluation (§4.3) rather than adjusted after the
+  fact.
 - `perp_implied_gap = perp_last_px / prev_session_close - 1`: the gap the perp
   "implies" at the cutoff. It is a perp trade price, not a forecast (see §2.6),
   and it is the feature that most directly tests the weekend information channel.
@@ -838,7 +936,7 @@ bars + context history, with an explicit dry-run cost gate:
 
 ```text
 fills (node_fills_by_block | node_fills | node_trades)
-  -> dedupe (fill id / fill_hash) -> bucket by TRADE time (UTC) -> 1m/15m/1h bars
+  -> dedupe on trade id (tid) -> bucket by TRADE time (UTC) -> 1m/15m/1h bars
 asset_ctxs/<date>.csv.lz4        -> funding / OI / mark / oracle rows (fields TO VERIFY)
 misc_events_by_block             -> funding events
 market_data/<date>/<hour>/l2Book/<coin>.lz4 -> optional L2 sample (P4+)
@@ -854,7 +952,7 @@ market_data/<date>/<hour>/l2Book/<coin>.lz4 -> optional L2 sample (P4+)
 | `--profile NAME` / `AWS_PROFILE` env | AWS profile *name* only; credentials come from the standard chain and are never read, printed or persisted. |
 | `--usd-per-gb`, `--max-cost-usd`, `--max-bytes`, `--max-objects` | Cost gate. Defaults documented in the module; a run aborts before downloading if the estimate exceeds the cap. |
 | `--out-manifest PATH` | JSON manifest: object keys, bytes, ETags, estimated cost, rows read, bars written, gaps. |
-| `--dry-run` (default) | List objects only; zero `GET`s. |
+| `--dry-run` (default) | List objects only: **no object downloads** (`ListObjectsV2` listing only). |
 | `--live` | Required to download. Never implied by any other flag. |
 
 **Dry-run cost print (before any download).** Paginate `ListObjectsV2` with
@@ -863,7 +961,7 @@ market_data/<date>/<hour>/l2Book/<coin>.lz4 -> optional L2 sample (P4+)
 ```text
 dataset=fills  prefix=s3://hl-mainnet-node-data/node_fills_by_block/2026-09/
 objects=1,234  bytes=812.4 GB  est_transfer_usd=... (at --usd-per-gb)
-action=DRY-RUN (no GET sent); pass --live to download
+action=DRY-RUN (no object download; ListObjectsV2 listing only); pass --live to download
 ```
 
 The rate is a CLI input with a documented default, not a hard-coded claim; the
@@ -887,9 +985,13 @@ idempotent.
 - `open` = first fill price, `high`/`low` = max/min, `close` = last fill price,
   `volume` = sum of sizes, `trade_count` = fill count; `notional` is summed from
   `price * size`.
-- Dedupe on `(symbol, fill_id)` when the archive carries an id, else on
-  `fill_hash = sha256(canonical fill tuple)`. A duplicate is counted in the
-  manifest, not double-counted in the bar.
+- Dedupe on the **trade id** `(symbol, tid)`: a node fill record can be emitted
+  once per counterparty (maker and taker rows for the same trade), so the rebuild
+  collapses rows sharing a `tid` and counts the trade once. When the archive
+  carries no trade id, fall back to `fill_hash = sha256(canonical fill tuple)`.
+  A duplicate is counted in the manifest, not double-counted in the bar, and the
+  collapsed volume is reconciled against `candleSnapshot` over an overlapping
+  window before the rebuild is trusted.
 - Out-of-order or late fills re-emit the affected bar as an append-only
   correction in Bronze; Silver selects the latest valid observation.
 - No interpolation, no forward fill: a bar with no fills does not exist and is a
@@ -914,15 +1016,19 @@ hand-edited.
 
 **Testability (P1).** The object store and the decoder are injected
 (`ObjectStore.list/get_stream`, `Decoder.records`), so tests use a tiny recorded
-fixture and a fake store: a dry-run test asserts zero `get` calls, a mutation
-test asserts a whole-object `read()` or a missing `--live` gate fails, and
-bucketing/dedupe are tested across a UTC midnight boundary and a late fill.
+fixture and a fake store: a dry-run test asserts no object `get` (no downloads,
+`ListObjectsV2` listing only), a mutation test asserts a whole-object `read()` or
+a missing `--live` gate fails, and bucketing/dedupe are tested across a UTC
+midnight boundary, a duplicate counterparty `tid` and a late fill.
 
 **Pre-implementation gate (P1, owner-approved, requester-pays).** Inspect one
 `node_fills_by_block` object and one `asset_ctxs/<date>.csv.lz4` object: record
 the coin list (does it include `xyz`/`para`/`io`?), the field list (does
-`asset_ctxs` carry funding/OI/mark/oracle?), the bytes and the cost. Record the
-result in the evidence file and update §2.5 before claiming the upper bound.
+`asset_ctxs` carry funding/OI/mark/oracle?), whether each trade appears once per
+counterparty under one `tid`, the bytes and the cost. **Verify on the sample and
+reconcile aggregated volume against `candleSnapshot` over an overlapping window**
+before the fill-bar rebuild is trusted. Record the result in the evidence file and
+update §2.5 before claiming the upper bound.
 
 **Bronze targets:** `bronze_perp_fills`, `bronze_perp_candles` (fill-built),
 `bronze_perp_asset_ctxs`, `bronze_perp_funding`, `bronze_perp_oi_snapshots`
@@ -979,10 +1085,13 @@ the review list that drives this table.
 2. **Friday equity/options features:** join as-of the Friday session close using
    the existing `information_available_ts`; require it to be `<= prediction_ts`.
    Do not use Monday data in a Friday feature.
-3. **Label:** `open_gap = session_open / prev_session_close - 1` on the raw
-   official prints with `label_split_factor` effective at that open. It is
-   available only at the opening print (`label_available_ts`) and must never
-   appear in a feature column or a model input.
+3. **Label:** `label_split_factor = Π split_ratio for splits with ex_date = session_date` (new/old; 1.0 when none),
+   and `open_gap = session_open * label_split_factor / prev_session_close - 1` on the
+   raw consolidated prints — the same formula as §Target/§4.3. It is available
+   only at the opening print (`label_available_ts`) and must never appear in a
+   feature column or a model input. The label is split-adjusted only until
+   dividend ingestion (P1 prerequisite) lands; an ex-dividend weekend carries
+   `dividend_unadjusted`.
 4. **Mapping:** use the bridge row valid at `prediction_ts`
    (`valid_from <= prediction_ts < valid_to`).
 5. **Evaluation:** out-of-time split by `weekend_id`; no random shuffling.
@@ -1016,46 +1125,112 @@ weekend-clustered. Until that check is recorded, 1,871/49 is an upper bound and
 the API-only 1,538/30 is what the probe proves.
 
 The panel is clustered by weekend: rows in the same weekend share one macro/crypto
-shock. The effective N is the **number of weekends**, not the row count:
+shock. The effective N is the **number of weekends**, not the row count. The
+Fisher-z bound applies to a **partial correlation**, so it is converted back with
+`tanh` (the previous round quoted the untransformed z value, which overstated
+every row); and `ΔR² = partial r² × (1 − R²_base)`, so the increment is smaller
+than the block's partial R² whenever the baseline already explains variance:
 
-| N_eff | Smallest detectable partial r (80% power, two-sided 5%) | ΔR² |
-|---|---|---|
-| 30 (API-only lower bound) | **0.54** | **0.29** |
-| 49 (upper bound, if flat-file HIP-3 coverage is confirmed) | **0.41** | **0.17** |
+| N_eff (weekend clusters) | Smallest detectable partial r | Partial r² of the block | ΔR² at R²_base = 0 (maximum) |
+|---|---|---|---|
+| **18** — the primary test's evaluation weekends (§6.2) | **0.62** | **0.38** | **0.38** |
+| 30 — API-only panel (context only) | 0.49 | 0.24 | 0.24 |
+| 49 — upper bound if flat-file HIP-3 coverage is confirmed (context only) | 0.39 | 0.15 | 0.15 |
+
+**The primary test's power is the 18-weekend row, not 30 or 49.** The
+pre-registered evaluation uses only the last 18 buildable weekends, because the
+first 12 are the training allocation (§6.2): N_eff = **18**, plainly. At 80%
+power and a two-sided 5% test it can only detect a partial correlation of about
+0.62, i.e. a partial r² of 0.38 and a ΔR² of at most 0.38 (0.29 if the baseline
+already has R² = 0.25). That is an implausibly large increment for a liquidity
+effect, so a null is the expected outcome and no result below this scale may be
+described as evidence of an edge.
 
 Using the 1,538 pooled rows instead would suggest r ≈ 0.07 (ΔR² ≈ 0.005) — an
-anticonservative illusion. Even at the upper bound, the design can only detect
-a **large** incremental effect. A realistic weekend-perp increment is far
-smaller, so P6 must report the effect size and confidence interval, must not
-present a non-significant result as "no signal", and must treat a null as the
-expected outcome. The pre-registered test in §6.2 is defined at this effect
-scale; anything smaller is descriptive.
+anticonservative illusion. P6 must report the effect size and confidence
+interval, must not present a non-significant result as "no signal", and must
+treat a null as the expected outcome: the design is powered for a large effect
+only, and anything smaller is descriptive.
 
-### 6.2 Pre-registration and multiple testing
+### 6.2 Pre-registration, the primary test and multiple testing
 
-Fixed **before** any P6 result is inspected, in the P6 kickoff note:
+Fixed **before** any P6 result is inspected, in the P6 kickoff note. This section
+is the whole confirmatory specification; nothing here may change after an
+evaluation loss is seen.
 
-- **One primary hypothesis / comparison (confirmatory):** H1 at cutoff
-  `mon_0900` — the perp block added to the baseline
-  (Friday equity/options + BTC/ETH controls) improves the out-of-time partial
-  R² for `open_gap`. Primary metric: out-of-time partial R² of the perp block
-  (equivalently the t-statistic of the block), with the weekend-clustered
-  standard error. Primary sample: the bar-buildable weekends (flat-file
-  fill-built `1h` bars once the HIP-3 coverage check is recorded, otherwise the
-  API-only lower bound) with a verified mapping and a complete baseline.
+**Design — expanding-origin walk-forward by weekend.** The panel is the 30
+buildable `1h` weekends (2026-03-27 → 2026-10-16, §2.5). The **training
+allocation is the first 12 weekends** (2026-03-27, 04-03, 04-10, 04-17, 04-24,
+05-01, 05-08, 05-15, 05-22, 05-29, 06-05, 06-12). The **out-of-time evaluation
+weekends are the remaining 18**, exactly:
+
+```text
+2026-06-19  2026-06-26  2026-07-03  2026-07-10  2026-07-17  2026-07-24
+2026-07-31  2026-08-07  2026-08-14  2026-08-21  2026-08-28  2026-09-04
+2026-09-11  2026-09-18  2026-09-25  2026-10-02  2026-10-09  2026-10-16
+```
+
+For evaluation weekend `w` the model is fitted on **every buildable weekend
+strictly before `w`** (expanding origin: 12 weekends for the first evaluation
+weekend, 29 for the last), frozen, and used to predict `w` only. There is no
+random shuffling and no refit after a loss is seen. If the P1 flat-file rebuild
+extends history before 2026-03-27, those earlier weekends only **add training
+data**: the 18 evaluation weekends stay pinned to the list above and are never
+re-selected or extended.
+
+**Models and rows.** Baseline = Friday equity/options features + BTC/ETH
+controls; full = baseline + the five perp features (`perp_ret_weekend`,
+`perp_implied_gap`, `perp_friday_close_basis`, `funding_sum`,
+`perp_realized_vol_1h`), tested as **one joint block**. Both models are OLS on
+the pre-declared columns with no automated feature selection, no per-feature
+test and no threshold tuning. The comparison uses the identical row set: a row
+missing any baseline or perp feature is dropped from **both** models and the
+dropped count is reported per weekend. `open_gap` is the dependent variable in
+decimal return units. Rows flagged `split_weekend` are excluded (declared in
+§4.3 before any result).
+
+**One primary statistic.** For each evaluation weekend `w` compute the mean
+squared error of each model over that weekend's rows, `MSE_base,w` and
+`MSE_full,w`, and the loss differential `d_w = MSE_base,w − MSE_full,w`. The
+primary statistic is the **out-of-time ΔR²**:
+
+```text
+ΔR²_oot = mean_w(d_w) / mean_w(MSE_base,w)
+```
+
+Weekend means are weighted equally (not pooled rows), so a weekend with fewer
+eligible instruments cannot dominate. Positive means the perp block improves
+out-of-time accuracy; the hypothesis is two-sided. This is the only confirmatory
+statistic.
+
+**Inference — weekend-clustered, small-cluster corrected.** The 18 `d_w` values
+are the clusters. Primary inference is a **wild cluster bootstrap-t**
+(G = 18 clusters, Rademacher weights, 9,999 replications, null imposed by
+centering `d_w − mean(d)`, studentized by the CR2 cluster-robust variance,
+two-sided 5%). The CR2 t statistic with G − 1 = 17 degrees of freedom is the
+pre-declared sensitivity check; both are reported, the bootstrap p-value decides.
+A 5-feature block is a joint test: no per-feature p-value is confirmatory.
+
+**Power for THIS test (not the panel).** N_eff is the **18 evaluation weekends** (not 1,538 rows and not the 30-weekend panel).
+With the Fisher-z approximation at 80% power and two-sided 5%, the smallest
+detectable partial correlation is **0.62** (partial r² 0.38; ΔR² at most 0.38,
+0.29 at baseline R² = 0.25). Report that plainly: the design can detect only an
+implausibly large increment, so a null is the expected outcome. The panel-level
+30/49 rows in §6.1 are context, not this test's power.
+
 - **Secondary family:** all other comparisons (other cutoffs, per-instrument
   runs, single-feature ablations, commodity perps, static-tier subsets). They
   are reported with the family defined up front and corrected with **Holm**
   across the family (family-wise error control), or **Benjamini–Hochberg** when
   the family is explicitly declared exploratory with FDR reported. The plan
   names one correction per family; switching correction after seeing results is
-  not allowed.
+  not allowed. A `mon_0900` result may only be claimed against a baseline that
+  includes ES/NQ futures, overnight ATS and pre-market bars (§3.2).
 - **Model selection and tuning stay inside training folds:** all feature
   selection, hyper-parameters, thresholds and cutoff choices are fitted on
-  training weekends only (walk-forward/nested by `weekend_id`). The final
-  out-of-time block is evaluated **once**, after the model is frozen; touching
-  it to re-tune converts the test into a validation set and must be reported as
-  such.
+  training weekends only (expanding origin by `weekend_id`). The 18 evaluation
+  weekends are evaluated **once**, after the model is frozen; touching them to
+  re-tune converts the test into a validation set and must be reported as such.
 - **Reporting:** every comparison reports N_eff (weekends), the estimate, its
   interval and the correction applied; the pre-registered comparison is reported
   first and unadjusted, then the corrected secondary family.
@@ -1065,11 +1240,11 @@ Fixed **before** any P6 result is inspected, in the P6 kickoff note:
 | Slice | Scope | Acceptance |
 |---|---|---|
 | **P0 (this round)** | `config/perp_universe.yaml` v4 + typed loader (instrument_type, underlying_type, commodities, tiers A-D, flags); static NYSE calendar; `scripts/perps/check_universe.py`; `scripts/perps/probe_history.py`; `scripts/perps/measure_closed_liquidity.py`; `scripts/perps/recount_weekends.py`; this plan (including the §4.4 flat-file reader design); architecture diagram; ontology terms; tests. | `pytest -q -m "not spark and not lakebase and not databricks"` (plain and with pyspark blocked); probe/measure `--dry-run`; no pandas/duckdb imports; calendar `--check`; loader loads 78 companies + 8 commodities + 2 controls; every row/record carries a valid `data_source` from `config/data_sources.py`; recount reproduces 1,871/1,538 company-weekends; ontology test green; no code path in P0 touches the network. |
-| **P1 (flat-file backfill)** | **`scripts/perps/hl_flat_files.py` as designed in §4.4**: Hyperliquid requester-pays S3 fills (`node_fills_by_block`, older `node_fills`/`node_trades`) rebuilt into our own `1m`/`15m`/`1h` trade-price bars; `asset_ctxs` for funding/OI/mark/oracle **after** its field list is verified; `misc_events_by_block` funding events; optional L2 sample; Binance Vision controls. Plus the HIP-3 coverage check on one sample object, the universe survivorship audit, the per-dex oracle open-question verification, and a decision + ingestion plan for the pre-market/overnight (US pre-market equity bars) and CME Globex baselines. **No API forward-capture job.** | Dry-run prints the object list + estimated requester-pays transfer cost and sends **zero** `GET`s; `--live` is required to download and honours `--max-cost-usd`/`--max-bytes`; bars bucket by trade time in UTC, dedupe on fill id/hash and pass the fixture tests (UTC-midnight boundary, duplicate fill, late fill); re-running a manifest is idempotent; HIP-3 coverage and the `asset_ctxs` field list are recorded from a sample object; the survivorship list is recorded with sources; each open question in §2.6 is either answered with a cited source or still marked open; the pre-market/Globex decision is recorded before P6 claims "beyond pre-market". |
+| **P1 (flat-file backfill)** | **`scripts/perps/hl_flat_files.py` as designed in §4.4**: Hyperliquid requester-pays S3 fills (`node_fills_by_block`, older `node_fills`/`node_trades`) rebuilt into our own `1m`/`15m`/`1h` trade-price bars; `asset_ctxs` for funding/OI/mark/oracle **after** its field list is verified; `misc_events_by_block` funding events; optional L2 sample; Binance Vision controls. Plus the HIP-3 coverage check on one sample object, the universe survivorship audit, the per-dex oracle open-question verification, **dividend ingestion (amount, currency, ex-date) so the label can stop being split-only**, and a decision + ingestion plan for the overnight baselines (US pre-market equity bars, overnight equity ATS sessions and CME equity-index futures ES/NQ; CME Globex for commodities). **No API forward-capture job.** | Dry-run prints the object list + estimated requester-pays transfer cost and performs **no object downloads** (`ListObjectsV2` listing only); `--live` is required to download and honours `--max-cost-usd`/`--max-bytes`; bars bucket by trade time in UTC, dedupe on the trade id (`tid`) and pass the fixture tests (UTC-midnight boundary, duplicate counterparty `tid`, late fill); the sample object verifies the field names and whether each trade appears once per counterparty, and **aggregated volume is reconciled against `candleSnapshot` over an overlapping window**; re-running a manifest is idempotent; HIP-3 coverage and the `asset_ctxs` field list are recorded from a sample object; the survivorship list is recorded with sources; each open question in §2.6 is either answered with a cited source or still marked open; the overnight (ES/NQ + ATS + pre-market) decision is recorded before P6 claims "beyond pre-market". |
 | **P2** | Bronze loaders for the P1 reader (fills, fill-built candles, asset contexts if verified, funding, Binance USD-M archives), manifests, idempotency, bounded backfill, archive checksums; DQ report on missing months and duplicate fills. | Re-running a run id creates zero duplicate Bronze rows; requester-pays cost stays inside the approved cap; partial writes retryable; checksum mismatch fails the run; DQ report on missing/duplicate bars and archive gaps. |
 | **P3** | Silver normalization: 1h bars, funding, QA flags (gaps, DST, stale marks, split suspects), canonical dedupe. | Natural keys unique; `information_available_ts` equals bar close; QA counts match Bronze source counts; no forward fill. |
 | **P4** | OI: verified `asset_ctxs` backfill into `bronze_perp_oi_snapshots` (`source='s3_backfill'`), plus optional forward `metaAndAssetCtxs` snapshots (`source='forward_snapshot'`); optional L2 depth sample. | Field list verified before backfill; snapshot cadence documented; no fabricated history; `oi_change_pct` null when endpoints missing. |
-| **P5** | `gold_weekend_perp_features`: weekend windows, four prediction cutoffs, PIT trailing liquidity, equity/options baselines, BTC/ETH controls, the `prev_session_close`/`session_open`/`label_split_factor` label; mapping bridge. | Window boundaries match `market_calendar` fixtures; every row passes `information_available_ts <= prediction_ts`; label never in feature columns; `open_gap` reproducible from the stored prints and factor; reconciliation counts. |
+| **P5** | `gold_weekend_perp_features`: weekend windows, four prediction cutoffs, PIT trailing liquidity, equity/options baselines, BTC/ETH controls, the `prev_session_close`/`session_open`/`label_split_factor` label; mapping bridge. | Window boundaries match `market_calendar` fixtures; every row passes `information_available_ts <= prediction_ts`; label never in feature columns; `open_gap = session_open * label_split_factor / prev_session_close - 1` reproducible from the stored raw prints and factor; split/dividend weekend flags set; reconciliation counts. |
 | **P6** | Research evaluation: baseline models (Friday equity/options; + crypto; + perps), the pre-registered primary comparison (§6.2), out-of-time metrics, ablations, notebook, owner review. | Pre-registered metrics and correction; N_eff reported; model selection inside training folds; final out-of-time block untouched until evaluation; no signal publication; reproducible notebook and data snapshot; honest negative result allowed. |
 
 Dependencies: P1 → P2 → P3 → P4/P5 → P6. P0 is standalone. P1 is no longer
@@ -1124,20 +1299,32 @@ not attempt an OI history fetch.
 - **Stale reference price:** the perp's oracle may be frozen while the underlying
   is closed (§2.6), so a weekend perp move is not an unbiased expectation of the
   opening print and can carry a basis. Report the basis, never treat it as value.
-- **Pre-market/overnight confounder:** US pre-market equity bars and CME Globex
-  commodity futures are not ingested, so at the `mon_0400`/`mon_0900` cutoffs the
-  baseline is incomplete. H1 is narrowed accordingly (§3.2); claiming a perp
-  edge over the pre-market would require those inputs.
+- **Overnight confounders:** CME equity-index futures (ES/NQ) reopen Sunday
+  18:00 ET and overnight equity ATS sessions resume Sunday evening, so at
+  `sun_2000`, `mon_0400` and `mon_0900` the perp block competes with overnight
+  information this repository does not yet ingest (pre-market bars, ATS bars,
+  ES/NQ). Those cutoffs stay exploratory until ES/NQ + ATS + pre-market are in
+  their baseline (§2.4, §3.2); claiming a perp edge over them without those
+  inputs would be a false claim. The primary `sun_1800` cutoff precedes the
+  reopens and is not affected.
+- **Label timing/dividends:** the label is split-adjusted only —
+  `bronze_corporate_actions` has no dividend amounts — so ex-dividend openings
+  are biased until dividend ingestion lands (P1 prerequisite); those weekends
+  carry `dividend_unadjusted`. Splits are explicit and stored per row.
 - **24/7 microstructure:** weekend marks may be noisy or stale; measure bar
   coverage and gap counts (`weekend_coverage`, `weekend_gap_hours`), and withhold
-  liquidity tiers below 80% expected-hour coverage.
+  liquidity tiers below 80% expected-hour coverage. Coverage counts every
+  eligible post-listing weekend, including one with no bars: an empty weekend is
+  missing data, not full coverage.
 - **Crypto confounding:** perps trade alongside crypto; BTC/ETH controls are
   mandatory, not optional.
-- **Clustered and unbalanced panel:** 30-49 weekend clusters, so only large
-  effects are detectable (§6.1); report N_eff, not row counts.
+- **Clustered and unbalanced panel:** the panel has 30-49 weekend clusters and
+  the pre-registered test evaluates 18 of them, so only a partial correlation of
+  about 0.62 or more is detectable (§6.1/§6.2); report N_eff, not row counts.
 - **Corporate actions:** splits/index changes may create price jumps; flag and
-  review rather than auto-adjust. The label uses the explicit factor effective at
-  the open, stored per row.
+  review rather than auto-adjust. The label uses the explicit new/old factor
+  effective at the open, stored per row; a split weekend is excluded from the
+  primary evaluation rather than silently adjusted.
 - **Provider instability:** unofficial APIs and archive layouts can change
   fields or limits; fail closed, monitor the probe and ingestion manifest.
 - **Minute bars:** the API keeps only ~3.5 days of `1m` candles, so API-only
@@ -1157,7 +1344,7 @@ python scripts/perps/probe_history.py --dry-run
 python scripts/perps/measure_closed_liquidity.py --dry-run
 python scripts/perps/check_universe.py
 python scripts/perps/recount_weekends.py \
-  --probe docs/data/perps_history_probe.json   # the 2026-10-21 run is also archived as the P0 facts JSON
+  --probe docs/data/perps_history_probe.json   # committed public 2026-10-21 probe; CI asserts 1,871/1,538
 python -m config.market_calendar --check
 # coordinator only, live network:
 python scripts/perps/probe_history.py --live \
@@ -1170,7 +1357,10 @@ python scripts/perps/measure_closed_liquidity.py --live \
 `scripts/perps/hl_flat_files.py` does not exist in P0: §4.4 is its design and the
 implementation lands in P1. No P0 command above downloads a flat file.
 
-The probe is not run in tests. `--dry-run` is the default and makes zero network
+The probe is not run in tests, but the committed
+`docs/data/perps_history_probe.json` **is** read by
+`tests/perps/test_recount_weekends.py`, which asserts the 1,871 / 1,538
+company-weekend panel in CI. `--dry-run` is the default and makes zero network
 calls; `--live` enforces ≤ 2 requests/second with retries/backoff/jitter. The
 liquidity tool writes a proposal only (`docs/data/perp_liquidity_tier_proposal.json`);
 applying it to `config/perp_universe.yaml` is an owner edit. The recount script

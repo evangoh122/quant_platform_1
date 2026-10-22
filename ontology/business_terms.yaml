@@ -111,17 +111,21 @@ terms:
     definition: "Closed-market interval [last NYSE regular-session close before the break, next regular-session open after it). Holiday-aware: a Monday holiday ends the window on Tuesday, a Friday holiday starts it on Thursday, and 13:00 early closes move the start."
     aliases: [weekend break, closed-market window]
   closed_market_liquidity:
-    definition: "Notional traded per hour while the NYSE is closed, measured from provider 1h candles (bars fully inside the closed interval); the weekend subset is weekend_usd_per_h, whose denominator is the expected hours of the covered weekend breaks (missing hours count as zero notional) and which is the input to the descriptive tiers A-D."
+    definition: "Notional traded per hour while the NYSE is closed, measured from provider 1h candles (bars fully inside the closed interval); the weekend subset is weekend_usd_per_h, whose denominator is the expected hours of every eligible post-listing weekend break in the measurement window — including a break with no bars. Missing hours count as zero notional; breaks ending before the instrument's first observed bar are pre-listing and are not expected (the first bar is only a lower bound on the listing)."
     aliases: [weekend liquidity, closed-hours liquidity]
   liquidity_tier:
-    definition: "Descriptive closed-market liquidity bucket from weekend_usd_per_h measured over 2026-08-26..2026-10-21: A >= 250k, B >= 50k, C >= 10k, D < 10k USD per hour. The window covers weekends used in the study, so the static tier is look-ahead: use it for stratification and reporting only, and compute trailing point-in-time liquidity strictly before each weekend for any model input or filter. Never an ingestion filter, and a tier is withheld when bar coverage is below 80% of the expected weekend hours."
+    definition: "Descriptive closed-market liquidity bucket from weekend_usd_per_h measured over 2026-08-26..2026-10-21: A >= 250k, B >= 50k, C >= 10k, D < 10k USD per hour. The window covers weekends used in the study, so the static tier is look-ahead: use it for stratification and reporting only, and compute trailing point-in-time liquidity strictly before each weekend for any model input or filter. Never an ingestion filter, and a tier is withheld when bar coverage is below 80% of the expected hours of the eligible post-listing weekend breaks."
     aliases: [tier A-D, weekend liquidity tier]
   new_flag:
     definition: "Review flag for a perpetual whose first available bar is after the liquidity measurement window start, so its history is short relative to the window."
     aliases: [new listing flag, short history flag]
   sparse_flag:
-    definition: "Review flag for a perpetual with more than 25% of the expected weekend hours showing zero volume; mark coverage must be checked before modelling."
+    definition: "Review flag for a perpetual with more than 25% of the expected weekend hours showing zero volume, where hours with no bar count as zero-volume hours; mark coverage must be checked before modelling."
     aliases: [sparse weekend flag, zero-volume flag]
+  open_gap:
+    definition: "Perps weekend label: the gap from the prior session's raw consolidated close to the first regular session's raw consolidated open after the weekend, restated for splits with one explicit new-shares/old-shares factor — open_gap = session_open * label_split_factor / prev_session_close - 1, where label_split_factor is the product of bronze_corporate_actions.split_ratio for splits with ex_date = session_date (1.0 when none). session_open is the consolidated first regular-session print (Massive daily open), not the primary-listing exchange opening auction print. The label is split-adjusted only until dividend ingestion lands (P1 prerequisite); ex-dividend weekends are flagged dividend_unadjusted. Known only at the opening print, never a feature."
+    aliases: [opening gap, open gap label]
+    critical_rule: "One formula only: open_gap = session_open * label_split_factor / prev_session_close - 1. Raw prices on both sides plus the explicit factor, never a vendor back-adjusted level; the label never appears in a feature column."
   commodity_perp:
     definition: "A perpetual future on a spot commodity (e.g. xyz:GOLD), paired with one or more Massive ETF wrappers for the open-gap label; the wrapper may be physical or futures-based."
     aliases: [commodity perpetual, perp on commodity]
