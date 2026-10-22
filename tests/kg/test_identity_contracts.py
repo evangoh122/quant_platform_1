@@ -387,3 +387,25 @@ def test_period_dates_must_be_real_calendar_dates():
         identity.period_id_v2("instant", None, "2024-1-01")
     # A real leap day is accepted.
     assert identity.period_id_v2("instant", None, "2024-02-29")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CodeRabbit full review (PR #76) item 4 — a blank legacy instant start is None
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_instant_period_normalises_the_blank_legacy_start():
+    canonical = identity.period_id_v2("instant", None, "2024-01-28")
+    # The v1 encoder stores an instant start as "" (sec_kg/model.py), so a KG-B
+    # migration that passes `period_start` verbatim must still mint the v2 id.
+    assert identity.period_id_v2("instant", "", "2024-01-28") == canonical
+    assert identity.period_id_v2("instant", "   ", "2024-01-28") == canonical
+    # The v2 key still encodes None, never the blank string.
+    assert identity.period_key("instant", "", "2024-01-28") == (
+        "period",
+        "instant",
+        None,
+        "2024-01-28",
+    )
+    # A real start on an instant remains an error; only blank is normalised.
+    with pytest.raises(identity.IdentityError):
+        identity.period_id_v2("instant", "2024-01-27", "2024-01-28")

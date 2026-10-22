@@ -104,10 +104,15 @@ class SubmissionsSnapshot:
             if not isinstance(item, FormerName):
                 raise NameError("former_names must contain FormerName values")
         object.__setattr__(self, "former_names", former)
-        object.__setattr__(
-            self, "first_observed_at", ensure_utc(self.first_observed_at)
-        )
-        object.__setattr__(self, "observed_at", ensure_utc(self.observed_at))
+        first_observed = ensure_utc(self.first_observed_at)
+        observed = ensure_utc(self.observed_at)
+        if first_observed > observed:
+            raise NameError(
+                "first_observed_at must not be after observed_at: "
+                f"{first_observed.isoformat()} > {observed.isoformat()}"
+            )
+        object.__setattr__(self, "first_observed_at", first_observed)
+        object.__setattr__(self, "observed_at", observed)
         object.__setattr__(
             self, "evidence_id", normalize_unicode(str(self.evidence_id or ""))
         )

@@ -129,6 +129,13 @@ class AttributeEvent:
             raise IntervalError(f"event {self.event_id}: {error}") from error
         object.__setattr__(self, "data_source", data_source)
         object.__setattr__(self, "event_id", normalize_unicode(str(self.event_id)))
+        if self.supersedes_event_id is not None:
+            target = normalize_unicode(str(self.supersedes_event_id))
+            if not target:
+                raise IntervalError(
+                    f"event {self.event_id}: supersedes_event_id must not be blank"
+                )
+            object.__setattr__(self, "supersedes_event_id", target)
         object.__setattr__(self, "entity_id", normalize_unicode(str(self.entity_id)))
         object.__setattr__(self, "attribute", normalize_unicode(str(self.attribute)))
         start = _as_datetime(self.valid_from, "valid_from")

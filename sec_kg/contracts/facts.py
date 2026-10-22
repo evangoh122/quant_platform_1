@@ -332,6 +332,35 @@ def make_observation(
     )
 
 
+_UNKNOWN_AVAILABILITY = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _public_rank(observation: Observation) -> datetime:
+    """Sort key for public availability; ``None`` (unverified) sorts first."""
+    return observation.public_available_at or _UNKNOWN_AVAILABILITY
+
+
+def _dedupe_sort_key(observation: Observation) -> tuple:
+    """Total order inside one observation key, so input order never decides.
+
+    ``entry_hash`` is part of the key and is therefore constant within a group;
+    every other visible column completes the order: the documented
+    ``(value_raw, evidence_id)`` prefix first, then ``system_from``, the public
+    availability rank, and finally form/decimal/system_to/conflict as
+    last-resort discriminators for a hand-built collision.
+    """
+    return (
+        observation.value_raw,
+        observation.evidence_id or "",
+        observation.system_from,
+        _public_rank(observation),
+        observation.form_type,
+        "" if observation.value_decimal is None else str(observation.value_decimal),
+        observation.system_to or _UNKNOWN_AVAILABILITY,
+        observation.conflict_flag,
+    )
+
+
 def dedupe_observations(
     observations: Iterable[Observation],
 ) -> Tuple[Observation, ...]:
@@ -340,8 +369,9 @@ def dedupe_observations(
     Different values inside one payload have different ``entry_hash`` values and
     therefore different keys; they are kept.  A genuine key collision with a
     different payload is reported through ``conflict_flag`` on the survivor and
-    resolved by the smallest ``(value_raw, evidence_id)`` so ingestion order
-    never decides.
+    resolved by the full :func:`_dedupe_sort_key` order, so ingestion order
+    never decides.  Callers that query a view must filter **before** calling
+    this (see :func:`filter_observations`).
     """
     grouped: dict = {}
     for observation in observations:
@@ -350,10 +380,7 @@ def dedupe_observations(
 
     survivors: List[Observation] = []
     for key in sorted(grouped):
-        group = sorted(
-            grouped[key],
-            key=lambda item: (item.value_raw, item.evidence_id or ""),
-        )
+        group = sorted(grouped[key], key=_dedupe_sort_key)
         winner = group[0]
         if any(other.value_raw != winner.value_raw for other in group[1:]):
             winner = winner.with_conflict(True)
@@ -382,33 +409,37 @@ class Reconciliation:
 def filter_observations(
     observations: Iterable[Observation], view, knowledge_time: datetime
 ) -> Tuple[Tuple[Observation, ...], Tuple[Observation, ...]]:
-    """Return ``(eligible, excluded)`` for the requested view."""
+    """Return ``(eligible, excluded)`` for the requested view.
+
+    Visibility is decided for every raw row **before** de-duplication, so a copy
+    that is visible at ``knowledge_time`` always survives even when an invisible
+    copy of the same key would win the tie-break.  Each partition is then
+    de-duplicated independently, and a key kept as eligible is never repeated in
+    ``excluded``.
+    """
     mode = normalise_view(view)
     moment = ensure_utc(knowledge_time)
-    eligible: List[Observation] = []
-    excluded: List[Observation] = []
-    for observation in dedupe_observations(observations):
+    visible: List[Observation] = []
+    hidden: List[Observation] = []
+    for observation in observations:
         if mode is TemporalView.SYSTEM_REPLAY:
-            visible = observation.system_from <= moment and (
+            is_visible = observation.system_from <= moment and (
                 observation.system_to is None or moment < observation.system_to
             )
         else:
-            visible = (
+            is_visible = (
                 observation.public_available_at is not None
                 and observation.public_available_at <= moment
             )
-        (eligible if visible else excluded).append(observation)
-    eligible.sort(key=lambda item: item.key.as_tuple())
-    excluded.sort(key=lambda item: item.key.as_tuple())
-    return tuple(eligible), tuple(excluded)
-
-
-_UNKNOWN_AVAILABILITY = datetime.min.replace(tzinfo=timezone.utc)
-
-
-def _public_rank(observation: Observation) -> datetime:
-    """Sort key for public availability; ``None`` (unverified) sorts first."""
-    return observation.public_available_at or _UNKNOWN_AVAILABILITY
+        (visible if is_visible else hidden).append(observation)
+    eligible = dedupe_observations(visible)
+    kept = {item.key.as_tuple() for item in eligible}
+    excluded = tuple(
+        item
+        for item in dedupe_observations(hidden)
+        if item.key.as_tuple() not in kept
+    )
+    return eligible, excluded
 
 
 def _precedence_selection(eligible: Sequence[Observation]) -> Observation:

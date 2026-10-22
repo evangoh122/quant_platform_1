@@ -179,3 +179,81 @@ def test_filing_dedup_equal_ingest_missing_metadata_shuffle():
         filings.FilingRow(accession="", record_key="a", ingest_ts=EQUA)
     with pytest.raises(filings.FilingsError):
         filings.FilingRow(accession=ACCESSION, record_key="", ingest_ts=EQUA)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CodeRabbit full review (PR #76) items 2 and 3 — a total tie-break order for
+# identical row identities, and real calendar dates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_equal_ingest_and_record_key_resolve_by_payload_not_input_order():
+    common = {
+        "accession": ACCESSION,
+        "record_key": "same",
+        "ingest_ts": EQUA,
+        "cik": CIK,
+        "filing_date": "2024-01-28",
+    }
+    first = filings.FilingRow(
+        form_type="10-K",
+        accepted_ts=dt(2024, 1, 28, 12),
+        primary_doc="a.htm",
+        **common,
+    )
+    second = filings.FilingRow(
+        form_type="10-Q",
+        accepted_ts=dt(2024, 1, 28, 11),
+        primary_doc="b.htm",
+        **common,
+    )
+
+    baseline = filings.dedupe_filings([first, second])
+    # Every ingestion permutation yields byte-identical rows and issues, even
+    # though `ingest_ts` and `record_key` are identical: the payload columns
+    # complete the order.
+    for permutation in itertools.permutations([first, second]):
+        candidate = filings.dedupe_filings(permutation)
+        assert candidate.as_rows() == baseline.as_rows()
+        assert candidate.issue_rows() == baseline.issue_rows()
+    assert baseline.filings[0].record_key == "same"
+    assert baseline.filings[0].form_type == "10-K"
+    assert baseline.filings[0].primary_doc == "a.htm"
+    conflict = next(
+        issue for issue in baseline.issues
+        if issue.field == "form_type" and issue.kind == filings.ISSUE_CONFLICT
+    )
+    assert conflict.values == ("10-K", "10-Q")
+
+
+def test_filing_dates_must_be_real_calendar_dates():
+    impossible = filings.FilingRow(
+        accession=ACCESSION,
+        record_key="a",
+        ingest_ts=EQUA,
+        filing_date="2024-02-30",
+    )
+    with pytest.raises(filings.FilingsError, match="calendar"):
+        filings.dedupe_filings([impossible])
+
+    bad_period = filings.FilingRow(
+        accession=ACCESSION,
+        record_key="a",
+        ingest_ts=EQUA,
+        filing_date="2024-01-28",
+        period_of_report="2024-04-31",
+    )
+    with pytest.raises(filings.FilingsError, match="calendar"):
+        filings.dedupe_filings([bad_period])
+
+    # A real leap day still passes: the check is calendar validity, not a ban
+    # on unusual dates.
+    leap = filings.FilingRow(
+        accession=ACCESSION,
+        record_key="a",
+        ingest_ts=EQUA,
+        filing_date="2024-02-29",
+        period_of_report="2024-02-29",
+    )
+    deduped = filings.dedupe_filings([leap]).filings[0]
+    assert deduped.filing_date == "2024-02-29"
+    assert deduped.period_of_report == "2024-02-29"

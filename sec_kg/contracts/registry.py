@@ -604,6 +604,11 @@ class SecuritySymbolBridge:
     ``data_source`` is required and validated (``RULE-data-source-column``).  A
     bridge is hand-maintained repository config, so the registry's own join
     contract declares the only provider that may stamp it (``config``).
+
+    ``provider`` (lower-cased) and ``symbol`` (whitespace-normalised, case
+    preserved because provider symbols are not guaranteed case-insensitive) are
+    normalised once here, so ``validate_bridge_rows`` and
+    ``resolve_security_symbol`` operate on the same key.
     """
 
     provider: str
@@ -636,6 +641,7 @@ class SecuritySymbolBridge:
             )
         object.__setattr__(self, "data_source", data_source)
         object.__setattr__(self, "provider", normalize_unicode(str(self.provider)).lower())
+        object.__setattr__(self, "symbol", normalize_unicode(str(self.symbol)))
         object.__setattr__(self, "observed_at", ensure_utc(self.observed_at))
         start = ensure_utc(self.valid_from)
         object.__setattr__(self, "valid_from", start)
@@ -697,7 +703,7 @@ def resolve_security_symbol(
         bridge
         for bridge in bridges
         if bridge.provider == provider_key
-        and normalize_unicode(bridge.symbol) == symbol_key
+        and bridge.symbol == symbol_key
         and bridge.covers(moment)
     ]
     if not matches:

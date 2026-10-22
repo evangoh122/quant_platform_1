@@ -5,11 +5,12 @@ Design of record: ``KG_DATA_MODEL_v3`` §5 and ``v4`` §H.
 ``dim_filing`` has one row per accession, grouped from the chunk-bearing bronze
 rows.  For each metadata field: a value shared by every row wins; on
 disagreement the value from the row with the earliest ``ingest_ts`` wins, with
-the smallest ``record_key`` breaking ties at equal ``ingest_ts``.  Conflicts and
-absent metadata become ``kg_quality_issues`` rows (absent metadata yields a
-``null`` column, never an invented value).  ``period_of_report`` and the
-amendment target are nullable by design and are sourced only from explicit
-evidence.
+the smallest ``record_key`` breaking ties at equal ``ingest_ts``.  Rows that tie
+on both are ordered by their remaining payload columns, so a duplicate row
+identity can never be resolved by ingestion order.  Conflicts and absent
+metadata become ``kg_quality_issues`` rows (absent metadata yields a ``null``
+column, never an invented value).  ``period_of_report`` and the amendment target
+are nullable by design and are sourced only from explicit evidence.
 
 ``bronze_company_label`` is the bronze ``company_name`` column carried through
 verbatim.  It is **not** a registrant name: ``KG_DATA_MODEL_v4`` §A records that
@@ -89,6 +90,12 @@ def _as_date(value: Any, label: str) -> Optional[str]:
         return None
     if len(text) != 10 or text[4] != "-" or text[7] != "-":
         raise FilingsError(f"{label} must be an ISO date (YYYY-MM-DD): {value!r}")
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        raise FilingsError(
+            f"{label} is not a real calendar date: {value!r}"
+        ) from None
     return text
 
 
@@ -220,12 +227,41 @@ def _field_value(row: FilingRow, field_name: str) -> Optional[str]:
     return _text(getattr(row, field_name))
 
 
+def _row_payload_key(row: FilingRow) -> Tuple[str, ...]:
+    """Positional, normalised view of every payload column of *row*.
+
+    ``(ingest_ts, record_key)`` is the documented tie-break; a chunk and a
+    metadata row of one accession can share both, so the remaining columns
+    complete a total order.  Two rows that are equal on all of them are
+    interchangeable and any stable order is correct.
+    """
+    return tuple(
+        "" if (value := getattr(row, name)) is None else normalize_unicode(str(value))
+        for name in (
+            "cik",
+            "form_type",
+            "filing_date",
+            "accepted_ts",
+            "bronze_company_label",
+            "primary_doc",
+            "filing_url",
+            "period_of_report",
+            "amendment_target",
+        )
+    )
+
+
+def _row_sort_key(row: FilingRow) -> Tuple[Any, ...]:
+    """Stable row order: ingest time, record key, then every payload column."""
+    return (row.ingest_ts, row.record_key, _row_payload_key(row))
+
+
 def _resolve_field(
     accession: str,
     rows: Sequence[FilingRow],
     field_name: str,
 ) -> Tuple[Optional[str], List[QualityIssue]]:
-    rows = sorted(rows, key=lambda row: (row.ingest_ts, row.record_key))
+    rows = sorted(rows, key=_row_sort_key)
     candidates = [
         (row, _field_value(row, field_name))
         for row in rows
@@ -277,7 +313,7 @@ def dedupe_filings(rows: Iterable[FilingRow]) -> DedupeResult:
     filings: List[DimFiling] = []
     issues: List[QualityIssue] = []
     for accession in sorted(groups):
-        group = sorted(groups[accession], key=lambda row: (row.ingest_ts, row.record_key))
+        group = sorted(groups[accession], key=_row_sort_key)
         resolved: Dict[str, Optional[str]] = {}
         for field_name in METADATA_FIELDS:
             value, field_issues = _resolve_field(accession, group, field_name)

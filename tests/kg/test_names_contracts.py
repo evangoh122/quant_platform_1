@@ -24,12 +24,15 @@ def former(name: str, start: date, end: date, evidence: str) -> names.FormerName
     )
 
 
-def snapshot(former_names=(), current="Gamma Corp", first_observed=None):
+def snapshot(former_names=(), current="Gamma Corp", first_observed=None,
+             observed_at=None):
+    """A snapshot observed at (or after) its first observation by default."""
+    first = first_observed or dt(2018, 1, 1)
     return names.SubmissionsSnapshot(
         current_name=current,
         former_names=tuple(former_names),
-        first_observed_at=first_observed or dt(2018, 1, 1),
-        observed_at=dt(2018, 1, 1),
+        first_observed_at=first,
+        observed_at=observed_at or first,
         evidence_id="ev-current",
     )
 
@@ -166,3 +169,30 @@ def test_submissions_name_intervals_gaps_overlap_date_boundaries():
             first_observed_at=dt(2020, 1, 1),
             observed_at=dt(2020, 1, 1),
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CodeRabbit full review (PR #76) item 5 — a snapshot cannot be observed before
+# its own first observation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_snapshot_rejects_observation_timestamps_in_reverse_order():
+    # The no-former-names fixture used to supply May 2020 followed by January
+    # 2018, leaving the current name unresolved at the snapshot's own time.
+    with pytest.raises(names.NameError, match="first_observed_at"):
+        names.SubmissionsSnapshot(
+            current_name="Solo Inc",
+            former_names=(),
+            first_observed_at=dt(2020, 5, 1),
+            observed_at=dt(2018, 1, 1),
+        )
+    # Equal timestamps are valid: the snapshot was taken at first observation.
+    equal = names.SubmissionsSnapshot(
+        current_name="Solo Inc",
+        former_names=(),
+        first_observed_at=dt(2020, 5, 1),
+        observed_at=dt(2020, 5, 1),
+    )
+    assert equal.first_observed_at == equal.observed_at
+    history = names.build_name_history(equal)
+    assert names.resolve_name(history, dt(2020, 5, 1)).name == "Solo Inc"

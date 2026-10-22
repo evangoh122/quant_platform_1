@@ -645,3 +645,47 @@ def test_symbol_bridge_rows_require_a_validated_data_source():
     assert registry.get_contract("bridge_security_symbol").data_sources == (
         data_sources.CONFIG,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CodeRabbit full review (PR #76) item 8 — the bridge symbol key is normalised
+# once, so validation and resolution cannot disagree
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_bridge_symbol_is_normalised_before_overlap_validation():
+    common = dict(
+        provider="massive",
+        security_id="sec-old",
+        observed_at=dt(2020, 1, 1),
+        data_source=data_sources.CONFIG,
+    )
+    first = registry.SecuritySymbolBridge(
+        symbol="AAPL", valid_from=dt(2019, 1, 1), valid_to=None, **common
+    )
+    padded = registry.SecuritySymbolBridge(
+        symbol="  AAPL\t", valid_from=dt(2021, 6, 1), valid_to=None, **common
+    )
+    assert first.symbol == "AAPL"
+    assert padded.symbol == "AAPL"
+
+    # Before normalisation these rows landed in different `(provider, symbol)`
+    # groups, so the overlap guard never ran and resolution raised instead.
+    with pytest.raises(registry.BridgeViolation):
+        registry.validate_bridge_rows([padded, first])
+
+    # Resolution uses the same normalised key as validation.
+    alone = registry.SecuritySymbolBridge(
+        symbol=" AAPL ", valid_from=dt(2019, 1, 1), valid_to=None, **common
+    )
+    assert registry.resolve_security_symbol(
+        [alone],
+        provider="massive",
+        symbol="AAPL",
+        business_time=dt(2020, 1, 2),
+        query_time=dt(2024, 1, 2),
+    ) == "sec-old"
+    # Case is preserved: provider symbols are not declared case-insensitive.
+    lower = registry.SecuritySymbolBridge(
+        symbol="aapl", valid_from=dt(2019, 1, 1), valid_to=None, **common
+    )
+    assert lower.symbol == "aapl"

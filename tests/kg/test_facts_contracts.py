@@ -515,3 +515,91 @@ def test_link_ignores_mappings_not_visible_in_the_requested_view():
     assert facts.filter_candidates(
         [present, recorded_only], "public_as_of", T1
     ) == (present,)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CodeRabbit full review (PR #76) item 1 — filter before de-duplication, and a
+# survivor choice that no input order can decide
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_view_filter_runs_before_dedupe_and_input_order_never_decides():
+    s = series()
+    key = facts.observation_key(
+        facts.assertion_key(s, FILING), facts.SOURCE_COMPANYFACTS, entry("100")
+    )
+
+    def observation(value, *, evidence, public, system_from):
+        return facts.Observation(
+            key=key,
+            value_raw=value,
+            value_decimal=facts.parse_decimal(value),
+            form_type="10-K",
+            public_available_at=public,
+            system_from=system_from,
+            evidence_id=evidence,
+        )
+
+    # (a) The smallest `(value_raw, evidence_id)` copy is not public at T.  The
+    # visible copy must survive as the answer; the key must not be exiled to
+    # `excluded` because its invisible twin won the tie-break first.
+    invisible_smallest = observation(
+        "100", evidence="ev-a", public=dt(2025, 1, 1), system_from=dt(2025, 1, 2)
+    )
+    visible_larger = observation(
+        "120", evidence="ev-z", public=dt(2024, 2, 1), system_from=dt(2024, 2, 2)
+    )
+    for order in (
+        [invisible_smallest, visible_larger],
+        [visible_larger, invisible_smallest],
+    ):
+        result = facts.reconcile(
+            order, view="public_as_of", knowledge_time=dt(2024, 6, 1)
+        )
+        assert result.selected is not None
+        assert result.selected.value_raw == "120"
+        # The key is reported once, as eligible; it is never also "excluded".
+        assert result.excluded == ()
+
+    # (b) Same key, same payload, re-ingested at two system times.  Replay at a
+    # time between them answers from the copy visible then, either input order.
+    early = observation(
+        "100", evidence="ev-1", public=dt(2024, 1, 1), system_from=dt(2024, 1, 5)
+    )
+    late = observation(
+        "100", evidence="ev-1", public=dt(2024, 1, 1), system_from=dt(2024, 5, 5)
+    )
+    moment = dt(2024, 3, 1)
+    for order in ([early, late], [late, early]):
+        survivors = facts.dedupe_observations(order)
+        assert len(survivors) == 1
+        assert survivors[0].system_from == dt(2024, 1, 5)
+        replayed = facts.reconcile(
+            order, view="system_replay", knowledge_time=moment
+        )
+        assert replayed.selected is not None
+        assert replayed.selected.system_from == dt(2024, 1, 5)
+        # The key is reported once (as eligible); its invisible twin is not
+        # repeated in `excluded`.
+        assert replayed.excluded == ()
+
+    # (c) Property-style: every permutation of a small set gives one output.
+    other = facts.make_observation(
+        facts.assertion_key(s, FILING_AMENDED),
+        entry("7", accn="0001045810-24-000002"),
+        public_available_at=dt(2024, 2, 1),
+        system_from=dt(2024, 2, 2),
+        evidence_id="ev-other",
+    )
+    outcomes = set()
+    for permutation in itertools.permutations([early, late, other]):
+        result = facts.reconcile(
+            permutation, view="public_as_of", knowledge_time=dt(2024, 6, 1)
+        )
+        outcomes.add(
+            (
+                None if result.selected is None else result.selected.key.as_tuple(),
+                tuple(item.key.as_tuple() for item in result.conflicts),
+                tuple(item.key.as_tuple() for item in result.excluded),
+            )
+        )
+    assert len(outcomes) == 1

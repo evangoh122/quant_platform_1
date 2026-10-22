@@ -507,3 +507,53 @@ def test_attribute_event_requires_a_valid_data_source():
                  data_source="sec_edgar").data_source == "sec_edgar"
     assert event("ok-2", "X", dt(2010, 1, 1), None, dt(2010, 6, 1),
                  data_source="derived").data_source == "derived"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CodeRabbit full review (PR #76) item 9 — supersedes_event_id is normalised the
+# same way as event_id
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_supersedes_event_id_is_normalised_like_event_id():
+    # A non-breaking space is NFKC-normalised to a plain space, so the stored
+    # event id is "e 1"; the correction's raw reference must resolve to it.
+    original = event(
+        "e\u00a01",
+        "Old Co",
+        dt(2010, 1, 1),
+        None,
+        dt(2010, 6, 1),
+        public=dt(2010, 6, 1),
+    )
+    correction = event(
+        "c1",
+        "New Co",
+        dt(2010, 1, 1),
+        None,
+        dt(2022, 1, 1),
+        public=dt(2022, 1, 1),
+        supersedes="e\u00a01",
+    )
+    assert original.event_id == "e 1"
+    assert correction.supersedes_event_id == "e 1"
+
+    intervals = temporal.derive_system_intervals([original, correction])
+    by_id = {interval.event.event_id: interval for interval in intervals}
+    assert by_id["e 1"].system_to == dt(2022, 1, 1)
+    # The resolved event, not a dangling-supersession failure, answers at T.
+    resolved = temporal.system_replay(
+        [original, correction], ENTITY, dt(2012, 6, 1), dt(2023, 1, 1),
+        attribute=ATTRIBUTE,
+    )
+    assert resolved is not None and resolved.event_id == "c1"
+
+    # A blank reference is rejected rather than silently treated as no-op.
+    with pytest.raises(temporal.IntervalError, match="supersedes_event_id"):
+        event(
+            "c2",
+            "X",
+            dt(2010, 1, 1),
+            None,
+            dt(2022, 1, 1),
+            supersedes="   ",
+        )

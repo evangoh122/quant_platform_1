@@ -329,11 +329,17 @@ def instrument_key(
 def period_key(
     period_type: str, start: Optional[str], end: Optional[str]
 ) -> NaturalKey:
-    """``("period", type, start, end)``; an instant has ``start = None`` (v4 §B)."""
+    """``("period", type, start, end)``; an instant has ``start = None`` (v4 §B).
+
+    A blank legacy start (``""`` or whitespace, as the v1 encoder stores an
+    instant) is treated as ``None`` here, so a KG-B migration can pass the
+    legacy ``period_start`` column through unchanged.  The v2 key still encodes
+    ``None``; only a real start on an instant is rejected.
+    """
     kind_type = normalise_period_type(period_type)
     end_iso = normalise_iso_date(end, "period end")
     if kind_type == "instant":
-        if start is not None:
+        if start is not None and _normalise_text(start):
             raise IdentityError("instant periods must not carry a start date")
         return (KIND_PERIOD, kind_type, None, end_iso)
     start_iso = normalise_iso_date(start, "period start")

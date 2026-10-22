@@ -477,7 +477,7 @@ def row_owner(row: Mapping[str, Any]) -> str:
                 )
             return OWNER_COMPANY_PREFIX + normalize_unicode(str(company))
         company = row.get("company_id")
-        if company is None:
+        if company is None or not normalize_unicode(str(company)):
             raise PublicationError(
                 f"{edge_type}: company-scoped edge is missing company_id"
             )
@@ -491,7 +491,7 @@ def row_owner(row: Mapping[str, Any]) -> str:
             return OWNER_GLOBAL
         if node_kind in COMPANY_SCOPED_NODE_KINDS:
             company = row.get("company_id")
-            if company is None:
+            if company is None or not normalize_unicode(str(company)):
                 raise PublicationError(
                     f"{node_kind}: company-scoped node is missing company_id"
                 )
@@ -806,13 +806,27 @@ class ClassificationObservation:
 
 def _latest_by_company_taxonomy(
     observations: Iterable[ClassificationObservation],
-) -> Dict[Tuple[str, str], ClassificationObservation]:
-    latest: Dict[Tuple[str, str], ClassificationObservation] = {}
+) -> Dict[Tuple[str, str], Tuple[Tuple[str, ...], ...]]:
+    """Every observation at the latest timestamp, per ``(company, taxonomy)``.
+
+    Keeping the whole set at the newest ``observed_at`` (instead of the first row
+    that happens to exceed the previous one) makes the staleness gate
+    independent of input order: a correction recorded at the same instant as the
+    row it corrects is still a change, whichever row arrives first.
+    """
+    grouped: Dict[Tuple[str, str], List[ClassificationObservation]] = {}
     for observation in observations:
-        key = (normalize_unicode(observation.company_id), normalize_unicode(observation.taxonomy))
-        current = latest.get(key)
-        if current is None or observation.observed_at > current.observed_at:
-            latest[key] = observation
+        key = (
+            normalize_unicode(observation.company_id),
+            normalize_unicode(observation.taxonomy),
+        )
+        grouped.setdefault(key, []).append(observation)
+    latest: Dict[Tuple[str, str], Tuple[Tuple[str, ...], ...]] = {}
+    for key, rows in grouped.items():
+        newest = max(row.observed_at for row in rows)
+        latest[key] = tuple(
+            sorted(row.as_row() for row in rows if row.observed_at == newest)
+        )
     return latest
 
 
@@ -838,13 +852,11 @@ def check_subset_allowed(
         old = before.get(key)
         new = after.get(key)
         if old is None:
-            changed.append(f"{company}/{taxonomy}: added {new.as_row()!r}")
+            changed.append(f"{company}/{taxonomy}: added {new!r}")
         elif new is None:
-            changed.append(f"{company}/{taxonomy}: deleted {old.as_row()!r}")
-        elif old.as_row() != new.as_row():
-            changed.append(
-                f"{company}/{taxonomy}: {old.as_row()!r} -> {new.as_row()!r}"
-            )
+            changed.append(f"{company}/{taxonomy}: deleted {old!r}")
+        elif old != new:
+            changed.append(f"{company}/{taxonomy}: {old!r} -> {new!r}")
     if changed:
         raise SubsetRejectedError(
             "subset build rejected: member classification observations changed "

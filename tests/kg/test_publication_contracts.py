@@ -4,6 +4,7 @@ Acceptance tests named by Codex Sol R4 (R3-6 / S16, R2-7 / R3-5).
 """
 from __future__ import annotations
 
+import itertools
 from datetime import datetime, timezone
 
 import pytest
@@ -781,3 +782,55 @@ def test_classification_observation_requires_a_validated_data_source():
     )
     assert good.as_row()[-1] == CLASSIFICATION_SOURCE
     assert good.data_source == CLASSIFICATION_SOURCE
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CodeRabbit full review (PR #76) items 6 and 7 — blank company_id rejection and
+# an order-free classification staleness gate
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_company_scoped_rows_reject_a_blank_company_id():
+    for blank in ("", "   ", "\u00a0"):
+        for row in (
+            {"edge_type": "FILED", "company_id": blank},
+            {"node_type": "XbrlFact", "company_id": blank},
+            {"node_type": "Security", "company_id": blank},
+        ):
+            with pytest.raises(publication.PublicationError):
+                publication.row_owner(row)
+    # A real owner is still resolved exactly as before.
+    assert publication.row_owner(
+        {"edge_type": "FILED", "company_id": "co:A"}
+    ) == "company:co:A"
+    assert publication.row_owner(
+        {"node_type": "XbrlFact", "company_id": " co:A "}
+    ) == "company:co:A"
+
+
+def test_classification_staleness_gate_is_independent_of_input_order():
+    base = publication.ClassificationObservation(
+        company_id="co:A", taxonomy="sic", code="3674", label="Semiconductors",
+        observed_at=DT, data_source=CLASSIFICATION_SOURCE,
+    )
+    # A correction carrying the *same* timestamp as the row it corrects.
+    correction = publication.ClassificationObservation(
+        company_id="co:A", taxonomy="sic", code="7372", label="Software",
+        observed_at=DT, data_source=CLASSIFICATION_SOURCE,
+    )
+    rows = [base, correction]
+
+    # Every input order rejects the subset: the current side holds both
+    # observations at the latest timestamp, so this is genuinely a change.
+    for before in ([base], [correction]):
+        for current in itertools.permutations(rows):
+            with pytest.raises(publication.SubsetRejectedError):
+                publication.check_subset_allowed(
+                    before, list(current), ["co:A"]
+                )
+
+    # The same observation set on both sides is still allowed, in every order.
+    for before in itertools.permutations(rows):
+        for current in itertools.permutations(rows):
+            publication.check_subset_allowed(
+                list(before), list(current), ["co:A"]
+            )
