@@ -17,15 +17,22 @@ Universe (owner choices):
 Liquidity is measured **while NYSE is closed** from 1h candles.  Tiers are
 derived from ``weekend_usd_per_h``: ``A >= 250k``, ``B >= 50k``, ``C >= 10k``,
 ``D < 10k``.  Flags are derived too: ``new`` = first bar after the measurement
-window start (short history) and ``sparse`` = more than 25% of weekend hours
-with zero volume.  Tiers/flags are model inputs and filters, never ingestion
-filters.
+window start (short history) and ``sparse`` = more than 25% of expected weekend
+hours with zero volume.
+
+Tiers and flags are **descriptive stratification only**.  The checked-in values
+were measured over 2026-08-26..2026-10-21, i.e. *after* most weekends in the
+study, so using them as a model input is look-ahead.  Any model input or filter
+must use trailing point-in-time liquidity computed only from data strictly
+before each window start; the static values are for reporting and universe
+description.  They are never ingestion filters.
 
 The loader is deliberately strict.  A typo in a provider symbol is a silent
 data-loss bug (the exchange simply returns no candles), so the schema is
 validated before any request is made:
 
-* ``version`` is a positive integer;
+* ``version`` is exactly 4 (the schema this loader validates); any other value
+  is rejected so a stale file cannot be read with new semantics;
 * every row has ``instrument_type: perpetual_future``; anything else (including
   a missing value) is rejected;
 * ``underlying_type`` is one of the documented values and is consistent with
@@ -36,6 +43,8 @@ validated before any request is made:
 * company and commodity tiers agree with the measured ``weekend_usd_per_h`` and
   the stored ``flags`` agree with the measured history;
 * commodity rows must carry a non-empty ``etfs`` list and a valid ``etf_kind``;
+* ``first_bar`` on companies and commodities must fall inside the measurement
+  window (a first bar after ``window.end`` was never measured);
 * venues are limited to the implemented adapters; HIP-3 dexes are limited to
   the three observed sub-dexes (``xyz``, ``para``, ``io``);
 * every row carries an explicit ``data_source`` from :mod:`config.data_sources`
@@ -881,6 +890,11 @@ def _parse_commodity(
         key + ".zero_volume_weekend_share",
     )
     first_bar = _as_date(entry["first_bar"], source, key + ".first_bar")
+    if first_bar > window.end:
+        raise PerpUniverseError(
+            f"{_where(source, key + '.first_bar')} {first_bar} is after the "
+            f"measurement window end {window.end}"
+        )
     expected_tier = tier_for_weekend_usd_per_h(weekend)
     if tier != expected_tier:
         raise PerpUniverseError(
@@ -922,8 +936,11 @@ def _parse_document(document: Any, source: Path | str) -> PerpUniverse:
     )
 
     version = _as_int(root["version"], source, "version")
-    if version < 1:
-        raise PerpUniverseError(f"{_where(source, 'version')} must be >= 1, got {version}")
+    if version != 4:
+        raise PerpUniverseError(
+            f"{_where(source, 'version')} must be 4 (the schema this loader "
+            f"validates), got {version}"
+        )
 
     instrument_defaults = _parse_instrument_defaults(
         root["instrument_defaults"], source

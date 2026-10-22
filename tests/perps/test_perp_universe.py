@@ -6,6 +6,7 @@ configuration; no validation logic is re-implemented here.
 from __future__ import annotations
 
 import copy
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -341,10 +342,35 @@ def test_rejects_missing_version(tmp_path):
         load_perp_universe(_write_document(tmp_path, document))
 
 
-def test_rejects_bad_version(tmp_path):
+@pytest.mark.parametrize("version", [0, 3, 5])
+def test_rejects_bad_version(tmp_path, version):
+    # The loader validates one schema; a stale or future version is rejected
+    # rather than silently reinterpreted.
     document = _base_document()
-    document["version"] = 0
-    with pytest.raises(PerpUniverseError, match="version"):
+    document["version"] = version
+    with pytest.raises(PerpUniverseError, match="must be 4"):
+        load_perp_universe(_write_document(tmp_path, document))
+
+
+def test_rejects_commodity_tier_inconsistent_with_measurement(tmp_path):
+    # Mutation target: deleting the commodity tier/weekend_usd_per_h check must
+    # fail here (companies already had this test; commodities did not).
+    document = _base_document()
+    assert document["commodities"][0]["tier"] == "A"
+    document["commodities"][0]["tier"] = "B"
+    with pytest.raises(PerpUniverseError, match="weekend_usd_per_h"):
+        load_perp_universe(_write_document(tmp_path, document))
+
+
+def test_rejects_commodity_first_bar_after_the_window(tmp_path):
+    # Same bound as company rows: a first bar after the measurement window end
+    # means the row's liquidity was never measured.
+    document = _base_document()
+    window_end = date.fromisoformat(document["liquidity_window"]["end"])
+    document["commodities"][0]["first_bar"] = (
+        window_end + timedelta(days=1)
+    ).isoformat()
+    with pytest.raises(PerpUniverseError, match="after the measurement window end"):
         load_perp_universe(_write_document(tmp_path, document))
 
 

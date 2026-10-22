@@ -6,6 +6,7 @@ new/sparse instrument.  All expectations come from the production helpers.
 from __future__ import annotations
 
 import json
+import random
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib import request as urlrequest
@@ -78,9 +79,155 @@ def test_measure_nvda_fixture():
     assert result["bars"] == 98
     assert result["weekend_bars"] == 89
     assert result["first_bar"] == "2026-09-04"
-    assert result["weekend_usd_per_h"] == pytest.approx(300_000 * 85 / 89)
-    assert result["zero_volume_weekend_share"] == pytest.approx(4 / 89)
+    assert result["covered_weekends"] == 1
+    # Friday 16:00 ET -> Tuesday 09:30 ET (Labor Day) is 89.5 expected hours and
+    # the fixture has 89 one-hour bars inside the break, so the mean divides by
+    # the expected hours (the half hour before the opening print is missing).
+    assert result["expected_hours"] == pytest.approx(89.5)
+    # Provider bars end 1 ms before the next hour, so the observed duration is a
+    # hair under 89 h; the missing half hour before the opening print dominates.
+    assert result["weekend_gap_hours"] == pytest.approx(0.5, abs=1e-3)
+    assert result["weekend_coverage"] == pytest.approx(89 / 89.5, abs=1e-4)
+    assert result["weekend_usd_per_h"] == pytest.approx(300_000 * 85 / 89.5)
+    assert result["zero_volume_weekend_share"] == pytest.approx(4 / 89.5)
     assert result["closed_usd_per_h"] > 0
+    assert result["closed_bars"] + result["open_bars"] == result["bars"]
+
+
+def test_boundary_crossing_bar_is_not_closed_market_volume():
+    # Monday 2026-09-08 09:00-10:00 ET is 13:00-14:00 UTC.  The session opens at
+    # 09:30 ET, so half the bar is session volume: it must not enter the
+    # closed-market mean (the old start-only test counted it as closed).
+    boundary = measure.Candle(
+        start_ts=datetime(2026, 9, 8, 13, 0, tzinfo=UTC),
+        end_ts=datetime(2026, 9, 8, 14, 0, tzinfo=UTC),
+        open=1.0,
+        high=1.0,
+        low=1.0,
+        close=1.0,
+        volume=1_000_000_000.0,
+        trades=1,
+    )
+    fully_closed = measure.Candle(
+        start_ts=datetime(2026, 9, 8, 12, 0, tzinfo=UTC),
+        end_ts=datetime(2026, 9, 8, 13, 0, tzinfo=UTC),
+        open=1.0,
+        high=1.0,
+        low=1.0,
+        close=1.0,
+        volume=1.0,
+        trades=1,
+    )
+    assert measure.bar_is_fully_closed(boundary) is False
+    assert measure.bar_overlaps_session(boundary) is True
+    assert measure.bar_is_fully_closed(fully_closed) is True
+    result = measure.measure_candles([boundary, fully_closed], [])
+    assert result["closed_bars"] == 1
+    assert result["closed_usd_per_h"] == pytest.approx(1.0)
+    assert result["open_bars"] == 1
+
+
+def test_tier_is_withheld_below_eighty_percent_weekend_coverage():
+    universe = load_perp_universe()
+    # A normal (non-holiday) weekend: Friday 2026-01-09 16:00 ET -> Monday
+    # 2026-01-12 09:30 ET = 65.5 expected hours.
+    windows = measure.weekend_windows_for(date(2026, 1, 5), date(2026, 1, 12))
+    assert len(windows) == 1
+    assert measure._window_hours(windows[0]) == pytest.approx(65.5)
+
+    def one_bar_with_notional(notional: float) -> dict:
+        candle = measure.Candle(
+            start_ts=datetime(2026, 1, 10, 0, 0, tzinfo=UTC),
+            end_ts=datetime(2026, 1, 10, 1, 0, tzinfo=UTC),
+            open=1.0,
+            high=1.0,
+            low=1.0,
+            close=1.0,
+            volume=notional,
+            trades=1,
+        )
+        return measure.measure_candles([candle], windows)
+
+    small = one_bar_with_notional(10_000.0)
+    assert small["weekend_coverage"] == pytest.approx(1 / 65.5)
+    row = measure._proposal_row(
+        identifier="NVDA",
+        symbol="xyz:NVDA",
+        underlying_type="equity",
+        data_source="hyperliquid",
+        current_tier="A",
+        current_flags=[],
+        measurement=small,
+        window_start=universe.liquidity_window.start,
+    )
+    assert row["proposed_tier"] is None
+    assert "coverage" in row["tier_withheld_reason"]
+    assert row["tier_changed"] is False
+    assert row["weekend_coverage"] == pytest.approx(1 / 65.5, abs=1e-4)
+
+    # Even a bar whose expected-hours mean would clear tier B is withheld: the
+    # gate is coverage, not the threshold.
+    large = one_bar_with_notional(10_000_000.0)
+    assert large["weekend_usd_per_h"] == pytest.approx(10_000_000 / 65.5)
+    large_row = measure._proposal_row(
+        identifier="NVDA",
+        symbol="xyz:NVDA",
+        underlying_type="equity",
+        data_source="hyperliquid",
+        current_tier="A",
+        current_flags=[],
+        measurement=large,
+        window_start=universe.liquidity_window.start,
+    )
+    assert large_row["proposed_tier"] is None
+
+
+def test_candle_rejects_naive_datetimes():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        measure.Candle(
+            start_ts=datetime(2026, 9, 8, 12, 0),
+            end_ts=datetime(2026, 9, 8, 13, 0),
+            open=1.0,
+            high=1.0,
+            low=1.0,
+            close=1.0,
+            volume=1.0,
+            trades=1,
+        )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        measure.is_regular_session(datetime(2026, 9, 8, 12, 0))
+
+
+def test_weekend_windows_for_returns_start_then_end():
+    windows = measure.weekend_windows_for(date(2026, 9, 1), date(2026, 9, 10))
+    start, end = windows[0]
+    assert start < end
+    # start is the Friday close, end the next open (Labor Day moves it to Tuesday).
+    assert start == datetime(2026, 9, 4, 20, 0, tzinfo=UTC)
+    assert end == datetime(2026, 9, 8, 13, 30, tzinfo=UTC)
+
+
+def test_retry_backoff_has_injected_jitter():
+    rng = random.Random(7)
+    client = measure.HttpClient(
+        backoff_seconds=1.0, jitter_fraction=0.5, rng=rng, max_rps=2.0
+    )
+    delays = [client._delay(attempt) for attempt in range(6)]
+    for attempt, delay in enumerate(delays):
+        base = 2 ** attempt
+        assert base <= delay <= base * 1.5
+        # Upward-only jitter: with a non-zero fraction every wait is strictly
+        # longer than the bare exponential schedule.
+        assert delay > base
+    assert len(set(delays)) > 1
+    # A zero jitter fraction keeps the deterministic exponential schedule.
+    fixed = measure.HttpClient(
+        backoff_seconds=1.0,
+        jitter_fraction=0.0,
+        rng=random.Random(7),
+        max_rps=2.0,
+    )
+    assert [fixed._delay(attempt) for attempt in range(4)] == [1.0, 2.0, 4.0, 8.0]
 
 
 def test_sparse_and_new_flags_from_fixture():
@@ -91,8 +238,10 @@ def test_sparse_and_new_flags_from_fixture():
     measurement = measure.measure_candles(_candles("KSTR"), windows)
     assert measurement["first_bar"] == "2026-09-17"
     assert measurement["weekend_bars"] == 65
-    assert measurement["zero_volume_weekend_share"] == pytest.approx(20 / 65)
-    assert measurement["weekend_usd_per_h"] == pytest.approx(12_000 * 45 / 65)
+    assert measurement["expected_hours"] == pytest.approx(65.5)
+    # Zero-volume share divides by the expected hours, not by the bar count.
+    assert measurement["zero_volume_weekend_share"] == pytest.approx(20 / 65.5)
+    assert measurement["weekend_usd_per_h"] == pytest.approx(12_000 * 45 / 65.5)
 
     proposal = measure.build_proposal(
         universe,
@@ -105,7 +254,7 @@ def test_sparse_and_new_flags_from_fixture():
     row = next(row for row in proposal["companies"] if row["id"] == "KSTR")
     assert row["proposed_tier"] == "D"
     assert row["proposed_flags"] == ["new", "sparse"]
-    assert row["zero_volume_weekend_share"] == pytest.approx(20 / 65, abs=1e-4)
+    assert row["zero_volume_weekend_share"] == pytest.approx(20 / 65.5, abs=1e-4)
     assert proposal["commodities"]
     assert all(row["proposed_tier"] is None for row in proposal["commodities"])
 

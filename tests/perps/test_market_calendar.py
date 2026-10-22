@@ -13,6 +13,7 @@ from config.market_calendar import (
     CALENDAR_START,
     MarketCalendarError,
     check_calendar_file,
+    derive_early_closes,
     early_close_dates,
     full_closure_dates,
     is_trading_day,
@@ -190,9 +191,51 @@ def test_next_open_after_is_strict():
     )
 
 
-def test_naive_datetime_is_interpreted_as_new_york():
-    start = last_close_before(datetime(2026, 4, 3, 0, 0))
+def test_naive_inputs_are_rejected():
+    # A naive datetime or an offset-less ISO string has no defined instant, so
+    # the calendar refuses it instead of silently assuming one (MarketCalendarError
+    # is a ValueError).
+    with pytest.raises(MarketCalendarError, match="naive datetime"):
+        last_close_before(datetime(2026, 4, 3, 0, 0))
+    with pytest.raises(MarketCalendarError, match="no UTC offset"):
+        next_open_after("2026-01-12T09:30:00")
+    with pytest.raises(ValueError):
+        weekend_window("2026-01-09 16:00:00")
+    # Offsets (including trailing 'Z') and plain dates are still accepted.
+    assert last_close_before("2026-04-03T00:00:00-04:00") == datetime(
+        2026, 4, 2, 20, 0, tzinfo=timezone.utc
+    )
+    assert last_close_before("2026-04-03T04:00:00Z") == datetime(
+        2026, 4, 2, 20, 0, tzinfo=timezone.utc
+    )
+    start, end = weekend_window(date(2026, 4, 3))
     _assert_et(start, 2026, 4, 2, 16, 0)
+    _assert_et(end, 2026, 4, 6, 9, 30)
+
+
+def test_pre_2013_july_eve_rule_uses_the_following_friday():
+    # July 4 2002 is a Thursday: before 2013 the 13:00 close was Friday
+    # 2002-07-05, not Wednesday 2002-07-03.  Assert the rule itself (not only
+    # the static file it generated) so a regressed derivation is caught.
+    derived = derive_early_closes(date(2002, 1, 1), date(2002, 12, 31))
+    assert date(2002, 7, 5) in derived
+    assert date(2002, 7, 3) not in derived
+    assert date(2002, 7, 5) in early_close_dates()
+    assert date(2002, 7, 3) not in early_close_dates()
+    assert is_trading_day(date(2002, 7, 3)) is True
+    start, end = weekend_window(date(2002, 7, 5))
+    _assert_et(start, 2002, 7, 5, 13, 0)
+    _assert_et(end, 2002, 7, 8, 9, 30)
+
+
+def test_pre_2013_july_eve_rule_only_moves_a_thursday_holiday():
+    # 2001-07-04 is a Wednesday and 2008-07-04 is a Friday: the eve (July 3)
+    # stays the early close in both years.
+    assert date(2001, 7, 3) in early_close_dates()
+    assert date(2008, 7, 3) in early_close_dates()
+    assert date(2008, 7, 7) not in early_close_dates()
+    # 2013 onward the eve rule is unconditional.
+    assert date(2013, 7, 3) in early_close_dates()
 
 
 def test_weekend_has_no_session():

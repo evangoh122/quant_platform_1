@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import sys
 import time
@@ -596,7 +597,11 @@ class RateLimiter:
 
 
 class HttpClient:
-    """Minimal stdlib HTTP client with rate limiting and retry/backoff."""
+    """Minimal stdlib HTTP client with rate limiting and retry/backoff.
+
+    Retries use exponential backoff **plus jitter** so parallel probes do not
+    retry a rate limit in lockstep; ``rng`` is injectable for tests.
+    """
 
     def __init__(
         self,
@@ -604,14 +609,18 @@ class HttpClient:
         max_rps: float = DEFAULT_RATE_LIMIT_RPS,
         retries: int = DEFAULT_RETRIES,
         backoff_seconds: float = 1.0,
+        jitter_fraction: float = 0.5,
         timeout: float = DEFAULT_TIMEOUT,
         limiter: Optional[RateLimiter] = None,
+        rng: Optional[random.Random] = None,
         urlopen: Optional[Callable[..., Any]] = None,
     ) -> None:
         self.retries = max(0, retries)
         self.backoff_seconds = max(0.0, backoff_seconds)
+        self.jitter_fraction = min(max(0.0, jitter_fraction), 1.0)
         self.timeout = timeout
         self.limiter = limiter or RateLimiter(max_rps)
+        self._rng = rng or random.Random()
         self._urlopen = urlopen or urlrequest.urlopen
 
     def post_json(self, url: str, body: Mapping[str, Any]) -> Any:
@@ -674,7 +683,9 @@ class HttpClient:
         raise ProbeError(f"{url}: exhausted retries ({last_error})")
 
     def _delay(self, attempt: int) -> float:
-        return self.backoff_seconds * (2 ** attempt)
+        """Exponential backoff with upward-only jitter (never shortens a wait)."""
+        base = self.backoff_seconds * (2 ** attempt)
+        return base * (1.0 + self._rng.random() * self.jitter_fraction)
 
 
 # ---------------------------------------------------------------------------

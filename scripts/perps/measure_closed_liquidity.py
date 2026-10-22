@@ -11,15 +11,30 @@ Method
 * Candles are 1h provider candles (notional = ``volume * close``).
 * A session is a regular NYSE session from ``config/market_calendar.py``: the
   static holiday file supplies full closures and recurring 13:00 early closes.
-* ``weekend_usd_per_h`` is the mean hourly notional of bars fully inside the
-  weekend break; ``closed_usd_per_h`` is the mean across every non-session bar.
+* A bar counts as **closed-market** only when the whole half-open interval
+  ``[bar_start, bar_end)`` lies outside every session.  A bar that straddles an
+  open or close boundary (e.g. the Monday 09:00-10:00 ET bar when the session
+  opens at 09:30 ET) is neither fully closed nor a session bar and is excluded
+  from ``closed_usd_per_h``; bars are partitioned into ``closed_bars`` and
+  ``open_bars`` (any overlap with a session).
+* ``weekend_usd_per_h`` divides the weekend notional by the **expected** hours
+  of the covered weekend breaks, not by the number of bars returned: a missing
+  hour is a real zero-notional hour and must not raise the mean.  The same
+  denominator drives ``zero_volume_weekend_share`` and ``weekend_gap_hours``
+  (``expected - observed``), and ``weekend_coverage`` is the observed share.
 * Weekend breaks come from :func:`config.market_calendar.weekend_window`, so a
   Monday holiday ends the window on Tuesday 09:30 ET and a Friday holiday
-  (e.g. Good Friday) starts it on Thursday 16:00 ET.  No hard-coded holiday
-  set is used.
+  (e.g. Good Friday) starts it on Thursday 16:00 ET.  Only breaks that contain
+  at least one bar are used for the expected-hours denominator (an instrument
+  listed mid-window is measured over the weekends it existed for and carries
+  the ``new`` flag).
 * Tiers (``A >= 250k``, ``B >= 50k``, ``C >= 10k``, ``D < 10k``) and flags
   (``new`` = first bar after the window start, ``sparse`` = more than 25% of
-  weekend hours with zero volume) come from the loader's shared rules.
+  expected weekend hours with zero volume) come from the loader's shared rules.
+  A tier is **withheld** (``proposed_tier: null`` plus ``tier_withheld_reason``)
+  when the observed weekend coverage is below
+  :data:`MIN_WEEKEND_COVERAGE` (80%) of the expected hours: a mean computed
+  from a handful of bars is not a measurement.
 * Every proposal row carries ``data_source`` — the provider code from
   ``config/data_sources.py`` (validated; ``hyperliquid`` for this measurement) —
   so a tier proposal is traceable to the source that measured it.
@@ -46,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import sys
 import time as time_module
@@ -89,6 +105,9 @@ DEFAULT_TIMEOUT = 30.0
 MAX_RATE_LIMIT_RPS = 2.0
 #: Public ``candleSnapshot`` page cap used for forward paging.
 MAX_CANDLES_PER_REQUEST = 5000
+#: Minimum observed share of the expected weekend hours before a tier is
+#: proposed.  Below this the mean is a handful of bars, not a measurement.
+MIN_WEEKEND_COVERAGE = 0.80
 
 
 class MeasureError(RuntimeError):
@@ -106,9 +125,30 @@ class Candle:
     volume: float
     trades: int
 
+    def __post_init__(self) -> None:
+        # Boundary arithmetic ("is this bar inside the closed window?") is only
+        # defined for timezone-aware instants.  A naive datetime would silently
+        # be compared in an arbitrary zone, so it is rejected rather than
+        # guessed (the market calendar rejects naive input for the same reason).
+        for field in ("start_ts", "end_ts"):
+            value = getattr(self, field)
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(
+                    f"Candle.{field} must be timezone-aware (UTC), got {value!r}"
+                )
+        if self.end_ts <= self.start_ts:
+            raise ValueError(
+                f"Candle.end_ts must be after start_ts, got "
+                f"{self.start_ts!r}..{self.end_ts!r}"
+            )
+
     @property
     def notional(self) -> float:
         return self.volume * self.close
+
+    @property
+    def hours(self) -> float:
+        return (self.end_ts - self.start_ts).total_seconds() / 3600.0
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +204,31 @@ def parse_candle_payload(payload: Any) -> List[Candle]:
 
 def is_regular_session(moment: datetime, path: str | Path | None = None) -> bool:
     """Return True when *moment* falls inside a regular NYSE session."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError(f"moment must be timezone-aware, got {moment!r}")
     local = moment.astimezone(NY)
     day = local.date()
     if not is_trading_day(day, path):
         return False
     close = wall_time(13, 0) if day in early_close_dates(path) else wall_time(16, 0)
     return wall_time(9, 30) <= local.time().replace(tzinfo=None) < close
+
+
+def bar_overlaps_session(candle: Candle, path: str | Path | None = None) -> bool:
+    """True when any part of ``[start, end)`` lies inside a regular session."""
+    return is_regular_session(candle.start_ts, path) or is_regular_session(
+        candle.end_ts - timedelta(microseconds=1), path
+    )
+
+
+def bar_is_fully_closed(candle: Candle, path: str | Path | None = None) -> bool:
+    """True only when the whole bar lies outside every session.
+
+    A bar that straddles a session boundary (for example Monday 09:00-10:00 ET
+    when the session opens at 09:30 ET) is *not* a closed-market bar: half of
+    its volume belongs to the session.
+    """
+    return not bar_overlaps_session(candle, path)
 
 
 def weekend_windows_for(
@@ -187,9 +246,11 @@ def weekend_windows_for(
         day += timedelta(days=1)
     windows: List[Tuple[datetime, datetime]] = []
     while day <= end:
-        open_utc, close_utc = weekend_window(day, path=path)
-        if open_utc >= start_utc and close_utc <= end_utc:
-            windows.append((open_utc, close_utc))
+        # ``weekend_window`` returns (last session close, next session open), so
+        # the first value opens the *break* and the second closes it.
+        window_start_utc, window_end_utc = weekend_window(day, path=path)
+        if window_start_utc >= start_utc and window_end_utc <= end_utc:
+            windows.append((window_start_utc, window_end_utc))
         day += timedelta(days=7)
     return windows
 
@@ -207,41 +268,79 @@ def _mean(values: Sequence[float]) -> Optional[float]:
     return sum(values) / len(values)
 
 
+def _window_hours(window: Tuple[datetime, datetime]) -> float:
+    start, end = window
+    return (end - start).total_seconds() / 3600.0
+
+
 def measure_candles(
     candles: Iterable[Candle],
     windows: Sequence[Tuple[datetime, datetime]],
+    *,
+    path: str | Path | None = None,
 ) -> Dict[str, Any]:
-    """Compute closed-market liquidity metrics for one instrument."""
+    """Compute closed-market liquidity metrics for one instrument.
+
+    Both ``weekend_usd_per_h`` and ``zero_volume_weekend_share`` use the
+    **expected** hours of the covered weekend breaks as the denominator, so an
+    hour with no bar counts as a zero-notional hour instead of disappearing
+    from the mean.
+    """
+    empty: Dict[str, Any] = {
+        "bars": 0,
+        "first_bar": None,
+        "weekend_bars": 0,
+        "weekend_usd_per_h": None,
+        "closed_usd_per_h": None,
+        "open_usd_per_h": None,
+        "closed_bars": 0,
+        "open_bars": 0,
+        "covered_weekends": 0,
+        "expected_hours": None,
+        "observed_hours": None,
+        "weekend_gap_hours": None,
+        "weekend_coverage": None,
+        "zero_volume_weekend_share": None,
+    }
     ordered = sorted(candles, key=lambda candle: candle.start_ts)
     if not ordered:
-        return {
-            "bars": 0,
-            "first_bar": None,
-            "weekend_bars": 0,
-            "weekend_usd_per_h": None,
-            "closed_usd_per_h": None,
-            "open_usd_per_h": None,
-            "zero_volume_weekend_share": None,
-        }
+        return empty
     weekend = [candle for candle in ordered if in_weekend(candle, windows)]
-    closed = [
-        candle.notional for candle in ordered if not is_regular_session(candle.start_ts)
+    covered_windows = [
+        window
+        for window in windows
+        if any(in_weekend(candle, (window,)) for candle in weekend)
     ]
+    expected_hours = sum(_window_hours(window) for window in covered_windows)
+    observed_hours = sum(candle.hours for candle in weekend)
+    zero_hours = sum(candle.hours for candle in weekend if candle.volume == 0)
+    coverage = observed_hours / expected_hours if expected_hours > 0 else None
+    closed = [candle.notional for candle in ordered if bar_is_fully_closed(candle, path)]
     opened = [
-        candle.notional for candle in ordered if is_regular_session(candle.start_ts)
+        candle.notional for candle in ordered if bar_overlaps_session(candle, path)
     ]
-    zero_share: Optional[float] = None
-    if weekend:
-        zero_count = sum(1 for candle in weekend if candle.volume == 0)
-        zero_share = zero_count / len(weekend)
+    weekend_notional = sum(candle.notional for candle in weekend)
     return {
         "bars": len(ordered),
         "first_bar": ordered[0].start_ts.date().isoformat(),
         "weekend_bars": len(weekend),
-        "weekend_usd_per_h": _mean([candle.notional for candle in weekend]),
+        "weekend_usd_per_h": (
+            weekend_notional / expected_hours if expected_hours > 0 else None
+        ),
         "closed_usd_per_h": _mean(closed),
         "open_usd_per_h": _mean(opened),
-        "zero_volume_weekend_share": zero_share,
+        "closed_bars": len(closed),
+        "open_bars": len(opened),
+        "covered_weekends": len(covered_windows),
+        "expected_hours": expected_hours if expected_hours > 0 else None,
+        "observed_hours": observed_hours,
+        "weekend_gap_hours": (
+            expected_hours - observed_hours if expected_hours > 0 else None
+        ),
+        "weekend_coverage": coverage,
+        "zero_volume_weekend_share": (
+            zero_hours / expected_hours if expected_hours > 0 else None
+        ),
     }
 
 
@@ -272,9 +371,18 @@ def _proposal_row(
     except ValueError as exc:
         raise MeasureError(f"{identifier}: {exc}") from exc
     weekend = measurement.get("weekend_usd_per_h")
-    proposed_tier = (
-        tier_for_weekend_usd_per_h(float(weekend)) if weekend is not None else None
-    )
+    coverage = measurement.get("weekend_coverage")
+    proposed_tier: Optional[str] = None
+    withheld_reason: Optional[str] = None
+    if weekend is None:
+        withheld_reason = "no weekend bars in the measured breaks"
+    elif coverage is not None and float(coverage) < MIN_WEEKEND_COVERAGE:
+        withheld_reason = (
+            f"weekend bar coverage {float(coverage):.1%} of the expected hours is "
+            f"below the {MIN_WEEKEND_COVERAGE:.0%} minimum"
+        )
+    else:
+        proposed_tier = tier_for_weekend_usd_per_h(float(weekend))
     first_bar = measurement.get("first_bar")
     zero_share = measurement.get("zero_volume_weekend_share")
     proposed_flags: Optional[List[str]] = None
@@ -294,6 +402,7 @@ def _proposal_row(
         "data_source": data_source,
         "current_tier": current_tier,
         "proposed_tier": proposed_tier,
+        "tier_withheld_reason": withheld_reason,
         "tier_changed": proposed_tier is not None and proposed_tier != current_tier,
         "current_flags": list(current_flags),
         "proposed_flags": proposed_flags,
@@ -302,6 +411,9 @@ def _proposal_row(
         "weekend_usd_per_h": _round(weekend),
         "closed_usd_per_h": _round(measurement.get("closed_usd_per_h")),
         "zero_volume_weekend_share": _round(zero_share, 4),
+        "weekend_coverage": _round(coverage, 4),
+        "expected_hours": _round(measurement.get("expected_hours"), 2),
+        "weekend_gap_hours": _round(measurement.get("weekend_gap_hours"), 2),
         "first_bar": first_bar,
         "bars": measurement.get("bars", 0),
     }
@@ -373,6 +485,8 @@ def build_proposal(
             "C": TIER_THRESHOLDS[2][1],
             "D": "< C",
             "sparse_zero_volume_share_above": SPARSE_ZERO_VOLUME_SHARE,
+            "min_weekend_coverage": MIN_WEEKEND_COVERAGE,
+            "denominator": "expected_hours_of_covered_weekend_breaks",
         },
         "companies": companies,
         "commodities": commodities,
@@ -384,16 +498,24 @@ def render_summary(proposal: Mapping[str, Any]) -> str:
     rows = list(proposal.get("companies", [])) + list(proposal.get("commodities", []))
     changed = [row for row in rows if row.get("tier_changed")]
     no_data = [row for row in rows if row.get("proposed_tier") is None]
+    withheld = [
+        row
+        for row in no_data
+        if row.get("weekend_coverage") is not None
+    ]
     lines = [
         f"window: {proposal['window']['start']} -> {proposal['window']['end']}",
         f"instruments measured: {len(rows) - len(no_data)} of {len(rows)}",
         f"tier changes proposed: {len(changed)}",
+        f"tiers withheld for low weekend coverage: {len(withheld)}",
     ]
     for row in changed:
         lines.append(
             f"  {row['id']}: {row['current_tier']} -> {row['proposed_tier']} "
             f"({row['weekend_usd_per_h']} USD/h)"
         )
+    for row in withheld:
+        lines.append(f"  {row['id']}: withheld — {row['tier_withheld_reason']}")
     if no_data:
         lines.append("no weekend bars: " + ", ".join(row["id"] for row in no_data))
     return "\n".join(lines)
@@ -455,7 +577,12 @@ class RateLimiter:
 
 
 class HttpClient:
-    """Minimal stdlib HTTP client with rate limiting and retry/backoff."""
+    """Minimal stdlib HTTP client with rate limiting and retry/backoff.
+
+    Retries use exponential backoff **plus jitter**: a fleet of polite clients
+    that all retry on the same 429/5xx boundary would otherwise synchronise and
+    retry in lockstep.  ``rng`` is injectable so tests can pin the jitter.
+    """
 
     def __init__(
         self,
@@ -463,14 +590,18 @@ class HttpClient:
         max_rps: float = DEFAULT_RATE_LIMIT_RPS,
         retries: int = DEFAULT_RETRIES,
         backoff_seconds: float = 1.0,
+        jitter_fraction: float = 0.5,
         timeout: float = DEFAULT_TIMEOUT,
         limiter: Optional[RateLimiter] = None,
+        rng: Optional[random.Random] = None,
         urlopen: Optional[Callable[..., Any]] = None,
     ) -> None:
         self.retries = max(0, retries)
         self.backoff_seconds = max(0.0, backoff_seconds)
+        self.jitter_fraction = min(max(0.0, jitter_fraction), 1.0)
         self.timeout = timeout
         self.limiter = limiter or RateLimiter(max_rps)
+        self._rng = rng or random.Random()
         self._urlopen = urlopen or urlrequest.urlopen
 
     def post_json(self, url: str, body: Mapping[str, Any]) -> Any:
@@ -530,7 +661,9 @@ class HttpClient:
         raise MeasureError(f"{url}: exhausted retries ({last_error})")
 
     def _delay(self, attempt: int) -> float:
-        return self.backoff_seconds * (2 ** attempt)
+        """Exponential backoff with upward-only jitter (never shortens a wait)."""
+        base = self.backoff_seconds * (2 ** attempt)
+        return base * (1.0 + self._rng.random() * self.jitter_fraction)
 
 
 def fetch_candles(

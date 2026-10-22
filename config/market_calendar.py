@@ -38,9 +38,32 @@ Public API
 ``last_close_before(ts)`` and ``next_open_after(ts)`` return timezone-aware
 UTC ``datetime`` values.  ``weekend_window(friday)`` returns
 ``(start_utc, end_utc)``: the last regular-session close before the weekend
-break and the next regular-session open after it.  Naive datetimes and
-timezone-naive ISO strings are interpreted as America/New_York; a ``date`` is
-interpreted as 00:00 America/New_York on that date.
+break and the next regular-session open after it.
+
+Inputs must carry a timezone: a naive ``datetime`` or an ISO-8601 string
+without a UTC offset raises :class:`MarketCalendarError` (a ``ValueError``)
+instead of being silently interpreted in some zone.  A ``date`` is the one
+exception and means 00:00 America/New_York on that date, because "the
+weekend beginning on this Friday" has no clock time.
+
+Rule provenance, coverage and known limits
+------------------------------------------
+Full closures are derived from NYSE Rule 7.2 for the whole 2000-2035 window and
+drift-checked against the static file.  The recurring early-close rules
+(day after Thanksgiving, Independence Day eve, Christmas Eve) are the modern
+NYSE trading-hours rules; this module asserts them from **2013-01-01 onward**.
+
+For 2000-2012 the file applies one documented historical July rule: when July 4
+falls on a Thursday the 13:00 close is the following **Friday, July 5**, not
+Wednesday July 3 (2002 is the only such year inside the coverage).  The
+pre-2013 Christmas behaviour could **not** be verified offline against the
+calendar's cited source (the NYSE trading-hours page does not publish the
+pre-2013 session schedule), so this module makes no claim about it: the
+December-24 early closes before 2013 stay in the file as best-effort entries
+and are flagged in the YAML rule list as unverified.  Treat a weekend window
+in 2000-2012 whose start or end depends on a December early close as
+approximate until an owner verifies the primary source (for example whether
+2003-12-26 rather than 2003-12-24 was the 13:00 session).
 
 The module is pure: no network, no pandas, no DuckDB.  It only reads the
 checked-in YAML (via ``zoneinfo`` for DST).
@@ -162,12 +185,14 @@ _RULES: Tuple[Tuple[str, str, str], ...] = (
     ),
     (
         "independence_day_eve",
-        "early close 13:00 on July 3 when it is a trading day",
+        "early close 13:00 on July 3 when it is a trading day (from 2013; "
+        "before 2013 a Thursday July 4 moved the early close to Friday July 5)",
         "NYSE trading hours",
     ),
     (
         "christmas_eve",
-        "early close 13:00 on December 24 when it is a trading day",
+        "early close 13:00 on December 24 when it is a trading day "
+        "(2013+; pre-2013 entries are unverified best-effort)",
         "NYSE trading hours",
     ),
 )
@@ -295,16 +320,27 @@ def derive_full_closures(
 def derive_early_closes(
     start: date = CALENDAR_START, end: date = CALENDAR_END
 ) -> Dict[date, str]:
-    """Derive recurring 13:00 NYSE early closes for ``[start, end]``."""
+    """Derive recurring 13:00 NYSE early closes for ``[start, end]``.
+
+    July rule: from 2013 the early close is July 3 (the eve).  Before 2013,
+    when July 4 fell on a Thursday the 13:00 close was the following Friday,
+    July 5 — see the module docstring for the documented range and the
+    unverified pre-2013 December behaviour.
+    """
     if end < start:
         raise MarketCalendarError(f"end {end} precedes start {start}")
     closures = derive_full_closures(start, end)
     out: Dict[date, str] = {}
     for year in range(start.year, end.year + 1):
         thanksgiving = _nth_weekday(year, 11, 3, 4)
+        july_fourth = date(year, 7, 4)
+        if year < 2013 and july_fourth.weekday() == 3:  # Thursday
+            july_eve = date(year, 7, 5)
+        else:
+            july_eve = date(year, 7, 3)
         candidates = [
             (thanksgiving + timedelta(days=1), "Day after Thanksgiving"),
-            (date(year, 7, 3), "Independence Day eve"),
+            (july_eve, "Independence Day eve"),
             (date(year, 12, 24), "Christmas Eve"),
         ]
         for day, name in candidates:
@@ -483,8 +519,11 @@ def _session_close(day: date, calendar: _Calendar) -> Optional[datetime]:
 
 def _coerce_to_ny(ts: TimestampLike) -> datetime:
     if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            return ts.replace(tzinfo=NY)
+        if ts.tzinfo is None or ts.utcoffset() is None:
+            raise MarketCalendarError(
+                f"naive datetime {ts!r} is rejected; pass a timezone-aware "
+                "datetime or a date"
+            )
         return ts.astimezone(NY)
     if isinstance(ts, date):
         return datetime.combine(ts, time(0, 0), tzinfo=NY)
@@ -498,10 +537,13 @@ def _coerce_to_ny(ts: TimestampLike) -> datetime:
             parsed = datetime.fromisoformat(raw)
         except ValueError as exc:
             raise MarketCalendarError(
-                f"cannot parse timestamp {ts!r}; use ISO-8601"
+                f"cannot parse timestamp {ts!r}; use ISO-8601 with a UTC offset"
             ) from exc
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=NY)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise MarketCalendarError(
+                f"timestamp {ts!r} has no UTC offset; append one (for example "
+                "'-05:00', '+00:00' or 'Z') or pass a date"
+            )
         return parsed.astimezone(NY)
     raise TypeError(
         f"ts must be a datetime, date or ISO-8601 string, got {type(ts).__name__}"

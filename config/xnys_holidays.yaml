@@ -18,8 +18,8 @@
 #   thanksgiving_day: fourth Thursday in November [NYSE Rule 7.2]
 #   christmas_day: December 25; Saturday to Friday, Sunday to Monday [NYSE Rule 7.2]
 #   day_after_thanksgiving: early close 13:00 the Friday after Thanksgiving [NYSE Rule 7.2; NYSE trading hours]
-#   independence_day_eve: early close 13:00 on July 3 when it is a trading day [NYSE trading hours]
-#   christmas_eve: early close 13:00 on December 24 when it is a trading day [NYSE trading hours]
+#   independence_day_eve: early close 13:00 on July 3 when it is a trading day (from 2013; before 2013 a Thursday July 4 moved the early close to Friday July 5) [NYSE trading hours]
+#   christmas_eve: early close 13:00 on December 24 when it is a trading day (2013+; pre-2013 entries are unverified best-effort) [NYSE trading hours]
 #
 # Ad-hoc closures (attacks, weather, national days of mourning) are
 # listed under special_closures with their announcement citation and
@@ -70,10 +70,10 @@ rules:
     description: "early close 13:00 the Friday after Thanksgiving"
     source: "NYSE Rule 7.2; NYSE trading hours"
   - id: independence_day_eve
-    description: "early close 13:00 on July 3 when it is a trading day"
+    description: "early close 13:00 on July 3 when it is a trading day (from 2013; before 2013 a Thursday July 4 moved the early close to Friday July 5)"
     source: "NYSE trading hours"
   - id: christmas_eve
-    description: "early close 13:00 on December 24 when it is a trading day"
+    description: "early close 13:00 on December 24 when it is a trading day (2013+; pre-2013 entries are unverified best-effort)"
     source: "NYSE trading hours"
 
 full_closures:
@@ -416,7 +416,7 @@ early_closes:
   - {date: "2001-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
   - {date: "2001-11-23", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
   - {date: "2001-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
-  - {date: "2002-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2002-07-05", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
   - {date: "2002-11-29", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
   - {date: "2002-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
   - {date: "2003-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
