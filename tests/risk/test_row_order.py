@@ -207,3 +207,127 @@ def test_duplicate_dates_are_rejected_by_every_frame_entry_point() -> None:
             methods=("equal_dollar",),
             cost_levels=(cfg.costs.baseline_bps,),
         )
+
+SIGNAL_MODES = ("momentum", "reversal", "momentum_z", "constant")
+
+
+def _adv_frame(panel: pl.DataFrame) -> pl.DataFrame:
+    return panel.select(
+        pl.col("date"),
+        (pl.col("close_a") * 1_000_000.0).alias("adv_a"),
+        (pl.col("close_b") * 1_000_000.0).alias("adv_b"),
+    )
+
+
+def _with_null_dates(frame: pl.DataFrame, count: int) -> pl.DataFrame:
+    dates = frame["date"].to_list()
+    for index in range(count):
+        dates[index] = None
+    return frame.with_columns(pl.Series("date", dates, dtype=pl.Date))
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("mode", SIGNAL_MODES)
+def test_build_signal_is_invariant_to_row_order(seed: int, mode: str) -> None:
+    """The lookback and rolling scale read row order: the sort is pinned."""
+    cfg = load_config()
+    panel = synthetic_pair_panel(replace(cfg.experiment, n_days=260, seed=81), 252)
+    params = replace(cfg.signals, mode=mode)
+
+    chronological = build_signal(panel, params, cfg.columns)
+    reversed_rows = build_signal(panel.reverse(), params, cfg.columns)
+    shuffled = build_signal(_shuffled(panel, seed), params, cfg.columns)
+
+    dates = chronological["date"].to_list()
+    assert dates == sorted(dates)
+    # Non-vacuous for every mode: a real signal came out, not all zeros.
+    assert float(chronological["signal"].abs().sum()) > 0.0
+    assert_frame_equal(reversed_rows, chronological, check_exact=True)
+    assert_frame_equal(shuffled, chronological, check_exact=True)
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("precomputed", [False, True])
+def test_compare_sizers_is_invariant_to_row_order(
+    seed: int, precomputed: bool
+) -> None:
+    cfg = load_config()
+    panel = synthetic_pair_panel(replace(cfg.experiment, n_days=240, seed=83), 252)
+    signals = (
+        build_signal(panel, cfg.signals, cfg.columns) if precomputed else None
+    )
+    kwargs = {
+        "methods": ("equal_dollar", "vol_target"),
+        "cost_levels": (cfg.costs.baseline_bps,),
+    }
+
+    chronological = compare_sizers(panel, cfg, signals=signals, **kwargs)
+    reversed_rows = compare_sizers(
+        panel.reverse(),
+        cfg,
+        signals=None if signals is None else signals.reverse(),
+        **kwargs,
+    )
+    shuffled = compare_sizers(
+        _shuffled(panel, seed),
+        cfg,
+        signals=None if signals is None else _shuffled(signals, seed + 100),
+        **kwargs,
+    )
+
+    # Non-vacuous: two variants with real turnover and finite metrics.
+    assert chronological.height == 2
+    assert float(chronological["turnover_avg"].min()) > 0.0
+    assert_frame_equal(reversed_rows, chronological, check_exact=True)
+    assert_frame_equal(shuffled, chronological, check_exact=True)
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_adv_cost_mode_is_invariant_to_row_order(seed: int) -> None:
+    """The ADV join also reads row order; shuffle prices, weights and adv."""
+    cfg = load_config()
+    panel = synthetic_pair_panel(replace(cfg.experiment, n_days=240, seed=85), 252)
+    estimates = estimate_pair(panel, cfg.estimators, cfg.columns)
+    signal = build_signal(panel, cfg.signals, cfg.columns)
+    weights = size(signal, estimates, cfg.sizing)
+    params = replace(cfg.backtest, cost_mode="adv")
+    adv = _adv_frame(panel)
+
+    chronological = backtest_vol_pair(
+        panel, weights, params, columns=cfg.columns, adv=adv
+    )
+    shuffled = backtest_vol_pair(
+        _shuffled(panel, seed + 11),
+        _shuffled(weights, seed),
+        params,
+        columns=cfg.columns,
+        adv=_shuffled(adv, seed + 23),
+    )
+
+    # Non-vacuous: the ADV participation model charged real turnover.
+    assert float(chronological.daily["turnover_cost"].sum()) > 0.0
+    assert_frame_equal(shuffled.daily, chronological.daily, check_exact=True)
+    assert shuffled.metrics == chronological.metrics
+
+
+@pytest.mark.parametrize("nulls", [1, 2])
+def test_null_dates_are_rejected_with_the_count(nulls: int) -> None:
+    cfg = load_config()
+    panel = synthetic_pair_panel(replace(cfg.experiment, n_days=40, seed=87), 252)
+    estimates = estimate_pair(panel, cfg.estimators, cfg.columns)
+    signals = build_signal(panel, cfg.signals, cfg.columns)
+    null_panel = _with_null_dates(panel, nulls)
+    null_estimates = _with_null_dates(estimates, nulls)
+    null_signals = _with_null_dates(signals, nulls)
+    message = rf"{nulls} null date"
+
+    with pytest.raises(ValueError, match=message):
+        estimate_pair(null_panel, cfg.estimators, cfg.columns)
+    with pytest.raises(ValueError, match=message):
+        build_signal(null_panel, cfg.signals, cfg.columns)
+    with pytest.raises(ValueError, match=message):
+        label_regimes(null_estimates, cfg.regimes, "vol_a")
+    with pytest.raises(ValueError, match=message):
+        size(null_signals, estimates, cfg.sizing)
+    with pytest.raises(ValueError, match=message):
+        size(signals, null_estimates, cfg.sizing)

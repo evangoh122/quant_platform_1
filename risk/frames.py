@@ -6,7 +6,8 @@ ascending date order.  The frame-level functions are the public entry points,
 so each one runs its inputs through :func:`sorted_by_date` before building
 those expressions.  Sorting removes the row-order trap; duplicate dates are
 rejected because a trailing window cannot choose between two observations
-dated the same day.
+dated the same day, and null dates are rejected because a row with no date
+cannot be placed in time at all.
 """
 from __future__ import annotations
 
@@ -14,12 +15,22 @@ import polars as pl
 
 
 def require_date_column(frame: pl.DataFrame, column: str = "date") -> None:
-    """Raise unless ``column`` exists and has the ``pl.Date`` dtype."""
+    """Raise unless ``column`` exists, is ``pl.Date`` and has no nulls.
+
+    A missing column raises ``KeyError``, a wrong dtype ``TypeError`` and a
+    null date ``ValueError`` naming how many dates are missing.
+    """
     if column not in frame.columns:
         raise KeyError(f"missing date column {column!r}")
     if frame.schema[column] != pl.Date:
         raise TypeError(
             f"column {column!r} must be pl.Date, got {frame.schema[column]!r}"
+        )
+    null_dates = frame.get_column(column).null_count()
+    if null_dates:
+        raise ValueError(
+            f"{null_dates} null date(s) in column {column!r}: "
+            "every row must carry a date"
         )
 
 
@@ -47,11 +58,12 @@ def sorted_by_date(
 ) -> pl.DataFrame:
     """Return ``frame`` in stable ascending date order.
 
-    ``column`` defaults to the frame's only ``pl.Date`` column.  A missing or
-    non-date column raises ``TypeError``; duplicate dates raise ``ValueError``
-    rather than silently picking one row's position for a trailing window.
-    Stable sorting keeps the operation deterministic for the rejected
-    duplicate keys and harmless for unique ones.
+    ``column`` defaults to the frame's only ``pl.Date`` column.  A missing
+    column raises ``KeyError``, a non-date column ``TypeError`` and a null
+    date ``ValueError``; duplicate dates raise ``ValueError`` rather than
+    silently picking one row's position for a trailing window.  Stable
+    sorting keeps the operation deterministic for the rejected duplicate
+    keys and harmless for unique ones.
     """
     name = column if column is not None else date_column(frame)
     require_date_column(frame, name)

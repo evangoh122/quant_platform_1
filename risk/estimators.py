@@ -39,7 +39,11 @@ def _positive(price: pl.Expr) -> pl.Expr:
 
 
 def price_returns(price: pl.Expr, params: EstimatorParams) -> pl.Expr:
-    """Bar-over-bar return from a price expression (log by default)."""
+    """Bar-over-bar return from a price expression (log by default).
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     safe = _positive(price)
     previous = safe.shift(1)
     ratio = safe / previous
@@ -51,13 +55,21 @@ def price_returns(price: pl.Expr, params: EstimatorParams) -> pl.Expr:
 
 
 def overnight_returns(open_price: pl.Expr, close_price: pl.Expr) -> pl.Expr:
-    """Close(t-1) to open(t) log gap."""
+    """Close(t-1) to open(t) log gap.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     previous_close = _positive(close_price).shift(1)
     return (_positive(open_price) / previous_close).log()
 
 
 def intraday_returns(open_price: pl.Expr, close_price: pl.Expr) -> pl.Expr:
-    """Open(t) to close(t) log return."""
+    """Open(t) to close(t) log return.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     return (_positive(close_price) / _positive(open_price)).log()
 
 
@@ -72,17 +84,30 @@ def _ewm_kwargs(params: EstimatorParams) -> dict:
 
 
 def ewma_mean(returns: pl.Expr, params: EstimatorParams) -> pl.Expr:
+    """Exponentially weighted mean of a returns expression.
+
+    The recursion reads the previous bar, so the caller must pass rows in
+    ascending date order; the frame-level entry points sort first.
+    """
     return returns.ewm_mean(**_ewm_kwargs(params))
 
 
 def ewma_var(returns: pl.Expr, params: EstimatorParams) -> pl.Expr:
-    """Sample EWMA variance (``bias=False`` == ddof 1)."""
+    """Sample EWMA variance (``bias=False`` == ddof 1).
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     series = returns
     return series.ewm_var(bias=False, **_ewm_kwargs(params))
 
 
 def ewma_vol(returns: pl.Expr, params: EstimatorParams) -> pl.Expr:
-    """Annualized EWMA volatility."""
+    """Annualized EWMA volatility.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     return (ewma_var(returns, params) * float(params.annualization)).sqrt()
 
 
@@ -106,7 +131,11 @@ def _correlation(returns_a: pl.Expr, returns_b: pl.Expr, params: EstimatorParams
 
 
 def ewma_corr(returns_a: pl.Expr, returns_b: pl.Expr, params: EstimatorParams) -> pl.Expr:
-    """Annualization-free EWMA correlation in ``[-1, 1]``."""
+    """Annualization-free EWMA correlation in ``[-1, 1]``.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     return _correlation(returns_a, returns_b, params)
 
 
@@ -117,6 +146,9 @@ def ewma_cov(returns_a: pl.Expr, returns_b: pl.Expr, params: EstimatorParams) ->
     correlation comes from the population means.  Multiplying the (unitless)
     correlation by the sample standard deviations makes ``ewma_cov`` exactly
     consistent with ``ewma_vol`` and keeps the correlation invariant.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
     """
     sd_sample_a = returns_a.ewm_var(bias=False, **_ewm_kwargs(params)).sqrt()
     sd_sample_b = returns_b.ewm_var(bias=False, **_ewm_kwargs(params)).sqrt()
@@ -135,7 +167,11 @@ def rolling_vol(
     window: int,
     params: EstimatorParams,
 ) -> pl.Expr:
-    """Annualized rolling standard deviation with ``ddof=1``."""
+    """Annualized rolling standard deviation with ``ddof=1``.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     return returns.rolling_std(
         window_size=window,
         min_samples=params.rolling_min_samples,
@@ -148,7 +184,11 @@ def overnight_vol(
     close_price: pl.Expr,
     params: EstimatorParams,
 ) -> pl.Expr:
-    """Annualized rolling volatility of close-to-open gaps."""
+    """Annualized rolling volatility of close-to-open gaps.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     return rolling_vol(
         overnight_returns(open_price, close_price),
         params.overnight_window,
@@ -161,7 +201,11 @@ def intraday_vol(
     close_price: pl.Expr,
     params: EstimatorParams,
 ) -> pl.Expr:
-    """Annualized rolling volatility of open-to-close moves."""
+    """Annualized rolling volatility of open-to-close moves.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
+    """
     return rolling_vol(
         intraday_returns(open_price, close_price),
         params.intraday_window,
@@ -181,6 +225,9 @@ def vol_percentile(
     The window ends at the current row, so the result is past-only.  Fewer than
     ``min_history`` usable observations yields null (the caller maps that to
     ``unknown``); it never fabricates a number from a short history.
+
+    Assumes the caller passed rows in ascending date order; the frame-level
+    entry points sort first.
     """
 
     def _percentile(values: pl.Series) -> float | None:
@@ -199,7 +246,10 @@ def vol_percentile(
 
 
 def floor_vol(vol: pl.Expr, floor: float) -> pl.Expr:
-    """Apply a volatility floor; nulls and non-finite values stay null."""
+    """Apply a volatility floor; nulls and non-finite values stay null.
+
+    Element-wise, so it does not read row order and needs no date sort.
+    """
     return (
         pl.when(vol.is_null())
         .then(pl.lit(None, dtype=pl.Float64))
