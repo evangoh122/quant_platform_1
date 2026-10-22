@@ -1,0 +1,33 @@
+{
+  "cik": "654321",
+  "entityName": "Atlas Re Holdings, Inc.",
+  "name": "Atlas Re Holdings, Inc.",
+  "entityType": "operating",
+  "sic": "6331",
+  "sicDescription": "Fire, Marine & Casualty Insurance",
+  "tickers": [
+    "ATLR"
+  ],
+  "exchanges": [
+    "NYSE"
+  ],
+  "stateOfIncorporation": "DE",
+  "fiscalYearEnd": "1231",
+  "formerNames": [
+    {
+      "name": "Atlas Re Corp.",
+      "from": "1987-01-02T00:00:00.000Z",
+      "to": "1999-12-31T00:00:00.000Z"
+    },
+    {
+      "name": "Meridian Assurance Group",
+      "from": "2000-01-03T00:00:00.000Z",
+      "to": "2003-06-30T00:00:00.000Z"
+    },
+    {
+      "name": "Atlas Re Corp.",
+      "from": "2010-01-04T00:00:00.000Z",
+      "to": "2018-06-29T00:00:00.000Z"
+    }
+  ]
+}

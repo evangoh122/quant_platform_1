@@ -10,7 +10,9 @@ so research symbols get daily coverage without joining the 39-symbol
 screen and is not changed by this group).
 Executes the version-controlled transforms under silver/ and gold/ in
 dependency order via a serverless Spark session (databricks-connect).
-Idempotent: every transform is a MERGE on a stable key.
+Idempotent: the MERGE transforms are keyed on a stable key, while
+``silver/09_silver_sec_registrant.sql`` rebuilds its two tables with CREATE OR
+REPLACE from the append-only bronze source.
 
 Usage:
     python pipelines/run_silver_gold.py --truncate        # clean full backfill
@@ -59,6 +61,12 @@ STEPS = [
     ("silver_options_trades", "silver/04_silver_options_trades.sql", "sql"),
     ("silver_sec_sections", "silver/05_silver_sec_sections.sql", "sql"),
     ("silver_sec_entities", "silver/06_silver_sec_entities.sql", "sql"),
+    # 09_ creates both silver_sec_registrant and
+    # silver_sec_registrant_former_names (one file, two CREATE OR REPLACE
+    # statements).  They are intentionally absent from TARGET_TABLES: the
+    # tables do not exist before the first run, and CREATE OR REPLACE rebuilds
+    # them anyway (no truncate needed).
+    ("silver_sec_registrant", "silver/09_silver_sec_registrant.sql", "sql"),
     ("silver_cot_positions", "silver/07_silver_cot_positions.sql", "sql"),
     ("silver_ohlcv_day_adjusted", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),
     ("data_quality_breaks", "silver/08_silver_ohlcv_day_adjusted.sql", "sql"),
@@ -79,6 +87,15 @@ TARGET_TABLES = [
     "gold_sec_coverage", "gold_cot_features", "gold_model_features",
     "gold_tradable_universe", "gold_regime_features",
 ]
+
+# Steps whose input is produced outside this runner and may legitimately not
+# exist yet.  bronze_sec_submissions is created only by an owner-approved
+# ``--live`` run of pipelines/ingest_sec_submissions.py, so a shared refresh
+# must SKIP the KG-0 step instead of aborting with TABLE_OR_VIEW_NOT_FOUND and
+# skipping every later silver/gold step.
+STEP_SOURCE_TABLES = {
+    "silver_sec_registrant": "bronze_sec_submissions",
+}
 
 DATE_START = "1900-01-01"
 DATE_END = "2100-01-01"
@@ -221,6 +238,31 @@ def ensure_gold_ohlcv_log_return_columns(spark):
     cols = ", ".join(f"{c} {GOLD_OHLCV_LOG_RETURN_COLUMNS[c]}" for c in missing)
     spark.sql(f"ALTER TABLE {FQN}.gold_ohlcv_features ADD COLUMNS ({cols})")
     print(f"  added gold_ohlcv_features columns: {', '.join(missing)}")
+
+
+def step_source_exists(spark, name: str) -> bool:
+    """True when ``name``'s optional source table is present (or it needs none).
+
+    The KG-0 registrant step reads ``bronze_sec_submissions``, which exists only
+    after an owner-approved live ingest.  A missing table is a logged SKIP so the
+    shared refresh keeps running every later step instead of aborting with
+    TABLE_OR_VIEW_NOT_FOUND.  If the existence check itself cannot run (for
+    example a permissions error), the step is attempted — never skipped — so a
+    broken check cannot silently drop real work."""
+    table = STEP_SOURCE_TABLES.get(name)
+    if not table:
+        return True
+    fqn = f"{FQN}.{table}"
+    try:
+        exists = bool(spark.catalog.tableExists(fqn))
+    except Exception as e:  # noqa: BLE001 - a failed check must not abort the run
+        print(f"  WARNING: cannot check {fqn} ({str(e)[:120]}); "
+              f"attempting {name} anyway")
+        return True
+    if not exists:
+        print(f"  SKIP {name}: source table {fqn} does not exist yet; run "
+              f"pipelines/ingest_sec_submissions.py --live first")
+    return exists
 
 
 def run_step(spark, name, path, kind, symbols):
@@ -486,6 +528,8 @@ def main():
         if args.only and layer != args.only:
             continue
         if args.counts:
+            continue
+        if not step_source_exists(spark, name):
             continue
         run_step(spark, name, path, kind, symbols)
 

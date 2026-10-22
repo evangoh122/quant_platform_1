@@ -210,6 +210,15 @@ def _module_literal(path: Path, name: str):
     raise AssertionError(f"{name} assignment not found in {path}")
 
 
+# Steps that intentionally have no TARGET_TABLES entry. silver/09 creates both
+# KG-0 tables with CREATE OR REPLACE, so they do not pre-exist and need no
+# truncate; pipelines/run_silver_gold.py documents that absence in a comment
+# above the step. Naming the step here keeps the "no step was dropped" check an
+# exact set comparison against everything the runner runs, instead of a subset
+# check that could no longer notice a dropped step.
+_STEPS_WITHOUT_TARGET_TABLE = frozenset({"silver_sec_registrant"})
+
+
 def _read_steps() -> list[tuple[str, str, str]]:
     return [tuple(step) for step in _module_literal(_RUNNER, "STEPS")]
 
@@ -248,7 +257,12 @@ class TestPipelineOrder:
     def test_no_step_was_dropped_by_the_reorder(self):
         steps = _read_steps()
         targets = set(_module_literal(_RUNNER, "TARGET_TABLES"))
-        assert {name for name, _path, _kind in steps} == targets
+        names = {name for name, _path, _kind in steps}
+        expected = targets | _STEPS_WITHOUT_TARGET_TABLE
+        assert names == expected, (
+            f"pipeline steps drifted from the target tables: missing "
+            f"{sorted(expected - names)}, unexpected {sorted(names - expected)}"
+        )
 
     def test_every_step_path_exists(self):
         for name, rel, _kind in _read_steps():

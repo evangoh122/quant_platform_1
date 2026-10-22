@@ -7,6 +7,15 @@ terms:
   cik:
     definition: "SEC Central Index Key, normalized as a zero-padded 10-character string."
     aliases: [SEC issuer id, company CIK]
+  registrant:
+    definition: "The legal entity that files with the SEC under a CIK. Its current name, SIC code and observed tickers come from silver_sec_registrant; bronze_sec_filings_v2.company_name holds a ticker, not a name."
+    aliases: [SEC registrant, filer]
+  former_name:
+    definition: "A registrant legal name that applied during a past interval published by the SEC; from_date and to_date are inclusive as published."
+    aliases: [previous legal name, prior company name]
+  sic_code:
+    definition: "SEC Standard Industrial Classification code, stored as a string because leading zeros are significant, with its published description."
+    aliases: [SIC, standard industrial classification]
   point_in_time_join:
     definition: "As-of join selecting the latest eligible source row whose information_available_ts is not after the prediction timestamp."
     aliases: [PIT join, as-of join, no-look-ahead]
