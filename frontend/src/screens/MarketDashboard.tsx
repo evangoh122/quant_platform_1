@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { Eyebrow } from '../components/Eyebrow';
 import { SymbolPicker } from '../components/SymbolPicker';
 import { api } from '../api/client';
 import type { MarketSnapshot, OHLCVFeature } from '../api/types';
@@ -145,7 +146,10 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
           className="w-full"
           role="img"
           aria-label={`Adjusted close price chart for ${symbol}`}
-          style={{ minWidth: 300, maxHeight: 220 }}
+          // The plot keeps a legible 12 px axis minimum: below ~560 px the
+          // wrapper scrolls horizontally instead of shrinking the labels into
+          // illegibility (HIG typography.md minimum sizes).
+          style={{ minWidth: 560, maxHeight: 220 }}
         >
           {/* Grid lines */}
           {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
@@ -154,7 +158,7 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
             return (
               <g key={frac}>
                 <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="currentColor" strokeOpacity={0.08} />
-                <text x={width - padding.right + 4} y={y + 3} className="text-[9px] fill-slate-400" style={{ fontSize: 9 }}>
+                <text x={width - padding.right + 4} y={y + 3} className="fill-slate-400" style={{ fontSize: 12 }}>
                   {val.toFixed(1)}
                 </text>
               </g>
@@ -192,8 +196,8 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
               x={getX(i)}
               y={height - 5}
               textAnchor="middle"
-              className="text-[9px] fill-slate-400"
-              style={{ fontSize: 9 }}
+              className="fill-slate-400"
+              style={{ fontSize: 12 }}
             >
               {formatDate(filtered[i].event_date)}
             </text>
@@ -242,8 +246,11 @@ export function MarketDashboard() {
 
   return (
     <div data-tour="market-research" className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Market Dashboard</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <Eyebrow>market explorer</Eyebrow>
+          <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Market Dashboard</h1>
+        </div>
         <div className="flex items-center gap-2">
           {data && (
             <FreshnessBadge freshness={data.ohlcv.freshness} />

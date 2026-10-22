@@ -1,4 +1,5 @@
 import { api } from '../api/client';
+import { Eyebrow } from '../components/Eyebrow';
 import type { Order, Portfolio, Position } from '../api/types';
 import { useApi } from '../hooks/useApi';
 import { Card } from '../components/Card';
@@ -42,8 +43,11 @@ export function PaperPortfolio() {
 
   return (
     <div data-tour="lakebase-write" className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">IBKR Paper Portfolio</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <Eyebrow>paper portfolio</Eyebrow>
+          <h1 className="mt-1.5 text-xl font-semibold tracking-tight">IBKR Paper Portfolio</h1>
+        </div>
         {data && <FreshnessBadge freshness={data.positions.freshness} />}
       </div>
 

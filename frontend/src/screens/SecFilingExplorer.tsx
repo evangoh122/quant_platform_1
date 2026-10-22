@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../api/client';
+import { Eyebrow } from '../components/Eyebrow';
 import type { ChatResponse, SecCoverageItem, SecCoverageResponse } from '../api/types';
 import { SymbolPicker } from '../components/SymbolPicker';
 import { Card } from '../components/Card';
@@ -129,7 +130,10 @@ export function SecFilingExplorer() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">SEC Filing Explorer</h1>
+      <div className="min-w-0">
+        <Eyebrow>sec filing explorer</Eyebrow>
+        <h1 className="mt-1.5 text-xl font-semibold tracking-tight">SEC Filing Explorer</h1>
+      </div>
 
       {coverageStatus === 'loading' && <LoadingState label="Loading equities…" />}
 

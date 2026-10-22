@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { api } from '../api/client';
+import { Eyebrow } from '../components/Eyebrow';
 import type { ChatResponse, PendingAction, ResearchNote, WriteResult } from '../api/types';
 import { Card } from '../components/Card';
 import { LoadingState } from '../components/LoadingState';
@@ -154,7 +155,10 @@ export function ResearchAgent() {
 
   return (
     <div data-tour="agent" className="space-y-4">
-      <h1 className="text-xl font-semibold">AI Research Agent</h1>
+      <div className="min-w-0">
+        <Eyebrow>research agent</Eyebrow>
+        <h1 className="mt-1.5 text-xl font-semibold tracking-tight">AI Research Agent</h1>
+      </div>
 
       <SymbolPicker
         value={symbol}

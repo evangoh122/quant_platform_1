@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api/client';
+import { Eyebrow } from '../components/Eyebrow';
 import type { Order, OrderActionResult, Portfolio } from '../api/types';
 import { useApi } from '../hooks/useApi';
 import { Card } from '../components/Card';
@@ -43,8 +44,11 @@ export function OrderApprovalDrawer() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Order Approval Drawer</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <Eyebrow>order approval</Eyebrow>
+          <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Order Approval Drawer</h1>
+        </div>
         {data && <FreshnessBadge freshness={data.orders.freshness} />}
       </div>
 
@@ -85,7 +89,7 @@ function ApprovalRow({ order, busy, result, onApprove, onReject }: { order: Orde
         <div className={`mt-3 rounded-md p-2 text-xs ${result.ok ? 'bg-success-fill text-[var(--on-success)]' : 'bg-warning-dim text-[var(--warning)]'}`}>
           <div className="font-semibold">Status: {result.status}</div>
           {result.reason && <div>{result.reason}</div>}
-          {result.risk && <pre className="mt-1 whitespace-pre-wrap break-all text-[11px]">{JSON.stringify(result.risk, null, 2)}</pre>}
+          {result.risk && <pre className="mt-1 whitespace-pre-wrap break-all text-xs">{JSON.stringify(result.risk, null, 2)}</pre>}
         </div>
       )}
 

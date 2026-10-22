@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Eyebrow } from '../components/Eyebrow';
 import {
   NAV_LINKS,
   SNAPSHOT,
@@ -83,9 +84,9 @@ export const EVIDENCE_GAP_STATUS_LABELS: Record<'verified-present' | 'unverified
 
 export function PageIntro({ eyebrow, title, thought }: { eyebrow: string; title: string; thought: string }) {
   return (
-    <header className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-6">
-      <p className="text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">{eyebrow}</p>
-      <h1 className="mt-2 text-2xl font-bold text-[var(--text-primary)]">{title}</h1>
+    <header className="card-featured p-6">
+      <Eyebrow>{eyebrow}</Eyebrow>
+      <h1 className="mt-3 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">{title}</h1>
       <p className="mt-3 max-w-3xl text-sm leading-relaxed text-[var(--text-secondary)]">{thought}</p>
     </header>
   );
@@ -108,7 +109,7 @@ export function SnapshotStrip() {
 
 export function FieldLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+    <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
       {children}
     </span>
   );

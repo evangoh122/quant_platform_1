@@ -1,4 +1,5 @@
 import { api } from '../api/client';
+import { Eyebrow } from '../components/Eyebrow';
 import type { Envelope, Signal } from '../api/types';
 import { useApi } from '../hooks/useApi';
 import { Card } from '../components/Card';
@@ -31,8 +32,11 @@ export function SignalExplorer() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Signal Explorer</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <Eyebrow>signal explorer</Eyebrow>
+          <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Signal Explorer</h1>
+        </div>
         {data && <FreshnessBadge freshness={data.freshness} />}
       </div>
       <div className="rounded-md border border-info-dim-20 bg-info-dim-8 px-3 py-2 text-xs text-[var(--info)]">
