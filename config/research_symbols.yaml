@@ -1,0 +1,103 @@
+# Research / benchmark universe — configuration-driven symbol groups.
+#
+# Owner decision 2026-10-22 (option D of
+# .agents/requests/SOL-commodity-etfs-advice.txt): commodity ETFs get daily
+# research coverage — split-adjusted silver_ohlcv_day_adjusted plus
+# bronze_corporate_actions so ETF reverse splits are captured — WITHOUT
+# joining the 39-symbol trading universe in config/universe.yaml or the
+# published baseline signals. gold_tradable_universe is a separate ADV screen,
+# so some of these ETFs can enter it independently by ADV; this group does not
+# add them there.
+#
+# Consumers (and only these):
+#   - pipelines/run_silver_gold.py      registers the ``research_universe`` temp view
+#   - silver/08_silver_ohlcv_day_adjusted.sql  unions it into the adjusted set
+#   - notebooks/refresh_bronze_corporate_actions.py  unions it into the
+#     corporate-action symbol screen (so USO/UNG reverse splits are fetched)
+#
+# ``data_source`` (owner decision 2026-10-22, RULE-data-source-column.md) names
+# the provider each symbol's prices come from: ``massive`` for every row here.
+# The codes are defined once in config/data_sources.py; the loader
+# (config/research_symbols.py) rejects a missing or unknown value.
+#
+# Two pitfalls that this group's daily bars inherit, documented here because
+# consumers of silver_ohlcv_day_adjusted for these symbols trip over them:
+#   1. Adjustment is split-only. Distributions/dividends are NOT adjusted (the
+#      corporate-action scope is bronze_corporate_actions stock splits), so an
+#      ETF ex-distribution gap stays in adj_* returns.
+#   2. The two return columns in silver/08 use different price inputs.
+#      ``return_1d`` (= adjusted_return_1d_unmasked) is close-to-close on
+#      ADJUSTED prices: adj_close / LAG(adj_close) - 1.
+#      ``raw_overnight_return`` is close-to-close on UNADJUSTED prices:
+#      close / LAG(close) - 1, so a split jumps it — a 1-for-4 reverse split
+#      shows about +300% raw against 0% adjusted. Neither is the opening-gap
+#      label; the gap label is
+#      next-session adj_open / previous-session adj_close - 1.
+#
+# Guarded non-consumers (tests/test_research_symbols_pipeline.py):
+#   - gold/01_gold_ohlcv_features.sql  (minute feature spine, trading ``universe``)
+#   - gold/05_gold_model_features.sql  (model matrix inputs)
+#   - scripts/publish_baseline_signals.py  (published signals)
+#
+# Overlap with config/universe.yaml is a configuration mistake: the loader
+# (config/research_symbols.py) reports it as a warning, not an error, so a
+# deliberate promotion can be staged without breaking a pipeline run.
+#
+# Symbols are YAML mapping keys, so they must be quoted strings. (They are
+# unique upper-case tickers; the loader validates that and rejects non-ticker
+# character sets before any symbol is quoted into SQL.) Unquoted
+# scalars such as ON / YES / NO / OFF / Y / N / TRUE / FALSE / NULL parse as
+# booleans or null; the loader rejects non-string keys.
+
+groups:
+  commodity_etfs:
+    # Daily commodity ETF benchmarks paired with the liquid commodity perps in
+    # the weekend-gap research. Daily bars are sufficient for the gap label
+    # (next-session adj_open / previous-session adj_close - 1); minute bars are
+    # a separate ingestion decision and are not part of this group.
+    #
+    # etf_kind:
+    #   physical — backed by the physical commodity (or allocated metal)
+    #   futures  — backed by a futures basket, so the ETF price carries roll
+    #              yield (contango/backwardation) independent of spot
+    symbols:
+      GLD:
+        commodity: gold
+        etf_kind: physical
+        data_source: massive
+      IAU:
+        commodity: gold
+        etf_kind: physical
+        data_source: massive
+      SLV:
+        commodity: silver
+        etf_kind: physical
+        data_source: massive
+      SIVR:
+        commodity: silver
+        etf_kind: physical
+        data_source: massive
+      USO:
+        commodity: crude_oil
+        etf_kind: futures
+        data_source: massive
+      BNO:
+        commodity: brent_crude_oil
+        etf_kind: futures
+        data_source: massive
+      UNG:
+        commodity: natural_gas
+        etf_kind: futures
+        data_source: massive
+      CPER:
+        commodity: copper
+        etf_kind: futures
+        data_source: massive
+      PPLT:
+        commodity: platinum
+        etf_kind: physical
+        data_source: massive
+      PALL:
+        commodity: palladium
+        etf_kind: physical
+        data_source: massive

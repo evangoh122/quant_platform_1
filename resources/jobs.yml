@@ -36,6 +36,8 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+            dependencies:
+              - "pyyaml>=6.0"
 
     ml_ablation:
       name: quant-platform-ml-ablation-${bundle.target}

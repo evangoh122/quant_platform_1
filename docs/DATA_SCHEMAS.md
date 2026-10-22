@@ -1,4 +1,31 @@
 
+## Provenance: `data_source`
+
+Under the owner rule of 2026-10-22, every **new** table, view, config row, snapshot record and knowledge-graph row
+produced from that date onward carries a non-null `data_source` holding exactly one code from the controlled
+vocabulary in `config/data_sources.py` (`DATA_SOURCES` + `validate_data_source`; unknown, empty or non-string
+values raise). This is a forward rule, not a description of the current schema: existing tables — for example
+`bronze_ohlcv`, whose provider column is `source` (see its listing below) — and existing config files
+(`config/universe.yaml`, `config/tickers.yaml`) do not carry `data_source` yet, and no table listed in this file
+has one today. The only rows that do are the ten research-symbol rows in `config/research_symbols.yaml`.
+
+| code | meaning |
+|---|---|
+| `massive` | Massive (Polygon) S3 flat files / REST (OHLCV, options, splits, dividends) |
+| `sec_edgar` | SEC EDGAR filings and the submissions API (data.sec.gov/submissions) |
+| `sec_companyfacts` | SEC XBRL Company-Facts API |
+| `hyperliquid` | Hyperliquid info API (HIP-3 perps, funding, candles) |
+| `binance_um` | Binance USD-M futures (data.binance.vision archives / API) |
+| `config` | hand-maintained repository config (e.g. universe YAML) |
+| `derived` | computed in this project from other rows (record the inputs' sources in lineage/docs where a row mixes sources) |
+
+From 2026-10-22 onward, new SQL tables and views get `data_source STRING NOT NULL`; new YAML config rows declare
+`data_source:` and their loader rejects a missing or unknown value; new Python records get a required `data_source`
+field. Among the existing files, only the research group in `config/research_symbols.yaml` follows this today: its
+ten rows declare `data_source: massive` (their prices come from Massive) and `config/research_symbols.py` rejects a
+missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` predate the rule and have no
+`data_source` yet.
+
 ### bronze_ohlcv  (14 cols)
   symbol                             string NOT NULL
   event_ts                           timestamp NOT NULL
@@ -637,6 +664,35 @@
   return_1d is the canonical return: NULL when is_data_quality_break = TRUE,
   otherwise adj_close / LAG(adj_close) - 1.  Never zero-filled for masked dates.
   information_available_ts is 16:30 America/New_York on the bar date (daily close).
+
+  Coverage: gold_tradable_universe symbols, the SPY/RSP/QQQ benchmarks, and the
+  research_universe symbols from config/research_symbols.yaml (ten commodity ETFs:
+  GLD, IAU, SLV, SIVR, USO, BNO, UNG, CPER, PPLT, PALL).  Research symbols are
+  research coverage only: they never enter gold_model_features or the published
+  baseline signals, and config/universe.yaml (the trading universe) must stay
+  disjoint from them.
+  Adjustment scope: SPLIT-ONLY.  Distributions/dividends are NOT adjusted (the
+  corporate-action scope is stock splits from bronze_corporate_actions), so an
+  ETF ex-distribution gap remains in adj_* returns and return_1d.
+  Return formulas, copied from silver/08_silver_ohlcv_day_adjusted.sql:
+    adjusted_return_1d_unmasked
+        = adj_close / NULLIF(LAG(adj_close) OVER (PARTITION BY symbol
+                                                   ORDER BY event_date), 0) - 1
+      where adj_close = close * (1.0 / NULLIF(COALESCE(cumulative_split_ratio,
+                                                       1.0), 0)).
+    return_1d = adjusted_return_1d_unmasked, but NULL while a masked
+      data-quality break exists on the row.
+    raw_overnight_return
+        = raw_gross_return - 1.0
+        = close / NULLIF(LAG(close) OVER (PARTITION BY symbol
+                                          ORDER BY event_date), 0) - 1
+      i.e. built from UNADJUSTED closes.
+  The two return columns therefore use different price inputs.  Because
+  raw_overnight_return is unadjusted, it jumps on splits: a 1-for-4 reverse
+  split shows about +300% raw (the price multiplies by 4) against 0% adjusted.
+  Do NOT use return_1d or raw_overnight_return as the opening-gap label:
+  neither is the opening gap.  The gap label is
+  next-session adj_open / previous-session adj_close - 1.
 
 ### data_quality_breaks  (14 cols)
   symbol                             string NOT NULL

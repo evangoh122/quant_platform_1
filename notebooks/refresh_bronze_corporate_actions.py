@@ -2,8 +2,9 @@
 """notebooks/refresh_bronze_corporate_actions.py — Databricks notebook entry point.
 
 Append-only refresh of ``bronze_corporate_actions`` from the live Gold
-universe + SPY/RSP/QQQ using the Massive adapter in
-``etl/corporate_actions.py``.
+universe + SPY/RSP/QQQ + the research/benchmark group
+(``config/research_symbols.yaml``, e.g. commodity ETFs whose reverse splits
+must be captured) using the Massive adapter in ``etl/corporate_actions.py``.
 
 Import-safe: pure helpers at module scope, all Spark / network setup inside
 ``main()``.  ``if __name__ == "__main__": main()``.
@@ -41,6 +42,11 @@ from typing import Any, Optional
 _REPO_ROOT = str(Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+from config.research_symbols import (  # noqa: E402
+    load_research_symbols,
+    normalize_symbol,
+)
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no Spark, no network)
@@ -165,6 +171,32 @@ def _is_finite_positive_nonone(v: Any) -> bool:
         return math.isfinite(r) and r > 0 and r != 1.0
     except (TypeError, ValueError):
         return False
+
+
+def build_universe_sql(fqn: str, research_symbols=()) -> str:
+    """SQL selecting the corporate-action symbol universe.
+
+    Historical ``gold_tradable_universe`` members plus the SPY/RSP/QQQ
+    benchmarks, plus the configured research/benchmark symbols
+    (config/research_symbols.yaml). Research symbols are not in the 39-symbol
+    trading universe (``config/universe.yaml``), so without this union their
+    reverse splits (USO, UNG) would never be fetched and
+    ``silver_ohlcv_day_adjusted`` would show false price gaps.
+
+    Every research symbol is validated by ``normalize_symbol`` before being
+    quoted into the literal — configuration cannot inject SQL here.
+    """
+    parts = [
+        "SELECT DISTINCT UPPER(TRIM(symbol)) AS symbol",
+        f"FROM {fqn}.gold_tradable_universe",
+        "WHERE symbol IS NOT NULL",
+    ]
+    parts += [f"UNION SELECT '{symbol}'" for symbol in ("SPY", "RSP", "QQQ")]
+    parts += [
+        f"UNION SELECT '{normalize_symbol(symbol)}'"
+        for symbol in research_symbols
+    ]
+    return "\n        ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -574,14 +606,7 @@ def main() -> None:
     t0 = _time.time()
 
     # --- Universe query ---
-    universe_sql = """
-        SELECT DISTINCT UPPER(TRIM(symbol)) AS symbol
-        FROM {fqn}.gold_tradable_universe
-        WHERE symbol IS NOT NULL
-        UNION SELECT 'SPY'
-        UNION SELECT 'RSP'
-        UNION SELECT 'QQQ'
-    """.format(fqn=FQN)
+    universe_sql = build_universe_sql(FQN, load_research_symbols())
 
     if spark is None:
         raise RuntimeError("Spark session required for universe query")

@@ -117,11 +117,21 @@ WHERE rn = 1;
 
 
 -- ============================================================
--- 4. Universe filter: only symbols in Gold + SPY/RSP/QQQ
+-- 4. Universe filter: ever-in-Gold + research group + SPY/RSP/QQQ
+--
+-- ``research_universe`` is the research/benchmark temp view registered by
+-- pipelines/run_silver_gold.py from config/research_symbols.yaml (commodity
+-- ETFs). Those symbols get the same split-adjusted daily history and break
+-- detection as the trading names, for research only: they are NOT added to
+-- gold_tradable_universe and never reach gold_ohlcv_features (the minute model
+-- spine) or the published baseline signals.
 -- ============================================================
 CREATE OR REPLACE TEMP VIEW _universe AS
 SELECT DISTINCT UPPER(TRIM(symbol)) AS symbol
 FROM bootcamp_students.evangoh_capstone.gold_tradable_universe
+WHERE symbol IS NOT NULL
+UNION SELECT UPPER(TRIM(symbol)) AS symbol
+FROM research_universe
 WHERE symbol IS NOT NULL
 UNION SELECT 'SPY'
 UNION SELECT 'RSP'
