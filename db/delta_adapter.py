@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -90,6 +91,38 @@ def _build_market_features_intraday_query(symbol: str, start_ts: str, end_ts: st
         f"WHERE symbol = :symbol AND feature_ts BETWEEN :start_ts AND :end_ts"
     )
     params: Dict[str, Any] = {"symbol": symbol, "start_ts": start_ts, "end_ts": end_ts}
+    return query, params
+
+
+_FED_COLS = [
+    "series_id", "observation_date", "value", "vintage_date", "ingest_ts",
+]
+
+
+def _build_fed_series_query(series_ids: Sequence[str], start_ts: str, end_ts: str) -> tuple[str, dict[str, Any]]:
+    """Build the bronze_fed_series query. Returns (sql, params).
+
+    Series ids are bound (``:series_id_0`` …), never interpolated, and the
+    caller (``agent.tools_retrieval.get_fed_series``) allow-lists them first.
+    All vintages are returned so the caller can keep the latest per observation.
+    """
+    ids = list(series_ids)
+    if not ids:
+        raise ValueError("series_ids must not be empty")
+    placeholders = ", ".join(f":series_id_{i}" for i in range(len(ids)))
+    cols_sql = ", ".join(_FED_COLS)
+    query = (
+        f"SELECT {cols_sql} "
+        f"FROM {_fqn('bronze_fed_series')} "
+        f"WHERE series_id IN ({placeholders}) "
+        f"AND observation_date BETWEEN :start_ts AND :end_ts "
+        f"ORDER BY observation_date DESC, series_id"
+    )
+    params: dict[str, Any] = {
+        f"series_id_{i}": series_id for i, series_id in enumerate(ids)
+    }
+    params["start_ts"] = start_ts
+    params["end_ts"] = end_ts
     return query, params
 
 
@@ -429,6 +462,37 @@ def market_features_intraday(symbol: str, start_ts: str, end_ts: str, *, limit: 
 
     # Warehouse fallback
     query, params = _build_market_features_intraday_query(symbol, start_ts, end_ts)
+    return _warehouse_query(query, params=params, limit=limit)
+
+
+def fed_series(series_ids: Sequence[str], start_ts: str, end_ts: str, *, limit: int = 5000) -> Any:
+    """Read raw FRED vintages from bronze_fed_series for allow-listed series ids.
+
+    Returns every vintage in the window (``series_id``, ``observation_date``,
+    ``value``, ``vintage_date``, ``ingest_ts``); callers collapse to the latest
+    vintage per observation.  ``start_ts``/``end_ts`` are date-only strings
+    (``YYYY-MM-DD``) compared against the DATE column.
+    Auto-selects pyspark or warehouse backend.
+    """
+    ids = list(series_ids)
+    if not ids:
+        raise ValueError("series_ids must not be empty")
+
+    if _has_pyspark:
+        spark = _spark()
+        df = (
+            spark.table(_fqn("bronze_fed_series"))
+            .where(
+                F.col("series_id").isin(ids)
+                & F.col("observation_date").between(start_ts, end_ts)
+            )
+            .select(*_FED_COLS)
+            .orderBy(F.col("observation_date").desc(), F.col("series_id"))
+        )
+        return df.limit(limit)
+
+    # Warehouse fallback
+    query, params = _build_fed_series_query(ids, start_ts, end_ts)
     return _warehouse_query(query, params=params, limit=limit)
 
 

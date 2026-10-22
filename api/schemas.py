@@ -90,6 +90,56 @@ class MarketSnapshot(BaseModel):
     options: Envelope[OptionsFeature] = Field(default_factory=Envelope)
 
 
+# ── market spreads ────────────────────────────────────────────────────────────
+class SpreadSeries(BaseModel):
+    """One line on a Market Spreads chart.
+
+    ``points`` are ``[ISO date, value]`` pairs, already aligned and (for
+    relative performance) rebased by the backend.  The frontend never recomputes
+    a ratio or a spread.
+    """
+    key: str = ""
+    label: str = ""
+    points: list[tuple[str, float]] = Field(default_factory=list)
+    latest_value: float | None = None
+    latest_date: str | None = None
+    window_pct_change: float | None = None
+
+
+class SpreadTile(BaseModel):
+    """A single number rendered beside a chart (e.g. the 10s2s spread)."""
+    label: str = ""
+    value: float | None = None
+    as_of: str | None = None
+    unit: str = ""
+    points: list[tuple[str, float]] = Field(default_factory=list)
+
+
+class SpreadChart(BaseModel):
+    chart_id: str
+    title: str = ""
+    subtitle: str = ""
+    kind: Literal["price", "index", "yield"] = "index"
+    unit: str = ""
+    source: str = ""
+    freshness: Freshness = Field(default_factory=Freshness)
+    empty: bool = True
+    series: list[SpreadSeries] = Field(default_factory=list)
+    first_common_date: str | None = None
+    dropped_dates: int = 0
+    as_of: str | None = None
+    tile: SpreadTile | None = None
+    caption: str = ""
+
+
+class MarketSpreadsResponse(BaseModel):
+    """``GET /api/spreads`` — the five Market Spreads charts."""
+    days: int = 252
+    window_start: str = ""
+    window_end: str = ""
+    charts: list[SpreadChart] = Field(default_factory=list)
+
+
 class WatchlistItem(BaseModel):
     symbol: str
     created_at: str = ""

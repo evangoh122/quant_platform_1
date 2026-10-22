@@ -34,6 +34,13 @@ const marketResponse = {
   options: { data: [], count: 0, empty: true, source: 'gold_options_features', freshness: { state: 'empty', table: '', detail: '' } },
 };
 
+const spreadsResponse = {
+  days: 1000,
+  window_start: '2024-01-02',
+  window_end: '2026-10-01',
+  charts: [],
+};
+
 function mockFetch(body: unknown) {
   return vi.fn().mockImplementation((url: string) => {
     if (url === '/api/health') {
@@ -41,6 +48,9 @@ function mockFetch(body: unknown) {
     }
     if (url.startsWith('/api/market/')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(marketResponse) });
+    }
+    if (url.startsWith('/api/spreads')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(spreadsResponse) });
     }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
   });
@@ -242,6 +252,31 @@ describe('App — agent tour auto-start guard', () => {
 
     expect(screen.queryByText('Research Agent tour')).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument();
+  });
+});
+
+describe('App - Market Spreads navigation', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('opens the Market Spreads screen from the Research group', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const sidebar = screen.getByRole('complementary');
+    await user.click(within(sidebar).getByRole('button', { name: 'Market Spreads' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Market Spreads' })).toBeInTheDocument();
+    });
+    expect(screen.getByText(/no futures data source in the lakehouse yet/i)).toBeInTheDocument();
   });
 });
 

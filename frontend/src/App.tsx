@@ -3,6 +3,7 @@ import { api } from './api/client';
 import type { HealthResponse } from './api/types';
 import { AppShell, type NavGroup } from './layout/AppShell';
 import { MarketDashboard } from './screens/MarketDashboard';
+import { MarketSpreads } from './screens/MarketSpreads';
 import { SignalExplorer } from './screens/SignalExplorer';
 import { OptionsAnalytics } from './screens/OptionsAnalytics';
 import { SecFilingExplorer } from './screens/SecFilingExplorer';
@@ -24,6 +25,7 @@ import { useTourHost, CoachMarks } from './components/tours/TourHost';
 type ScreenId =
   | 'platform-overview'
   | 'market'
+  | 'market-spreads'
   | 'options'
   | 'sec'
   | 'agent'
@@ -50,6 +52,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Research',
     items: [
       { id: 'market', label: 'Market Explorer' },
+      { id: 'market-spreads', label: 'Market Spreads' },
       { id: 'options', label: 'Options Analytics' },
       { id: 'sec', label: 'SEC Research' },
       { id: 'agent', label: 'AI Research Agent' },
@@ -125,6 +128,8 @@ export default function App() {
         return <PlatformOverview onNavigate={(id) => setScreen(id as ScreenId)} />;
       case 'market':
         return <MarketDashboard />;
+      case 'market-spreads':
+        return <MarketSpreads />;
       case 'options':
         return <OptionsAnalytics />;
       case 'sec':

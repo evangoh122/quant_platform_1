@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.demo import is_hosted_public
 from api.deps import FRONTEND_DIST
-from api.routes import analytics, health, market, notes, sec, signals
+from api.routes import analytics, health, market, notes, sec, signals, spreads
 
 APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
 
@@ -400,6 +400,7 @@ def create_app() -> FastAPI:
         application.include_router(health.router, prefix="/api/health", tags=["health"])
         application.include_router(signals.router, prefix="/api/signals", tags=["signals"])
         application.include_router(market.router, prefix="/api/market", tags=["market"])
+        application.include_router(spreads.router, prefix="/api/spreads", tags=["spreads"])
         application.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
         application.include_router(sec.router, prefix="/api/sec", tags=["sec"])
         application.include_router(notes.router, prefix="/api/notes", tags=["notes"])

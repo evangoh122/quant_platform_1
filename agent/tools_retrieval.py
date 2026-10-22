@@ -16,7 +16,7 @@ and never becomes a SQL fragment.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from agent.guardrails import normalize_symbol
 from api.services.exceptions import EmbeddingConfigError
@@ -40,6 +40,11 @@ _COT_COLS = [
     "lev_money_zscore_52w", "asset_mgr_net", "asset_mgr_pctile_52w",
     "crowding_score", "regime_label",
 ]
+
+#: FRED series a caller may read through ``get_fed_series``.  An explicit
+#: allow-list: the series id becomes a bind parameter, but only these values are
+#: ever accepted, so a caller cannot read (or probe) an arbitrary series.
+FED_SERIES_ALLOWED = ("DGS10", "DGS2", "T10Y2Y")
 
 
 def _build_options_query(symbol: str) -> tuple[str, dict]:
@@ -93,6 +98,38 @@ def get_market_features(symbol: str, start_time: str, end_time: str, *, limit: i
     from db.delta_adapter import as_dicts, market_features
 
     return as_dicts(market_features(symbol, start_time, end_time, limit=limit))
+
+
+def get_fed_series(
+    series_ids,
+    start_time: str,
+    end_time: str,
+    limit: int = 5000,
+) -> list:
+    """Raw FRED vintages from bronze_fed_series for an allow-listed series set.
+
+    Accepts a single id or an iterable.  Every id is normalised and checked
+    against :data:`FED_SERIES_ALLOWED` before the adapter is called — an unknown
+    series raises ``ValueError`` instead of reaching the warehouse.  All vintages
+    are returned; the caller keeps the latest ``vintage_date`` (tie-break
+    ``ingest_ts``) per ``(series_id, observation_date)``.
+    """
+    if isinstance(series_ids, str):
+        series_ids = [series_ids]
+    allowed = set(FED_SERIES_ALLOWED)
+    ids: list[str] = []
+    for series_id in series_ids:
+        candidate = str(series_id or "").strip().upper()
+        if candidate not in allowed:
+            raise ValueError(f"unknown fed series: {series_id!r}")
+        if candidate not in ids:
+            ids.append(candidate)
+    if not ids:
+        return []
+
+    from db.delta_adapter import as_dicts, fed_series
+
+    return as_dicts(fed_series(ids, start_time, end_time, limit=limit))
 
 
 def get_options_features(symbol: str, expiry: Optional[str] = None, *, limit: int = 5000) -> list:

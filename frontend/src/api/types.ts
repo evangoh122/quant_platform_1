@@ -63,6 +63,50 @@ export interface MarketSnapshot {
   options: Envelope<OptionsFeature>;
 }
 
+/** `[ISO date, value]` — computed (aligned/rebased) by the API, drawn as-is. */
+export type SpreadPoint = [string, number];
+
+export interface SpreadSeries {
+  key: string;
+  label: string;
+  points: SpreadPoint[];
+  latest_value: number | null;
+  latest_date: string | null;
+  window_pct_change: number | null;
+}
+
+export interface SpreadTile {
+  label: string;
+  value: number | null;
+  as_of: string | null;
+  unit: string;
+  points: SpreadPoint[];
+}
+
+export interface SpreadChart {
+  chart_id: string;
+  title: string;
+  subtitle: string;
+  kind: 'price' | 'index' | 'yield';
+  unit: string;
+  source: string;
+  freshness: Freshness;
+  empty: boolean;
+  series: SpreadSeries[];
+  first_common_date: string | null;
+  dropped_dates: number;
+  as_of: string | null;
+  tile: SpreadTile | null;
+  caption: string;
+}
+
+export interface MarketSpreadsResponse {
+  days: number;
+  window_start: string;
+  window_end: string;
+  charts: SpreadChart[];
+}
+
 export interface WatchlistItem {
   symbol: string;
   created_at: string;

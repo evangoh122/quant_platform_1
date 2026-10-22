@@ -134,6 +134,25 @@ missing data, not full coverage. The opening-gap label uses one formula,
 `open_gap = session_open * label_split_factor / prev_session_close - 1`, with the new/old split ratio as the factor;
 `session_open` is the **consolidated** first regular-session print, not the listing-exchange opening auction. It is
 **split-adjusted only**: `bronze_corporate_actions` has no dividend amounts, so dividend ingestion is a P1 prerequisite.
+## Market Spreads screen
+
+`Market Spreads` (Research group, `GET /api/spreads`) draws five charts from data the lakehouse already holds:
+
+| Chart | Source |
+|---|---|
+| USO split-adjusted close | `silver_ohlcv_day_adjusted` (`adj_close`) |
+| US 10Y / 2Y Treasury yields + 10s2s tile | `bronze_fed_series` (`DGS10`, `DGS2`, latest vintage per observation) |
+| RSP / SPY, MAGS / SOXX, MAGS / SMH relative performance | `silver_ohlcv_day_adjusted` |
+
+**Rebased-index caveat:** the relative-performance charts are *not* raw price ratios. The `adj_*` columns are
+global/current-scale split-adjusted levels, approved for returns but not as price-level features, so each pair is
+inner-joined on its common dates, converted to a ratio and rebased to 100 at the first common date of the window. They
+show price return (splits adjusted, dividends not), not total return. Dates missing from one leg are dropped (and
+counted in the UI), never forward-filled, and fewer than two common points is shown as empty rather than zero.
+
+**Futures spread not included:** `CLZ26.NYM` vs `CLZ27.NYM` is not charted because there is no futures data source in
+the lakehouse yet; the screen names the gap instead of inventing prices. The window is the last 1/3/6/12 months of
+trading days (weekday approximation, holidays not excluded; default 252, capped at 1000).
 
 ## Repository layout
 

@@ -6,6 +6,7 @@ import type {
   HealthResponse,
   HealthTraceResponse,
   MarketSnapshot,
+  MarketSpreadsResponse,
   OrderActionResult,
   OrderIntentRequest,
   OrderIntentResult,
@@ -57,6 +58,8 @@ export const api = {
   },
   market: (symbol: string): Promise<MarketSnapshot> =>
     request<MarketSnapshot>(`/api/market/${encodeURIComponent(symbol)}`),
+  spreads: (days: number): Promise<MarketSpreadsResponse> =>
+    request<MarketSpreadsResponse>(`/api/spreads?days=${encodeURIComponent(String(days))}`),
   chat: (message: string): Promise<ChatResponse> =>
     post<ChatResponse>('/api/agent/chat', { message } satisfies ChatRequest),
   confirmWrite: (token: string): Promise<ChatResponse> =>
