@@ -125,6 +125,29 @@ def test_price_series_with_a_zero_first_close_reports_no_window_change():
     assert result["window_pct_change"] is None
 
 
+# ── 1c. one surviving point is empty, never a one-point "series" (round 3) ──
+def test_single_point_left_after_the_finite_filter_is_empty_not_a_series():
+    """A non-base zero denominator drops every other date; one point is not a series.
+
+    The index is ``inf`` on the two non-base dates (leg B closes at zero), so the
+    ``is_finite`` filter leaves only the base date.  ``indexed.height < 2`` must
+    turn that into ``empty`` instead of a one-point series.
+    """
+    a = bars([("2024-01-02", 10.0), ("2024-01-03", 11.0), ("2024-01-04", 12.0)])
+    b = bars([("2024-01-02", 5.0), ("2024-01-03", 0.0), ("2024-01-04", 0.0)])
+
+    result = rebased_relative_index(a, b, symbol_a="A", symbol_b="B")
+
+    # Both legs list all three dates, so the base itself is well defined.
+    assert result["first_common_date"] == "2024-01-02"
+    assert result["dropped_dates"] == 0
+    assert result["empty"] is True
+    assert result["points"] == []
+    assert result["latest_value"] is None
+    assert result["latest_date"] is None
+    assert result["window_pct_change"] is None
+
+
 # ── 2. rebasing at the first COMMON date ─────────────────────────────────────
 def test_index_starts_at_exactly_100_at_first_common_date():
     # Leg A has a leading date that leg B lacks: the base must be the first

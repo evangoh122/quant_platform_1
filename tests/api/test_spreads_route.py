@@ -7,9 +7,10 @@ blocks any non-loopback socket, ``databricks.sdk.WorkspaceClient`` and
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from loguru import logger
 
 DATES = ["2024-01-02", "2024-01-03", "2024-01-04"]
 
@@ -67,6 +68,7 @@ def _stub_readers(
     *,
     failing: str | None = None,
     closes: dict[str, list[float]] | None = None,
+    fed=None,
 ) -> None:
     closes = CLOSES if closes is None else closes
 
@@ -84,11 +86,65 @@ def _stub_readers(
         return _fed_fixture()
 
     monkeypatch.setattr("agent.tools_retrieval.get_market_features", fake_market)
-    monkeypatch.setattr("agent.tools_retrieval.get_fed_series", fake_fed)
+    monkeypatch.setattr(
+        "agent.tools_retrieval.get_fed_series", fed if fed is not None else fake_fed
+    )
 
 
 def _charts(payload: dict) -> dict[str, dict]:
     return {chart["chart_id"]: chart for chart in payload["charts"]}
+
+
+def _weekdays(count: int, start: date = date(2023, 1, 2)) -> list[date]:
+    """``count`` consecutive weekdays from ``start`` (the route's calendar)."""
+    days: list[date] = []
+    current = start
+    while len(days) < count:
+        if current.weekday() < 5:
+            days.append(current)
+        current += timedelta(days=1)
+    return days
+
+
+def _fed_vintages(
+    dates: list[date],
+    vintages: int,
+    series: tuple[str, ...] = ("DGS10", "DGS2"),
+) -> list[dict]:
+    """Raw ``bronze_fed_series`` rows: every vintage of every observation."""
+    rows = []
+    for series_id in series:
+        base = 4.00 if series_id == "DGS10" else 4.50
+        for day in dates:
+            for vintage in range(vintages):
+                vintage_date = (date(2024, 1, 8) + timedelta(days=vintage)).isoformat()
+                rows.append(
+                    {
+                        "series_id": series_id,
+                        "observation_date": day.isoformat(),
+                        "value": base + vintage / 100.0,
+                        "vintage_date": vintage_date,
+                        "ingest_ts": f"{vintage_date}T21:00:00Z",
+                        "revision_class": "market_rate",
+                    }
+                )
+    return rows
+
+
+def _limited_fed_reader(rows: list[dict], captured: dict):
+    """Simulate ``db.delta_adapter.fed_series``: ORDER BY date DESC, then LIMIT.
+
+    The adapter orders ``observation_date DESC`` *before* the limit is applied,
+    so a read that hits the cap drops the OLDEST observations of the window.
+    """
+
+    ordered = sorted(rows, key=lambda row: row["observation_date"], reverse=True)
+
+    def fake_fed(series_ids, start_time, end_time, *, limit=5000):
+        captured["limit"] = limit
+        return ordered[:limit]
+
+    return fake_fed
 
 
 # ── 6. route behaviour ──────────────────────────────────────────────────────
@@ -279,6 +335,149 @@ def test_unexpected_chart_error_degrades_only_that_chart_without_leaking(
         assert charts[chart_id]["empty"] is False
         assert charts[chart_id]["freshness"]["state"] == "fresh"
     assert charts["mags_smh"]["series"][0]["points"]
+
+
+# ── 1c. EVERY computation fallback degrades only its own chart (fix round 3) ─
+#: (patched function, chart ids that must degrade).  Removing the yields or a
+#: pair handler used to stay green: only the USO fallback had a test.
+_DEGRADATION_CASES = (
+    ("api.routes.spreads.price_series", ("uso_price",)),
+    ("api.routes.spreads.yield_curve", ("treasury_yields",)),
+    (
+        "api.routes.spreads.rebased_relative_index",
+        ("rsp_spy", "mags_soxx", "mags_smh"),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("target", "degraded"),
+    _DEGRADATION_CASES,
+    ids=["price_series", "yield_curve", "rebased_relative_index"],
+)
+def test_each_computation_fallback_degrades_only_its_charts(
+    client, fake_lakebase, monkeypatch, target, degraded
+):
+    _stub_readers(monkeypatch)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("internal-only detail: warehouse password rotation")
+
+    monkeypatch.setattr(target, explode)
+
+    response = client.get("/api/spreads", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert "internal-only detail" not in response.text
+    assert "Traceback" not in response.text
+    charts = _charts(response.json())
+    assert len(charts) == 5
+    for chart_id in degraded:
+        chart = charts[chart_id]
+        assert chart["empty"] is True, chart_id
+        assert chart["series"] == [], chart_id
+        assert chart["freshness"]["state"] == "unavailable", chart_id
+        assert "chart computation unavailable" in chart["freshness"]["detail"]
+    for chart_id, chart in charts.items():
+        if chart_id in degraded:
+            continue
+        assert chart["empty"] is False, chart_id
+        assert chart["freshness"]["state"] == "fresh", chart_id
+        for series in chart["series"]:
+            assert series["points"], chart_id
+
+
+# ── 1d. a failed chart is logged with its chart id (fix round 3, CR-1) ──────
+@pytest.mark.parametrize(
+    ("target", "failing_ids"),
+    _DEGRADATION_CASES,
+    ids=["price_series", "yield_curve", "rebased_relative_index"],
+)
+def test_failed_chart_logs_its_chart_id_in_brace_style(
+    client, fake_lakebase, monkeypatch, target, failing_ids
+):
+    _stub_readers(monkeypatch)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("internal-only detail")
+
+    monkeypatch.setattr(target, explode)
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda message: messages.append(str(message)), level="ERROR")
+    try:
+        response = client.get("/api/spreads", headers=HEADERS)
+    finally:
+        logger.remove(sink_id)
+
+    assert response.status_code == 200
+    assert messages
+    # loguru interpolates with ``{}``; a ``%s`` placeholder would be printed
+    # literally and the chart name would be lost.
+    assert not any("%s" in message for message in messages), messages
+    for chart_id in failing_ids:
+        assert any(chart_id in message for message in messages), (chart_id, messages)
+
+
+# ── 1e. the FRED read cap is large and reports truncation (fix round 3, CR-2) ─
+def test_fed_read_keeps_every_observation_date_of_the_window(
+    client, fake_lakebase, monkeypatch
+):
+    """Vintaged rows above the old 5000 cap must not drop the oldest dates."""
+    from api.routes.spreads import _FED_MAX_ROWS
+
+    dates = _weekdays(150)
+    rows = _fed_vintages(dates, vintages=20)
+    assert len(rows) == 6000  # the shared silver cap (5000) would have cut this
+    assert 5000 < len(rows) < _FED_MAX_ROWS
+    captured: dict = {}
+    _stub_readers(monkeypatch, fed=_limited_fed_reader(rows, captured))
+
+    response = client.get("/api/spreads?days=1000", headers=HEADERS)
+
+    assert response.status_code == 200
+    yields = _charts(response.json())["treasury_yields"]
+    assert captured["limit"] == _FED_MAX_ROWS
+    expected = [day.isoformat() for day in dates]
+    for series in yields["series"]:
+        assert [point[0] for point in series["points"]] == expected
+    assert "truncated" not in yields["freshness"]["detail"]
+
+
+def test_fed_read_at_the_cap_flags_a_possibly_incomplete_window(
+    client, fake_lakebase, monkeypatch
+):
+    """Exactly a cap-sized read is reported, never silently treated as complete."""
+    dates = _weekdays(100, start=date(2022, 1, 3))
+    rows = _fed_vintages(dates, vintages=100)
+    assert len(rows) == 20_000
+    captured: dict = {}
+    _stub_readers(monkeypatch, fed=_limited_fed_reader(rows, captured))
+
+    response = client.get("/api/spreads?days=1000", headers=HEADERS)
+
+    assert response.status_code == 200
+    charts = _charts(response.json())
+    yields = charts["treasury_yields"]
+    # Honest, not fatal: the chart still renders with its normal state.
+    assert yields["freshness"]["state"] == "fresh"
+    assert (
+        "rows truncated at cap; window may be incomplete"
+        in yields["freshness"]["detail"]
+    )
+    for chart_id, chart in charts.items():
+        if chart_id == "treasury_yields":
+            continue
+        assert "truncated" not in chart["freshness"]["detail"], chart_id
+
+
+def test_normal_fed_volume_has_no_truncation_note(client, fake_lakebase, monkeypatch):
+    _stub_readers(monkeypatch)
+
+    payload = client.get("/api/spreads?days=1000", headers=HEADERS).json()
+
+    for chart in payload["charts"]:
+        assert "truncated" not in chart["freshness"]["detail"], chart["chart_id"]
 
 
 # ── adapter contract ────────────────────────────────────────────────────────

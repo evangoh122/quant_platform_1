@@ -42,6 +42,13 @@ router = APIRouter()
 _DEFAULT_DAYS = 252
 _MAX_DAYS = 1000
 _MAX_ROWS = 5000
+#: ``bronze_fed_series`` stores one row per *vintage* of each observation, so its
+#: read is much larger than a silver read: ~2000 rows for the two market-rate
+#: series over a 1000-trading-day window today, but a re-vintaged table would
+#: multiply that.  A separate, larger cap keeps the whole window bounded without
+#: silently cutting the oldest observations of the window.
+_FED_MAX_ROWS = 20_000
+_FED_TRUNCATED_DETAIL = "rows truncated at cap; window may be incomplete"
 
 _SILVER = "silver_ohlcv_day_adjusted"
 _FED = "bronze_fed_series"
@@ -181,10 +188,16 @@ def market_spreads(
     def _read_fed() -> list[dict]:
         from agent.tools_retrieval import get_fed_series
 
-        return get_fed_series(list(_FED_SERIES), start_text, end_text, limit=_MAX_ROWS)
+        return get_fed_series(list(_FED_SERIES), start_text, end_text, limit=_FED_MAX_ROWS)
 
     with stage("delta_read", table=_FED):
         fed_rows, fed_state, fed_detail = read_delta(_read_fed)
+
+    # A read that comes back at exactly the cap was very likely cut off by it:
+    # the adapter orders ``observation_date DESC`` before applying the limit, so
+    # truncation drops the OLDEST observations of the window.  Say so in the
+    # chart's freshness detail instead of claiming a complete window.
+    fed_truncated = len(fed_rows) >= _FED_MAX_ROWS
 
     charts: list[SpreadChart] = []
 
@@ -229,7 +242,7 @@ def market_spreads(
             caption=uso_caption,
         )
     except Exception:  # noqa: BLE001 - one bad chart must not fail the response
-        logger.exception("market spreads: uso_price computation failed")
+        logger.exception("market spreads: {} computation failed", "uso_price")
         uso_chart = _unavailable_chart(
             chart_id="uso_price",
             title=_USO_TITLE,
@@ -291,6 +304,7 @@ def market_spreads(
                 table=_FED,
                 detail=_join_detail(
                     fed_detail,
+                    _FED_TRUNCATED_DETAIL if fed_truncated else "",
                     "latest vintage per (series_id, observation_date)",
                     _WEEKDAY_DETAIL,
                 ),
@@ -314,7 +328,7 @@ def market_spreads(
             caption=yield_caption,
         )
     except Exception:  # noqa: BLE001 - one bad chart must not fail the response
-        logger.exception("market spreads: treasury_yields computation failed")
+        logger.exception("market spreads: {} computation failed", "treasury_yields")
         yields_chart = _unavailable_chart(
             chart_id="treasury_yields",
             title=_YIELD_TITLE,
@@ -373,7 +387,7 @@ def market_spreads(
                 caption=_outperformance_caption(rel, symbol_a, symbol_b),
             )
         except Exception:  # noqa: BLE001 - one bad chart must not fail the response
-            logger.exception("market spreads: %s computation failed", chart_id)
+            logger.exception("market spreads: {} computation failed", chart_id)
             pair_chart = _unavailable_chart(
                 chart_id=chart_id,
                 title=title,
