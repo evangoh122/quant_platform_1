@@ -52,10 +52,14 @@ One signature: `size(signal_or_pair, estimates, params) -> date, w_a, w_b`.
 `var_a + h^2 var_b - 2 h cov` floored at `0.05^2`, and
 `scale = min(target_vol / spread_vol, max_gross / (1 + h))`.
 `vol_target` additionally multiplies by the alpha signal clipped to
-`[-signal_cap, signal_cap]` **and** divides the scale by `max(1, |alpha|)`, so
-gross exposure stays at or below `max_gross` for any configured cap (a cap
-above 1 widens the alpha, not the risk limit). `signal_cap` must be finite and
-positive; `risk/config.py` rejects anything else.
+`[-signal_cap, signal_cap]` **and** scales the book by
+`alpha / max(1, |alpha|)`, so gross exposure stays at or below `max_gross` for
+any configured cap. Because of that denominator, any `signal_cap` above 1 has
+**no effect** on the final weights: with `|alpha| >= 1` the factor is the
+unit-alpha book (`+1` or `-1`), so a cap above 1 never changes `w_a` or `w_b`
+and `signal_cap` only matters below 1. `signal_cap` must be a positive finite
+number, and `risk/config.py` validates this when the config is loaded, not on a
+directly constructed parameter object.
 
 Every sizer -- including `equal_dollar`, whose formula uses none of the
 estimates -- requires a finite signal and a complete, finite estimate set
