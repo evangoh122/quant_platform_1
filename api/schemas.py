@@ -6,8 +6,6 @@ an :class:`Envelope` with an explicit freshness indicator so the UI can render
 loading / empty / error states honestly — including when a backing table is
 empty today (all ``gold_*`` / ``analytics_*`` tables are currently 0 rows) or
 when a backend dependency (Delta / Lakebase) is unavailable.
-
-This module is additive: it does not modify the read-only ``api/models``.
 """
 from __future__ import annotations
 

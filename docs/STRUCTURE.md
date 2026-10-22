@@ -8,7 +8,8 @@ supporting pipelines. One line per top-level directory:
 - `api/` — FastAPI backend: `api/main.py` entrypoint, `api/deps.py` dependency
   providers (Lakebase, Delta reader, authenticated user + server-side roles),
   `api/routes/` (one module per resource), `api/schemas.py` (response
-  contracts), and read-only inherited `api/services/` + `api/models/`.
+  contracts), and the inherited `api/services/` retrieval helpers
+  (embeddings, hybrid retrieval, reranking, SEC knowledge graph, sentiment).
 - `frontend/` — React + TypeScript + Tailwind SPA (Vite). Eight rubric screens,
   a single typed API client, and shared components.
 - `agent/` — agent orchestration, retrieval/write tool contracts, and

@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEAD_MODULE = REPO_ROOT / "api" / "services" / "drift_detection.py"
 
 # Public surface of the deleted module (``DriftStatus`` is bounded so the
-# unrelated ``api/models/review_schemas.py::DriftStatusOut`` schema is not
+# unrelated ``DriftStatusOut`` name from the removed review schemas is not
 # matched).
 DEAD_SYMBOLS = (
     re.compile(r"drift_detection"),

@@ -76,6 +76,11 @@ Dates are the last recorded verification; this repository does not assert the cu
 | `tests/` | Offline test suite |
 | `docs/` | Deployment, runbooks, data schemas, proposal |
 
+The inherited Rag_workbench RAG/DuckDB stack (LangGraph orchestration, DuckDB-backed chat/SQL services and review
+schemas) was deleted because no app or job entry point started it. A dead-code guard now fails the suite if an
+`api.*` module becomes unreachable: `scripts/check_api_reachability.py` derives the reachable set from `api.main`,
+the executable packages and `resources/*.yml` job tasks, and `tests/test_no_dead_api_modules.py` asserts it.
+
 ## Local development
 
 Python dependencies are managed with [uv](https://docs.astral.sh/uv/).
