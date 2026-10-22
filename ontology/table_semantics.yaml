@@ -57,6 +57,15 @@ tables:
     keys: [accession_number, chunk_id]
     pit_column: accepted_ts
     freshness: "Event-driven at EDGAR acceptance"
+    company_name_note: "company_name holds the canonical TICKER, not a company name (pipelines/sec_rag_ingest.py:1637); registrant legal names come from silver_sec_registrant."
+  bronze_sec_submissions:
+    grain: "One raw SEC submissions API document per (cik, payload_sha256); an HTTP 404 miss is a row with payload NULL and the miss sentinel hash"
+    keys: [cik, payload_sha256]
+    pit_column: fetched_at
+    data_source: sec_edgar
+    pit_rule: "fetched_at is when this project observed the payload. The SEC generated the document earlier and its public publication time is unknown, so this table is not used for point-in-time joins."
+    freshness: "Appended by the unscheduled SEC submissions ingestion job; a rerun is a no-op while the payload is unchanged"
+    append_only_rule: "The writer only inserts on an absent (cik, payload_sha256) key; it never updates or deletes."
   sec_ingest_log:
     grain: "One append-only SEC filing attempt per (run_id, ticker, accession_number, attempt)"
     keys: [run_id, ticker, accession_number, attempt]
@@ -132,6 +141,38 @@ tables:
     pit_column: accepted_ts
     freshness: "Event-driven; available no earlier than accepted_ts"
     entity_types: [xbrl_fact, company, event, risk_factor]
+  silver_sec_registrant:
+    grain: "One registrant identity observation per (cik, payload_sha256)"
+    keys: [cik10, payload_sha256]
+    pit_column: observed_at
+    data_source: sec_edgar
+    column_meanings:
+      cik10: "SEC Central Index Key zero-padded to ten digits; joins to filings by cik"
+      name: "Current legal name as published by the SEC at observed_at"
+      sic: "SEC SIC code kept as a string; leading zeros are significant"
+      sic_description: "SEC SIC industry description"
+      tickers: "Tickers observed at observed_at, in payload order"
+      exchanges: "Exchanges observed at observed_at, in payload order"
+      state_of_incorporation: "SEC state-of-incorporation code"
+      fiscal_year_end: "SEC fiscal year end as MMDD, verbatim"
+      entity_type: "SEC entity type, for example operating or investment"
+      observed_at: "Fetch time of the payload this row was parsed from; equals bronze_sec_submissions.fetched_at"
+      processed_ts: "Transform run time; lineage only, never an availability time"
+    observed_rule: "tickers/exchanges are observations at observed_at, not history: do not use them before observed_at and do not assume they were valid earlier."
+    freshness: "Rebuilt from bronze when the silver run executes"
+  silver_sec_registrant_former_names:
+    grain: "One former-name interval per (cik, payload_sha256, former_name)"
+    keys: [cik10, payload_sha256, former_name]
+    pit_column: observed_at
+    data_source: sec_edgar
+    column_meanings:
+      former_name: "A former legal name of the registrant"
+      from_date: "First day the former name applied, inclusive as published"
+      to_date: "Last day the former name applied, inclusive as published; never shifted to an exclusive bound"
+      observed_at: "Fetch time of the payload this row was parsed from"
+      processed_ts: "Transform run time; lineage only, never an availability time"
+    interval_rule: "from_date and to_date are inclusive exactly as the SEC publishes them; no date arithmetic is applied."
+    freshness: "Rebuilt from bronze when the silver run executes"
 
   serve_daily_prices_v1:
     status: proposed

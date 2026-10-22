@@ -17,9 +17,12 @@ from pathlib import Path
 
 import pytest
 
+from config.data_sources import validate_data_source
 from sec_kg.submissions import (
     MISS_PAYLOAD_SHA256,
+    SEC_EDGAR_DATA_SOURCE,
     FormerName,
+    RegistrantRecord,
     normalize_cik,
     parse_registrant,
     parse_registrant_json,
@@ -149,6 +152,7 @@ def test_to_dict_has_the_documented_keys():
     assert set(record.to_dict()) == {
         "cik10",
         "name",
+        "data_source",
         "former_names",
         "sic",
         "sic_description",
@@ -159,6 +163,22 @@ def test_to_dict_has_the_documented_keys():
         "entity_type",
         "observed_at",
     }
+
+
+def test_record_carries_the_sec_edgar_data_source():
+    """Every parsed record names its provider code from the shared vocabulary."""
+    record = parse_registrant(_load("with_former_names.json"), OBSERVED_AT)
+
+    assert SEC_EDGAR_DATA_SOURCE == "sec_edgar"
+    assert record.data_source == "sec_edgar"
+    assert validate_data_source(record.data_source) == "sec_edgar"
+    assert record.to_dict()["data_source"] == "sec_edgar"
+
+
+def test_record_data_source_is_a_required_field():
+    """Mutation guard: giving the field a default would stop this failing."""
+    with pytest.raises(TypeError):
+        RegistrantRecord(cik10="0000000042", name="No Source Corp.")
 
 
 def test_parse_registrant_json_matches_mapping_input():

@@ -498,3 +498,42 @@ def test_bronze_market_keys_match_notebook_constants(table, path, constant):
     ontology_keys = _documents()["table_semantics.yaml"]["tables"][table]["keys"]
     assert ontology_keys == notebook_keys
     assert "event_date" not in ontology_keys
+
+
+def test_sec_registrant_slice_is_declared():
+    """KG-0: the submissions/registrant vocabulary must stay declared.
+
+    ``_sql_table_schemas`` cannot see ``CREATE OR REPLACE TABLE ... AS SELECT``,
+    so without this test the three KG-0 tables could be dropped from the
+    ontology without any failure.
+    """
+    documents = _documents()
+    tables = documents["table_semantics.yaml"]["tables"]
+    required_keys = {
+        "bronze_sec_submissions": {"cik", "payload_sha256"},
+        "silver_sec_registrant": {"cik10", "payload_sha256"},
+        "silver_sec_registrant_former_names": {
+            "cik10", "payload_sha256", "former_name"
+        },
+    }
+    for table, keys in required_keys.items():
+        assert table in tables, f"missing table semantics: {table}"
+        assert set(tables[table]["keys"]) == keys, table
+        assert tables[table]["data_source"] == "sec_edgar", table
+
+    # fetched_at is the bronze system time; public availability is unknown.
+    assert tables["bronze_sec_submissions"]["pit_column"] == "fetched_at"
+    # company_name in the filings table is a ticker, not a company name.
+    filing_note = tables["bronze_sec_filings_v2"]["company_name_note"]
+    assert "TICKER" in filing_note and "company_name" in filing_note
+
+    lineage = documents["join_hints.yaml"]["lineage"]
+    assert "bronze_sec_submissions_to_silver_sec_registrant" in lineage
+    joins = documents["join_hints.yaml"]["joins"]
+    assert joins["cik_to_registrant"]["tables"] == [
+        "silver_sec_registrant",
+        "silver_sec_registrant_former_names",
+    ]
+
+    terms = documents["business_terms.yaml"]["terms"]
+    assert {"registrant", "former_name", "sic_code"} <= set(terms)

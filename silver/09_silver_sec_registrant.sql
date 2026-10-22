@@ -11,6 +11,7 @@
 --   sic                   SEC SIC code, kept as a string (leading zeros matter)
 --   tickers / exchanges   observations at ingest time (never back-dated)
 --   observed_at           the fetch timestamp (fetched_at)
+--   data_source           always 'sec_edgar' (config/data_sources.py)
 -- Rows with payload IS NULL are HTTP 404 misses and are deliberately excluded.
 
 CREATE OR REPLACE TABLE {catalog}.{schema}.silver_sec_registrant AS
@@ -60,14 +61,22 @@ SELECT
   j.entityType                          AS entity_type,
   fetched_at                            AS observed_at,
   ingest_run_id                         AS ingest_run_id,
+  'sec_edgar'                           AS data_source,
   current_timestamp()                   AS processed_ts
 FROM parsed;
+
+ALTER TABLE {catalog}.{schema}.silver_sec_registrant
+  ALTER COLUMN data_source COMMENT 'Provider code from config.data_sources.DATA_SOURCES — this table is always sec_edgar';
+
+ALTER TABLE {catalog}.{schema}.silver_sec_registrant
+  ALTER COLUMN data_source SET NOT NULL;
 
 -- silver_sec_registrant_former_names: exploded former-name intervals
 --
 -- One row per (cik, payload_sha256, former name).  The SEC ``from`` / ``to``
 -- dates are inclusive and are cast as given — never shifted or adjusted.
--- Also excludes 404 misses (payload IS NULL).
+-- Also excludes 404 misses (payload IS NULL).  data_source is always
+-- 'sec_edgar', from the controlled vocabulary in config/data_sources.py.
 
 CREATE OR REPLACE TABLE {catalog}.{schema}.silver_sec_registrant_former_names AS
 WITH deduped AS (
@@ -104,6 +113,13 @@ SELECT
   CAST(fn.`to` AS DATE)                 AS to_date,
   p.fetched_at                          AS observed_at,
   p.ingest_run_id                       AS ingest_run_id,
+  'sec_edgar'                           AS data_source,
   current_timestamp()                   AS processed_ts
 FROM parsed p
 LATERAL VIEW explode(p.j.formerNames) t AS fn;
+
+ALTER TABLE {catalog}.{schema}.silver_sec_registrant_former_names
+  ALTER COLUMN data_source COMMENT 'Provider code from config.data_sources.DATA_SOURCES — this table is always sec_edgar';
+
+ALTER TABLE {catalog}.{schema}.silver_sec_registrant_former_names
+  ALTER COLUMN data_source SET NOT NULL;

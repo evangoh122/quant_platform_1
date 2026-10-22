@@ -23,6 +23,20 @@ lineage:
     keys: [accession_number]
     cardinality: one_to_many
     grain: "One filing accession maps to many entity rows at the silver_sec_entities grain."
+  bronze_sec_submissions_to_silver_sec_registrant:
+    left_table: bronze_sec_submissions
+    right_table: silver_sec_registrant
+    keys: ["cik -> cik10", payload_sha256]
+    cardinality: one_to_one
+    temporal_rule: "silver_sec_registrant.observed_at equals bronze_sec_submissions.fetched_at; the payload's public publication time is unknown, so this lineage is not used for point-in-time joins."
+    transform: "Parse the raw submissions JSON and drop HTTP 404 misses (payload IS NULL)."
+  bronze_sec_submissions_to_silver_sec_registrant_former_names:
+    left_table: bronze_sec_submissions
+    right_table: silver_sec_registrant_former_names
+    keys: ["cik -> cik10", payload_sha256]
+    cardinality: one_to_many
+    temporal_rule: "Former-name rows carry the same observed_at as the bronze fetch; the intervals are the SEC published validity of each name, not an availability timestamp."
+    transform: "Explode payload.formerNames; from_date/to_date stay inclusive as published."
   silver_ohlcv_to_gold_ohlcv_features:
     left_table: silver_ohlcv
     right_table: gold_ohlcv_features
@@ -75,6 +89,12 @@ joins:
     right_keys: [ticker]
     output_key: cik
     rule: "Resolve ticker aliases first and time-bound mappings when issuer-symbol history is available; do not infer CIK from company name."
+  cik_to_registrant:
+    tables: [silver_sec_registrant, silver_sec_registrant_former_names]
+    left_keys: [cik10]
+    right_keys: [cik10]
+    additional_keys: [payload_sha256]
+    rule: "Resolve a filing cik to registrant identity. Current name, SIC and observed tickers come from silver_sec_registrant; a historical name is valid only while the as-of date lies inside the inclusive former-name interval [from_date, to_date]."
   section_chunk_to_entity:
     tables: [silver_sec_sections, silver_sec_entities]
     left_keys: [chunk_id]

@@ -9,6 +9,8 @@ with SEC fair-access headers, and appends the raw payload to
 The submissions endpoint is the only source in this project that carries the
 registrant's real company name, former names, SIC code, tickers and exchanges
 (``bronze_sec_filings_v2.company_name`` actually holds the canonical ticker).
+Every bronze row carries ``data_source = 'sec_edgar'`` from the controlled
+vocabulary in ``config/data_sources.py``.
 
 Safety
 ------
@@ -44,6 +46,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple
 _p = globals().get("__file__") or sys.argv[0]
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(_p))))
 
+from config.data_sources import validate_data_source  # noqa: E402
 from pipelines._runtime import get_spark  # noqa: E402
 from pipelines.sec_rag_ingest import (  # noqa: E402
     DEFAULT_SECRET_KEY,
@@ -59,6 +62,7 @@ from pipelines.sec_rag_ingest import (  # noqa: E402
 )
 from sec_kg.submissions import (  # noqa: E402
     MISS_PAYLOAD_SHA256,
+    SEC_EDGAR_DATA_SOURCE,
     normalize_cik,
     parse_registrant_json,
     payload_sha256,
@@ -87,7 +91,17 @@ BRONZE_COLUMNS = [
     _ColumnSpec("http_status", "int", False),
     _ColumnSpec("fetched_at", "timestamp", False),
     _ColumnSpec("ingest_run_id", "string", False),
+    _ColumnSpec("data_source", "string", False),
 ]
+
+# Unity Catalog column comments for non-obvious columns.  Only ``data_source``
+# carries one today: it is the provenance contract from config/data_sources.py.
+_COLUMN_COMMENTS = {
+    "data_source": (
+        "Provider code from config.data_sources.DATA_SOURCES — "
+        "this table is always sec_edgar"
+    ),
+}
 
 _DDL_TYPE_MAP = {
     "string": "STRING",
@@ -154,7 +168,9 @@ def columns_to_ddl(columns) -> str:
     for c in columns:
         ddl_type = _DDL_TYPE_MAP.get(c.type_str, c.type_str.upper())
         nullable = "" if c.nullable else " NOT NULL"
-        parts.append(f"    {c.name} {ddl_type}{nullable}")
+        comment = _COLUMN_COMMENTS.get(c.name)
+        comment_sql = f" COMMENT '{comment}'" if comment else ""
+        parts.append(f"    {c.name} {ddl_type}{nullable}{comment_sql}")
     return ",\n".join(parts)
 
 
@@ -191,6 +207,8 @@ def coerce_bronze_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "http_status": int(status) if status is not None else 200,
         "fetched_at": row.get("fetched_at"),
         "ingest_run_id": row.get("ingest_run_id"),
+        # A row without a valid provider code must fail here, not be written.
+        "data_source": validate_data_source(row["data_source"]),
     }
 
 
@@ -203,6 +221,7 @@ def miss_row(cik: str, ingest_run_id: str, fetched_at: datetime) -> Dict[str, An
         "http_status": 404,
         "fetched_at": fetched_at,
         "ingest_run_id": ingest_run_id,
+        "data_source": SEC_EDGAR_DATA_SOURCE,
     }
 
 
@@ -220,6 +239,7 @@ def payload_row(
         "http_status": 200,
         "fetched_at": fetched_at,
         "ingest_run_id": ingest_run_id,
+        "data_source": SEC_EDGAR_DATA_SOURCE,
     }
 
 

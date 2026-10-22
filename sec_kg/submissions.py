@@ -13,6 +13,8 @@ registrant fields the knowledge graph needs:
 * ``sic`` / ``sic_description``
 * ``tickers`` / ``exchanges`` — observations at ingest time, in payload order
 * ``state_of_incorporation`` / ``fiscal_year_end`` / ``entity_type``
+* ``data_source`` — always ``sec_edgar`` (controlled vocabulary in
+  ``config/data_sources.py``)
 * ``observed_at`` — the fetch timestamp supplied by the caller
 
 No field is fabricated: a missing key becomes ``None`` (or an empty list for the
@@ -27,6 +29,11 @@ from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
+
+from config.data_sources import validate_data_source
+
+# Every record produced by this parser is an SEC EDGAR submissions observation.
+SEC_EDGAR_DATA_SOURCE = validate_data_source("sec_edgar")
 
 # Sentinel hash recorded for a 404 miss.  Hash of a fixed marker (not of an
 # empty body) so a miss is distinguishable from a genuinely empty payload and
@@ -79,6 +86,7 @@ class RegistrantRecord:
 
     cik10: str
     name: Optional[str]
+    data_source: str
     former_names: List[FormerName] = field(default_factory=list)
     sic: Optional[str] = None
     sic_description: Optional[str] = None
@@ -93,6 +101,7 @@ class RegistrantRecord:
         return {
             "cik10": self.cik10,
             "name": self.name,
+            "data_source": self.data_source,
             "former_names": [fn.to_dict() for fn in self.former_names],
             "sic": self.sic,
             "sic_description": self.sic_description,
@@ -169,6 +178,7 @@ def parse_registrant(
     return RegistrantRecord(
         cik10=normalize_cik(payload.get("cik")),
         name=name,
+        data_source=SEC_EDGAR_DATA_SOURCE,
         former_names=former_names,
         sic=_opt_str(payload.get("sic")),
         sic_description=_opt_str(payload.get("sicDescription")),

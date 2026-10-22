@@ -23,12 +23,14 @@ from pathlib import Path
 import pytest
 import yaml
 
+from config.data_sources import validate_data_source
 import pipelines.ingest_sec_submissions as ingest
 from pipelines.ingest_sec_submissions import (
     BRONZE_COLUMNS,
     MAX_SUBMISSIONS_RPS,
     build_source_url,
     clamp_requests_per_second,
+    coerce_bronze_row,
     columns_to_ddl,
     payload_row,
     miss_row,
@@ -405,6 +407,8 @@ def test_ensure_table_ddl_is_the_column_spec():
     assert "http_status INT NOT NULL" in ddl
     assert "fetched_at TIMESTAMP NOT NULL" in ddl
     assert "ingest_run_id STRING NOT NULL" in ddl
+    assert "data_source STRING NOT NULL" in ddl
+    assert "data_source STRING NOT NULL COMMENT" in ddl
 
     fake = FakeSpark()
     writer = ingest.SparkSubmissionsWriter(spark_factory=lambda: fake)
@@ -422,7 +426,36 @@ def test_bronze_schema_column_order():
         "http_status",
         "fetched_at",
         "ingest_run_id",
+        "data_source",
     ]
+
+
+def test_bronze_rows_carry_a_valid_data_source():
+    """Both row builders and the coercion step stamp the provider code.
+
+    Mutation: delete ``data_source`` from ``payload_row`` and this fails.
+    """
+    rows = [
+        payload_row("1234567", FIXTURE_TEXT, "run-1", NOW),
+        miss_row("7654321", "run-1", NOW),
+    ]
+
+    for row in rows:
+        assert row["data_source"] == "sec_edgar"
+        assert validate_data_source(row["data_source"]) == "sec_edgar"
+
+    coerced = coerce_bronze_row(rows[0])
+    assert coerced["data_source"] == "sec_edgar"
+    assert set(coerced) == {c.name for c in BRONZE_COLUMNS}
+
+
+def test_a_row_without_a_data_source_is_rejected():
+    """A row whose provenance is missing must fail instead of being written."""
+    row = payload_row("1234567", FIXTURE_TEXT, "run-1", NOW)
+    del row["data_source"]
+
+    with pytest.raises(KeyError):
+        coerce_bronze_row(row)
 
 
 # ── Rate limiting ────────────────────────────────────────────────────────────
@@ -508,6 +541,53 @@ def test_silver_registrant_columns_and_types(silver_sql):
     assert "PARTITION BY cik, payload_sha256" in window
     # 404 misses (payload IS NULL) never reach silver.
     assert "WHERE payload IS NOT NULL" in window
+
+
+def test_silver_tables_carry_the_sec_edgar_data_source(silver_sql):
+    """Both silver tables project the provider code and comment the column.
+
+    Mutation: dropping the ``data_source`` projection from either SELECT fails.
+    """
+    blocks = silver_sql.split("CREATE OR REPLACE TABLE")
+    assert len(blocks) == 3, "expected the header plus two table statements"
+
+    window = " ".join(silver_sql.split())
+    assert window.count("'sec_edgar' AS data_source") == 2
+
+    for table, block in zip(
+        ("silver_sec_registrant", "silver_sec_registrant_former_names"),
+        blocks[1:],
+    ):
+        table_sql = " ".join(block.split())
+        assert "'sec_edgar' AS data_source" in table_sql, table
+        assert (
+            f"ALTER TABLE {{catalog}}.{{schema}}.{table} "
+            "ALTER COLUMN data_source COMMENT" in table_sql
+        ), table
+        assert (
+            f"ALTER TABLE {{catalog}}.{{schema}}.{table} "
+            "ALTER COLUMN data_source SET NOT NULL" in table_sql
+        ), table
+
+
+def test_silver_sql_splits_into_intact_statements(silver_sql):
+    """The runner splits on ';', so a comment string must not contain one."""
+    from pipelines.run_silver_gold import split_statements
+
+    statements = split_statements(silver_sql)
+
+    assert len(statements) == 6
+    assert [stmt.split()[0] for stmt in statements] == [
+        "CREATE",
+        "ALTER",
+        "ALTER",
+        "CREATE",
+        "ALTER",
+        "ALTER",
+    ]
+    assert statements[2].endswith("SET NOT NULL")
+    assert statements[5].endswith("SET NOT NULL")
+    assert all(stmt.count("'") % 2 == 0 for stmt in statements), statements
 
 
 def test_silver_former_names_is_exploded_and_inclusive(silver_sql):

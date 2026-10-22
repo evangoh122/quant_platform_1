@@ -722,16 +722,19 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   is_masked = TRUE for UNEXPLAINED_PENDING and CONFIRMED_DATA_BREAK.
   Masking sets return_1d = NULL (never 0) in silver_ohlcv_day_adjusted.
 
-### bronze_sec_submissions  (6 cols)
+### bronze_sec_submissions  (7 cols)
   cik                                string NOT NULL
   payload                            string
   payload_sha256                     string NOT NULL
   http_status                        int NOT NULL
   fetched_at                         timestamp NOT NULL
   ingest_run_id                      string NOT NULL
+  data_source                        string NOT NULL
 
   Source: https://data.sec.gov/submissions/CIK##########.json (SEC submissions
   API).  CIKs come from distinct non-null gold_sec_coverage.cik.
+  data_source is always 'sec_edgar', from the controlled vocabulary in
+  config/data_sources.py (UC column comment set by the writer DDL).
   Fair access: descriptive User-Agent from SEC_EDGAR_USER_AGENT (env or
   Databricks secret evangoh_capstone/sec_edgar_user_agent; never hard-coded),
   <= 8 requests/s, retries with backoff.  A 404 is a recorded miss:
@@ -742,7 +745,7 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   payload is the raw JSON text exactly as fetched; fetched_at is the
   observation time (never back-dated).
 
-### silver_sec_registrant  (13 cols)
+### silver_sec_registrant  (14 cols)
   cik10                              string
   payload_sha256                     string
   name                               string
@@ -755,15 +758,17 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   entity_type                        string
   observed_at                        timestamp
   ingest_run_id                      string
+  data_source                        string NOT NULL
   processed_ts                       timestamp
 
   One row per (cik, payload_sha256) parsed from bronze_sec_submissions.
   404 misses (payload IS NULL) are excluded.  name is the current legal name;
   sic is kept as a string (leading zeros are significant); fiscal_year_end is
   the SEC MMDD value verbatim.  tickers/exchanges are observations at
-  observed_at (ingest time) and are never back-dated.
+  observed_at (ingest time) and are never back-dated.  data_source is always
+  'sec_edgar' (config/data_sources.py).
 
-### silver_sec_registrant_former_names  (8 cols)
+### silver_sec_registrant_former_names  (9 cols)
   cik10                              string
   payload_sha256                     string
   former_name                        string
@@ -771,8 +776,10 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   to_date                            date
   observed_at                        timestamp
   ingest_run_id                      string
+  data_source                        string NOT NULL
   processed_ts                       timestamp
 
   One row per (cik, payload_sha256, former name), exploded from
   payload.formerNames.  from_date/to_date are the SEC from/to dates inclusive,
-  cast as given (no +/- 1 day adjustment).
+  cast as given (no +/- 1 day adjustment).  data_source is always 'sec_edgar'
+  (config/data_sources.py).
