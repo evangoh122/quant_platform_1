@@ -7,6 +7,7 @@ editing the YAML.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -147,6 +148,21 @@ def _garch(raw: dict[str, Any], where: str) -> GarchParams:
     )
 
 
+def _signal_cap(raw: dict[str, Any]) -> float:
+    """Read ``sizing.signal_cap``; it clips an alpha, so it must be > 0.
+
+    ``risk.sizing`` keeps gross exposure at or below ``max_gross`` for any cap,
+    but a zero, negative or non-finite cap is still a configuration error and
+    must fail loudly instead of silently producing an all-zero book.
+    """
+    value = float(_require(raw, "signal_cap", "sizing"))
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(
+            f"risk config: sizing.signal_cap must be finite and > 0, got {value!r}"
+        )
+    return value
+
+
 def _parse(raw: dict[str, Any]) -> RiskConfig:
     epsilon = float(_require(raw, "epsilon", "risk"))
     columns_raw = _require(raw, "columns", "risk")
@@ -195,7 +211,7 @@ def _parse(raw: dict[str, Any]) -> RiskConfig:
         vol_floor=float(_require(size_raw, "vol_floor", "sizing")),
         equal_dollar_gross=float(_require(size_raw, "equal_dollar_gross", "sizing")),
         inverse_vol_gross=float(_require(size_raw, "inverse_vol_gross", "sizing")),
-        signal_cap=float(_require(size_raw, "signal_cap", "sizing")),
+        signal_cap=_signal_cap(size_raw),
         default_signal=float(_require(size_raw, "default_signal", "sizing")),
         epsilon=epsilon,
     )

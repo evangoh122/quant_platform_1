@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -203,6 +204,76 @@ def test_borrow_only_on_short_notional() -> None:
         2.0 * half_result.metrics["borrow_cost_total"], rel=1e-9
     )
     assert borrow_rate_daily("liquid") == CostParams().borrow_bps_daily["liquid"]
+
+
+def test_borrow_accrues_on_the_book_held_over_the_interval() -> None:
+    """Borrow bills the book held over open-to-open, not the book filled today."""
+    cfg = load_config()
+    panel = _panel([100.0 * (1.001**index) for index in range(14)])
+    schedule_a = [
+        0.6, -0.4, 0.0, 0.5, -0.5, 0.25, 0.0, -0.75, 0.4, -0.2, 0.3, -0.1, 0.2, -0.3
+    ]
+    schedule_b = [-0.5 * weight for weight in schedule_a]
+    weights = _weights(panel["date"], schedule_a, schedule_b)
+    result = backtest_vol_pair(
+        panel,
+        weights,
+        replace(cfg.backtest, cost_bps_per_side=0.0),
+        columns=cfg.columns,
+    )
+    daily = result.daily
+    rate = borrow_rate_daily(cfg.backtest.borrow_bucket) / 10_000.0
+    # The first row has no open-to-open return, so daily row i is panel row i+1.
+    assert daily.height == panel.height - 1
+
+    held_rows = [schedule_a[row - 2] if row >= 2 else 0.0 for row in range(1, panel.height)]
+    expected_held = []
+    expected_exec = []
+    for row in range(1, panel.height):
+        held_a = schedule_a[row - 2] if row >= 2 else 0.0
+        held_b = schedule_b[row - 2] if row >= 2 else 0.0
+        exec_a, exec_b = schedule_a[row - 1], schedule_b[row - 1]
+        expected_held.append((max(-held_a, 0.0) + max(-held_b, 0.0)) * rate)
+        expected_exec.append((max(-exec_a, 0.0) + max(-exec_b, 0.0)) * rate)
+
+    assert daily["borrow_cost"].to_list() == pytest.approx(
+        expected_held, rel=1e-12, abs=1e-18
+    )
+    assert [float(value) for value in daily["w_a_held"]] == pytest.approx(held_rows)
+
+    held_total = sum(expected_held)
+    exec_total = sum(expected_exec)
+    assert held_total > 0.0
+    # The two candidate books really differ here, so the pin above is not vacuous.
+    assert not math.isclose(held_total, exec_total, rel_tol=1e-6)
+
+
+def test_realized_vol_ddof_follows_config() -> None:
+    cfg = load_config()
+    closes = [
+        100.0 * (1.004**index) * (1.0 + 0.01 * (-1) ** index) for index in range(40)
+    ]
+    panel = _panel(closes)
+    # Only leg A is traded: the fixture gives both legs identical returns, so a
+    # hedged book would have zero gross variance and prove nothing.
+    weights = _weights(panel["date"], [0.5] * panel.height, [0.0] * panel.height)
+    population = backtest_vol_pair(
+        panel, weights, replace(cfg.backtest, sharpe_ddof=0), columns=cfg.columns
+    )
+    sample = backtest_vol_pair(
+        panel, weights, replace(cfg.backtest, sharpe_ddof=1), columns=cfg.columns
+    )
+    n_days = population.metrics["n_days"]
+    ratio = math.sqrt(n_days / (n_days - 1.0))
+    assert population.metrics["realized_vol_gross"] > 0.0
+    assert population.metrics["realized_vol_net"] > 0.0
+    for key in ("realized_vol_gross", "realized_vol_net"):
+        assert sample.metrics[key] == pytest.approx(
+            population.metrics[key] * ratio, rel=1e-12
+        )
+        assert not math.isclose(
+            sample.metrics[key], population.metrics[key], rel_tol=1e-6
+        )
 
 
 def test_polars_cost_expression_matches_scalar_cost_per_trade() -> None:

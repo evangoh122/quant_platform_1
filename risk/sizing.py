@@ -9,15 +9,25 @@ One entry point — :func:`size` — exposes four sizers:
 ``covariance_aware``
     Volatility-ratio hedge with a floored spread variance and a vol/gross cap.
 ``vol_target``
-    The covariance-aware book multiplied by the clipped alpha signal.
+    The covariance-aware book multiplied by the clipped alpha signal, with the
+    scale divided by ``max(1, |alpha|)`` so gross exposure stays at or below
+    ``max_gross`` for any configured ``signal_cap``.
 
 The hedge ratio is ``h = clip(vol_a / vol_b)`` (equivalently
 ``sqrt(var_a / var_b)``) clipped to the configured band.  Spread variance is
 ``var_a + h^2 * var_b - 2 * h * cov`` floored at ``spread_var_floor``, and the
 scale is ``min(target_vol / spread_vol, max_gross / (1 + h))``.
 
-Every non-finite input (null, NaN or infinity) produces a zero weight at the
-sizing boundary; a NaN never reaches the backtester.
+Estimate contract
+-----------------
+Every sizer -- including ``equal_dollar``, whose formula uses none of the
+estimates -- requires a finite signal *and* a complete, finite raw estimate set
+(``vol_a``, ``vol_b``, ``corr``).  A null, NaN or infinite value in any of them
+yields exactly ``0.0`` on both legs: a missing or unusable risk estimate never
+produces a position.  The check runs on the **raw** estimates, before the
+correlation is clipped into ``[-1, 1]``, so an infinite correlation cannot be
+laundered into ``+1`` and turned into a maximum-size book.  A NaN never reaches
+the backtester as a weight.
 """
 from __future__ import annotations
 
@@ -108,20 +118,22 @@ def spread_volatility(
 # ── Sizing ───────────────────────────────────────────────────────────────────
 
 def _validity(
-    method: str,
     signal: pl.Expr,
     vol_a: pl.Expr,
     vol_b: pl.Expr,
     corr: pl.Expr,
 ) -> pl.Expr:
-    finite_signal = signal.is_finite().fill_null(False)
-    if method == "equal_dollar":
-        return finite_signal
-    finite_vols = vol_a.is_finite().fill_null(False) & vol_b.is_finite().fill_null(False)
-    if method == "inverse_vol":
-        return finite_signal & finite_vols
-    finite_corr = corr.is_finite().fill_null(False)
-    return finite_signal & finite_vols & finite_corr
+    """True only when the signal and the whole raw estimate set are finite.
+
+    Method-independent on purpose: every sizer needs a trustworthy estimate
+    set, even when its own formula ignores one of the fields (``equal_dollar``
+    ignores all three).  Callers pass raw columns, never clipped ones, so a
+    non-finite value is rejected instead of being clipped into range.
+    """
+    finite = signal.is_finite().fill_null(False)
+    for expr in (vol_a, vol_b, corr):
+        finite = finite & expr.is_finite().fill_null(False)
+    return finite
 
 
 def _safe_weight(expr: pl.Expr, valid: pl.Expr) -> pl.Expr:
@@ -146,7 +158,9 @@ def size(
             direction/magnitude of the long-A/short-B spread.  ``None`` means
             the configured default signal (constant, direction only).
         estimates: long frame ``[date, vol_a, vol_b, corr]`` of annualized
-            volatilities and correlation.  Missing estimates yield zero weight.
+            volatilities and correlation.  A null, NaN or infinite value in any
+            of the three yields zero weight for every method (see the module
+            docstring's estimate contract).
         params: sizing parameters; ``params.method`` selects the sizer.
     """
     p = params or load_config().sizing
@@ -186,7 +200,8 @@ def size(
     signal = pl.col("signal")
     vol_a = pl.col("_vol_a")
     vol_b = pl.col("_vol_b")
-    corr = pl.col("corr").clip(lower_bound=-1.0, upper_bound=1.0)
+    raw_corr = pl.col("corr")
+    corr = raw_corr.clip(lower_bound=-1.0, upper_bound=1.0)
     h = hedge_ratio(vol_a, vol_b, p)
     covariance = corr * vol_a * vol_b
     spread_var = _floored_variance_expr(
@@ -200,7 +215,12 @@ def size(
     )
     direction = signal.sign()
     alpha = signal.clip(lower_bound=-p.signal_cap, upper_bound=p.signal_cap)
-    valid = _validity(p.method, signal, vol_a, vol_b, corr)
+    # The vol-target book is alpha * scale, so the gross cap must apply to the
+    # alpha-scaled book, not to the bare scale.  Dividing by max(1, |alpha|)
+    # gives |w_a| + |w_b| = (1 + h) * scale * |alpha| / max(1, |alpha|) <=
+    # max_gross for every signal_cap, and is a no-op when |alpha| <= 1.
+    alpha_scale = scale / pl.max_horizontal(pl.lit(1.0), alpha.abs())
+    valid = _validity(signal, pl.col("vol_a"), pl.col("vol_b"), raw_corr)
 
     if p.method == "equal_dollar":
         gross = min(p.equal_dollar_gross, p.max_gross)
@@ -217,8 +237,8 @@ def size(
         weight_a = direction * scale
         weight_b = (-direction) * h * scale
     else:  # vol_target
-        weight_a = alpha * scale
-        weight_b = (-alpha) * h * scale
+        weight_a = alpha * alpha_scale
+        weight_b = (-alpha) * h * alpha_scale
 
     return frame.select(
         pl.col("date"),

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from pathlib import Path
 
 import polars as pl
 
 from risk.compare import compare_sizers
 from risk.config import load_config
+from risk.run_compare import render_markdown
 from risk.sizing import METHODS
 from risk.synthetic import synthetic_pair_panel
 
@@ -49,6 +51,37 @@ def test_vol_target_tracks_target_better_than_equal_dollar() -> None:
     }
     assert set(gaps) == {"equal_dollar", "vol_target"}
     assert gaps["vol_target"] < gaps["equal_dollar"]
+
+
+def test_committed_report_has_no_blank_line_at_eof() -> None:
+    """`git diff --check` rejects a blank line at EOF; the committed report is clean."""
+    report = Path(__file__).resolve().parents[2] / "risk" / "results" / "p1_compare.md"
+    text = report.read_text(encoding="utf-8")
+    assert text.endswith("\n")
+    assert not text.endswith("\n\n")
+
+
+def test_render_markdown_leaves_the_trailing_newline_to_the_writer() -> None:
+    cfg = load_config()
+    row = {
+        "variant": "equal_dollar",
+        "cost_bps": 5.0,
+        "oos_sharpe": 0.0,
+        "ann_return": 0.0,
+        "realized_vol_gross": 0.0,
+        "target_vol": 0.0,
+        "vol_gap": 0.0,
+        "max_drawdown": 0.0,
+        "gross_exposure_avg": 0.0,
+        "net_exposure_avg": 0.0,
+        "turnover_avg": 0.0,
+        "borrow_cost_total": 0.0,
+        "net_pnl_total": 0.0,
+    }
+    markdown = render_markdown(pl.DataFrame([row]), cfg)
+    assert not markdown.endswith("\n")
+    assert (markdown + "\n").endswith(".\n")
+    assert not (markdown + "\n").endswith("\n\n")
 
 
 def test_comparison_covers_every_sizer_with_finite_metrics() -> None:

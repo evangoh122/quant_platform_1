@@ -22,8 +22,12 @@ Costs
 * Transaction cost is charged on the notional actually traded
   (``sum |delta w|``) at a configurable flat bps per side, or through the ADV
   participation model when ``cost_mode == "adv"``.
-* Borrow is charged only on **short** notional of the book established at the
-  open (``w_exec``), using the daily rate for the configured bucket in
+* Borrow is charged only on **short** notional of the book *held* over the
+  row's open-to-open interval (``w_a_held`` / ``w_b_held``) -- the same book
+  that earns ``gross_return``.  The book established at the open (``w_exec``)
+  is not charged until the next row, when it is the held book; charging
+  ``w_exec`` would bill borrow for an interval the book did not own.  The
+  daily rate is the configured bucket in
   ``strategies.cost_model.CostParams``.  No borrow feed exists in the
   lakehouse, so this remains a stated assumption.
 * ``turnover`` is ``sum |delta w|`` and deliberately ignores intraday weight
@@ -113,7 +117,11 @@ def performance_metrics(
     daily: pl.DataFrame,
     params: BacktestParams | None = None,
 ) -> dict[str, float]:
-    """Summary statistics for a daily path (all columns are per-NAV fractions)."""
+    """Summary statistics for a daily path (all columns are per-NAV fractions).
+
+    ``sharpe``, ``realized_vol_gross`` and ``realized_vol_net`` all use
+    ``params.sharpe_ddof`` as their standard-deviation ``ddof``.
+    """
     p = params or load_config().backtest
     n = daily.height
     empty = {
@@ -158,8 +166,12 @@ def performance_metrics(
     else:
         ann_return = float("nan")
 
-    gross_vol = float(gross.std(ddof=0)) * scale
-    net_vol = float(net.std(ddof=0)) * scale
+    # Realized-vol ddof is the configured metric ddof -- the same knob that sets
+    # the Sharpe ddof, so both metrics share one convention.
+    vol_ddof = p.sharpe_ddof
+    has_vol = n > vol_ddof
+    gross_vol = float(gross.std(ddof=vol_ddof)) * scale if has_vol else 0.0
+    net_vol = float(net.std(ddof=vol_ddof)) * scale if has_vol else 0.0
     return {
         "n_days": float(n),
         "sharpe": float(sharpe),

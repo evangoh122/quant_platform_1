@@ -37,4 +37,3 @@ signal varies in magnitude, so the two variants differ.
 return path; `vol_gap` is its absolute distance from the configured
 target. `turnover_avg` is the mean daily `sum |delta w|` (two-way
 traded notional) and ignores intraday weight drift.
-

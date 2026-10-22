@@ -51,8 +51,18 @@ One signature: `size(signal_or_pair, estimates, params) -> date, w_a, w_b`.
 (equivalently `sqrt(var_a / var_b)`), spread variance is
 `var_a + h^2 var_b - 2 h cov` floored at `0.05^2`, and
 `scale = min(target_vol / spread_vol, max_gross / (1 + h))`.
-`vol_target` additionally multiplies by the alpha signal clipped to `[-1, 1]`.
-Null, NaN and infinite inputs become zero weights at the boundary.
+`vol_target` additionally multiplies by the alpha signal clipped to
+`[-signal_cap, signal_cap]` **and** divides the scale by `max(1, |alpha|)`, so
+gross exposure stays at or below `max_gross` for any configured cap (a cap
+above 1 widens the alpha, not the risk limit). `signal_cap` must be finite and
+positive; `risk/config.py` rejects anything else.
+
+Every sizer -- including `equal_dollar`, whose formula uses none of the
+estimates -- requires a finite signal and a complete, finite estimate set
+(`vol_a`, `vol_b`, `corr`). A null, NaN or infinite value in any of them yields
+exactly zero weight on both legs, and the check runs on the raw estimates
+*before* the correlation is clipped, so an infinite correlation cannot become a
+maximum-size book. Missing risk estimates never produce a position.
 
 ## Execution and costs
 
@@ -65,9 +75,11 @@ the overnight gap into its own fill price. It is covered by a shock test and a
 fill-price test. Transaction costs are a configurable 5/10/15 bps per side on
 `sum |delta w|`, with an optional ADV-participation mode implemented in Polars
 and parity-tested against `strategies.cost_model.cost_per_trade`. Borrow is
-charged only on the short notional of the book established at the open, using
-the daily rate from `strategies.cost_model.CostParams` (no borrow feed exists,
-so this is a stated assumption).
+charged only on the short notional of the book **held** over each open-to-open
+interval (`w_a_held`, `w_b_held`) -- the same book that earns `gross_return`,
+not the book filled at that row's open -- using the daily rate from
+`strategies.cost_model.CostParams` (no borrow feed exists, so this is a stated
+assumption).
 
 ## Assumptions and limitations
 
@@ -81,6 +93,9 @@ so this is a stated assumption).
 * `turnover = sum |delta w|` ignores intraday weight drift (no rebalancing
   between fills), so costs are a lower bound when prices drift.
 * Borrow buckets are an assumption, not a measured securities-lending curve.
+* `sharpe`, `realized_vol_gross` and `realized_vol_net` share one configured
+  `ddof` (`backtest.sharpe_ddof`; default 0 matches `strategies/backtest.py`),
+  so switching the convention moves all three together.
 * The synthetic experiment uses seeded GARCH-like shocks. It proves the
   plumbing (estimators, lag, floors, caps, costs, reporting), **not alpha**.
   No claim is made about real MAGS/SOXX or any instrument.

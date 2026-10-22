@@ -78,10 +78,11 @@ def render_markdown(table: pl.DataFrame, config: RiskConfig) -> str:
             "return path; `vol_gap` is its absolute distance from the configured",
             "target. `turnover_avg` is the mean daily `sum |delta w|` (two-way",
             "traded notional) and ignores intraday weight drift.",
-            "",
         ]
     )
-    return "\n".join(lines)
+    # No trailing blank line: the writer appends exactly one newline, and
+    # `git diff --check` rejects a blank line at EOF.
+    return "\n".join(lines).rstrip("\n")
 
 
 def main(argv: list[str] | None = None) -> int:

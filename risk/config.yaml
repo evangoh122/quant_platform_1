@@ -49,7 +49,8 @@ costs:
 backtest:
   annualization: 252
   return_type: simple         # open-to-open simple returns for P&L
-  sharpe_ddof: 0              # matches strategies/backtest.py::_sharpe
+  sharpe_ddof: 0              # matches strategies/backtest.py::_sharpe; also the
+                              # ddof of realized_vol_gross/net in performance_metrics
   borrow_bucket: liquid       # key into strategies.cost_model.CostParams
   cost_mode: flat             # flat | adv
   book_capital: 1000000.0     # ADV mode only: converts weights to dollars

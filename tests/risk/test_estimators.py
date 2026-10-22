@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+from risk.compare import build_signal
 from risk.config import load_config
 from risk.estimators import (
     estimate_pair,
@@ -49,17 +50,24 @@ def test_past_weights_unchanged_by_future_perturbation() -> None:
     first_future = dates[cut]
 
     base_est = estimate_pair(panel, cfg.estimators, cfg.columns)
-    base_signal = base_est.select(
-        pl.col("date"), pl.lit(1.0, dtype=pl.Float64).alias("signal")
-    )
+    # The data-derived signal is part of the no-look-ahead chain: a constant
+    # signal would leave risk.compare.build_signal outside the guarantee.
+    base_signal = build_signal(panel, cfg.signals, cfg.columns)
+    assert base_signal["signal"].n_unique() > 1
     base_weights = size(base_signal, base_est, replace(cfg.sizing, method="covariance_aware"))
 
     shocked = _perturb(panel, cut)
     shocked_est = estimate_pair(shocked, cfg.estimators, cfg.columns)
+    shocked_signal = build_signal(shocked, cfg.signals, cfg.columns)
     shocked_weights = size(
-        base_signal, shocked_est, replace(cfg.sizing, method="covariance_aware")
+        shocked_signal, shocked_est, replace(cfg.sizing, method="covariance_aware")
     )
 
+    assert_frame_equal(
+        base_signal.filter(pl.col("date") < first_future),
+        shocked_signal.filter(pl.col("date") < first_future),
+        check_exact=True,
+    )
     assert_frame_equal(
         base_weights.filter(pl.col("date") < first_future),
         shocked_weights.filter(pl.col("date") < first_future),
@@ -78,9 +86,7 @@ def test_future_perturbation_leaves_estimators_and_regime_unchanged() -> None:
 
     base_est = estimate_pair(panel, cfg.estimators, cfg.columns)
     base_regime = label_regimes(base_est, cfg.regimes, "vol_a")
-    base_signal = base_est.select(
-        pl.col("date"), pl.lit(1.0, dtype=pl.Float64).alias("signal")
-    )
+    base_signal = build_signal(panel, cfg.signals, cfg.columns)
     base_weights = size(
         base_signal, base_est, replace(cfg.sizing, method="covariance_aware")
     )
@@ -88,8 +94,16 @@ def test_future_perturbation_leaves_estimators_and_regime_unchanged() -> None:
     future_only = _perturb(panel, cut + 1)
     future_est = estimate_pair(future_only, cfg.estimators, cfg.columns)
     future_regime = label_regimes(future_est, cfg.regimes, "vol_a")
+    future_signal = build_signal(future_only, cfg.signals, cfg.columns)
     future_weights = size(
-        base_signal, future_est, replace(cfg.sizing, method="covariance_aware")
+        future_signal, future_est, replace(cfg.sizing, method="covariance_aware")
+    )
+
+    # Strictly future bars cannot move the data-derived signal either.
+    assert_frame_equal(
+        base_signal.filter(pl.col("date") <= last_known),
+        future_signal.filter(pl.col("date") <= last_known),
+        check_exact=True,
     )
 
     columns = [

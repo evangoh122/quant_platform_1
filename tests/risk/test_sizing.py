@@ -1,16 +1,17 @@
-"""Worked example, hedge/spread math, floors and the gross cap."""
+"""Worked example, hedge/spread math, floors, gross cap and input rejection."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import pytest
 
 from risk.config import load_config
-from risk.sizing import hedge_ratio, size, spread_variance, spread_volatility
+from risk.sizing import METHODS, hedge_ratio, size, spread_variance, spread_volatility
 
 
 def _estimate(
@@ -107,6 +108,131 @@ def test_vol_target_clips_alpha_and_respects_gross_cap() -> None:
     )
     gross = abs(float(weights["w_a"][0])) + abs(float(weights["w_b"][0]))
     assert gross <= params.max_gross + 1e-9
+
+
+def test_vol_target_gross_cap_holds_when_signal_cap_exceeds_one() -> None:
+    """The cap must bind on the alpha-scaled book, not on the bare scale."""
+    params = replace(
+        load_config().sizing,
+        method="vol_target",
+        signal_cap=2.0,
+        target_vol=0.90,
+        max_gross=2.0,
+    )
+    weights = size(_signal(2.0), _estimate(0.25, 0.40, 0.8), params)
+    gross = abs(float(weights["w_a"][0])) + abs(float(weights["w_b"][0]))
+    # Unnormalised this book is gross 4.0 (2 x the limit).
+    assert gross <= params.max_gross + 1e-9
+    assert gross == pytest.approx(params.max_gross, rel=1e-12)
+
+
+@pytest.mark.parametrize("signal_cap", [0.5, 1.0, 2.0, 5.0])
+@pytest.mark.parametrize("signal", [-5.0, -2.0, -0.5, 0.5, 2.0, 5.0])
+def test_vol_target_gross_never_exceeds_max_gross(
+    signal_cap: float, signal: float
+) -> None:
+    params = replace(
+        load_config().sizing,
+        method="vol_target",
+        signal_cap=signal_cap,
+        target_vol=0.90,
+        max_gross=2.0,
+    )
+    weights = size(_signal(signal), _estimate(0.25, 0.40, 0.8), params)
+    for column in ("w_a", "w_b"):
+        assert math.isfinite(float(weights[column][0]))
+    gross = abs(float(weights["w_a"][0])) + abs(float(weights["w_b"][0]))
+    assert gross <= params.max_gross + 1e-9
+
+
+def test_vol_target_keeps_sub_unit_alpha_proportional_to_the_signal() -> None:
+    """Normalising by max(1, |alpha|) must not rescale ordinary alpha books."""
+    params = replace(
+        load_config().sizing,
+        method="vol_target",
+        signal_cap=1.0,
+        target_vol=0.90,
+        max_gross=2.0,
+    )
+    unit = size(_signal(1.0), _estimate(0.25, 0.40, 0.8), params)
+    half = size(_signal(0.5), _estimate(0.25, 0.40, 0.8), params)
+    assert float(half["w_a"][0]) == pytest.approx(
+        0.5 * float(unit["w_a"][0]), rel=1e-12
+    )
+    assert float(half["w_b"][0]) == pytest.approx(
+        0.5 * float(unit["w_b"][0]), rel=1e-12
+    )
+
+
+def _assert_zero_weights(
+    vol_a: float | None,
+    vol_b: float | None,
+    corr: float | None,
+    method: str,
+) -> None:
+    weights = size(
+        _signal(1.0),
+        _estimate(vol_a, vol_b, corr),
+        replace(load_config().sizing, method=method),
+    )
+    assert weights.height == 1
+    assert float(weights["w_a"][0]) == 0.0
+    assert float(weights["w_b"][0]) == 0.0
+
+
+@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize(
+    "corr",
+    [float("inf"), float("-inf"), float("nan"), None],
+    ids=["inf", "-inf", "nan", "none"],
+)
+def test_non_finite_or_missing_corr_zeroes_every_sizer(
+    method: str, corr: float | None
+) -> None:
+    _assert_zero_weights(0.20, 0.20, corr, method)
+
+
+@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize(
+    "vol_a,vol_b",
+    [
+        (None, 0.20),
+        (0.20, None),
+        (None, None),
+        (float("inf"), 0.20),
+        (0.20, float("nan")),
+    ],
+    ids=["null_a", "null_b", "null_both", "inf_a", "nan_b"],
+)
+def test_missing_or_non_finite_vol_zeroes_every_sizer(
+    method: str, vol_a: float | None, vol_b: float | None
+) -> None:
+    _assert_zero_weights(vol_a, vol_b, 0.5, method)
+
+
+@pytest.mark.parametrize("method", METHODS)
+def test_all_none_estimates_zero_every_sizer(method: str) -> None:
+    _assert_zero_weights(None, None, None, method)
+
+
+def test_config_rejects_non_positive_or_non_finite_signal_cap(tmp_path) -> None:
+    source = Path(__file__).resolve().parents[2] / "risk" / "config.yaml"
+    text = source.read_text(encoding="utf-8")
+    assert "signal_cap: 1.0" in text
+    for index, bad in enumerate(("0.0", "-1.0", ".inf", ".nan")):
+        candidate = tmp_path / f"config_bad_{index}.yaml"
+        candidate.write_text(
+            text.replace("signal_cap: 1.0", f"signal_cap: {bad}"),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError):
+            load_config(candidate)
+
+    good = tmp_path / "config_good.yaml"
+    good.write_text(
+        text.replace("signal_cap: 1.0", "signal_cap: 2.5"), encoding="utf-8"
+    )
+    assert load_config(good).sizing.signal_cap == pytest.approx(2.5)
 
 
 def test_equal_dollar_and_inverse_vol_are_finite_and_hedged() -> None:
