@@ -8,6 +8,13 @@ formula used identically in the plan, the schema doc and the universe config, th
 committed public probe document, the ``tid`` dedupe rule, and the coverage
 definition that counts empty weekends.
 
+Round 10 adds the honest power labelling (the Fisher-z numbers are illustrative
+1-df bounds; the primary test's power is undetermined until the pre-registered
+simulation in §6.2.1), the Clark-West-adjusted one-sided primary, the Friday
+after-hours confounders and Friday-holiday sensitivity exclusion, the
+not-populated ``dividend_unadjusted`` flag, and the frozen pre-rule probe
+snapshot.
+
 They are offline and stdlib + PyYAML only. They fail on the pre-round-9 docs.
 """
 from __future__ import annotations
@@ -55,6 +62,11 @@ def _plan() -> str:
     return PLAN.read_text(encoding="utf-8")
 
 
+def _flat(text: str) -> str:
+    """Collapse markdown wrapping so multi-line phrases can be asserted."""
+    return " ".join(text.split())
+
+
 def test_primary_cutoff_is_sun_1800_and_mon_0900_is_secondary():
     text = _plan()
     assert "`sun_1800`" in text
@@ -65,6 +77,19 @@ def test_primary_cutoff_is_sun_1800_and_mon_0900_is_secondary():
     assert "the pre-registered test in §6.2 is `sun_1800`" in text
     assert "H1 at cutoff" not in text
     assert "pre-market complete" not in text.lower()
+
+
+def test_sun_2000_is_after_the_esnq_reopen_and_confounded():
+    rows = [line for line in _plan().splitlines() if line.startswith("| `sun_2000`")]
+    assert len(rows) == 1, rows
+    row = rows[0]
+    # Round 10: sun_2000 trades after the 18:00 ET ES/NQ reopen, so it cannot
+    # be presented as an unconfounded "one more evening" of perp bars.
+    assert "after" in row
+    assert "ES/NQ" in row
+    assert "reopen" in row
+    assert "confounded" in row
+    assert "never part of H1" in row
 
 
 def test_overnight_confounders_are_named_everywhere_they_belong():
@@ -92,26 +117,109 @@ def test_primary_test_has_one_statistic_and_an_expanding_origin_design():
     assert "ΔR²_oot" in text
     assert "mean_w(d_w) / mean_w(MSE_base,w)" in text
     assert "wild cluster bootstrap-t" in text
-    assert "CR2" in text
     assert "Rademacher" in text
     assert "5-feature block is a joint test" in text
+    # The statistic is one observation per weekend, so the CR2 variance reduces
+    # to the classical cluster-mean variance; round 10 retires the CR2 label.
+    assert "variance `s/√G`" in text
+    assert "CR2 cluster-robust variance reduces to exactly that classical" in text
+    assert "so the CR2 label is not used" in text
+    # The bootstrap distribution is centered; "null imposed" was ambiguous.
+    assert "bootstrap is **centered**" in text
+    assert "null imposed" not in text.lower()
+    # H1 is "> 0", so the pre-registered alternative is one-sided.
+    assert "H1 is one-sided" in text
+    assert "the hypothesis is two-sided" not in text
     # The removed wording: a 5-feature block is not a t-statistic.
     assert "equivalently" not in text.lower()
     assert "t-statistic of the block" not in text
 
 
-def test_power_is_recomputed_for_the_evaluation_weekends_not_the_panel():
+def test_illustrative_correlation_bounds_are_not_the_primary_tests_power():
+    """Round 10 (Codex Sol P2): the Fisher-z numbers are not the test's power."""
     text = _plan()
+    flat = _flat(text)
     assert "N_eff is the **18 evaluation weekends**" in text
     assert "0.62" in text
     # The tanh-corrected panel bounds replace the untransformed z values.
     assert "0.49" in text
     assert "0.39" in text
     assert "0.54" not in text
-    assert "equivalently the t-statistic" not in text
     assert "ΔR² = partial r² × (1 − R²_base)" in text
     assert "partial r²" in text
     assert "tanh" in text
+    # The numbers are relabelled as what they are: a 1-df heuristic.
+    assert "illustrative correlation bounds, not the power of the primary test." in flat
+    assert "1-df heuristic" in flat
+    assert "joint 5-feature block" in flat
+    assert "needs a **larger** effect" in flat
+    # The primary test's power is explicitly undetermined until §6.2.1 runs.
+    assert "The primary test's power is UNDETERMINED." in flat
+    # The round-9 claim, and the heading that carried it, must be gone.
+    assert "Power for THIS test" not in text
+    assert "### 6.1 Statistical power" not in text
+    assert "powered for a large effect" not in flat
+    assert "a null is the expected outcome" not in flat
+
+
+def test_primary_power_simulation_is_preregistered_and_specific():
+    """The plan must state the simulation that replaces the heuristic."""
+    flat = _flat(_plan())
+    assert "#### 6.2.1 Pre-registered power simulation" in flat
+    # Data-generating process from the training window.
+    assert "Data-generating process, from the training window." in flat
+    assert "12 pinned training weekends" in flat
+    assert "stationary weekend block bootstrap" in flat
+    # Design: the 18 evaluation weekends and the joint block.
+    assert "18 evaluation weekends" in flat
+    assert "5-feature block" in flat
+    # The simulated test is the real one, Clark-West included.
+    assert "Clark-West-adjusted `d_w`" in flat
+    assert "Nominal α:** 0.05, **one-sided**" in flat
+    # Replication counts and what is reported.
+    assert "2,000" in flat
+    assert "999" in flat
+    assert "power curve" in flat
+    assert "minimum detectable ΔR²_oot at 80% power" in flat
+    assert "size at ΔR²_oot = 0" in flat
+    assert "Monte Carlo standard error" in flat
+    assert "seed" in flat
+    # The simulation runs before any P6 loss is inspected.
+    assert "P6 **before** any evaluation loss is inspected" in flat
+
+
+def test_clark_west_and_the_friday_holiday_weekends_are_predeclared():
+    """Opus MINOR 1 and 2: the baseline's edge and the nested-model adjustment."""
+    text = _plan()
+    flat = _flat(text)
+    # Clark-West replaces the unadjusted d_w as the primary.
+    assert "Clark-West adjusted" in flat
+    assert "mean_{rows in w}(ŷ_base − ŷ_full)²" in flat
+    assert "unadjusted `MSE_base,w − MSE_full,w` is reported as a sensitivity" in flat
+    # One-sided alternative, matching H1.
+    assert "H1 is one-sided — ΔR²_oot > 0 at the 5% level" in flat
+    # The claim is only "beyond the Friday regular-session close + crypto".
+    assert "Friday regular-session close + crypto" in flat
+    assert "16:00-20:00 ET" in flat
+    assert "17:00 ET" in flat
+    assert "Friday after-hours and the last ES/NQ hour" in flat
+    # Labor Day and July 3 are in the primary, flagged; July 3 also has a
+    # pre-declared sensitivity exclusion.
+    assert "Labor Day weekend (2026-09-04" in flat
+    assert "Friday-holiday weekend (2026-07-03" in flat
+    assert "The primary report covers **all 18** evaluation weekends" in flat
+    assert "pre-declared sensitivity run excludes the Friday-holiday weekend" in flat
+    assert "**includes** those weekends, flagged" in flat
+    assert "The primary **includes** these weekends, flagged" in flat
+
+
+def test_dividend_flag_is_not_shipped_all_false():
+    """Opus MINOR 3: the flag exists but is populated only after P1 ingestion."""
+    flat = _flat(_plan())
+    assert "not populated in P0" in flat
+    assert "no all-false flag shipped silently" in flat
+    assert "populated only from that point" in flat
+
 
 
 def test_evaluation_weekend_list_matches_the_production_calendar_helper():
@@ -241,9 +349,34 @@ def test_committed_probe_is_public_data_and_cited_by_the_plan():
     assert "test_recount_weekends.py" in _plan()
 
 
+def test_probe_json_is_a_frozen_prerule_snapshot():
+    """Opus MINOR 4: the committed JSON predates the data_source rule.
+
+    The file is a dated measurement, not a live view: it has no ``data_source``
+    field and its Binance rows record the pre-fix S3 listing. The plan must say
+    so, and this test pins the frozen artifact so a later edit cannot quietly
+    "fix" it; P1 re-runs the probe instead.
+    """
+    flat = _flat(_plan())
+    assert "pre-rule snapshot" in flat
+    assert "carries no `data_source` field" in flat
+    assert "pre-fix S3 listing" in flat
+    assert "no monthly archives" in flat
+    assert "HTTP 200" in flat
+    document = json.loads(PROBE.read_text(encoding="utf-8"))
+    assert "data_source" not in set(_walk_keys(document))
+    instruments = document["binance_usdm"]["instruments"]
+    assert len(instruments) == 2
+    for instrument in instruments:
+        for stream in instrument["streams"].values():
+            assert stream["error"] == "no monthly archives"
+
+
 def test_recount_script_labels_partial_r2_and_delta_r2():
-    """The plan's power numbers come from a tanh-mapped partial correlation."""
+    """The plan's illustrative bounds come from a tanh-mapped partial correlation."""
     text = (ROOT / "scripts" / "perps" / "recount_weekends.py").read_text(encoding="utf-8")
     assert "math.tanh(z)" in text
     assert "partial_r2 * (1.0 - r2_base)" in text
     assert re.search(r"tanh\(\(z_\{1-alpha/2\}", text) is not None
+    # Round 10: the script must not call this the primary test's power.
+    assert "not that test's power" in text

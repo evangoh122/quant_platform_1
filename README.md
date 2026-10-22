@@ -97,21 +97,29 @@ rejects a missing, unknown or venue-contradicting code, and every perps table ca
 (`instrument_type`, `underlying_type`, `underlying_symbol`, `venue`, `contract_symbol`).
 The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12); its public
 output is committed as [`docs/data/perps_history_probe.json`](docs/data/perps_history_probe.json) and
-`tests/perps/test_recount_weekends.py` asserts the recount in CI. Its `1h` recount is an **API-only lower bound**: the
-public API serves at most 5,000 candles per interval, so `1h` reaches back only to 2026-03-27 on the oldest instruments
+`tests/perps/test_recount_weekends.py` asserts the recount in CI. That JSON is a **pre-rule snapshot**: it predates the
+`data_source` rule, so it carries no `data_source` field, and its Binance rows record the pre-fix S3 listing
+(`no monthly archives`), so the 2020-01/2021-12 Binance starts come from the coordinator's HTTP 200 checks, not from that
+file. Its `1h` recount is an **API-only lower bound**: the public API serves at most 5,000 candles per interval, so
+`1h` reaches back only to 2026-03-27 on the oldest instruments
 and the window rolls forward ([`scripts/perps/recount_weekends.py`](scripts/perps/recount_weekends.py) gives 1,871
 company-weekends on `1d` history but **1,538 company-weekends over 30 distinct weekends** on API-only `1h` coverage;
 19 weekends / 333 company-weekends are `1d`-only). If the fills archive covers HIP-3 from listing — unverified — the
 buildable panel returns to the daily-history **upper bound of ~1,871 company-weekends over 49 weekends**, still
 weekend-clustered. Binance Vision archives still carry the control klines/funding from 2020-01 and metrics from 2021-12.
 With 30-49 weekend clusters the effective N is the weekend count, not the row count, and the Fisher-z bound is converted
-back with `tanh`: at 80% power the panel can detect partial r ≈ 0.49 (partial r² 0.24) at N_eff = 30 and r ≈ 0.39
-(partial r² 0.15) at N_eff = 49, not the 0.54/0.41 the untransformed z suggested. The **pre-registered primary test** is
-fixed in the plan (§6.2): cutoff `sun_1800` (before CME ES/NQ futures and overnight equity ATS sessions reopen), an
-expanding-origin walk-forward over the 18 evaluation weekends left after a 12-weekend training allocation, one statistic
-(out-of-time ΔR² of the joint five-feature perp block) and a wild-cluster-bootstrap-t on the 18 weekend loss
-differentials. Its own MDE is partial r ≈ 0.62 (ΔR² at most 0.38), so a null is the expected outcome; the later cutoffs
-(`mon_0400`, `mon_0900`) stay exploratory until ES/NQ futures, overnight ATS and pre-market bars are in their baseline.
+back with `tanh`: as an **illustrative single-coefficient bound** at 80% power and a two-sided 5% test, the panel can
+detect partial r ≈ 0.49 (partial r² 0.24) at N_eff = 30 and r ≈ 0.39 (partial r² 0.15) at N_eff = 49, not the 0.54/0.41
+the untransformed z suggested. Those numbers are **not the power of the primary test**. The **pre-registered primary
+test** fixed in the plan (§6.2) is a **one-sided** test of the joint five-feature perp block over 18 weekend clusters,
+using a Clark-West-adjusted loss differential and a wild-cluster-bootstrap-t; its power is **undetermined** until the
+pre-registered simulation in the plan (§6.2.1: data-generating process from the training window, 18 evaluation weekends,
+the 5-feature block, one-sided 5%, 2,000 Monte Carlo replications with 999 bootstrap replications, reporting size, power
+curve and minimum detectable ΔR²_oot) runs before any result is inspected. The baseline is the Friday **regular-session**
+close + crypto: Friday equity extended hours (16:00-20:00 ET) and the last ES/NQ hour (to 17:00 ET Friday) trade before
+`sun_1800` and are listed as confounders, and Friday-holiday weekends (2026-07-03) stay in the primary, flagged, with a
+pre-declared sensitivity exclusion. The later cutoffs (`mon_0400`, `mon_0900`) stay exploratory until ES/NQ futures,
+overnight ATS and pre-market bars are in their baseline.
 Liquidity tiers are descriptive only (measured 2026-08-26..2026-10-21, i.e. look-ahead): any model input uses trailing
 point-in-time liquidity, and the denominator counts every eligible post-listing weekend break — an empty weekend is
 missing data, not full coverage. The opening-gap label uses one formula,

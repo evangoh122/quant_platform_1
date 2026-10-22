@@ -896,10 +896,11 @@ Every perps table, when it lands, carries:
     Friday-holiday weekend). A 2:1 split (split_ratio 2.0) with prev close 100.00 and open 50.00
     gives 50.00 * 2.0 / 100.00 - 1 = 0.00%.
     The label is SPLIT-ADJUSTED ONLY: bronze_corporate_actions has no dividend amounts, so
-    dividend ingestion is a P1 prerequisite and ex-dividend weekends are flagged
-    dividend_unadjusted. A split effective at the open flags split_weekend and is excluded from
-    the primary evaluation.
-    Prediction cutoffs are rows: sun_1800 (PRIMARY confirmatory), sun_2000, mon_0400, mon_0900
+    dividend ingestion is a P1 prerequisite; the dividend_unadjusted flag is therefore not
+    populated until that ingestion lands (no all-false flag is shipped). A split effective at
+    the open flags split_weekend and is excluded from the primary evaluation.
+    Prediction cutoffs are rows: sun_1800 (PRIMARY confirmatory; H1 is one-sided), sun_2000
+    (secondary, confounded by the ES/NQ reopen at 18:00 ET), mon_0400, mon_0900
     (secondary; mon_0900 may be claimed only with ES/NQ futures + overnight ATS + pre-market in
     its baseline).
 

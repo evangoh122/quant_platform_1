@@ -63,8 +63,9 @@ The same line is used verbatim in §4.3, §6.3, `config/perp_universe.yaml` and
   (`docs/DATA_SCHEMAS.md §bronze_corporate_actions`), so the label is
   **split-adjusted only**. Dividend ingestion (amount, currency, ex-date, source)
   is a **P1 prerequisite**; until it lands, an ex-dividend opening biases
-  `open_gap` downward by the dividend/price ratio and those weekends carry the
-  `dividend_unadjusted` weekend flag. When dividends land, the same formula gains
+  `open_gap` downward by the dividend/price ratio and the `dividend_unadjusted`
+  flag cannot be populated — it is emitted only once dividend ingestion lands.
+  When dividends land, the same formula gains
   one explicit dividend term and the factor stays stored on the row — one change
   in one place.
 * The factor is stored on the row as `label_split_factor`, so the label is
@@ -77,15 +78,17 @@ The same line is used verbatim in §4.3, §6.3, `config/perp_universe.yaml` and
 
 **Hypotheses.**
 
-- **H1 (primary, pre-registered — the only confirmatory test):** at the
-  **Sunday 18:00 ET cutoff** (`sun_1800`), adding the perp block
+- **H1 (primary, pre-registered — the only confirmatory test, one-sided):** at
+  the **Sunday 18:00 ET cutoff** (`sun_1800`), adding the perp block
   (`perp_ret_weekend`, `perp_implied_gap`, `perp_friday_close_basis`,
-  `funding_sum`, `perp_realized_vol_1h`) to the Friday equity/options + BTC/ETH
-  control baseline raises the out-of-time ΔR² for `open_gap` by more than zero.
-  The one primary statistic, the expanding-origin evaluation, the 18 evaluation
-  weekends and the inference are fixed in §6.2 before any result is inspected.
-  The block is five features and is tested **jointly**; there is no per-feature
-  primary test.
+  `funding_sum`, `perp_realized_vol_1h`) to the **Friday regular-session close +
+  crypto** baseline (Friday equity/options features available at the 16:00 ET
+  cash close, plus BTC/ETH weekend returns) raises the out-of-time ΔR² for
+  `open_gap` by more than zero (one-sided, 5%). The one primary statistic (a
+  Clark-West-adjusted loss differential), the expanding-origin evaluation, the
+  18 evaluation weekends and the inference are fixed in §6.2 before any result
+  is inspected. The block is five features and is tested **jointly**; there is
+  no per-feature primary test.
 - **H2 (secondary, exploratory):** any apparent perp signal is explained by
   BTC/ETH weekend returns (equity perps trade 24/7 alongside crypto), so every
   secondary comparison must control for them.
@@ -106,6 +109,21 @@ futures (ES/NQ), so the H1 baseline is Friday equity/options features + BTC/ETH
 controls and the unmodelled overnight information is listed as a confounder
 (§9). That narrowing is honest for `sun_1800` (those sessions have not reopened
 yet at the cutoff) and is a real limitation for `mon_0400`/`mon_0900`.
+
+**H1's baseline stops at the Friday regular-session close.** The baseline is
+Friday cash-session information plus crypto — **not** everything known before
+Sunday 18:00 ET. Two sessions that trade before the cutoff are outside it: the
+Friday equity **extended-hours** session (16:00-20:00 ET) and the **last ES/NQ
+hour** (CME equity-index futures trade to 17:00 ET on Friday). Both consume
+weekend information this repository does not yet ingest, so a perp weekend move
+that merely repeats the Friday after-hours or ES/NQ move is **not** evidence for
+H1. The claim is "beyond the Friday regular-session close + crypto"; no claim
+"beyond everything known on Friday evening" is made, and both sessions are
+listed as risks in §9. On a **Friday-holiday weekend** (NYSE closed on Friday;
+evaluation weekend 2026-07-03) ES/NQ trade from Thursday evening, so the Friday
+extended-hours window does not exist in its usual form: the primary evaluation
+**includes** those weekends, flagged, and a pre-declared sensitivity run
+excludes them (§6.2, §9).
 
 The research claim is predictive lift in an out-of-time evaluation, not trading
 profitability. No signal is published to `gold_trading_signals` by this track
@@ -394,8 +412,9 @@ before the last Friday before the probe, 2026-10-16):
 The round-6 **API-only lower bound** stands: 1,538 company-weekends over 30
 weekends (19 weekends / 333 company-weekends are `1d`-only), and that API window
 loses about one weekend per instrument per week. Any pooled history figure that
-is not bar-based overstates what can be built; §6.1 carries the power
-consequence.
+is not bar-based overstates what can be built; §6.1 carries the illustrative
+correlation bound (not the primary test's power, which is undetermined until the
+§6.2.1 simulation runs).
 
 The **upper bound** applies only if the fills archive covers HIP-3
 (`xyz`/`para`/`io`) from each instrument's listing: the panel then returns to
@@ -415,10 +434,21 @@ The 2026-10-21 probe output is committed as
 Hyperliquid/Binance archive metadata only — no credentials or account data).
 `tests/perps/test_recount_weekends.py` recounts it in CI and asserts the
 1,871 / 1,538 company-weekends above, so the numbers quoted here cannot drift
-from the committed measurement. Every per-instrument record in that file and
-every row of the liquidity proposal carries `data_source` (`hyperliquid` for
-HIP-3 perps, `binance_um` for the Binance controls), validated against
-`config/data_sources.py` (§1.1).
+from the committed measurement.
+
+**That file is a pre-rule snapshot (do not read it as a live view, and do not
+edit it).** It was generated before the `data_source` rule (§1.1), so it
+**carries no `data_source` field** and does not validate that rule; every record
+the probe writes from now on, and every row of the liquidity proposal, carries
+`data_source` (`hyperliquid` for HIP-3 perps, `binance_um` for the Binance
+controls), and P1 re-runs the probe to add it. Its `binance_usdm` rows also
+record the **pre-fix S3 listing**: every stream carries `"no monthly
+archives"`, because the listing prefix was wrong when the probe ran. The
+Binance starts quoted above (klines/funding 2020-01, metrics 2021-12) therefore
+come from the coordinator's **HTTP 200 checks recorded on 2026-10-21**, not from
+the committed JSON; the file itself proves only that the listing failed at
+capture time. P1 re-runs the probe to record the first month/day. The committed
+JSON stays frozen as a dated measurement.
 
 ### 2.6 Oracle, mark and funding prices while the underlying is closed
 
@@ -535,7 +565,7 @@ information set), but **only `sun_1800` is confirmatory**:
 | Cutoff id | Wall time | What it can see | Role |
 |---|---|---|---|
 | `sun_1800` | Sunday 18:00 ET — before CME equity-index futures (ES/NQ) reopen and before overnight equity ATS sessions resume | perp + BTC/ETH bars with `bar_end_ts <= cutoff`; Friday equity/options features | **PRIMARY confirmatory** (H1, §6.2) |
-| `sun_2000` | Sunday 20:00 ET | same, one more evening of perp/crypto bars (still before Monday pre-market) | secondary |
+| `sun_2000` | Sunday 20:00 ET — **after** the CME equity-index futures (ES/NQ) reopen at 18:00 ET | same, plus the first ES/NQ bars (not ingested) | secondary; **confounded by the ES/NQ reopen**, never part of H1 |
 | `mon_0400` | Monday 04:00 ET (US pre-market opens) | same + any pre-market/overnight bars if ingested | secondary |
 | `mon_0900` | Monday 09:00 ET (pre-market still open and running to 09:30; the last complete 1h bar ends at 09:00) | same + pre-market/overnight information available at 09:00 | secondary; may be claimed only with ES/NQ futures **and** overnight ATS **and** pre-market in its baseline |
 
@@ -851,7 +881,7 @@ One row per `(weekend_id, security_id, prediction_cutoff)`.
 | Controls | `btc_ret_weekend`, `eth_ret_weekend`, `btc_realized_vol_1h`, `eth_realized_vol_1h` |
 | Equity baselines (PIT) | `friday_adj_close`, `friday_ret_1d`, `friday_ret_5d`, `friday_iv_atm`, `friday_iv_skew`, `friday_options_volume_z`, `equity_features_available_ts` |
 | Label | `prev_session_close` (raw consolidated close of the prior session; Thursday on Friday-holiday weekends, from `silver_ohlcv_day_adjusted.close`), `session_open` (raw consolidated open of the first session after the break, from `silver_ohlcv_day_adjusted.open` — not the listing-exchange auction print), `label_split_factor` (product of `bronze_corporate_actions.split_ratio`, new/old, for splits with `ex_date` = session date; 1.0 when none), `open_gap`, `label_available_ts` (= consolidated open print time) |
-| Weekend flags | `weekend_flags` (ARRAY<STRING>): `holiday_extended` (Monday/Friday holiday), `early_close_start` (13:00 Friday close), `good_friday`, `nfp_on_good_friday` (Good Friday that is also a US payrolls release), `month_end`, `quarter_end`, `split_weekend` (a split effective at that open; excluded from the primary evaluation), `dividend_unadjusted` (ex-dividend opening: the label has no dividend term yet) |
+| Weekend flags | `weekend_flags` (ARRAY<STRING>): `holiday_extended` (Monday/Friday holiday), `early_close_start` (13:00 Friday close), `good_friday`, `nfp_on_good_friday` (Good Friday that is also a US payrolls release), `month_end`, `quarter_end`, `split_weekend` (a split effective at that open; excluded from the primary evaluation), `dividend_unadjusted` (ex-dividend opening: the label has no dividend term yet; **not populated until P1 dividend ingestion lands**) |
 | Governance | `instrument_type` (NOT NULL `perpetual_future`), `underlying_type`, `underlying_symbol`, `contract_symbol`, `venue`, `data_source` (NOT NULL; `derived` for this feature row — perp/funding inputs are `hyperliquid`, equity/options inputs are `massive`, recorded in lineage), `mapping_status` (`verified` / `unverified`), `information_available_ts`, `feature_version`, `ingest_ts` |
 
 Natural key: `(weekend_id, security_id, prediction_cutoff)`. Partition:
@@ -889,8 +919,14 @@ open_gap = session_open * label_split_factor / prev_session_close - 1
   100.00, open 1000.00 → `1000.00 × 0.1 / 100.00 − 1 = 0.00%`.
 * **No dividend term yet.** `bronze_corporate_actions` has split ratios but no
   dividend amounts, so the label is **split-adjusted only** until dividend
-  ingestion lands as a **P1 prerequisite**; an ex-dividend weekend carries
-  `dividend_unadjusted` and is reported separately.
+  ingestion lands as a **P1 prerequisite**; ex-dividend openings are biased
+  downward by dividend/price in the meantime. The `dividend_unadjusted` weekend
+  flag can only be set once P1 dividend ingestion (amount, currency, ex-date)
+  lands: it is **not populated in P0** — no row carries it, and its absence must
+  not be read as "no ex-dividend weekend". Shipping the flag all-false would
+  silently imply ex-dividend weekends are handled, so the column is declared but
+  unset, and any ex-dividend window inside the study period is a known bias
+  reported in §9.
 * A split effective at the open flags the weekend `split_weekend` and excludes
   it from the primary evaluation: the perp basis features below use the raw
   `prev_session_close` (no factor), so they are not comparable across a split.
@@ -1090,8 +1126,8 @@ the review list that drives this table.
    raw consolidated prints — the same formula as §Target/§4.3. It is available
    only at the opening print (`label_available_ts`) and must never appear in a
    feature column or a model input. The label is split-adjusted only until
-   dividend ingestion (P1 prerequisite) lands; an ex-dividend weekend carries
-   `dividend_unadjusted`.
+   dividend ingestion (P1 prerequisite) lands; the `dividend_unadjusted` flag is
+   populated only from that point (in P0 it is declared but not populated).
 4. **Mapping:** use the bridge row valid at `prediction_ts`
    (`valid_from <= prediction_ts < valid_to`).
 5. **Evaluation:** out-of-time split by `weekend_id`; no random shuffling.
@@ -1101,10 +1137,11 @@ the review list that drives this table.
    computed only from weekends ending strictly before `window_start`. The static
    tier in the config is descriptive (§1.2) and is never a feature.
 
-### 6.1 Statistical power (recounted 2026-10-21; upper bound added 2026-10-22)
+### 6.1 Illustrative correlation bounds (recounted 2026-10-21; **not this test's power**)
 
 [`scripts/perps/recount_weekends.py`](../../scripts/perps/recount_weekends.py)
-reproduces the panel and its power consequence from the probe JSON:
+reproduces the panel and an **illustrative** single-parameter correlation bound
+from the probe JSON:
 
 | Basis | Company-weekends | Distinct weekends | First weekend | Role |
 |---|---|---|---|---|
@@ -1131,26 +1168,36 @@ Fisher-z bound applies to a **partial correlation**, so it is converted back wit
 every row); and `ΔR² = partial r² × (1 − R²_base)`, so the increment is smaller
 than the block's partial R² whenever the baseline already explains variance:
 
-| N_eff (weekend clusters) | Smallest detectable partial r | Partial r² of the block | ΔR² at R²_base = 0 (maximum) |
+| N_eff (weekend clusters) | Illustrative 1-df partial r bound | Partial r² | ΔR² at R²_base = 0 (maximum) |
 |---|---|---|---|
 | **18** — the primary test's evaluation weekends (§6.2) | **0.62** | **0.38** | **0.38** |
 | 30 — API-only panel (context only) | 0.49 | 0.24 | 0.24 |
 | 49 — upper bound if flat-file HIP-3 coverage is confirmed (context only) | 0.39 | 0.15 | 0.15 |
 
-**The primary test's power is the 18-weekend row, not 30 or 49.** The
-pre-registered evaluation uses only the last 18 buildable weekends, because the
-first 12 are the training allocation (§6.2): N_eff = **18**, plainly. At 80%
-power and a two-sided 5% test it can only detect a partial correlation of about
-0.62, i.e. a partial r² of 0.38 and a ΔR² of at most 0.38 (0.29 if the baseline
-already has R² = 0.25). That is an implausibly large increment for a liquidity
-effect, so a null is the expected outcome and no result below this scale may be
-described as evidence of an edge.
+**These are illustrative correlation bounds, not the power of the primary test.**
+Each number is what a **1-df heuristic** (Fisher-z, 80% power, two-sided 5%)
+would give a *single* coefficient; the pre-registered test is a **joint
+5-feature block** with a Clark-West-adjusted loss differential and a
+wild-cluster bootstrap-t, so it needs a **larger** effect than these numbers, not
+a smaller one — a joint block buys no precision per coefficient. Because the
+pre-registered alternative is one-sided, even these illustrative bounds are
+conservative for the direction tested. N_eff is the **18 evaluation weekends**
+(not 1,538 rows and not the 30-weekend panel), but that only says which row of an
+illustrative table applies.
+
+**The primary test's power is UNDETERMINED.** No number in this section is a
+power calculation for it: the sampling distribution of a joint-block bootstrap-t
+over 18 weekend clusters with a Clark-West adjustment is not the 1-df Fisher-z
+distribution, and the plan has not simulated it. The power is unknown until the
+**pre-registered simulation** in §6.2.1 is run and its result recorded in the P6
+kickoff note **before** any evaluation loss is inspected.
 
 Using the 1,538 pooled rows instead would suggest r ≈ 0.07 (ΔR² ≈ 0.005) — an
-anticonservative illusion. P6 must report the effect size and confidence
-interval, must not present a non-significant result as "no signal", and must
-treat a null as the expected outcome: the design is powered for a large effect
-only, and anything smaller is descriptive.
+anticonservative illusion. P6 must report the effect size and its interval, must
+not present a non-significant result as "no signal", and must report the
+simulation's minimum detectable effect next to any null: until §6.2.1 runs, a
+null cannot be called an expected outcome and a non-significant result is
+uninformative rather than evidence against H1.
 
 ### 6.2 Pre-registration, the primary test and multiple testing
 
@@ -1189,34 +1236,61 @@ dropped count is reported per weekend. `open_gap` is the dependent variable in
 decimal return units. Rows flagged `split_weekend` are excluded (declared in
 §4.3 before any result).
 
+**Holiday weekends stay in the primary.** The primary report covers **all 18**
+evaluation weekends, including the Labor Day weekend (2026-09-04; Monday
+2026-09-07 closed) and the Friday-holiday weekend (2026-07-03; NYSE closed
+Friday). They are reported and flagged `holiday_extended`; the primary is not
+conditioned on dropping them. A **pre-declared sensitivity run excludes the
+Friday-holiday weekend** (where ES/NQ trade from Thursday evening and the Friday
+extended-hours window does not exist in its usual form, §9) and is reported
+alongside — never instead of — the primary. Any other holiday exclusion is
+exploratory.
+
 **One primary statistic.** For each evaluation weekend `w` compute the mean
 squared error of each model over that weekend's rows, `MSE_base,w` and
-`MSE_full,w`, and the loss differential `d_w = MSE_base,w − MSE_full,w`. The
-primary statistic is the **out-of-time ΔR²**:
+`MSE_full,w`. The full model **nests** the baseline, so the pre-declared loss
+differential is **Clark-West adjusted** (Clark & West 2007): the squared
+difference between the two forecasts is added back, so the larger model is
+charged for the extra noise rather than credited with it:
+
+```text
+d_w = MSE_base,w − MSE_full,w + mean_{rows in w}(ŷ_base − ŷ_full)²
+```
+
+The unadjusted `MSE_base,w − MSE_full,w` is reported as a sensitivity, never as
+the primary; choosing Clark-West now avoids the conservatism argument being made
+after a result is seen. The primary statistic is the **out-of-time ΔR²**:
 
 ```text
 ΔR²_oot = mean_w(d_w) / mean_w(MSE_base,w)
 ```
 
 Weekend means are weighted equally (not pooled rows), so a weekend with fewer
-eligible instruments cannot dominate. Positive means the perp block improves
-out-of-time accuracy; the hypothesis is two-sided. This is the only confirmatory
-statistic.
+eligible instruments cannot dominate. Positive values mean the perp block
+improves out-of-time accuracy; **H1 is one-sided — ΔR²_oot > 0 at the 5%
+level** — matching H1's "raises ... by more than zero". A negative point
+estimate is reported as-is and is never re-labelled as an edge in the other
+direction. This is the only confirmatory statistic.
 
 **Inference — weekend-clustered, small-cluster corrected.** The 18 `d_w` values
 are the clusters. Primary inference is a **wild cluster bootstrap-t**
-(G = 18 clusters, Rademacher weights, 9,999 replications, null imposed by
-centering `d_w − mean(d)`, studentized by the CR2 cluster-robust variance,
-two-sided 5%). The CR2 t statistic with G − 1 = 17 degrees of freedom is the
-pre-declared sensitivity check; both are reported, the bootstrap p-value decides.
-A 5-feature block is a joint test: no per-feature p-value is confirmatory.
+(G = 18 clusters, Rademacher weights, 9,999 replications, one-sided 5%). The
+bootstrap is **centered**: each replication multiplies `d_w − mean(d)` by a
+Rademacher weight, so the resampled distribution is the sampling distribution of
+the mean under a zero mean. Studentization is the classical cluster-mean
+variance `s/√G` with G − 1 = 17 degrees of freedom; with one observation per
+cluster the CR2 cluster-robust variance reduces to exactly that classical value,
+so the CR2 label is not used. The one-sided bootstrap p-value decides H1; the
+two-sided p-value and the classical t statistic (`s/√G`, G − 1 = 17 df) are
+reported as context. A 5-feature block is a joint test: no per-feature p-value
+is confirmatory.
 
-**Power for THIS test (not the panel).** N_eff is the **18 evaluation weekends** (not 1,538 rows and not the 30-weekend panel).
-With the Fisher-z approximation at 80% power and two-sided 5%, the smallest
-detectable partial correlation is **0.62** (partial r² 0.38; ΔR² at most 0.38,
-0.29 at baseline R² = 0.25). Report that plainly: the design can detect only an
-implausibly large increment, so a null is the expected outcome. The panel-level
-30/49 rows in §6.1 are context, not this test's power.
+**Power is UNDETERMINED until the simulation in §6.2.1 runs.** N_eff is the
+**18 evaluation weekends** (not 1,538 rows and not the 30-weekend panel), and the
+panel-level 30/49 rows in §6.1 are context, not this test's power — the §6.1
+numbers are illustrative 1-df correlation bounds for a single coefficient, and a
+joint 5-feature block needs a larger effect. No power figure for the primary test
+is claimed before §6.2.1 is run, and a null is uninformative until then.
 
 - **Secondary family:** all other comparisons (other cutoffs, per-instrument
   runs, single-feature ablations, commodity perps, static-tier subsets). They
@@ -1235,6 +1309,48 @@ implausibly large increment, so a null is the expected outcome. The panel-level
   interval and the correction applied; the pre-registered comparison is reported
   first and unadjusted, then the corrected secondary family.
 
+#### 6.2.1 Pre-registered power simulation (run before any P6 result is inspected)
+
+The primary test's power is **UNDETERMINED** (§6.1). This simulation fixes it. It
+is specified now, run in P6 **before** any evaluation loss is inspected, and it
+simulates the actual statistic rather than the 1-df heuristic.
+
+- **Data-generating process, from the training window.** Fit the primary
+  baseline OLS (the same pre-declared columns) on the **training window**: the
+  12 pinned training weekends for the first evaluation origin, and every
+  buildable weekend strictly before `w` for the later origins (§6.2). The DGP
+  keeps the observed baseline design for the 18 evaluation weekends and draws
+  `open_gap` as the fitted baseline plus innovations resampled in **weekend
+  blocks** from the training-window residuals (a stationary weekend block
+  bootstrap, so weekend clustering and heteroskedasticity survive). The five perp
+  features are drawn the same way, in weekend blocks from the training window, so
+  their within-weekend correlation and their correlation with the baseline
+  features are preserved; the block is then rescaled so the injected effect has a
+  known population ΔR²_oot.
+- **Design simulated:** the **18 evaluation weekends**, with the panel's actual
+  per-weekend instrument counts (availability only — no labels), the identical
+  row-set rule, `split_weekend` rows dropped, and the same expanding-origin refit
+  per weekend. The effect is injected only through the joint **5-feature block**,
+  never through a single coefficient.
+- **Test simulated:** the §6.2 procedure exactly — the Clark-West-adjusted `d_w`,
+  ΔR²_oot, and the centered wild cluster bootstrap-t with Rademacher weights,
+  G = 18 clusters and **999** bootstrap replications per Monte Carlo replication.
+- **Nominal α:** 0.05, **one-sided** in the pre-registered direction. Size is
+  checked at ΔR²_oot = 0.
+- **Effect grid (population ΔR²_oot):** 0, 0.005, 0.01, 0.02, 0.05, 0.10, 0.20.
+- **Replications:** **2,000** Monte Carlo replications per grid point; the seed,
+  the code path and the data snapshot are recorded.
+- **Reported before any loss is inspected:** the size at ΔR²_oot = 0 with its
+  Monte Carlo interval; the **power curve** over the grid with 95% Monte Carlo
+  intervals; the **minimum detectable ΔR²_oot at 80% power** (interpolated on the
+  grid); the Monte Carlo standard error of each power estimate; and the fraction
+  of replications with a positive point estimate. These results become the
+  design's power statement; §6.1 stays the illustrative bounds it is.
+- **Decision rule, fixed now:** if power at every ΔR²_oot the plan treats as
+  plausible is below 80%, P6 reports the primary test as **underpowered** and a
+  null as uninformative. The plan is not re-tuned and no evaluation weekend is
+  added, dropped or re-weighted after a loss is seen.
+
 ## 7. PR slices
 
 | Slice | Scope | Acceptance |
@@ -1245,7 +1361,7 @@ implausibly large increment, so a null is the expected outcome. The panel-level
 | **P3** | Silver normalization: 1h bars, funding, QA flags (gaps, DST, stale marks, split suspects), canonical dedupe. | Natural keys unique; `information_available_ts` equals bar close; QA counts match Bronze source counts; no forward fill. |
 | **P4** | OI: verified `asset_ctxs` backfill into `bronze_perp_oi_snapshots` (`source='s3_backfill'`), plus optional forward `metaAndAssetCtxs` snapshots (`source='forward_snapshot'`); optional L2 depth sample. | Field list verified before backfill; snapshot cadence documented; no fabricated history; `oi_change_pct` null when endpoints missing. |
 | **P5** | `gold_weekend_perp_features`: weekend windows, four prediction cutoffs, PIT trailing liquidity, equity/options baselines, BTC/ETH controls, the `prev_session_close`/`session_open`/`label_split_factor` label; mapping bridge. | Window boundaries match `market_calendar` fixtures; every row passes `information_available_ts <= prediction_ts`; label never in feature columns; `open_gap = session_open * label_split_factor / prev_session_close - 1` reproducible from the stored raw prints and factor; split/dividend weekend flags set; reconciliation counts. |
-| **P6** | Research evaluation: baseline models (Friday equity/options; + crypto; + perps), the pre-registered primary comparison (§6.2), out-of-time metrics, ablations, notebook, owner review. | Pre-registered metrics and correction; N_eff reported; model selection inside training folds; final out-of-time block untouched until evaluation; no signal publication; reproducible notebook and data snapshot; honest negative result allowed. |
+| **P6** | Research evaluation: the pre-registered power simulation (§6.2.1) run **before** any evaluation loss is inspected, baseline models (Friday equity/options; + crypto; + perps), the pre-registered primary comparison (§6.2), out-of-time metrics, ablations, notebook, owner review. | Pre-registered metrics and correction; the §6.2.1 power simulation reported (size, power curve, minimum detectable ΔR²_oot) before the evaluation; N_eff reported; model selection inside training folds; final out-of-time block untouched until evaluation; no signal publication; reproducible notebook and data snapshot; honest negative result allowed. |
 
 Dependencies: P1 → P2 → P3 → P4/P5 → P6. P0 is standalone. P1 is no longer
 race-against-the-clock: the archive is durable, although it is uploaded roughly
@@ -1305,12 +1421,30 @@ not attempt an OI history fetch.
   information this repository does not yet ingest (pre-market bars, ATS bars,
   ES/NQ). Those cutoffs stay exploratory until ES/NQ + ATS + pre-market are in
   their baseline (§2.4, §3.2); claiming a perp edge over them without those
-  inputs would be a false claim. The primary `sun_1800` cutoff precedes the
-  reopens and is not affected.
+  inputs would be a false claim. `sun_2000` is explicitly **after** the ES/NQ
+  reopen and is confounded by it. The primary `sun_1800` cutoff precedes the
+  reopens and is not affected by them.
+- **Friday after-hours and the last ES/NQ hour:** the primary baseline stops at
+  the Friday **regular-session** close. The Friday equity extended-hours session
+  (16:00-20:00 ET) and the **last ES/NQ hour** (CME equity-index futures trade to
+  17:00 ET on Friday) both trade before `sun_1800`, and neither is in the
+  baseline, so the claim is "beyond the Friday regular-session close + crypto",
+  never "beyond everything known on Friday evening". A perp weekend move that
+  repeats the Friday after-hours or ES/NQ move is not evidence for H1.
+- **Friday-holiday weekends:** when the NYSE is closed on Friday (evaluation
+  weekend 2026-07-03), ES/NQ trade from Thursday evening, so the Friday
+  extended-hours window and the last Friday ES/NQ hour do not exist in their
+  usual form. The primary **includes** these weekends, flagged
+  `holiday_extended`; a pre-declared sensitivity run excludes them and is
+  reported alongside the primary (§6.2), and the choice is fixed before any
+  result. CME holiday hours remain **TO VERIFY** against CME's calendar (§3.2).
 - **Label timing/dividends:** the label is split-adjusted only —
   `bronze_corporate_actions` has no dividend amounts — so ex-dividend openings
-  are biased until dividend ingestion lands (P1 prerequisite); those weekends
-  carry `dividend_unadjusted`. Splits are explicit and stored per row.
+  are biased until dividend ingestion lands (P1 prerequisite). The
+  `dividend_unadjusted` flag is **not populated in P0** (no dividend data, no
+  all-false flag shipped silently); it is set only once P1 dividend ingestion
+  lands, so its absence must not be read as "no ex-dividend weekend". Splits are
+  explicit and stored per row.
 - **24/7 microstructure:** weekend marks may be noisy or stale; measure bar
   coverage and gap counts (`weekend_coverage`, `weekend_gap_hours`), and withhold
   liquidity tiers below 80% expected-hour coverage. Coverage counts every
@@ -1319,8 +1453,11 @@ not attempt an OI history fetch.
 - **Crypto confounding:** perps trade alongside crypto; BTC/ETH controls are
   mandatory, not optional.
 - **Clustered and unbalanced panel:** the panel has 30-49 weekend clusters and
-  the pre-registered test evaluates 18 of them, so only a partial correlation of
-  about 0.62 or more is detectable (§6.1/§6.2); report N_eff, not row counts.
+  the pre-registered test evaluates 18 of them. The §6.1 row is an
+  **illustrative 1-df correlation bound**, not the test's power: the joint
+  5-feature block's power is **UNDETERMINED** until the pre-registered
+  simulation (§6.2.1) runs, and a null before then is uninformative. Report
+  N_eff, not row counts.
 - **Corporate actions:** splits/index changes may create price jumps; flag and
   review rather than auto-adjust. The label uses the explicit new/old factor
   effective at the open, stored per row; a split weekend is excluded from the

@@ -52,8 +52,10 @@ as the increment to the model's multiple R²: the increment is
 This is an approximation, not a substitute for a simulation, but it is enough to
 show that the study cannot detect a small incremental R².  ``n_eff`` is the
 weekend count; the pooled row count is printed only as the wrong (anticonservative)
-comparison it is.  The pre-registered primary test's own power uses only its
-evaluation weekends (docs/data/PERPS_WEEKEND_PLAN.md §6.2), not this panel count.
+comparison it is.  The pre-registered primary test uses only its evaluation
+weekends (docs/data/PERPS_WEEKEND_PLAN.md §6.2); applying the same 1-df heuristic
+to those 18 weekends is an illustrative bound, not that test's power, which is
+undetermined until the plan's pre-registered simulation (§6.2.1) runs.
 
 Usage::
 
@@ -362,9 +364,11 @@ def build_report(
         "note": (
             "Rows in the same weekend share one macro/crypto shock, so the row "
             "count is not the effective N; the pooled-row MDE is shown only to "
-            "demonstrate the anticonservative comparison. The pre-registered "
-            "primary test is powered on its evaluation weekends only "
-            "(docs/data/PERPS_WEEKEND_PLAN.md §6.2)."
+            "demonstrate the anticonservative comparison. This is a 1-df "
+            "illustrative bound, not the power of the pre-registered primary "
+            "test, which uses only its evaluation weekends and whose power is "
+            "undetermined until the pre-registered simulation in "
+            "docs/data/PERPS_WEEKEND_PLAN.md §6.2.1 runs."
         ),
     }
     return report
