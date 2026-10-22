@@ -106,7 +106,7 @@
           <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
         </div>
       </div>
-      <p class="subtitle">P0 v4 plan · 78 company perps + 8 commodity perps + Binance USD-M controls · perps are derivatives · all downstream components planned (dashed)</p>
+      <p class="subtitle">P0 v5 plan · 78 company perps + 8 commodity perps + Binance USD-M controls · perps are derivatives · all downstream components planned (dashed)</p>
     </div>
 
     <div class="diagram-container">
@@ -184,9 +184,9 @@
         <!-- ================= SOURCES ================= -->
         <rect x="245" y="168" width="230" height="62" rx="6" fill="#0f172a"/>
         <rect x="245" y="168" width="230" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
-        <text x="360" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">Hyperliquid info API</text>
-        <text x="360" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">15m/1h rolling (5k cap) · 1m ~3.5 days</text>
-        <text x="360" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">current OI only (no history)</text>
+        <text x="360" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">Hyperliquid S3 flat files</text>
+        <text x="360" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">node_fills_by_block · asset_ctxs · events</text>
+        <text x="360" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">requester-pays · ~monthly · HIP-3 unverified</text>
 
         <rect x="495" y="168" width="230" height="62" rx="6" fill="#0f172a"/>
         <rect x="495" y="168" width="230" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
@@ -209,14 +209,14 @@
         <!-- ================= INGESTION ================= -->
         <rect x="245" y="278" width="215" height="68" rx="6" fill="#0f172a"/>
         <rect x="245" y="278" width="215" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
-        <text x="352" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ingest_perp_candles + capture_1m</text>
-        <text x="352" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">1h/15m/1m forward capture daily (P1)</text>
-        <text x="352" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">startTime paging · append-only</text>
+        <text x="352" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">hl_flat_files (P1)</text>
+        <text x="352" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">streaming lz4 · dry-run cost gate</text>
+        <text x="352" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">fills → own 1m/15m/1h bars</text>
 
         <rect x="475" y="278" width="215" height="68" rx="6" fill="#0f172a"/>
         <rect x="475" y="278" width="215" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
         <text x="582" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ingest_perp_funding</text>
-        <text x="582" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">fundingHistory paging</text>
+        <text x="582" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">misc_events_by_block (+ API check)</text>
         <text x="582" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">rate + interval per row</text>
 
         <rect x="705" y="278" width="200" height="68" rx="6" fill="#0f172a"/>
@@ -251,7 +251,7 @@
         <text x="812" y="416" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">bronze_perp_oi_snapshots</text>
         <text x="812" y="434" fill="#94a3b8" font-size="7.5" text-anchor="middle">NK venue, symbol, observed_at</text>
         <text x="812" y="448" fill="#94a3b8" font-size="7.5" text-anchor="middle">open_interest · mark · oracle</text>
-        <text x="812" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">source = forward_snapshot</text>
+        <text x="812" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">source = s3_backfill / forward_snapshot</text>
 
         <rect x="935" y="394" width="205" height="86" rx="6" fill="#0f172a"/>
         <rect x="935" y="394" width="205" height="86" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
@@ -398,12 +398,12 @@
           <h3>Sources and limits</h3>
         </div>
         <ul>
-          <li>• Hyperliquid info API: 15m/1h rolling 5k-candle window, 1m only ~3.5 days</li>
+          <li>• Hyperliquid requester-pays S3: fills, asset_ctxs, funding events, optional L2</li>
           <li>• Binance Vision: full 1m history for BTC/ETH controls</li>
           <li>• 8 commodity perps + physical/futures ETF wrappers</li>
-          <li>• 1h/15m/1m captured forward daily (P1), never backfilled</li>
-          <li>• probe/measure: dry-run default, --live, ≤ 2 req/s</li>
-          <li>• no historical OI: forward snapshots or S3 backfill</li>
+          <li>• flat-file backfill (P1), no API forward capture; archive ~monthly, HIP-3 unverified</li>
+          <li>• dry-run cost print before any download; --live required; profile name only</li>
+          <li>• API stays probe/measurement: 15m/1h rolling 5k cap, 1m ~3.5 days</li>
         </ul>
       </div>
 
@@ -425,7 +425,7 @@
     </div>
 
     <p class="footer">
-      P0 v4 · perps weekend research · 78 company + 8 commodity perpetual futures + BTCUSDT/ETHUSDT controls · all downstream components planned/dashed
+      P0 v5 · perps weekend research · flat-file history (Hyperliquid requester-pays S3 + Binance Vision) · 78 company + 8 commodity perpetual futures + BTCUSDT/ETHUSDT controls · all downstream components planned/dashed
     </p>
   </div>
 

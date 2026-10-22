@@ -50,7 +50,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | Streaming DLT pipeline | Yes | Local validation | Not deployed or run |
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
 | IBKR paper execution | Scaffold | Partial | Not live |
-| Weekend perps research (planned) | Loader, calendar and measurement tooling only | Yes (offline) | Not deployed — no ingestion job, no shared tables, no signals |
+| Weekend perps research (planned) | Loader, calendar and measurement tooling only (flat-file reader is design only) | Yes (offline) | Not deployed — no ingestion job, no shared tables, no signals |
 
 Dates are the last recorded verification; this repository does not assert the current state of the app, Lakebase, or the warehouse.
 
@@ -78,26 +78,35 @@ ETFs or spot commodities they track; they are never merged into the equity secur
 [`config/perp_universe.yaml`](config/perp_universe.yaml) (v4: 78 company perps, 8 commodity perps paired with Massive
 ETFs, and BTCUSDT/ETHUSDT controls), validated by `config/perp_universe.py`; closed-market liquidity is measured while
 the NYSE is shut, with the weekend window derived from [`config/market_calendar.py`](config/market_calendar.py).
-Planned sources are the Hyperliquid info API (1h/15m history; 1m only ~3.5 days back, so 1m must be forward-captured
-daily) and Binance Vision archives for the controls; design and schemas are in
-[`docs/data/PERPS_WEEKEND_PLAN.md`](docs/data/PERPS_WEEKEND_PLAN.md).
+History is planned from **flat files**, per the owner decision of 2026-10-22: Hyperliquid's requester-pays S3 archive
+(trades in `s3://hl-mainnet-node-data/node_fills_by_block`, aggregated into our own `1m`/`15m`/`1h` trade-price bars;
+`asset_ctxs` for funding/OI/mark/oracle with its field list still **to verify**; `misc_events_by_block` funding events;
+optional L2 snapshots) plus Binance Vision archives for the controls. There is **no API forward-capture job**: the
+Hyperliquid info API stays a probe/measurement tool. Design and schemas are in
+[`docs/data/PERPS_WEEKEND_PLAN.md`](docs/data/PERPS_WEEKEND_PLAN.md), including the
+`scripts/perps/hl_flat_files.py` reader design (streaming lz4, dry-run cost print before any download, `--live`
+required, credentials only from the AWS profile chain) — design only, no implementation in P0.
+Archive caveats are carried verbatim: uploads are **roughly monthly** with "no guarantee of timely updates and data may
+be missing", and **HIP-3 (`xyz`/`para`/`io`) coverage is unverified** until a sample object is checked (owner-approved,
+requester-pays).
 Every universe row, probe/liquidity record and planned perps table carries one `data_source` provider code
 (`hyperliquid`, `binance_um`, …) defined once in [`config/data_sources.py`](config/data_sources.py); the loader
-rejects a missing, unknown or venue-contradicting code.
-The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12),
-but weekend features need `1h` bars, and the public API serves at most 5,000 candles per interval: `1h` reaches
-back only to 2026-03-27 on the oldest instruments and the window rolls forward. Recounting the panel
-([`scripts/perps/recount_weekends.py`](scripts/perps/recount_weekends.py)) gives 1,871 company-weekends on `1d`
-history but **1,538 company-weekends over 30 distinct weekends** on the `1h` coverage the features need; 19
-weekends (333 company-weekends) cannot be built at all, so `1h`/`15m` forward capture is time-critical (P1) and
-the band shrinks by about one weekend per instrument per week meanwhile. Binance Vision archives still carry the
-control klines/funding from 2020-01 and metrics from 2021-12. With only ~30 weekend clusters the
-effective N is the weekend count, not the row count: at 80% power the design can only detect a large effect
-(partial r ≈ 0.54, ΔR² ≈ 0.29). The plan records that power ceiling and a pre-registered primary comparison,
-so any result is reported as small-sample evidence, not an edge. Liquidity tiers are descriptive only (measured
-2026-08-26..2026-10-21, i.e. look-ahead): any model input uses trailing point-in-time liquidity, and the gap label
-is the raw official open over the raw previous-session close with the explicit split/dividend factor effective at
-that open.
+rejects a missing, unknown or venue-contradicting code, and every perps table carries the derivative column set
+(`instrument_type`, `underlying_type`, `underlying_symbol`, `venue`, `contract_symbol`).
+The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12). Its
+`1h` recount is an **API-only lower bound**: the public API serves at most 5,000 candles per interval, so `1h` reaches
+back only to 2026-03-27 on the oldest instruments and the window rolls forward
+([`scripts/perps/recount_weekends.py`](scripts/perps/recount_weekends.py) gives 1,871 company-weekends on `1d`
+history but **1,538 company-weekends over 30 distinct weekends** on API-only `1h` coverage; 19 weekends / 333
+company-weekends are `1d`-only). If the fills archive covers HIP-3 from listing — unverified — the buildable panel
+returns to the daily-history **upper bound of ~1,871 company-weekends over 49 weekends**, still weekend-clustered.
+Binance Vision archives still carry the control klines/funding from 2020-01 and metrics from 2021-12. With 30-49
+weekend clusters the effective N is the weekend count, not the row count: at 80% power the design can only detect a
+large effect (partial r ≈ 0.54, ΔR² ≈ 0.29 at N_eff = 30; r ≈ 0.41, ΔR² ≈ 0.17 at the N_eff = 49 upper bound). The plan
+records that power ceiling and a pre-registered primary comparison, so any result is reported as small-sample
+evidence, not an edge. Liquidity tiers are descriptive only (measured 2026-08-26..2026-10-21, i.e. look-ahead): any
+model input uses trailing point-in-time liquidity, and the gap label is the raw official open over the raw
+previous-session close with the explicit split/dividend factor effective at that open.
 
 ## Repository layout
 
@@ -112,7 +121,7 @@ that open.
 | `sec_kg/contracts/` | KG-A executable contracts (identity and ids, bitemporal events, fact linking, join/edge registry, publication CAS, perp Instruments); pure Python with offline tests — no table or job yet |
 | `resources/`, `databricks.yml`, `app.yaml` | Databricks Asset Bundle: jobs, app, resources |
 | `strategies/`, `ml/` | Research code (backtests, evidence, models) |
-| `config/`, `scripts/perps/` | Perp universe/calendar config; probe and closed-market liquidity measurement (research scaffolding) |
+| `config/`, `scripts/perps/` | Perp universe/calendar config; probe, closed-market liquidity measurement and the flat-file reader design (research scaffolding) |
 | `evals/` | RAG evaluation harness |
 | `config/` | Environment settings, ticker/universe YAML, and the `data_source` provider vocabulary (`config/data_sources.py`) |
 | `tests/` | Offline test suite |

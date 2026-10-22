@@ -818,9 +818,16 @@ holding exactly one code from `config/data_sources.py`:
 that mixes providers is two rows. This PR adds contracts only: no table, view or
 DDL is created yet.
 
-### Perp tables (planned P2 — not deployed; 1h/15m forward capture is P1)
+### Perp tables (planned P2 — not deployed; flat-file backfill is P1)
 
 No perps table exists on this branch yet; the design is in docs/data/PERPS_WEEKEND_PLAN.md §4.
+History is planned from flat files (owner decision 2026-10-22), not from an API forward-capture
+job: Hyperliquid requester-pays S3 fills (`node_fills_by_block`, older `node_fills`/`node_trades`)
+aggregated into our own 1m/15m/1h trade-price bars, `asset_ctxs/<date>.csv.lz4` for
+funding/OI/mark/oracle (field list TO VERIFY), `misc_events_by_block` funding events, optional L2
+snapshots, and Binance Vision archives for the controls. The design for
+`scripts/perps/hl_flat_files.py` (streaming lz4, dry-run cost print, `--live` required) is
+docs/data/PERPS_WEEKEND_PLAN.md §4.4; no such code exists in P0.
 Every perps table, when it lands, carries:
 
   instrument_type                    string NOT NULL   -- always 'perpetual_future' (config/perp_universe.INSTRUMENT_TYPE)
@@ -839,7 +846,8 @@ Every perps table, when it lands, carries:
     (owner 2026-10-22); schema detail in docs/data/PERPS_WEEKEND_PLAN.md §4.
 
   Meaning (data_source): the upstream system that produced the row; one code per row, never null.
-    hyperliquid  -> bronze_perp_candles, bronze_perp_funding, bronze_perp_oi_snapshots,
+    hyperliquid  -> bronze_perp_fills, bronze_perp_candles, bronze_perp_asset_ctxs,
+                    bronze_perp_funding, bronze_perp_oi_snapshots,
                     silver_perp_bars_1h, silver_perp_funding
     binance_um   -> bronze_binance_um_klines, bronze_binance_um_funding, bronze_binance_um_metrics
     derived      -> gold_weekend_perp_features (perp inputs hyperliquid; equity/options inputs massive;
@@ -847,15 +855,40 @@ Every perps table, when it lands, carries:
   Vocabulary (config/data_sources.py): massive, sec_edgar, sec_companyfacts, hyperliquid,
     binance_um, config, derived.  The Unity Catalog column comment names the code and that path.
 
+  Flat-file provenance (every flat-file perps table): source string NOT NULL
+    ('flat_file_backfill' | 'api_capture' | 's3_backfill' | 'forward_snapshot', per table) and
+    archive_key (the object the row came from), so a bar or context row is reproducible from the
+    archive.  Bars are built from fills by TRADE time in UTC (bar_start = floor(trade_ts/interval),
+    information_available_ts = bar_end), deduplicated on fill id/hash, never interpolated; a late
+    fill re-emits the affected bar as an append-only correction.
+  bronze_perp_fills:  per-fill trade prints (trade_ts, fill_id, fill_hash, price, size, notional,
+    side, block_time, source, archive_key, payload_hash) + the derivative column set + data_source.
+  bronze_perp_asset_ctxs: per-(date, coin) context rows (observed_date, funding_rate, open_interest,
+    mark_px, oracle_px, premium, source, archive_key, payload_hash) + the derivative column set +
+    data_source='hyperliquid'.  Field list TO VERIFY before population; the loader fails closed on
+    a missing expected field.
+  bronze_perp_candles: fill-built 1m/15m/1h (+ 1d history checks) with source/archive_key; 1m is no
+    longer limited by the API's ~3.5-day retention, so no forward capture is required.
+  bronze_perp_oi_snapshots: source='s3_backfill' (from verified asset_ctxs) or
+    'forward_snapshot' (P4 poller); starts empty, and oi_* stays nullable until populated.
+  bronze_perp_funding: source='flat_file_backfill' (misc_events_by_block) or 'api_capture'
+    (only if approved), with archive_key for the object the row came from.
+
   Scope applies to the Binance control tables too: bronze_binance_um_klines/funding/metrics
     carry venue=binance_usdm, instrument_type=perpetual_future, underlying_type=crypto,
     underlying_symbol=BTC/ETH and contract_symbol=symbol, so no control row can be read as spot.
+    Binance Vision monthly archives are uploaded approximately monthly with "no guarantee of
+    timely updates and data may be missing"; a missing month is a recorded gap, not an empty month.
 
   Weekend label (gold_weekend_perp_features, docs/data/PERPS_WEEKEND_PLAN.md §4.3):
     open_gap = session_open / prev_session_close - 1 on RAW official prints, with the explicit
     split/dividend factor effective at that open (bronze_corporate_actions) stored as
     label_split_factor; prev_session_close is Thursday's close on a Friday-holiday weekend.
     Prediction cutoffs are rows: sun_1800, sun_2000, mon_0400, mon_0900.
+
+  Buildable panel (docs/data/PERPS_WEEKEND_PLAN.md §2.5, §6.1):
+    1h API-only lower bound 1,538 company-weekends / 30 weekends (measured 2026-10-21);
+    upper bound 1,871 / 49 weekends only if fills cover HIP-3 from listing (UNVERIFIED).
 
   Unity Catalog metadata (every perps table):
     TABLE COMMENT starts "Perpetual futures (derivatives), not equities:"

@@ -21,9 +21,11 @@ timestamp.  The response is bounded by ``endTime`` so a page cannot silently
 include later data.
 
 Minute bars are the exception: the public API serves only roughly the last
-~3.5 days of ``1m`` candles.  Treat ``1m`` as a forward-capture stream (a daily
-job) and use ``15m`` / ``1h`` for historical measurement; Binance Vision
-archives carry full ``1m`` history for the controls.
+~3.5 days of ``1m`` candles, so this probe cannot measure a ``1m`` floor.  Perp
+history is planned from the requester-pays flat files instead
+(``node_fills_by_block`` -> our own ``1m``/``15m``/``1h`` bars;
+docs/data/PERPS_WEEKEND_PLAN.md §2.1/§4.4), with Binance Vision archives
+carrying full ``1m`` history for the controls.
 
 Binance USD-M controls
 ----------------------

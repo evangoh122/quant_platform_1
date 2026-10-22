@@ -12,9 +12,10 @@ disagree:
   "history exists somewhere" number;
 * the weekend feature set needs ``1h`` bars.  Hyperliquid's public
   ``candleSnapshot`` returns at most 5,000 candles per interval, so the oldest
-  ``1h`` candle is a **rolling floor** (5,000 hours is ~208 days).  Weekends
-  before that floor cannot be built at all, and until forward capture starts the
-  buildable window loses roughly one weekend per instrument per week.
+  ``1h`` candle is a **rolling floor** (5,000 hours is ~208 days).  This script
+  therefore reports the **API-only lower bound**: the flat-file fills backfill
+  is not subject to that window and can raise the panel to the ``1d`` count once
+  HIP-3 coverage is confirmed (docs/data/PERPS_WEEKEND_PLAN.md §2.5).
 
 Rule (deliberately simple and identical for both streams)
 ---------------------------------------------------------
@@ -297,7 +298,8 @@ def build_report(
     report["one_hour_floor"] = {
         "why": (
             "weekend features need 1h bars; the public candleSnapshot window is "
-            "at most 5,000 candles (~208 days) and rolls forward"
+            "at most 5,000 candles (~208 days) and rolls forward, so this is the "
+            "API-only lower bound (a flat-file fills backfill is not subject to it)"
         ),
         "weekends_unbuildable_from_1h": len(unbuildable),
         "company_weekends_unbuildable_from_1h": (
@@ -353,9 +355,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines.append(
         f"1h retention floor: **{floor['weekends_unbuildable_from_1h']} weekends "
         f"({floor['company_weekends_unbuildable_from_1h']} company-weekends) cannot "
-        f"be built from 1h bars**; the window shrinks by about "
+        f"be built from 1h bars**; on the API-only path the window shrinks by about "
         f"{floor['shrinks_weekends_per_week']} weekend per instrument per week "
-        "until forward capture starts."
+        "(a flat-file fills backfill is not subject to that window)."
     )
     power = report["power"]
     if power["mde"]:

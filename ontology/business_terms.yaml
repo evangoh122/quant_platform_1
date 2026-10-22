@@ -99,7 +99,7 @@ terms:
     definition: "Periodic long/short payment on a perpetual future, stored as a decimal per funding interval (not a percentage) with the observed interval recorded per row."
     aliases: [funding, perp funding rate]
   open_interest:
-    definition: "Outstanding derivative contracts at a point in time. Hyperliquid's public info API serves current OI only, so historical OI is a forward-capture or S3-backfill series, never a candle-derived proxy."
+    definition: "Outstanding derivative contracts at a point in time. Hyperliquid's public info API serves current OI only; historical OI is expected from the asset_ctxs flat file once its field list is verified (source s3_backfill), otherwise from forward snapshots, and it is never a candle-derived proxy."
     aliases: [OI, open interest notional]
   mark_price:
     definition: "The venue's mark price for a perpetual future, used for margining; it is a perp price, not the stock price."
@@ -129,6 +129,17 @@ terms:
     definition: "Structure of the ETF wrapper paired with a commodity perp: physical (metal-backed trust) or futures (futures-based fund with contango/roll). The model must account for the difference."
     aliases: [ETF structure, physical vs futures ETF]
   data_source:
-    definition: "Provider code for the upstream system that produced a row: massive, sec_edgar, sec_companyfacts, hyperliquid, binance_um, config, or derived (computed here from other rows). One non-null code per row; a row that mixes sources is derived and records its input sources in lineage."
+    definition: "Provider code for the upstream system that produced a row: massive, sec_edgar, sec_companyfacts, hyperliquid (venue flat files and info API), binance_um, config, or derived (computed here from other rows). One non-null code per row; a row that mixes sources is derived and records its input sources in lineage."
     aliases: [provider code, lineage source code]
     critical_rule: "Never null and never free text: validate with config/data_sources.py validate_data_source; SQL tables declare data_source STRING NOT NULL with a Unity Catalog column comment, YAML rows declare data_source: and the loader rejects a missing, unknown or venue-contradicting code."
+  flat_file_archive:
+    definition: "Vendor-published object-store history (Hyperliquid requester-pays S3: node_fills_by_block/node_fills/node_trades, asset_ctxs, misc_events_by_block, optional L2 snapshots; Binance Vision USD-M zips) used as the perps history source instead of API forward capture. Uploads are roughly monthly and the vendor states there is no guarantee of timely updates and data may be missing, so a missing object is a recorded gap."
+    aliases: [flat file, flat-file archive, object-store archive]
+    critical_rule: "Reading one is a paid download when the bucket is requester-pays: dry-run first, print the object list and estimated transfer cost, require --live, and never read, print or persist credentials."
+  append_only_fill_bar:
+    definition: "A perp OHLCV bar built from fills, not from the candle API: fills are bucketed by TRADE time in UTC (bar_start = floor(trade_ts / interval)), deduplicated on fill id/hash, and the bar carries information_available_ts = bar_end_ts. A late fill re-emits the affected bar as an append-only correction; bars are never interpolated and a bar with no fills is a gap."
+    aliases: [fill-built bar, trade-price bar, rebuilt bar]
+    critical_rule: "The prices are perp trade (last) prices, never the mark, oracle, equity price or pre-market price; every row keeps instrument_type = perpetual_future and a non-null data_source."
+  requester_pays:
+    definition: "An S3 bucket whose access charges the requester for requests and data transfer (Hyperliquid node-data and archive buckets). Inspection and download both cost money, so the cost is printed and approved before any GET."
+    aliases: [requester-pays bucket, paid archive access]
