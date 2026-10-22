@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "generated_at": "2026-10-21T20:00:52.381708+00:00",
+  "mode": "live",
+  "probe": {"start": "2025-01-01T00:00:00+00:00", "coarse_days": 60, "max_steps": 60, "rate_limit_rps": 2.0},
+  "hyperliquid": {
+    "endpoint": "https://api.hyperliquid.xyz/info",
+    "instruments": [
+      {
+        "ticker": "OLD",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:OLD",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {"first_ms": 1774602000000, "first_iso": "2026-03-27T09:00:00+00:00", "requests": 8, "truncated": false},
+          "candle_1d": {"first_ms": 1736121600000, "first_iso": "2026-01-06T00:00:00+00:00", "requests": 7, "truncated": false},
+          "funding": {"first_ms": 1736175600000, "first_iso": "2026-01-06T15:00:00+00:00", "requests": 7, "truncated": false}
+        }
+      },
+      {
+        "ticker": "NEW",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:NEW",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {"first_ms": 1789137600000, "first_iso": "2026-09-10T14:00:00+00:00", "requests": 3, "truncated": false},
+          "candle_1d": {"first_ms": 1788998400000, "first_iso": "2026-09-10T00:00:00+00:00", "requests": 2, "truncated": false},
+          "funding": {"first_ms": 1789144800000, "first_iso": "2026-09-10T16:00:00+00:00", "requests": 2, "truncated": false}
+        }
+      },
+      {
+        "ticker": "LATE",
+        "venue": "hyperliquid",
+        "dex": "io",
+        "symbol": "io:LATE",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {"first_ms": 1792068000000, "first_iso": "2026-10-15T14:00:00+00:00", "requests": 1, "truncated": false},
+          "candle_1d": {"first_ms": 1791936000000, "first_iso": "2026-10-15T00:00:00+00:00", "requests": 1, "truncated": false},
+          "funding": {"first_ms": 1792071600000, "first_iso": "2026-10-15T15:00:00+00:00", "requests": 1, "truncated": false}
+        }
+      },
+      {
+        "ticker": "NODATA",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:NODATA",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {"first_ms": null, "first_iso": null, "requests": 0, "truncated": false},
+          "candle_1d": {"first_ms": null, "first_iso": null, "requests": 0, "truncated": false},
+          "funding": {"first_ms": null, "first_iso": null, "requests": 0, "truncated": false}
+        }
+      }
+    ]
+  },
+  "binance_usdm": {"endpoint": "https://data.binance.vision", "instruments": []},
+  "notes": {"open_interest": "fixture: current OI only; no historical series"}
+}

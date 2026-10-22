@@ -1,9 +1,9 @@
 terms:
   ticker:
-    definition: "Canonical uppercase exchange symbol used by market tables. Resolve aliases before filtering or joining."
-    aliases: [symbol, stock symbol, mapped asset]
+    definition: "Canonical uppercase exchange symbol used by market tables. Resolve aliases before filtering or joining. For options, the `underlying` column of a quote/feature row (notebooks/01_ingest_market_data.py) holds this ticker: an option is written on the listed security."
+    aliases: [symbol, stock symbol, mapped asset, underlying]
     examples: {BRK.B: BRK-B}
-    note: "GOOG (Class C) and GOOGL (Class A) are distinct securities, not ticker aliases."
+    note: "GOOG (Class C) and GOOGL (Class A) are distinct securities, not ticker aliases. `underlying` is the options spelling of this ticker; a perpetual's reference asset is `perp_underlying`, which is never merged into the ticker."
   cik:
     definition: "SEC Central Index Key, normalized as a zero-padded 10-character string."
     aliases: [SEC issuer id, company CIK]
@@ -86,15 +86,15 @@ terms:
     definition: "A model prediction stored in gold_trading_signals with its probability, model version, and feature snapshot lineage."
     aliases: [trading signal, prediction]
   perpetual_future:
-    definition: "A derivative contract with no expiry that tracks an underlying via a venue oracle (Hyperliquid HIP-3 or Binance USD-M). The traded instrument is the perp, never the underlying equity, ETF, fund, preferred or spot commodity."
+    definition: "A derivative contract with no expiry that tracks a reference asset (perp_underlying) via a venue oracle (Hyperliquid HIP-3 or Binance USD-M). The traded instrument is the perp, never the underlying equity, ETF, fund, preferred or spot commodity."
     aliases: [perp, perpetual, perpetual future contract]
     critical_rule: "Every perps table/row carries instrument_type = perpetual_future and is_derivative = true; never merge a perp into the Security node it tracks."
-  underlying:
-    definition: "The reference asset a perpetual future tracks through the venue oracle (a listed equity/ETF/fund/preferred ticker, a commodity, or BTC/ETH)."
-    aliases: [reference asset, tracked instrument]
+  perp_underlying:
+    definition: "The reference asset a perpetual future tracks through the venue oracle: a listed equity/ETF/fund/preferred ticker, a commodity, or BTC/ETH. Scoped to perpetuals. Distinct from the options `underlying` (an alias of ticker): the perp is a derivative on this reference and is never merged with it."
+    aliases: [reference asset, tracked instrument, perp reference asset]
   underlying_type:
-    definition: "Classification of the reference asset: equity, etf, fund, preferred, commodity, or crypto. It labels what the perp tracks and never changes the perp's instrument_type."
-    aliases: [underlying asset class]
+    definition: "Perps only: classification of the perpetual's reference asset — equity, etf, fund, preferred, commodity, or crypto. It labels what the perp tracks and never changes the perp's instrument_type."
+    aliases: [underlying asset class, perp underlying type]
   funding_rate:
     definition: "Periodic long/short payment on a perpetual future, stored as a decimal per funding interval (not a percentage) with the observed interval recorded per row."
     aliases: [funding, perp funding rate]
@@ -111,19 +111,19 @@ terms:
     definition: "Closed-market interval [last NYSE regular-session close before the break, next regular-session open after it). Holiday-aware: a Monday holiday ends the window on Tuesday, a Friday holiday starts it on Thursday, and 13:00 early closes move the start."
     aliases: [weekend break, closed-market window]
   closed_market_liquidity:
-    definition: "Notional traded per hour while the NYSE is closed, measured from provider 1h candles; the weekend subset is weekend_usd_per_h and the input to tiers A-D."
+    definition: "Notional traded per hour while the NYSE is closed, measured from provider 1h candles (bars fully inside the closed interval); the weekend subset is weekend_usd_per_h, whose denominator is the expected hours of the covered weekend breaks (missing hours count as zero notional) and which is the input to the descriptive tiers A-D."
     aliases: [weekend liquidity, closed-hours liquidity]
   liquidity_tier:
-    definition: "Closed-market liquidity bucket from weekend_usd_per_h: A >= 250k, B >= 50k, C >= 10k, D < 10k USD per hour. A model input/filter, not an ingestion filter."
+    definition: "Descriptive closed-market liquidity bucket from weekend_usd_per_h measured over 2026-08-26..2026-10-21: A >= 250k, B >= 50k, C >= 10k, D < 10k USD per hour. The window covers weekends used in the study, so the static tier is look-ahead: use it for stratification and reporting only, and compute trailing point-in-time liquidity strictly before each weekend for any model input or filter. Never an ingestion filter, and a tier is withheld when bar coverage is below 80% of the expected weekend hours."
     aliases: [tier A-D, weekend liquidity tier]
   new_flag:
     definition: "Review flag for a perpetual whose first available bar is after the liquidity measurement window start, so its history is short relative to the window."
     aliases: [new listing flag, short history flag]
   sparse_flag:
-    definition: "Review flag for a perpetual with more than 25% of weekend hours showing zero volume; mark coverage must be checked before modelling."
+    definition: "Review flag for a perpetual with more than 25% of the expected weekend hours showing zero volume; mark coverage must be checked before modelling."
     aliases: [sparse weekend flag, zero-volume flag]
   commodity_perp:
-    definition: "A perpetual future on a spot commodity (e.g. xyz:GOLD), paired with one or more Massive ETF wrappers for the Monday-gap target; the wrapper may be physical or futures-based."
+    definition: "A perpetual future on a spot commodity (e.g. xyz:GOLD), paired with one or more Massive ETF wrappers for the open-gap label; the wrapper may be physical or futures-based."
     aliases: [commodity perpetual, perp on commodity]
   etf_kind:
     definition: "Structure of the ETF wrapper paired with a commodity perp: physical (metal-backed trust) or futures (futures-based fund with contango/roll). The model must account for the difference."

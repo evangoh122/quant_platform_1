@@ -84,11 +84,20 @@ daily) and Binance Vision archives for the controls; design and schemas are in
 Every universe row, probe/liquidity record and planned perps table carries one `data_source` provider code
 (`hyperliquid`, `binance_um`, …) defined once in [`config/data_sources.py`](config/data_sources.py); the loader
 rejects a missing, unknown or venue-contradicting code.
-The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12,
-at most ~49 weekends; 23 instruments at most 13) and 1h only back to 2026-03-27 (5,000-candle API cap);
-Binance archives carry klines/funding from 2020-01 and metrics from 2021-12. The plan records the
-resulting pooled **~1.5–2k company-weekend** statistical-power caveat, so any result will be reported
-as small-sample evidence, not an edge.
+The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12),
+but weekend features need `1h` bars, and the public API serves at most 5,000 candles per interval: `1h` reaches
+back only to 2026-03-27 on the oldest instruments and the window rolls forward. Recounting the panel
+([`scripts/perps/recount_weekends.py`](scripts/perps/recount_weekends.py)) gives 1,871 company-weekends on `1d`
+history but **1,538 company-weekends over 30 distinct weekends** on the `1h` coverage the features need; 19
+weekends (333 company-weekends) cannot be built at all, so `1h`/`15m` forward capture is time-critical (P1) and
+the band shrinks by about one weekend per instrument per week meanwhile. Binance Vision archives still carry the
+control klines/funding from 2020-01 and metrics from 2021-12. With only ~30 weekend clusters the
+effective N is the weekend count, not the row count: at 80% power the design can only detect a large effect
+(partial r ≈ 0.54, ΔR² ≈ 0.29). The plan records that power ceiling and a pre-registered primary comparison,
+so any result is reported as small-sample evidence, not an edge. Liquidity tiers are descriptive only (measured
+2026-08-26..2026-10-21, i.e. look-ahead): any model input uses trailing point-in-time liquidity, and the gap label
+is the raw official open over the raw previous-session close with the explicit split/dividend factor effective at
+that open.
 
 ## Repository layout
 

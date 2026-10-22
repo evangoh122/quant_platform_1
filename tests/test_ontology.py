@@ -386,6 +386,23 @@ def test_business_term_aliases_have_one_owner():
             )
 
 
+def test_options_underlying_stays_a_ticker_alias_and_perps_are_scoped():
+    """The options `underlying` column must not be redefined by the perps track.
+
+    notebooks/01_ingest_market_data.py writes an `underlying` column of tickers,
+    so NL-to-SQL for options needs `underlying` to resolve to ticker; the perp
+    concept is `perp_underlying` instead.
+    """
+    terms = _documents()["business_terms.yaml"]["terms"]
+    ticker_aliases = {
+        _normalize_business_term(alias) for alias in terms["ticker"]["aliases"]
+    }
+    assert "underlying" in ticker_aliases
+    assert "underlying" not in terms
+    assert "perp_underlying" in terms
+    assert "options" in terms["perp_underlying"]["definition"].lower()
+
+
 @pytest.mark.parametrize("table", sorted(_documents()["table_semantics.yaml"]["tables"]))
 def test_table_keys_exist_in_sql_schema(table):
     semantics = _documents()["table_semantics.yaml"]["tables"][table]

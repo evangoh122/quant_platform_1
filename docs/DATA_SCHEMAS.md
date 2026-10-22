@@ -818,7 +818,7 @@ holding exactly one code from `config/data_sources.py`:
 that mixes providers is two rows. This PR adds contracts only: no table, view or
 DDL is created yet.
 
-### Perp tables (planned P1 — not deployed)
+### Perp tables (planned P2 — not deployed; 1h/15m forward capture is P1)
 
 No perps table exists on this branch yet; the design is in docs/data/PERPS_WEEKEND_PLAN.md §4.
 Every perps table, when it lands, carries:
@@ -846,6 +846,16 @@ Every perps table, when it lands, carries:
                     record the input sources in lineage)
   Vocabulary (config/data_sources.py): massive, sec_edgar, sec_companyfacts, hyperliquid,
     binance_um, config, derived.  The Unity Catalog column comment names the code and that path.
+
+  Scope applies to the Binance control tables too: bronze_binance_um_klines/funding/metrics
+    carry venue=binance_usdm, instrument_type=perpetual_future, underlying_type=crypto,
+    underlying_symbol=BTC/ETH and contract_symbol=symbol, so no control row can be read as spot.
+
+  Weekend label (gold_weekend_perp_features, docs/data/PERPS_WEEKEND_PLAN.md §4.3):
+    open_gap = session_open / prev_session_close - 1 on RAW official prints, with the explicit
+    split/dividend factor effective at that open (bronze_corporate_actions) stored as
+    label_split_factor; prev_session_close is Thursday's close on a Friday-holiday weekend.
+    Prediction cutoffs are rows: sun_1800, sun_2000, mon_0400, mon_0900.
 
   Unity Catalog metadata (every perps table):
     TABLE COMMENT starts "Perpetual futures (derivatives), not equities:"
