@@ -10,7 +10,20 @@ The swap succeeds only when the pointer still names the generation's
 ``predecessor_generation_id``; bootstrap inserts only while the pointer is
 empty.  Affected rows = 1 means published.  Affected rows = 0 means this call
 did not move the pointer, which is **not** the same as failure: the pointer is
-re-read after the CAS and the outcome is decided from the *stored* manifest —
+re-read after the CAS and the outcome is decided from the *stored* manifest.
+
+The manifest table is written **only** through two atomic operations, so the
+state machine is correct under any interleaving of concurrent invocations:
+
+* ``insert_manifest_if_absent`` is a ``WHEN NOT MATCHED THEN INSERT`` MERGE: it
+  can create a run row but never overwrites one, whatever its status.  A retry
+  therefore cannot resurrect a published (or failed) manifest as ``pending``;
+* ``transition_status`` is a ``WHEN MATCHED AND status IN (...) THEN UPDATE``
+  MERGE, i.e. a compare-and-set on ``status``.  ``published`` is terminal: no
+  transition may move a row out of it, so a concurrent ``pending -> failed``
+  write can never downgrade a published generation.
+
+The outcomes are decided from those two operations alone —
 
 * the pointer already names **this** generation (a concurrent identical retry
   published it first) -> idempotent success, ``already_current``; the stored
@@ -184,7 +197,39 @@ class Generation:
 
 
 class PointerExecutor(Protocol):
-    """Injected persistence; the real one is a Delta MERGE + manifest table."""
+    """Injected persistence: a pointer CAS plus two atomic manifest writes.
+
+    The real executor is Delta SQL.  The publisher may only *write* manifests
+    through the two compare-and-set operations below — there is deliberately no
+    unconditional "put" that could overwrite an existing row (Opus R4 MINOR 2 /
+    Sol R4 P1):
+
+    ``insert_manifest_if_absent(generation_id, manifest) -> bool``
+        ``MERGE INTO <manifests> AS t USING (<row>) AS s
+        ON t.generation_id = s.generation_id
+        WHEN NOT MATCHED THEN INSERT (...) VALUES (...)``
+
+        True when this call inserted the row; False when a row for that id
+        already exists, **whatever its status**.  An existing row is never
+        overwritten, so a retry can never replace a published or failed
+        manifest with a pending one.
+
+    ``transition_status(generation_id, from_statuses, to_status) -> int``
+        ``MERGE INTO <manifests> AS t USING (<generation_id>) AS s
+        ON t.generation_id = s.generation_id
+        WHEN MATCHED AND t.status IN (<from_statuses>)
+                     AND t.status <> 'published'
+        THEN UPDATE SET status = <to_status>``
+
+        Affected rows.  This is a compare-and-set on ``status``: a losing
+        writer sees 0, and ``published`` is terminal — no transition may move a
+        row out of it.  ``pending -> published`` is the publish transition;
+        ``failed -> published`` lets the pointer-CAS winner repair a failure
+        mark written in the gap between its pointer swap and its status write.
+
+    ``read_pointer``, ``compare_and_set`` and ``get_manifest`` are reads (plus
+    the pointer CAS); they never rewrite manifest content.
+    """
 
     def read_pointer(self) -> Optional[str]: ...
 
@@ -192,7 +237,16 @@ class PointerExecutor(Protocol):
         self, *, predecessor: Optional[str], generation_id: str
     ) -> int: ...
 
-    def put_manifest(self, generation: Generation) -> None: ...
+    def insert_manifest_if_absent(
+        self, generation_id: str, manifest: Generation
+    ) -> bool: ...
+
+    def transition_status(
+        self,
+        generation_id: str,
+        from_statuses: Tuple[str, ...],
+        to_status: str,
+    ) -> int: ...
 
     def get_manifest(self, generation_id: str) -> Optional[Generation]: ...
 
@@ -215,11 +269,14 @@ def publish(executor: PointerExecutor, generation: Generation) -> PublishResult:
 
     ``published`` is True whenever the generation's manifest is ``published``
     after the call — including the no-op outcomes — and ``outcome`` states
-    whether *this* call performed the swap.  A manifest that is already
-    ``published`` is never rewritten to ``failed``: a zero-row CAS is resolved
-    by re-reading the pointer and the stored run status.
+    whether *this* call performed the swap.  Manifests are written only through
+    ``insert_manifest_if_absent`` and ``transition_status`` (see
+    :class:`PointerExecutor`), so a manifest that is already ``published`` is
+    never rewritten to ``pending`` or ``failed`` under any interleaving: a
+    zero-row CAS is resolved by re-reading the pointer and the stored status.
     """
-    existing = executor.get_manifest(generation.generation_id)
+    gid = generation.generation_id
+    existing = executor.get_manifest(gid)
     if existing is not None and existing.digest() != generation.digest():
         return PublishResult(
             published=False,
@@ -229,107 +286,146 @@ def publish(executor: PointerExecutor, generation: Generation) -> PublishResult:
             generation=existing,
         )
     if existing is None:
-        try:
-            executor.put_manifest(generation)
-        except ManifestConflictError:
-            return PublishResult(
-                published=False,
-                outcome=OUTCOME_MANIFEST_CONFLICT,
-                affected_rows=0,
-                pointer=executor.read_pointer(),
-                generation=generation,
-            )
+        # Create the run row once, as pending.  An existing row — whatever its
+        # status — is never overwritten; if it appeared concurrently it must
+        # still describe this generation's content.
+        inserted = executor.insert_manifest_if_absent(
+            gid, generation.with_status(STATUS_PENDING)
+        )
+        if not inserted:
+            existing = executor.get_manifest(gid)
+            if existing is None:
+                raise PublicationError(
+                    f"executor reported generation {gid!r} as present but "
+                    "returned no manifest"
+                )
+            if existing.digest() != generation.digest():
+                return PublishResult(
+                    published=False,
+                    outcome=OUTCOME_MANIFEST_CONFLICT,
+                    affected_rows=0,
+                    pointer=executor.read_pointer(),
+                    generation=existing,
+                )
 
     current = executor.read_pointer()
-    if current == generation.generation_id:
-        stored = executor.get_manifest(generation.generation_id) or generation
-        return PublishResult(
-            published=True,
-            outcome=OUTCOME_ALREADY_CURRENT,
-            affected_rows=0,
-            pointer=current,
-            generation=stored,
+    if current == gid:
+        # The pointer already names this generation: it is published, and a
+        # still-pending (or gap-failed) row is repaired — never downgraded.
+        return _already_current(
+            executor, generation, affected_rows=0, pointer=current
         )
     if current != generation.predecessor_generation_id:
         # The pointer moved away from our predecessor.  If this generation was
         # published before that move it is only superseded, never failed.
-        stored = executor.get_manifest(generation.generation_id) or generation
-        if stored.status == STATUS_PUBLISHED:
-            return PublishResult(
-                published=True,
-                outcome=OUTCOME_ALREADY_PUBLISHED_SUPERSEDED,
-                affected_rows=0,
-                pointer=current,
-                generation=stored,
-            )
-        failed = generation.with_status(STATUS_FAILED)
-        _replace_manifest(executor, failed)
-        return PublishResult(
-            published=False,
-            outcome=OUTCOME_STALE_PREDECESSOR,
-            affected_rows=0,
+        return _not_our_turn(
+            executor,
+            generation,
             pointer=current,
-            generation=failed,
+            affected_rows=0,
+            outcome=OUTCOME_STALE_PREDECESSOR,
         )
 
     affected = executor.compare_and_set(
         predecessor=generation.predecessor_generation_id,
-        generation_id=generation.generation_id,
+        generation_id=gid,
     )
     if affected == 1:
-        published = generation.with_status(STATUS_PUBLISHED)
-        _replace_manifest(executor, published)
+        # This call moved the pointer, so this generation is published.  A
+        # duplicate invocation may have marked it failed in the gap between the
+        # pointer swap and this write; the CAS winner repairs that mark.
+        executor.transition_status(
+            gid, (STATUS_PENDING, STATUS_FAILED), STATUS_PUBLISHED
+        )
         return PublishResult(
             published=True,
             outcome=OUTCOME_PUBLISHED,
             affected_rows=affected,
             pointer=executor.read_pointer(),
-            generation=published,
+            generation=_stored_or(executor, generation, STATUS_PUBLISHED),
         )
 
     # The CAS lost.  Decide from the pointer and the stored manifest instead of
     # assuming failure: a concurrent identical invocation may have published
     # this very generation, and a published manifest is never downgraded.
     pointer_after = executor.read_pointer()
-    stored = executor.get_manifest(generation.generation_id) or generation
-    if pointer_after == generation.generation_id:
-        if stored.status != STATUS_PUBLISHED:
-            stored = generation.with_status(STATUS_PUBLISHED)
-            _replace_manifest(executor, stored)
-        return PublishResult(
-            published=True,
-            outcome=OUTCOME_ALREADY_CURRENT,
-            affected_rows=affected,
-            pointer=pointer_after,
-            generation=stored,
+    if pointer_after == gid:
+        return _already_current(
+            executor, generation, affected_rows=affected, pointer=pointer_after
         )
+    return _not_our_turn(
+        executor,
+        generation,
+        pointer=pointer_after,
+        affected_rows=affected,
+        outcome=OUTCOME_CAS_FAILED,
+    )
+
+
+def _stored_or(
+    executor: PointerExecutor, generation: Generation, status: str
+) -> Generation:
+    """Read the stored run row, falling back to *generation* with *status*."""
+    return executor.get_manifest(generation.generation_id) or generation.with_status(
+        status
+    )
+
+
+def _already_current(
+    executor: PointerExecutor,
+    generation: Generation,
+    *,
+    affected_rows: int,
+    pointer: Optional[str],
+) -> PublishResult:
+    """The pointer names this generation: published, repairing a stale row."""
+    gid = generation.generation_id
+    # A pointer that names this generation is authoritative: a pending row (the
+    # status write never landed) or a gap-failed row is repaired.  Published is
+    # terminal, so this can never downgrade a row that already published.
+    executor.transition_status(
+        gid, (STATUS_PENDING, STATUS_FAILED), STATUS_PUBLISHED
+    )
+    return PublishResult(
+        published=True,
+        outcome=OUTCOME_ALREADY_CURRENT,
+        affected_rows=affected_rows,
+        pointer=pointer,
+        generation=_stored_or(executor, generation, STATUS_PUBLISHED),
+    )
+
+
+def _not_our_turn(
+    executor: PointerExecutor,
+    generation: Generation,
+    *,
+    pointer: Optional[str],
+    affected_rows: int,
+    outcome: str,
+) -> PublishResult:
+    """This call did not move the pointer; classify from the stored status."""
+    gid = generation.generation_id
+    stored = _stored_or(executor, generation, STATUS_PENDING)
+    if stored.status != STATUS_PUBLISHED:
+        # Conditional on ``pending`` only: if another invocation published this
+        # row after we read it, the CAS affects 0 rows and leaves it published.
+        executor.transition_status(gid, (STATUS_PENDING,), STATUS_FAILED)
+        stored = _stored_or(executor, generation, STATUS_FAILED)
     if stored.status == STATUS_PUBLISHED:
         return PublishResult(
             published=True,
             outcome=OUTCOME_ALREADY_PUBLISHED_SUPERSEDED,
-            affected_rows=affected,
-            pointer=pointer_after,
+            affected_rows=affected_rows,
+            pointer=pointer,
             generation=stored,
         )
-    failed = generation.with_status(STATUS_FAILED)
-    _replace_manifest(executor, failed)
     return PublishResult(
         published=False,
-        outcome=OUTCOME_CAS_FAILED,
-        affected_rows=affected,
-        pointer=pointer_after,
-        generation=failed,
+        outcome=outcome,
+        affected_rows=affected_rows,
+        pointer=pointer,
+        generation=stored,
     )
-
-
-def _replace_manifest(executor: PointerExecutor, generation: Generation) -> None:
-    """Rewrite the run status of the same generation (content is unchanged)."""
-    try:
-        executor.put_manifest(generation)
-    except ManifestConflictError as error:  # pragma: no cover - defensive
-        raise PublicationError(
-            f"status update changed manifest content: {error}"
-        ) from error
 
 
 # ── Ownership ──────────────────────────────────────────────────────────────
@@ -475,6 +571,14 @@ def validate_node_row(row: Mapping[str, Any]) -> str:
     can never be published under a Security id; ``Security`` rows refuse
     Instrument-only attributes and re-derive their issuer+class id, so a perp
     can never be published as the equity it tracks (``KG_DATA_MODEL_v4`` §J).
+
+    A **provisional** Security id (``identity.provisional_security_id``, whose
+    share-class component is the deterministic ``PROV:`` evidence key) and a
+    legacy **v1** ``v1|security|...`` id cannot pass this check, and therefore
+    cannot pass :func:`merge_node_rows` either: the row's ``node_id`` must equal
+    the v2 id re-derived from ``issuer_company_id`` + ``share_class_code`` and
+    neither old form reproduces it.  That is intended until the KG-B identity
+    migration rewrites those ids; it is not a licence to trust an asserted id.
     """
     if not isinstance(row, Mapping):
         raise PublicationError(

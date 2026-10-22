@@ -18,32 +18,49 @@ CLASSIFICATION_SOURCE = "derived"
 
 
 class FakePointerExecutor:
-    """In-memory stand-in for the Delta pointer table + manifest writer.
+    """In-memory stand-in for the Delta pointer table + manifest table.
 
-    ``compare_and_set`` mirrors the MERGE in KG_DATA_MODEL_v4 §G: the update
-    matches only while the pointer still names the predecessor, and the
+    ``compare_and_set`` mirrors the pointer MERGE in KG_DATA_MODEL_v4 §G: the
+    update matches only while the pointer still names the predecessor, and the
     bootstrap insert matches only while the pointer is empty.
+
+    The two manifest writes mirror the executor contract's Delta MERGEs:
+
+    * ``insert_manifest_if_absent`` is ``WHEN NOT MATCHED THEN INSERT``: an
+      existing row is never overwritten, whatever its status;
+    * ``transition_status`` is ``WHEN MATCHED AND status IN (...) THEN UPDATE``:
+      a compare-and-set in which ``published`` is terminal.
     """
 
     def __init__(self) -> None:
         self.pointer = None
         self.manifests = {}
         self.cas_calls = 0
+        self.status_writes = 0
 
     def read_pointer(self):
         return self.pointer
 
-    def put_manifest(self, generation):
-        existing = self.manifests.get(generation.generation_id)
-        if existing is not None and existing.digest() != generation.digest():
-            raise publication.ManifestConflictError(
-                f"generation {generation.generation_id} already published with "
-                "different content"
-            )
-        self.manifests[generation.generation_id] = generation
-
     def get_manifest(self, generation_id):
         return self.manifests.get(generation_id)
+
+    def insert_manifest_if_absent(self, generation_id, manifest):
+        if generation_id in self.manifests:
+            # WHEN NOT MATCHED only: the existing row is left untouched.
+            return False
+        self.manifests[generation_id] = manifest
+        return True
+
+    def transition_status(self, generation_id, from_statuses, to_status):
+        current = self.manifests.get(generation_id)
+        if current is None or current.status not in tuple(from_statuses):
+            return 0
+        if current.status == publication.STATUS_PUBLISHED:
+            # ``published`` is terminal: no transition ever leaves it.
+            return 0
+        self.manifests[generation_id] = current.with_status(to_status)
+        self.status_writes += 1
+        return 1
 
     def compare_and_set(self, *, predecessor, generation_id):
         self.cas_calls += 1
@@ -474,6 +491,50 @@ class StaleBootstrapExecutor(FakePointerExecutor):
         return self._stale_read if self._stale else self.pointer
 
 
+class PendingWinnerExecutor(FakePointerExecutor):
+    """An identical invocation moves the pointer but loses its status write."""
+
+    def compare_and_set(self, *, predecessor, generation_id):
+        self.cas_calls += 1
+        self.pointer = generation_id
+        return 0
+
+
+class InterleavingExecutor(FakePointerExecutor):
+    """Fake executor that runs another actor at a named executor call.
+
+    ``before`` maps a hook name to a one-shot callback that runs *before* the
+    real operation, which reproduces a concrete interleaving without threads.
+    Hook names are ``insert:<generation_id>``, ``cas:<generation_id>`` and
+    ``transition:<generation_id>:<to_status>``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.before = {}
+
+    def _run_hook(self, name):
+        hook = self.before.pop(name, None)
+        if hook is not None:
+            hook()
+
+    def insert_manifest_if_absent(self, generation_id, manifest):
+        self._run_hook(f"insert:{generation_id}")
+        return super().insert_manifest_if_absent(generation_id, manifest)
+
+    def compare_and_set(self, *, predecessor, generation_id):
+        self._run_hook(f"cas:{generation_id}")
+        return super().compare_and_set(
+            predecessor=predecessor, generation_id=generation_id
+        )
+
+    def transition_status(self, generation_id, from_statuses, to_status):
+        self._run_hook(f"transition:{generation_id}:{to_status}")
+        return super().transition_status(
+            generation_id, from_statuses, to_status
+        )
+
+
 def test_identical_concurrent_retries_keep_the_generation_published():
     executor = ConcurrentWinnerExecutor()
     g1 = generation("gen-1", None)
@@ -549,6 +610,146 @@ def test_bootstrap_race_zero_row_cas_has_exactly_one_winner():
     # unpublished.
     assert executor.pointer == "gen-boot-1"
     assert executor.manifests["gen-boot-2"].status == publication.STATUS_FAILED
+
+
+def test_retry_paused_before_insert_does_not_downgrade_a_published_generation():
+    """Sol R4 P1: a retry can never overwrite an existing manifest row."""
+    executor = InterleavingExecutor()
+    retry_generation = generation("gen-a", None)
+
+    def publish_first_then_move_on():
+        # The concurrent invocation publishes A against the empty pointer, then
+        # B publishes on A — all before this retry's own insert executes.
+        first = publication.publish(executor, generation("gen-a", None))
+        second = publication.publish(executor, generation("gen-b", "gen-a"))
+        assert first.outcome == publication.OUTCOME_PUBLISHED
+        assert second.outcome == publication.OUTCOME_PUBLISHED
+        assert executor.pointer == "gen-b"
+        assert executor.get_manifest("gen-a").status == publication.STATUS_PUBLISHED
+
+    executor.before["insert:gen-a"] = publish_first_then_move_on
+    retry = publication.publish(executor, retry_generation)
+
+    # A stays published and the pointer stays on B: the resumed retry only
+    # observes that its generation was published and later superseded.
+    assert retry.published is True
+    assert retry.outcome == publication.OUTCOME_ALREADY_PUBLISHED_SUPERSEDED
+    assert retry.affected_rows == 0
+    assert retry.pointer == "gen-b"
+    assert executor.pointer == "gen-b"
+    stored = executor.get_manifest("gen-a")
+    assert stored.status == publication.STATUS_PUBLISHED
+    assert stored.digest() == retry_generation.digest()
+
+
+def test_duplicate_failure_mark_in_the_cas_gap_is_repaired_to_published():
+    """Opus R4 MINOR 2: the pointer-CAS winner repairs a gap failure mark."""
+    executor = InterleavingExecutor()
+    base = publication.publish(executor, generation("gen-base", None))
+    assert base.outcome == publication.OUTCOME_PUBLISHED
+
+    def publish_c_then_duplicate_b():
+        # C publishes on G between A's pointer CAS and A's status write ...
+        c = publication.publish(executor, generation("gen-c", "gen-g"))
+        # ... and B, a duplicate of A, loses the CAS against C and marks G
+        # failed in that same gap.
+        b = publication.publish(executor, generation("gen-g", "gen-base"))
+        assert c.outcome == publication.OUTCOME_PUBLISHED
+        assert b.published is False
+        assert executor.pointer == "gen-c"
+        assert executor.get_manifest("gen-g").status == publication.STATUS_FAILED
+
+    executor.before["transition:gen-g:published"] = publish_c_then_duplicate_b
+    a = publication.publish(executor, generation("gen-g", "gen-base"))
+
+    # A's repair is a status CAS from pending/failed, so it publishes G even
+    # though C already owns the pointer.
+    assert a.published is True
+    assert a.outcome == publication.OUTCOME_PUBLISHED
+    assert a.affected_rows == 1
+    assert a.generation.status == publication.STATUS_PUBLISHED
+    assert executor.get_manifest("gen-g").status == publication.STATUS_PUBLISHED
+    assert executor.pointer == "gen-c"
+
+
+def test_failure_mark_landing_after_publish_cannot_overwrite_it():
+    """Opus R4 MINOR 2: a conditional failure write never downgrades."""
+    executor = InterleavingExecutor()
+    publication.publish(executor, generation("gen-base", None))
+    # A won the pointer CAS for G but had not written its status yet; C then
+    # published on G, so G is still pending while its pointer is superseded.
+    pending = generation("gen-g", "gen-base")
+    assert executor.insert_manifest_if_absent("gen-g", pending) is True
+    executor.pointer = "gen-g"
+    c = publication.publish(executor, generation("gen-c", "gen-g"))
+    assert c.outcome == publication.OUTCOME_PUBLISHED
+    assert executor.get_manifest("gen-g").status == publication.STATUS_PENDING
+
+    def a_status_write_lands():
+        # A's (successful) publish status write lands just before B's failure
+        # mark; this is the gap the conditional CAS has to survive.
+        affected = executor.transition_status(
+            "gen-g", (publication.STATUS_PENDING,), publication.STATUS_PUBLISHED
+        )
+        assert affected == 1
+        assert executor.get_manifest("gen-g").status == publication.STATUS_PUBLISHED
+
+    executor.before["transition:gen-g:failed"] = a_status_write_lands
+    b = publication.publish(executor, generation("gen-g", "gen-base"))
+
+    # B's failure mark affects no row: published is terminal, and B reports the
+    # published/superseded no-op instead of a downgrade.
+    assert b.published is True
+    assert b.outcome == publication.OUTCOME_ALREADY_PUBLISHED_SUPERSEDED
+    assert b.affected_rows == 0
+    assert b.pointer == "gen-c"
+    assert executor.get_manifest("gen-g").status == publication.STATUS_PUBLISHED
+    assert executor.pointer == "gen-c"
+
+
+def test_pointer_naming_the_generation_repairs_a_pending_manifest():
+    """Opus R4 MINOR 2: the pointer, not the run row, is authoritative."""
+    # (a) Entry branch: the pointer already names the generation.
+    executor = FakePointerExecutor()
+    assert executor.insert_manifest_if_absent(
+        "gen-r", generation("gen-r", None)
+    ) is True
+    executor.pointer = "gen-r"
+    assert executor.get_manifest("gen-r").status == publication.STATUS_PENDING
+
+    repaired = publication.publish(executor, generation("gen-r", None))
+    assert repaired.published is True
+    assert repaired.outcome == publication.OUTCOME_ALREADY_CURRENT
+    assert repaired.affected_rows == 0
+    assert repaired.generation.status == publication.STATUS_PUBLISHED
+    assert executor.get_manifest("gen-r").status == publication.STATUS_PUBLISHED
+
+    # (b) Lost-CAS branch: the concurrent identical invocation moved the
+    # pointer but its status write never landed.
+    losing = PendingWinnerExecutor()
+    repaired_lost = publication.publish(losing, generation("gen-p", None))
+    assert repaired_lost.published is True
+    assert repaired_lost.outcome == publication.OUTCOME_ALREADY_CURRENT
+    assert repaired_lost.pointer == "gen-p"
+    assert losing.pointer == "gen-p"
+    assert losing.get_manifest("gen-p").status == publication.STATUS_PUBLISHED
+
+
+def test_provisional_and_v1_security_ids_cannot_be_merged():
+    """Intended until the KG-B migration (see ``validate_node_row``)."""
+    provisional = identity.provisional_security_id(COMPANY, ["ev-0001"])
+    assert identity.is_provisional_key(
+        identity.provisional_security_key(COMPANY, ["ev-0001"])
+    )
+    legacy = identity.make_node_id("v1", "security", "0001045810", "NVDA")
+    for node_id in (provisional, legacy):
+        row = dict(_security_node_row(), node_id=node_id)
+        # The id is re-derived from issuer + share class, so neither the
+        # provisional nor the v1 Security id can pass validation or merging.
+        with pytest.raises(publication.PublicationError):
+            publication.validate_node_row(row)
+        with pytest.raises(publication.PublicationError):
+            publication.merge_node_rows([row])
 
 
 def test_classification_observation_requires_a_validated_data_source():

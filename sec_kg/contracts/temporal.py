@@ -24,7 +24,9 @@ Both query modes filter first and resolve business time second:
     future must not erase an eligible predecessor (Sol R3 S3).  Supersession is
     applied among the eligible events, so a correction that is public at ``T``
     always beats the event it corrects, whichever of the two was published
-    first (Opus R4 MAJOR 1).
+    first (Opus R4 MAJOR 1).  The supersession chain is followed through
+    events that are not (yet) public, so a public correction also corrects the
+    older eligible event behind a never-public link (Opus R4 MINOR 1).
 """
 from __future__ import annotations
 
@@ -262,8 +264,9 @@ def _publicly_eligible(
 
 def _drop_publicly_superseded(
     intervals: Iterable[DerivedInterval],
+    supersedes_by_event: Mapping[str, Optional[str]],
 ) -> Tuple[DerivedInterval, ...]:
-    """Remove every eligible event that an *also eligible* event supersedes.
+    """Remove every eligible event an *also eligible* event supersedes.
 
     Supersession is applied **among the events visible in the requested view**,
     before business time is resolved (Opus R4 MAJOR 1).  Otherwise a superseded
@@ -271,14 +274,24 @@ def _drop_publicly_superseded(
     timestamp and the public view leaks a value the record had already
     corrected.  A correction that is not yet eligible is not in the set, so it
     still cannot erase an eligible predecessor (Sol R3 S3).
+
+    The correction chain is followed **transitively through events that are not
+    (yet) public** (Opus R4 MINOR 1).  If public ``e3`` supersedes
+    never-public ``e2``, which superseded public ``e1``, then ``e1`` is
+    corrected and must not answer either: the public view must agree with
+    ``system_replay`` at the same business time.  ``supersedes_by_event`` is
+    the *whole* log's ``event_id -> supersedes_event_id`` map, so the walk can
+    pass through ineligible links.
     """
     kept = tuple(intervals)
-    eligible_ids = {interval.event.event_id for interval in kept}
-    superseded: set = {
-        interval.event.supersedes_event_id
-        for interval in kept
-        if interval.event.supersedes_event_id in eligible_ids
-    }
+    superseded: set = set()
+    for interval in kept:
+        target = supersedes_by_event.get(interval.event.event_id)
+        seen: set = set()
+        while target is not None and target not in seen:
+            seen.add(target)
+            superseded.add(target)
+            target = supersedes_by_event.get(target)
     return tuple(
         interval for interval in kept if interval.event.event_id not in superseded
     )
@@ -295,7 +308,10 @@ def visible_intervals(
 
     ``public_as_of`` filters on public availability first and then applies
     supersession among the surviving events, so a public correction beats the
-    event it corrects regardless of which of the two became public first.
+    event it corrects regardless of which of the two became public first.  The
+    correction chain is followed through events that are not eligible, so a
+    public correction still corrects an older eligible event when the link
+    between them is a never-public one.
     """
     mode = normalise_view(view)
     moment = _as_datetime(knowledge_time, "knowledge_time")
@@ -304,6 +320,10 @@ def visible_intervals(
         normalize_unicode(str(attribute)) if attribute is not None else None
     )
     intervals = derive_system_intervals(events)
+    supersedes_by_event = {
+        interval.event.event_id: interval.event.supersedes_event_id
+        for interval in intervals
+    }
     selected = []
     for interval in intervals:
         event = interval.event
@@ -318,7 +338,9 @@ def visible_intervals(
             if _publicly_eligible(interval, moment):
                 selected.append(interval)
     if mode is TemporalView.PUBLIC_AS_OF:
-        selected = list(_drop_publicly_superseded(selected))
+        selected = list(
+            _drop_publicly_superseded(selected, supersedes_by_event)
+        )
     selected.sort(key=lambda interval: (interval.event.valid_from, interval.event.event_id))
     return tuple(selected)
 

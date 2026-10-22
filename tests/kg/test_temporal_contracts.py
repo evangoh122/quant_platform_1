@@ -408,6 +408,80 @@ def test_public_view_supersession_without_future_leakage():
                          attribute=ATTRIBUTE)
 
 
+def test_public_supersession_follows_the_chain_through_unpublished_corrections():
+    """Opus R4 MINOR 1: the public chain must not stop at an ineligible link."""
+    original = event(
+        "e1",
+        "Old Co",
+        dt(2010, 1, 1),
+        None,
+        dt(2010, 6, 1),
+        public=dt(2010, 6, 1),
+    )
+    never_public = event(
+        "e2",
+        "Hidden Co",
+        dt(2010, 1, 1),
+        dt(2015, 1, 1),
+        dt(2019, 1, 1),
+        public=None,
+        supersedes="e1",
+    )
+    public_correction = event(
+        "e3",
+        "Bounded Co",
+        dt(2010, 1, 1),
+        dt(2015, 1, 1),
+        dt(2022, 1, 1),
+        public=dt(2022, 1, 1),
+        supersedes="e2",
+    )
+    events = [original, never_public, public_correction]
+    business = dt(2023, 1, 1)
+    knowledge = dt(2023, 6, 1)
+
+    # e3 is public and supersedes e2, which is never public but supersedes e1.
+    # The chain makes e1 corrected, so the public view must be None exactly as
+    # the system replay is: following only one hop would resurrect e1 (whose
+    # open business interval still covers 2023).
+    assert (
+        temporal.public_as_of(
+            events, ENTITY, business, knowledge, attribute=ATTRIBUTE
+        )
+        is None
+    )
+    assert (
+        temporal.system_replay(
+            events, ENTITY, business, knowledge, attribute=ATTRIBUTE
+        )
+        is None
+    )
+    assert [
+        item.event.event_id
+        for item in temporal.visible_intervals(
+            events, ENTITY, "public_as_of", knowledge, attribute=ATTRIBUTE
+        )
+    ] == ["e3"]
+
+    # Inside e3's bounded interval the eligible correction answers in both
+    # views, so the transitive drop does not remove a legitimate value.
+    inside = dt(2012, 6, 1)
+    public_inside = temporal.public_as_of(
+        events, ENTITY, inside, knowledge, attribute=ATTRIBUTE
+    )
+    replay_inside = temporal.system_replay(
+        events, ENTITY, inside, knowledge, attribute=ATTRIBUTE
+    )
+    assert public_inside is not None and public_inside.event_id == "e3"
+    assert replay_inside is not None and replay_inside.event_id == "e3"
+
+    # Before e3 is public the chain is not eligible yet: e1 still answers.
+    before = temporal.public_as_of(
+        events, ENTITY, dt(2012, 6, 1), dt(2021, 1, 1), attribute=ATTRIBUTE
+    )
+    assert before is not None and before.event_id == "e1"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Every event row carries a required, validated data_source
 # ═══════════════════════════════════════════════════════════════════════════════
