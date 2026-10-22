@@ -20,7 +20,9 @@ function findLabel(id: string, groups: NavGroup[]): string {
  * Top bar, adapted from the site's navigation: a gold monogram tile with the
  * product name on the left, the current screen next to it, and quiet icon +
  * label actions on the right. The sidebar stays the primary navigation, so
- * this bar never carries the full link set.
+ * this bar never carries the full link set. This monogram is the one brand
+ * mark per view: the sidebar and the mobile drawer are navigation-only and
+ * never repeat it.
  */
 export function PageHeader({ currentId, groups, onMenuToggle, onTour }: PageHeaderProps) {
   const label = findLabel(currentId, groups);

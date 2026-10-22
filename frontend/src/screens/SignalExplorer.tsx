@@ -34,7 +34,7 @@ export function SignalExplorer() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <Eyebrow>signal explorer</Eyebrow>
+          <Eyebrow>baseline, not edge</Eyebrow>
           <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Signal Explorer</h1>
         </div>
         {data && <FreshnessBadge freshness={data.freshness} />}

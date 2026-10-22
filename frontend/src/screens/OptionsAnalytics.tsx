@@ -51,7 +51,7 @@ export function OptionsAnalytics() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <Eyebrow>options analytics</Eyebrow>
+          <Eyebrow>volatility and flow</Eyebrow>
           <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Options Analytics</h1>
         </div>
         {data && <FreshnessBadge freshness={data.options.freshness} />}

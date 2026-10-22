@@ -116,7 +116,11 @@ CI fails when either the lock or the export is stale. See
 The frontend follows the owner's site (evangoh.com) palette, italic-serif
 eyebrows, 16 px cards and a centred 1200 px content column, and it is
 deliberately dark-only — that brand match is the documented trade-off against
-HIG `dark-mode.md`. Text never renders below 12 px (13 px `text-xs` captions),
+HIG `dark-mode.md`. One brand mark is shown per view: the top-bar `Q` monogram,
+with the sidebar and the mobile drawer kept navigation-only, and each eyebrow
+names its section's category instead of repeating the title
+(`frontend/src/layout/brand-and-eyebrows.test.tsx` guards both). Text never
+renders below 12 px (13 px `text-xs` captions),
 and no screen scrolls horizontally between 320 and 768 px:
 `frontend/src/layout/layout-overflow.test.tsx` asserts the shell, column,
 wrapping and type-size guards on all 18 destinations at 320/375/390/768 px.

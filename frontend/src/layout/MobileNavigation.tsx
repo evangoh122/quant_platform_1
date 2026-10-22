@@ -89,17 +89,11 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
             onKeyDown={handleTrapFocus}
             className="absolute inset-y-0 left-0 w-[min(80vw,320px)] max-w-full overflow-y-auto bg-[var(--surface)] shadow-xl"
           >
-            <div className="border-b border-[var(--border)] px-4 py-4 pl-14">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="brand-tile" aria-hidden="true">
-                  Q
-                </span>
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-[var(--text-primary)]">QP1</div>
-                  <div className="truncate text-xs text-[var(--text-muted)]">Quant Trading Platform</div>
-                </div>
-              </div>
-            </div>
+            {/* Navigation-only: the brand mark lives in the top bar, so the
+                drawer never carries a second tile and the two can never show
+                at once. This spacer keeps the first group clear of the fixed
+                menu trigger that overlaps the drawer's top-left corner. */}
+            <div className="h-16 border-b border-[var(--border)]" aria-hidden="true" />
 
             <nav className="p-2">
               {groups.map((group) => (

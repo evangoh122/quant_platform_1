@@ -45,7 +45,7 @@ export function PaperPortfolio() {
     <div data-tour="lakebase-write" className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <Eyebrow>paper portfolio</Eyebrow>
+          <Eyebrow>simulated positions</Eyebrow>
           <h1 className="mt-1.5 text-xl font-semibold tracking-tight">IBKR Paper Portfolio</h1>
         </div>
         {data && <FreshnessBadge freshness={data.positions.freshness} />}

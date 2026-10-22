@@ -145,7 +145,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
       </section>
 
       <section>
-        <SectionHeading eyebrow="verified evidence" title="Verified Evidence" />
+        <SectionHeading eyebrow="what is already proven" title="Verified Evidence" />
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <EvidenceCard label="Market & regulatory records" value="287M+" detail="Across Massive, SEC, CFTC, and FRED sources" />
           <EvidenceCard label="Options records" value="152.1M" detail="Put/call volume, IV surfaces, and OI concentration" />
@@ -157,7 +157,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
       </section>
 
       <section>
-        <SectionHeading eyebrow="platform pipeline" title="Platform Pipeline" />
+        <SectionHeading eyebrow="how data moves" title="Platform Pipeline" />
         <nav aria-label="Pipeline stages">
           <ol className="flex flex-wrap items-center gap-3">
             {PIPELINE_STAGES.map((stage, i) => (
@@ -168,7 +168,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
       </section>
 
       <section>
-        <SectionHeading eyebrow="explore the platform" title="Explore the Platform" />
+        <SectionHeading eyebrow="start anywhere" title="Explore the Platform" />
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {RUBRIC_CARDS.map((card) => (
             <RubricCard

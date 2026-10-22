@@ -64,7 +64,7 @@ export function ArchitectureEvidence() {
   return (
     <div className="space-y-8">
       <section className="card-featured p-6">
-        <Eyebrow>architecture &amp; tests</Eyebrow>
+        <Eyebrow>built and checked</Eyebrow>
         <h1 className="mt-3 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
           Architecture &amp; Tests
         </h1>

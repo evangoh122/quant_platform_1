@@ -1,4 +1,5 @@
 import { FEATURES, NEXT_APPROACH, type NextApproach } from '../data/businessCase';
+import { Eyebrow } from '../components/Eyebrow';
 import { Table, type Column } from '../components/Table';
 import {
   CrossLinks,
@@ -110,7 +111,7 @@ export function BusinessCaseFeatures({ onNavigate }: BusinessCaseScreenProps) {
         data-roadmap
         className="rounded-[var(--radius-lg)] border-2 border-[var(--border-strong)] bg-[var(--surface-elevated)] p-5"
       >
-        <p className="text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">{NEXT_APPROACH.eyebrow}</p>
+        <Eyebrow>{NEXT_APPROACH.eyebrow}</Eyebrow>
         <h2 id="bc-roadmap" className="mt-1 text-xl font-bold text-[var(--text-primary)]">
           {NEXT_APPROACH.title}
         </h2>

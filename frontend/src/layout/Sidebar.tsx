@@ -16,21 +16,12 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
         collapsed ? 'w-16' : 'w-56'
       }`}
     >
-      <div className={`flex flex-wrap items-center gap-2 border-b border-[var(--border)] px-4 py-4 ${collapsed ? 'justify-center' : ''}`}>
-        {!collapsed && (
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="brand-tile" aria-hidden="true">
-              Q
-            </span>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-[var(--text-primary)]">QP1</div>
-              <div className="truncate text-xs text-[var(--text-muted)]">Quant Trading Platform</div>
-            </div>
-          </div>
-        )}
+      {/* Navigation-only. The one brand mark lives in the top bar, so the
+          sidebar never repeats it: exactly one brand presentation per view. */}
+      <div className={`flex items-center border-b border-[var(--border)] px-4 py-4 ${collapsed ? 'justify-center' : 'justify-end'}`}>
         <button
           onClick={onToggle}
-          className="control-target ml-auto shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          className="control-target shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-expanded={!collapsed}
         >

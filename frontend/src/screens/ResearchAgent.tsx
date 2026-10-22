@@ -156,7 +156,7 @@ export function ResearchAgent() {
   return (
     <div data-tour="agent" className="space-y-4">
       <div className="min-w-0">
-        <Eyebrow>research agent</Eyebrow>
+        <Eyebrow>governed retrieval</Eyebrow>
         <h1 className="mt-1.5 text-xl font-semibold tracking-tight">AI Research Agent</h1>
       </div>
 

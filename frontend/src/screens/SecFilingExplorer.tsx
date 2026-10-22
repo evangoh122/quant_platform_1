@@ -131,7 +131,7 @@ export function SecFilingExplorer() {
   return (
     <div className="space-y-4">
       <div className="min-w-0">
-        <Eyebrow>sec filing explorer</Eyebrow>
+        <Eyebrow>disclosure records</Eyebrow>
         <h1 className="mt-1.5 text-xl font-semibold tracking-tight">SEC Filing Explorer</h1>
       </div>
 
