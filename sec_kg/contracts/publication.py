@@ -8,11 +8,21 @@ Publication is a compare-and-swap on a single-row pointer table::
 
 The swap succeeds only when the pointer still names the generation's
 ``predecessor_generation_id``; bootstrap inserts only while the pointer is
-empty.  Affected rows = 1 means published, 0 means the CAS lost and the run is
-marked FAILED with its outputs left unpublished.  A retry reuses the same
-``generation_id`` and is a no-op success when that generation is already
-current.  The production executor is injected, so the state machine is tested
-without a warehouse.
+empty.  Affected rows = 1 means published.  Affected rows = 0 means this call
+did not move the pointer, which is **not** the same as failure: the pointer is
+re-read after the CAS and the outcome is decided from the *stored* manifest —
+
+* the pointer already names **this** generation (a concurrent identical retry
+  published it first) -> idempotent success, ``already_current``; the stored
+  status is published, and only a still-``pending`` row is repaired;
+* this generation was published earlier and has since been superseded ->
+  no-op success, ``already_published_superseded``;
+* otherwise the generation was never published -> the run is marked FAILED and
+  its outputs stay unpublished, ``cas_failed``.
+
+A run status is therefore never downgraded from ``published`` to ``failed``
+(Opus R4 MAJOR 2).  The production executor is injected, so the state machine
+is tested without a warehouse.
 """
 from __future__ import annotations
 
@@ -37,6 +47,7 @@ from sec_kg.contracts.instruments import (
 from sec_kg.contracts.registry import (
     COMPANY_SCOPED_NODE_KINDS,
     CONTRACT_NODE_KINDS,
+    EVIDENCE_DATA_SOURCES,
     GLOBAL_NODE_KINDS,
     SCOPE_CROSS_COMPANY,
     SCOPE_GLOBAL_TARGET,
@@ -57,6 +68,7 @@ STATUSES: Tuple[str, ...] = (STATUS_PENDING, STATUS_PUBLISHED, STATUS_FAILED)
 
 OUTCOME_PUBLISHED = "published"
 OUTCOME_ALREADY_CURRENT = "already_current"
+OUTCOME_ALREADY_PUBLISHED_SUPERSEDED = "already_published_superseded"
 OUTCOME_STALE_PREDECESSOR = "stale_predecessor"
 OUTCOME_CAS_FAILED = "cas_failed"
 OUTCOME_MANIFEST_CONFLICT = "manifest_conflict"
@@ -64,6 +76,9 @@ OUTCOME_MANIFEST_CONFLICT = "manifest_conflict"
 OWNER_GLOBAL = "global"
 OWNER_CROSS_COMPANY = "cross-company"
 OWNER_COMPANY_PREFIX = "company:"
+
+#: The one ``SCOPE_GLOBAL_TARGET`` edge that has no owning company.
+EDGE_UNDERLIES = "UNDERLIES"
 
 
 class PublicationError(ValueError):
@@ -197,6 +212,12 @@ def publish(executor: PointerExecutor, generation: Generation) -> PublishResult:
     Idempotent: retrying an already-current generation is a successful no-op
     and never moves the pointer.  Reusing a generation id with different
     content is rejected as an immutable-manifest conflict.
+
+    ``published`` is True whenever the generation's manifest is ``published``
+    after the call — including the no-op outcomes — and ``outcome`` states
+    whether *this* call performed the swap.  A manifest that is already
+    ``published`` is never rewritten to ``failed``: a zero-row CAS is resolved
+    by re-reading the pointer and the stored run status.
     """
     existing = executor.get_manifest(generation.generation_id)
     if existing is not None and existing.digest() != generation.digest():
@@ -230,6 +251,17 @@ def publish(executor: PointerExecutor, generation: Generation) -> PublishResult:
             generation=stored,
         )
     if current != generation.predecessor_generation_id:
+        # The pointer moved away from our predecessor.  If this generation was
+        # published before that move it is only superseded, never failed.
+        stored = executor.get_manifest(generation.generation_id) or generation
+        if stored.status == STATUS_PUBLISHED:
+            return PublishResult(
+                published=True,
+                outcome=OUTCOME_ALREADY_PUBLISHED_SUPERSEDED,
+                affected_rows=0,
+                pointer=current,
+                generation=stored,
+            )
         failed = generation.with_status(STATUS_FAILED)
         _replace_manifest(executor, failed)
         return PublishResult(
@@ -254,13 +286,38 @@ def publish(executor: PointerExecutor, generation: Generation) -> PublishResult:
             pointer=executor.read_pointer(),
             generation=published,
         )
+
+    # The CAS lost.  Decide from the pointer and the stored manifest instead of
+    # assuming failure: a concurrent identical invocation may have published
+    # this very generation, and a published manifest is never downgraded.
+    pointer_after = executor.read_pointer()
+    stored = executor.get_manifest(generation.generation_id) or generation
+    if pointer_after == generation.generation_id:
+        if stored.status != STATUS_PUBLISHED:
+            stored = generation.with_status(STATUS_PUBLISHED)
+            _replace_manifest(executor, stored)
+        return PublishResult(
+            published=True,
+            outcome=OUTCOME_ALREADY_CURRENT,
+            affected_rows=affected,
+            pointer=pointer_after,
+            generation=stored,
+        )
+    if stored.status == STATUS_PUBLISHED:
+        return PublishResult(
+            published=True,
+            outcome=OUTCOME_ALREADY_PUBLISHED_SUPERSEDED,
+            affected_rows=affected,
+            pointer=pointer_after,
+            generation=stored,
+        )
     failed = generation.with_status(STATUS_FAILED)
     _replace_manifest(executor, failed)
     return PublishResult(
         published=False,
         outcome=OUTCOME_CAS_FAILED,
         affected_rows=affected,
-        pointer=executor.read_pointer(),
+        pointer=pointer_after,
         generation=failed,
     )
 
@@ -311,11 +368,17 @@ def row_owner(row: Mapping[str, Any]) -> str:
             return OWNER_CROSS_COMPANY
         if contract.scope == SCOPE_GLOBAL_TARGET:
             # INSTANCE_OF / FOR_PERIOD are owned by the source fact's company
-            # (v4 §G) even though the target node is global; UNDERLIES has no
-            # company and belongs to the global union.
+            # (v4 §G) even though the target node is global; only UNDERLIES has
+            # no company at all and belongs to the global union, so a company
+            # edge without one is an error rather than a silent global row.
             company = row.get("company_id")
-            if company is None:
-                return OWNER_GLOBAL
+            if company is None or not normalize_unicode(str(company)):
+                if contract.edge_type == EDGE_UNDERLIES:
+                    return OWNER_GLOBAL
+                raise PublicationError(
+                    f"{contract.edge_type}: a {contract.scope} edge is owned by "
+                    "its source company; company_id is required"
+                )
             return OWNER_COMPANY_PREFIX + normalize_unicode(str(company))
         company = row.get("company_id")
         if company is None:
@@ -507,6 +570,14 @@ def merge_node_rows(
     perpetual future is a derivative and must stay a separate node from the
     equity it tracks (``KG_DATA_MODEL_v4`` §J).  A duplicate row of the same
     kind is a contract violation, not a silent overwrite.
+
+    Aliases are validated **after** resolution, on the resolved identity: a
+    kind whose id is derived from its natural key (``Instrument`` from the
+    venue contract, ``Security`` from issuer + share class) must still carry
+    exactly that id once the alias is applied.  The target row therefore does
+    not have to appear in the same batch — an Instrument can never be
+    republished under a Security id (or the reverse) merely because the
+    Security row is absent (Sol R4 P1).
     """
     alias_map = dict(aliases or {})
     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -515,6 +586,14 @@ def merge_node_rows(
         node_type = validate_node_row(row)
         original = normalize_unicode(str(row["node_id"]))
         resolved = identity.resolve_alias(alias_map, original)
+        if resolved != original:
+            try:
+                validate_node_row(dict(row, node_id=resolved))
+            except PublicationError as error:
+                raise PublicationError(
+                    f"node id {original!r} aliases to {resolved!r}, which is not "
+                    f"a valid {node_type} identity: {error}"
+                ) from error
         previous_kind = kind_by_id.setdefault(resolved, node_type)
         if previous_kind != node_type:
             raise PublicationError(
@@ -574,12 +653,20 @@ def plan_subset(
 
 @dataclass(frozen=True)
 class ClassificationObservation:
+    """One classification evidence row (``EVIDENCE_KINDS = 'classification'``).
+
+    ``data_source`` is required and validated against the one vocabulary
+    (``RULE-data-source-column``); a classification row is computed in this
+    project, so it must carry a code the registry allows for classification
+    evidence (``derived``).
+    """
+
     company_id: str
     taxonomy: str
     code: str
     label: str
     observed_at: datetime
-    source: str = ""
+    data_source: str
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -589,15 +676,27 @@ class ClassificationObservation:
         ):
             if not normalize_unicode(str(value)):
                 raise PublicationError(f"{label} must not be blank")
+        try:
+            data_source = validate_data_source(self.data_source)
+        except ValueError as error:
+            raise PublicationError(f"classification: {error}") from error
+        allowed = EVIDENCE_DATA_SOURCES["classification"]
+        if data_source not in allowed:
+            raise PublicationError(
+                f"classification: data_source {data_source!r} is not one of "
+                f"{list(allowed)}"
+            )
+        object.__setattr__(self, "data_source", data_source)
         object.__setattr__(self, "observed_at", ensure_utc(self.observed_at))
 
-    def as_row(self) -> Tuple[str, str, str, str, str]:
+    def as_row(self) -> Tuple[str, str, str, str, str, str]:
         return (
             self.company_id,
             self.taxonomy,
             self.code,
             self.label,
             self.observed_at.isoformat(),
+            self.data_source,
         )
 
 

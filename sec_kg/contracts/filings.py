@@ -11,6 +11,12 @@ absent metadata become ``kg_quality_issues`` rows (absent metadata yields a
 amendment target are nullable by design and are sourced only from explicit
 evidence.
 
+``bronze_company_label`` is the bronze ``company_name`` column carried through
+verbatim.  It is **not** a registrant name: ``KG_DATA_MODEL_v4`` §A records that
+the ingestion planner passes the canonical *ticker* into that column, so it is
+surfaced as a bronze label and never used for name precedence (see
+``sec_kg/contracts/names.py``).
+
 Both produced rows (``dim_filing`` and ``kg_quality_issues``) carry the
 required ``data_source`` ``sec_edgar`` (``RULE-data-source-column``); the field
 is a required constructor argument, so a builder cannot forget it.
@@ -30,7 +36,7 @@ CORE_METADATA_FIELDS: Tuple[str, ...] = (
     "form_type",
     "filing_date",
     "accepted_ts",
-    "company_name",
+    "bronze_company_label",
     "primary_doc",
     "filing_url",
 )
@@ -97,7 +103,7 @@ class FilingRow:
     form_type: Optional[str] = None
     filing_date: Any = None
     accepted_ts: Any = None
-    company_name: Optional[str] = None
+    bronze_company_label: Optional[str] = None
     primary_doc: Optional[str] = None
     filing_url: Optional[str] = None
     period_of_report: Any = None
@@ -144,6 +150,13 @@ class QualityIssue:
 
 @dataclass(frozen=True)
 class DimFiling:
+    """One de-duplicated accession.
+
+    ``bronze_company_label`` is the bronze ``company_name`` column verbatim —
+    the ingestion planner puts the canonical ticker there (``v4`` §A) — so it
+    is a label, never a registrant name.
+    """
+
     accession: str
     record_key: str
     source_row_count: int
@@ -152,7 +165,7 @@ class DimFiling:
     form_type: Optional[str] = None
     filing_date: Optional[str] = None
     accepted_ts: Optional[datetime] = None
-    company_name: Optional[str] = None
+    bronze_company_label: Optional[str] = None
     primary_doc: Optional[str] = None
     filing_url: Optional[str] = None
     period_of_report: Optional[str] = None
@@ -172,7 +185,7 @@ class DimFiling:
             "accepted_ts": (
                 None if self.accepted_ts is None else self.accepted_ts.isoformat()
             ),
-            "company_name": self.company_name,
+            "bronze_company_label": self.bronze_company_label,
             "primary_doc": self.primary_doc,
             "filing_url": self.filing_url,
             "period_of_report": self.period_of_report,
@@ -284,7 +297,7 @@ def dedupe_filings(rows: Iterable[FilingRow]) -> DedupeResult:
                 accepted_ts=(
                     None if accepted is None else datetime.fromisoformat(accepted)
                 ),
-                company_name=resolved["company_name"],
+                bronze_company_label=resolved["bronze_company_label"],
                 primary_doc=resolved["primary_doc"],
                 filing_url=resolved["filing_url"],
                 period_of_report=resolved["period_of_report"],

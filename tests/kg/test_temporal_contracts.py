@@ -31,6 +31,7 @@ def event(
     supersedes=None,
     attribute: str = ATTRIBUTE,
     entity_id: str = ENTITY,
+    data_source: str = "sec_edgar",
 ) -> temporal.AttributeEvent:
     return temporal.AttributeEvent(
         event_id=event_id,
@@ -40,6 +41,7 @@ def event(
         valid_from=valid_from,
         valid_to=valid_to,
         recorded_at=recorded_at,
+        data_source=data_source,
         public_available_at=public,
         supersedes_event_id=supersedes,
     )
@@ -316,7 +318,118 @@ def test_public_view_supersession_without_future_leakage():
     assert temporal.public_as_of(events, ENTITY, dt(2009, 12, 31), dt(2026, 1, 1),
                                 attribute=ATTRIBUTE) is None
 
+    # ── (a) A public correction trims an open-ended original ───────────────
+    # e1 is open-ended from 2010 and was public in 2010; the correction e2
+    # (public 2020) supersedes it with 2010-2015.  Inside 2015-2020 there is no
+    # value any more, exactly as in system_replay: the corrected range must not
+    # be resurrected just because e1's own public timestamp is older.
+    opened = event(
+        "q1",
+        "Opened Co",
+        dt(2010, 1, 1),
+        None,
+        dt(2010, 6, 1),
+        public=dt(2010, 6, 1),
+    )
+    trimmed = event(
+        "q2",
+        "Trimmed Co",
+        dt(2010, 1, 1),
+        dt(2015, 1, 1),
+        dt(2020, 1, 1),
+        public=dt(2020, 1, 1),
+        supersedes="q1",
+    )
+    trimmed_universe = [opened, trimmed]
+    assert temporal.public_as_of(
+        trimmed_universe, ENTITY, dt(2018, 6, 1), dt(2021, 1, 1),
+        attribute=ATTRIBUTE,
+    ) is None
+    assert temporal.system_replay(
+        trimmed_universe, ENTITY, dt(2018, 6, 1), dt(2021, 1, 1),
+        attribute=ATTRIBUTE,
+    ) is None
+    # Inside the surviving range the eligible correction answers ...
+    surviving = temporal.public_as_of(
+        trimmed_universe, ENTITY, dt(2012, 6, 1), dt(2021, 1, 1),
+        attribute=ATTRIBUTE,
+    )
+    assert surviving is not None and surviving.event_id == "q2"
+    # ... and before the correction is public the original still answers
+    # (filtering precedes supersession: no future leak in the other direction).
+    before_public = temporal.public_as_of(
+        trimmed_universe, ENTITY, dt(2018, 6, 1), dt(2019, 12, 31),
+        attribute=ATTRIBUTE,
+    )
+    assert before_public is not None and before_public.event_id == "q1"
+
+    # ── (b) The correction wins even when the corrected event was published
+    # later: supersession is applied among eligible events, not by public
+    # timestamp order.
+    late_original = event(
+        "r1",
+        "Late Public Co",
+        dt(2010, 1, 1),
+        dt(2020, 1, 1),
+        dt(2010, 6, 1),
+        public=dt(2020, 9, 1),
+    )
+    earlier_correction = event(
+        "r2",
+        "Correction Wins Co",
+        dt(2010, 1, 1),
+        dt(2015, 1, 1),
+        dt(2019, 1, 1),
+        public=dt(2019, 1, 1),
+        supersedes="r1",
+    )
+    inverted = [late_original, earlier_correction]
+    correction = temporal.public_as_of(
+        inverted, ENTITY, dt(2012, 6, 1), dt(2021, 1, 1), attribute=ATTRIBUTE
+    )
+    assert correction is not None
+    assert correction.event_id == "r2"
+    assert correction.value == "Correction Wins Co"
+    assert [
+        item.event.event_id
+        for item in temporal.visible_intervals(
+            inverted, ENTITY, "public_as_of", dt(2021, 1, 1), attribute=ATTRIBUTE
+        )
+    ] == ["r2"]
+    replay_correction = temporal.system_replay(
+        inverted, ENTITY, dt(2012, 6, 1), dt(2021, 1, 1), attribute=ATTRIBUTE
+    )
+    assert replay_correction is not None
+    assert replay_correction.event_id == "r2"
+
     # Unknown views are rejected rather than silently defaulting.
     with pytest.raises(temporal.TemporalError):
         temporal.resolve(events, ENTITY, dt(2016, 6, 1), "latest", dt(2023, 1, 1),
                          attribute=ATTRIBUTE)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Every event row carries a required, validated data_source
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_attribute_event_requires_a_valid_data_source():
+    with pytest.raises(TypeError):
+        temporal.AttributeEvent(
+            event_id="no-source",
+            entity_id=ENTITY,
+            attribute=ATTRIBUTE,
+            value="X",
+            valid_from=dt(2010, 1, 1),
+            valid_to=None,
+            recorded_at=dt(2010, 6, 1),
+        )
+    for broken in (None, "", "sec-edgar", "Massive", "edgar"):
+        with pytest.raises(temporal.IntervalError):
+            event("bad-source", "X", dt(2010, 1, 1), None, dt(2010, 6, 1),
+                  data_source=broken)
+    # A submissions-sourced name and a derived classification are both allowed
+    # codes of the one vocabulary.
+    assert event("ok-1", "X", dt(2010, 1, 1), None, dt(2010, 6, 1),
+                 data_source="sec_edgar").data_source == "sec_edgar"
+    assert event("ok-2", "X", dt(2010, 1, 1), None, dt(2010, 6, 1),
+                 data_source="derived").data_source == "derived"

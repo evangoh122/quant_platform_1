@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from config.data_sources import (
     BINANCE_UM,
@@ -427,7 +427,13 @@ def as_of_predicate(table: str, param: str = "T") -> str:
 def is_available(
     table: str, availability_value: Optional[datetime], query_time: datetime
 ) -> bool:
-    """PIT eligibility: a NULL/unknown availability is never eligible."""
+    """PIT eligibility: a NULL/unknown availability is never eligible.
+
+    The table must have a registered join contract: an unregistered table has
+    no declared availability column, so eligibility cannot be evaluated for it
+    and is rejected rather than silently answered (Sol R4 P2).
+    """
+    get_contract(table)
     if availability_value is None:
         return False
     return ensure_utc(availability_value) <= ensure_utc(query_time)
@@ -462,17 +468,62 @@ def check_grain(table: str, rows: Iterable[Mapping[str, Any]]) -> int:
     return count
 
 
+def _interval_bounds(
+    row: Mapping[str, Any], label: str, columns: Tuple[str, str]
+) -> Tuple[datetime, Optional[datetime]]:
+    """Half-open ``[from, to)`` bounds of a row; ``None`` *to* is open-ended."""
+    start_column, end_column = columns
+    for column in (start_column, end_column):
+        if column not in row:
+            raise CardinalityViolation(
+                f"{label}: row is missing interval column {column!r}"
+            )
+    start = ensure_utc(row[start_column])
+    end = row[end_column]
+    if end is None:
+        return start, None
+    end = ensure_utc(end)
+    if end <= start:
+        raise CardinalityViolation(
+            f"{label}: interval {start_column}={start.isoformat()} must precede "
+            f"{end_column}={end.isoformat()}"
+        )
+    return start, end
+
+
+def _overlaps(
+    left: Tuple[datetime, Optional[datetime]],
+    right: Tuple[datetime, Optional[datetime]],
+) -> bool:
+    """Half-open interval overlap; an open end extends to infinity."""
+    left_start, left_end = left
+    right_start, right_end = right
+    if left_end is not None and right_start >= left_end:
+        return False
+    if right_end is not None and left_start >= right_end:
+        return False
+    return True
+
+
 def check_cardinality(
     table: str,
     rows: Iterable[Mapping[str, Any]],
     *,
     left_column: str,
     right_column: str,
+    interval_columns: Optional[Tuple[str, str]] = None,
 ) -> None:
     """Verify the declared cardinality between ``left_column`` and ``right``.
 
     For ``n:1`` every left value must map to exactly one right value (many rows
     per security is fine, two securities for one symbol is not).
+
+    With ``interval_columns=(from, to)`` the cardinality is evaluated **per
+    time**: a left value may map to several right values as long as their
+    half-open validity intervals never overlap, so a ticker that is reused at
+    non-overlapping times is allowed while an overlap at one instant is still a
+    violation.  Without ``interval_columns`` every row is treated as
+    concurrent, which is the strict reading (Sol R4 P2).
     """
     contract = get_contract(table)
     if contract.cardinality not in ("n:1", "1:1"):
@@ -480,8 +531,9 @@ def check_cardinality(
             f"{table}: declared cardinality {contract.cardinality!r} cannot be "
             "validated with check_cardinality"
         )
-    forward: Dict[Any, set] = {}
-    reverse: Dict[Any, set] = {}
+    entries: List[Tuple[Any, Any, Tuple[datetime, Optional[datetime]]]] = []
+    forward: Dict[Any, List[int]] = {}
+    reverse: Dict[Any, List[int]] = {}
     for index, row in enumerate(rows):
         for column in (left_column, right_column):
             if column not in row:
@@ -492,22 +544,54 @@ def check_cardinality(
         right = row[right_column]
         if left is None or right is None:
             continue
-        forward.setdefault(left, set()).add(right)
-        reverse.setdefault(right, set()).add(left)
-    for left, rights in sorted(forward.items(), key=lambda item: str(item[0])):
-        if len(rights) > 1:
+        if interval_columns is None:
+            window: Tuple[Any, Any] = (None, None)
+        else:
+            window = _interval_bounds(row, table, interval_columns)
+        entries.append((left, right, window))
+        forward.setdefault(left, []).append(len(entries) - 1)
+        reverse.setdefault(right, []).append(len(entries) - 1)
+
+    def _violations(indices: List[int], varying: int) -> List[Tuple[int, int]]:
+        """Pairs inside ``indices`` whose *varying* value differs and overlaps.
+
+        ``varying`` is 0 for the left column and 1 for the right column: the
+        forward check varies ``right_column`` and the 1:1 reverse check varies
+        ``left_column``.
+        """
+        clashing = []
+        for position, first in enumerate(indices):
+            for second in indices[position + 1:]:
+                if entries[first][varying] == entries[second][varying]:
+                    continue
+                if interval_columns is None or _overlaps(
+                    entries[first][2], entries[second][2]
+                ):
+                    clashing.append((first, second))
+        return clashing
+
+    for left, indices in sorted(forward.items(), key=lambda item: str(item[0])):
+        rights = {entries[index][1] for index in indices}
+        if len(rights) < 2:
+            continue
+        if _violations(indices, 1):
             raise CardinalityViolation(
                 f"{table}: {left_column}={left!r} maps to {len(rights)} "
                 f"{right_column} values {sorted(str(r) for r in rights)} but "
                 f"cardinality is {contract.cardinality}"
+                + ("" if interval_columns is None else " at overlapping times")
             )
     if contract.cardinality == "1:1":
-        for right, lefts in sorted(reverse.items(), key=lambda item: str(item[0])):
-            if len(lefts) > 1:
+        for right, indices in sorted(reverse.items(), key=lambda item: str(item[0])):
+            lefts = {entries[index][0] for index in indices}
+            if len(lefts) < 2:
+                continue
+            if _violations(indices, 0):
                 raise CardinalityViolation(
                     f"{table}: {right_column}={right!r} maps to {len(lefts)} "
                     f"{left_column} values {sorted(str(l) for l in lefts)} but "
                     "cardinality is 1:1"
+                    + ("" if interval_columns is None else " at overlapping times")
                 )
 
 
@@ -515,12 +599,20 @@ def check_cardinality(
 
 @dataclass(frozen=True)
 class SecuritySymbolBridge:
+    """One provider-symbol -> security row (the ``bridge_security_symbol`` table).
+
+    ``data_source`` is required and validated (``RULE-data-source-column``).  A
+    bridge is hand-maintained repository config, so the registry's own join
+    contract declares the only provider that may stamp it (``config``).
+    """
+
     provider: str
     symbol: str
     security_id: str
     valid_from: datetime
     valid_to: Optional[datetime]
     observed_at: datetime
+    data_source: str
     mapping_status: str = "verified"
     evidence_id: Optional[str] = None
 
@@ -532,6 +624,17 @@ class SecuritySymbolBridge:
         ):
             if not normalize_unicode(str(value)):
                 raise BridgeViolation(f"{label} must not be blank")
+        try:
+            data_source = validate_data_source(self.data_source)
+        except ValueError as error:
+            raise BridgeViolation(f"bridge: {error}") from error
+        allowed = get_contract("bridge_security_symbol").data_sources
+        if data_source not in allowed:
+            raise BridgeViolation(
+                f"bridge: data_source {data_source!r} is not one of "
+                f"{list(allowed)}"
+            )
+        object.__setattr__(self, "data_source", data_source)
         object.__setattr__(self, "provider", normalize_unicode(str(self.provider)).lower())
         object.__setattr__(self, "observed_at", ensure_utc(self.observed_at))
         start = ensure_utc(self.valid_from)

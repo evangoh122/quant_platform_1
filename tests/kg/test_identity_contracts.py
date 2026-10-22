@@ -66,6 +66,18 @@ def test_security_identity_permutation_alias_cycle_and_ticker_reuse():
     provisional = identity.provisional_security_id(issuer, evidence)
     assert provisional == identity.provisional_security_id(issuer, sorted(evidence))
     assert provisional != class_a
+    # It is exactly the *smallest* evidence id that is hashed into the key, so a
+    # different first id (not merely a different set) yields another id below.
+    assert identity.provisional_security_key(issuer, evidence)[2] == (
+        identity.PROVISIONAL_PREFIX + "ev:2"
+    )
+    assert provisional == identity.entity_id(
+        (
+            identity.KIND_SECURITY,
+            issuer,
+            identity.PROVISIONAL_PREFIX + "ev:2",
+        )
+    )
     # A different first evidence id yields a different provisional security.
     assert identity.provisional_security_id(
         issuer, ["ev:1", "ev:2"]
@@ -278,12 +290,14 @@ def test_unchanged_v1_ids_and_complete_v2_reference_migration():
         assert row["generation_id"] == GENERATION
         assert row["old_id"] != row["new_id"]
         assert row["identity_version"] in ("v1", identity.IDENTITY_VERSION_V2)
+        assert row["data_source"] == "derived"
         assert set(row) == {
             "old_id",
             "new_id",
             "kind",
             "identity_version",
             "generation_id",
+            "data_source",
             "reason",
         }
     fact_migration = next(row for row in rows if row["kind"] == "xbrl_fact")
@@ -306,4 +320,70 @@ def test_unchanged_v1_ids_and_complete_v2_reference_migration():
             new_id=new_period,
             generation_id=GENERATION,
             identity_version=identity.IDENTITY_VERSION_V2,
+            data_source="derived",
         )
+    # The migration row's provider code is required and validated.
+    with pytest.raises(TypeError):
+        identity.IdentityMigration(
+            kind="period",
+            old_id="old",
+            new_id="new",
+            generation_id=GENERATION,
+            identity_version=identity.IDENTITY_VERSION_V2,
+        )
+    with pytest.raises(identity.MigrationError):
+        identity.IdentityMigration(
+            kind="period",
+            old_id="old",
+            new_id="new",
+            generation_id=GENERATION,
+            identity_version=identity.IDENTITY_VERSION_V2,
+            data_source="edgar",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# R4 — typed NULLs in collision detection, real calendar dates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_collision_detection_keeps_typed_nulls_and_never_crashes():
+    null_market = (identity.KIND_INSTRUMENT, "hyperliquid", None, "BTC-PERP")
+    empty_market = (identity.KIND_INSTRUMENT, "hyperliquid", "", "BTC-PERP")
+    other_market = (identity.KIND_INSTRUMENT, "hyperliquid", "dex", "BTC-PERP")
+
+    # ``None`` and ``""`` are different natural keys: mapping both to one id is
+    # a collision even though they render alike.
+    collisions = identity.check_collisions(
+        [(null_market, "shared-id"), (empty_market, "shared-id")]
+    )
+    assert len(collisions) == 1
+    assert collisions[0].direction == identity.COLLISION_ID_TO_MANY_KEYS
+    assert collisions[0].entity_id == "shared-id"
+    assert collisions[0].natural_keys == (empty_market, null_market)
+    assert len(collisions[0].natural_keys) == 2
+
+    # A typed NULL next to a real string sorts by a total key; it never raises
+    # TypeError by comparing None with str.
+    mixed = identity.check_collisions(
+        [(other_market, "shared-id"), (null_market, "shared-id")]
+    )
+    assert len(mixed) == 1
+    assert mixed[0].natural_keys == (other_market, null_market)
+    # The description lists both typed keys and stays readable.
+    assert "2 natural keys" in mixed[0].describe()
+
+    # One natural key with one id is still clean.
+    assert identity.check_collisions([(null_market, "shared-id")]) == []
+    assert identity.check_collisions([(empty_market, "shared-id")]) == []
+
+
+def test_period_dates_must_be_real_calendar_dates():
+    for impossible in ("2024-13-45", "2024-02-30", "2023-02-29", "2024-00-10"):
+        with pytest.raises(identity.IdentityError):
+            identity.period_id_v2("instant", None, impossible)
+    with pytest.raises(identity.IdentityError):
+        identity.period_id_v2("duration", "2024-01-01", "2024-13-01")
+    with pytest.raises(identity.IdentityError):
+        identity.period_id_v2("instant", None, "2024-1-01")
+    # A real leap day is accepted.
+    assert identity.period_id_v2("instant", None, "2024-02-29")

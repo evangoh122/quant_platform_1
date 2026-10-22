@@ -120,6 +120,36 @@ def test_submissions_name_intervals_gaps_overlap_date_boundaries():
     assert no_former.resolve(dt(2020, 4, 30)) is None
     assert no_former.resolve(dt(2020, 5, 1)).name == "Solo Inc"
 
+    # Rank 1 is the strongest: when a former-name interval and the current name
+    # overlap, the former name wins (v4 §A list order), and the resolution is
+    # not decided by which interval happens to be listed first.
+    overlapping_ranks = names.NameHistory(
+        intervals=(
+            names.NameInterval(
+                name="Former Strong",
+                valid_from=dt(2012, 1, 1),
+                valid_to=dt(2013, 1, 1),
+                source=names.NAME_SOURCE_FORMER,
+                rank=names.RANK_FORMER,
+                data_source="sec_edgar",
+                evidence_id="ev-2",
+            ),
+            names.NameInterval(
+                name="Current Weak",
+                valid_from=dt(2012, 1, 1),
+                valid_to=dt(2013, 1, 1),
+                source=names.NAME_SOURCE_CURRENT,
+                rank=names.RANK_CURRENT,
+                data_source="sec_edgar",
+                evidence_id="ev-1",
+            ),
+        )
+    )
+    assert names.resolve_name(overlapping_ranks, dt(2012, 6, 1)).name == (
+        "Former Strong"
+    )
+    assert names.RANK_FORMER < names.RANK_CURRENT < names.RANK_OBSERVATION
+
     # Explicit inclusive -> half-open conversion, and invalid ranges rejected.
     start, end = names.inclusive_dates_to_half_open(d(2010, 1, 1), d(2012, 12, 31))
     assert (start, end) == (dt(2010, 1, 1), dt(2013, 1, 1))

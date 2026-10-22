@@ -8,9 +8,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sec_kg.contracts import publication, registry
+from sec_kg.contracts import identity, instruments, publication, registry
 
 DT = datetime(2024, 1, 2, tzinfo=timezone.utc)
+
+COMPANY = identity.company_id("0001045810")
+SECURITY = identity.security_id(COMPANY, "common")
+CLASSIFICATION_SOURCE = "derived"
 
 
 class FakePointerExecutor:
@@ -279,11 +283,11 @@ def test_subset_equals_full_for_owned_rows_and_evidence():
     before = [
         publication.ClassificationObservation(
             company_id="co:A", taxonomy="sic", code="3674", label="Semiconductors",
-            observed_at=DT,
+            observed_at=DT, data_source=CLASSIFICATION_SOURCE,
         ),
         publication.ClassificationObservation(
             company_id="co:B", taxonomy="sic", code="3571", label="Computers",
-            observed_at=DT,
+            observed_at=DT, data_source=CLASSIFICATION_SOURCE,
         ),
     ]
     # Unchanged member classification: the subset is allowed.
@@ -293,6 +297,7 @@ def test_subset_equals_full_for_owned_rows_and_evidence():
         publication.ClassificationObservation(
             company_id="co:A", taxonomy="sic", code="7372", label="Software",
             observed_at=datetime(2024, 3, 1, tzinfo=timezone.utc),
+            data_source=CLASSIFICATION_SOURCE,
         ),
         before[1],
     ]
@@ -304,7 +309,7 @@ def test_subset_equals_full_for_owned_rows_and_evidence():
     added = before + [
         publication.ClassificationObservation(
             company_id="co:A", taxonomy="finviz", code="Tech", label="Technology",
-            observed_at=DT,
+            observed_at=DT, data_source=CLASSIFICATION_SOURCE,
         )
     ]
     with pytest.raises(publication.SubsetRejectedError):
@@ -315,6 +320,7 @@ def test_subset_equals_full_for_owned_rows_and_evidence():
         publication.ClassificationObservation(
             company_id="co:B", taxonomy="sic", code="9999", label="Other",
             observed_at=datetime(2024, 3, 1, tzinfo=timezone.utc),
+            data_source=CLASSIFICATION_SOURCE,
         ),
     ]
     publication.check_subset_allowed(before, non_member_change, ["co:A"])
@@ -325,3 +331,252 @@ def test_subset_equals_full_for_owned_rows_and_evidence():
     assert registry.get_edge_contract("FOR_PERIOD").scope == (
         registry.SCOPE_GLOBAL_TARGET
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# R4 — alias kind guard, immutable published manifests, CAS-returns-0 race
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _instrument_node_row(**overrides):
+    values = {
+        "venue": "hyperliquid",
+        "dex_or_market": "xyz",
+        "contract_symbol": "NVDA-USD",
+        "instrument_type": "perpetual_future",
+        "underlying_type": "equity",
+        "underlying": "NVDA",
+        "data_source": "hyperliquid",
+    }
+    values.update(overrides)
+    return instruments.Instrument(**values).as_node_row(company_id=COMPANY)
+
+
+def _security_node_row():
+    return {
+        "node_type": "Security",
+        "node_id": SECURITY,
+        "issuer_company_id": COMPANY,
+        "share_class_code": "common",
+        "company_id": COMPANY,
+        "data_source": "config",
+    }
+
+
+def test_alias_cannot_move_a_node_across_kinds_by_itself():
+    perp_row = _instrument_node_row()
+    security_row = _security_node_row()
+
+    # The Security row is deliberately absent from the batch: the alias alone
+    # must not be able to publish the Instrument under the Security id.
+    with pytest.raises(publication.PublicationError):
+        publication.merge_node_rows(
+            [perp_row], aliases={perp_row["node_id"]: SECURITY}
+        )
+    # The same guard holds in the other direction.
+    with pytest.raises(publication.PublicationError):
+        publication.merge_node_rows(
+            [security_row], aliases={SECURITY: perp_row["node_id"]}
+        )
+    # An alias that keeps the row's own kind still resolves normally.
+    company_row = {
+        "node_id": "co:old",
+        "node_type": "Company",
+        "company_id": "co:old",
+        "data_source": "sec_edgar",
+    }
+    merged = publication.merge_node_rows(
+        [company_row], aliases={"co:old": "co:new"}
+    )
+    assert [row["node_id"] for row in merged] == ["co:new"]
+
+
+def test_security_row_must_derive_its_id_from_issuer_and_share_class():
+    security_row = _security_node_row()
+    perp_row = _instrument_node_row()
+
+    assert publication.validate_node_row(security_row) == "Security"
+    # A Security row wearing the perp's venue id, another security's id, or an
+    # arbitrary digest is rejected: identity is re-derived, never asserted.
+    for borrowed in (
+        perp_row["node_id"],
+        identity.security_id(COMPANY, "class-b"),
+        "deadbeef",
+    ):
+        with pytest.raises(publication.PublicationError):
+            publication.validate_node_row(dict(security_row, node_id=borrowed))
+    assert (
+        publication.validate_node_row(dict(security_row, node_id=SECURITY))
+        == "Security"
+    )
+
+
+def test_global_target_edges_require_a_company_except_underlies():
+    for edge_type in ("INSTANCE_OF", "FOR_PERIOD"):
+        with pytest.raises(publication.PublicationError):
+            publication.row_owner({"edge_type": edge_type})
+        with pytest.raises(publication.PublicationError):
+            publication.row_owner({"edge_type": edge_type, "company_id": "   "})
+        assert publication.row_owner(
+            {"edge_type": edge_type, "company_id": "co:A"}
+        ) == "company:co:A"
+    # UNDERLIES (CryptoAsset -> Instrument) is the only global-target edge with
+    # no owning company.
+    assert publication.row_owner({"edge_type": "UNDERLIES"}) == "global"
+    assert publication.row_owner(
+        {"edge_type": "UNDERLIES", "company_id": "co:A"}
+    ) == "company:co:A"
+
+
+class ConcurrentWinnerExecutor(FakePointerExecutor):
+    """The identical concurrent invocation wins the CAS before ours loses it."""
+
+    def compare_and_set(self, *, predecessor, generation_id):
+        self.cas_calls += 1
+        # The other invocation published this very generation first ...
+        self.pointer = generation_id
+        self.manifests[generation_id] = self.manifests[generation_id].with_status(
+            publication.STATUS_PUBLISHED
+        )
+        # ... and our own MERGE then matches zero rows.
+        return 0
+
+
+class PointerMovingCasExecutor(FakePointerExecutor):
+    """CAS returns 0 because a concurrent invocation moved the pointer away."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mover = None
+
+    def compare_and_set(self, *, predecessor, generation_id):
+        self.cas_calls += 1
+        if self.mover is not None:
+            self.pointer = self.mover
+            return 0
+        return super().compare_and_set(
+            predecessor=predecessor, generation_id=generation_id
+        )
+
+
+class StaleBootstrapExecutor(FakePointerExecutor):
+    """Both bootstrap publishers read the empty pointer; one CAS inserts."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stale_read = None
+        self._stale = False
+
+    def freeze_reads(self) -> None:
+        self._stale_read = self.pointer
+        self._stale = True
+
+    def read_pointer(self):
+        return self._stale_read if self._stale else self.pointer
+
+
+def test_identical_concurrent_retries_keep_the_generation_published():
+    executor = ConcurrentWinnerExecutor()
+    g1 = generation("gen-1", None)
+
+    ours = publication.publish(executor, g1)
+    assert ours.published is True
+    assert ours.outcome == publication.OUTCOME_ALREADY_CURRENT
+    assert ours.affected_rows == 0
+    assert executor.pointer == "gen-1"
+    assert executor.get_manifest("gen-1").status == publication.STATUS_PUBLISHED
+
+    # Both invocations report success, and a later ordinary retry still does.
+    retry = publication.publish(executor, generation("gen-1", None))
+    assert retry.published is True
+    assert retry.outcome == publication.OUTCOME_ALREADY_CURRENT
+    assert retry.affected_rows == 0
+    assert executor.get_manifest("gen-1").status == publication.STATUS_PUBLISHED
+
+
+def test_late_retry_of_a_superseded_generation_is_a_no_op():
+    executor = FakePointerExecutor()
+    first = publication.publish(executor, generation("gen-a", None))
+    second = publication.publish(executor, generation("gen-b", "gen-a"))
+    assert first.outcome == publication.OUTCOME_PUBLISHED
+    assert second.outcome == publication.OUTCOME_PUBLISHED
+    assert executor.pointer == "gen-b"
+
+    late = publication.publish(executor, generation("gen-a", None))
+    assert late.published is True
+    assert late.outcome == publication.OUTCOME_ALREADY_PUBLISHED_SUPERSEDED
+    assert late.affected_rows == 0
+    assert late.pointer == "gen-b"
+    assert executor.pointer == "gen-b"
+    assert late.generation.status == publication.STATUS_PUBLISHED
+    assert executor.get_manifest("gen-a").status == publication.STATUS_PUBLISHED
+    assert executor.get_manifest("gen-a").digest() == generation(
+        "gen-a", None
+    ).digest()
+
+
+def test_cas_zero_after_a_published_generation_is_not_a_downgrade():
+    executor = PointerMovingCasExecutor()
+    publication.publish(executor, generation("gen-a", None))
+    publication.publish(executor, generation("gen-g", "gen-a"))
+    # An operator rolls the pointer back to A, then a concurrent run publishes C
+    # while our retry of the already-published G is in flight.
+    executor.pointer = "gen-a"
+    executor.mover = "gen-c"
+
+    late = publication.publish(executor, generation("gen-g", "gen-a"))
+    assert late.published is True
+    assert late.outcome == publication.OUTCOME_ALREADY_PUBLISHED_SUPERSEDED
+    assert late.affected_rows == 0
+    assert executor.pointer == "gen-c"
+    assert executor.get_manifest("gen-g").status == publication.STATUS_PUBLISHED
+
+
+def test_bootstrap_race_zero_row_cas_has_exactly_one_winner():
+    executor = StaleBootstrapExecutor()
+    executor.freeze_reads()  # both publishers see the empty pointer
+
+    winner = publication.publish(executor, generation("gen-boot-1", None))
+    loser = publication.publish(executor, generation("gen-boot-2", None))
+
+    assert winner.published is True
+    assert winner.outcome == publication.OUTCOME_PUBLISHED
+    assert winner.affected_rows == 1
+    assert loser.published is False
+    assert loser.outcome == publication.OUTCOME_CAS_FAILED
+    assert loser.affected_rows == 0
+    assert [winner.published, loser.published].count(True) == 1
+    # The real pointer never moved for the loser and its outputs stay
+    # unpublished.
+    assert executor.pointer == "gen-boot-1"
+    assert executor.manifests["gen-boot-2"].status == publication.STATUS_FAILED
+
+
+def test_classification_observation_requires_a_validated_data_source():
+    with pytest.raises(TypeError):
+        publication.ClassificationObservation(
+            company_id="co:A",
+            taxonomy="sic",
+            code="3674",
+            label="Semiconductors",
+            observed_at=DT,
+        )
+    for broken in (None, "", "Massive", "sec_edgar"):
+        with pytest.raises(publication.PublicationError):
+            publication.ClassificationObservation(
+                company_id="co:A",
+                taxonomy="sic",
+                code="3674",
+                label="Semiconductors",
+                observed_at=DT,
+                data_source=broken,
+            )
+    good = publication.ClassificationObservation(
+        company_id="co:A",
+        taxonomy="sic",
+        code="3674",
+        label="Semiconductors",
+        observed_at=DT,
+        data_source=CLASSIFICATION_SOURCE,
+    )
+    assert good.as_row()[-1] == CLASSIFICATION_SOURCE
+    assert good.data_source == CLASSIFICATION_SOURCE

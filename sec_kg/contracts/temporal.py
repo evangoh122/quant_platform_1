@@ -18,9 +18,13 @@ Both query modes filter first and resolve business time second:
     system_to``), then resolve the requested business time.
 ``public_as_of``
     keep every event that was public at ``T`` (known ``public_available_at <=
-    T``), then resolve.  Filtering deliberately does **not** require the row to
-    be the current belief: a correction that only becomes public in the future
-    must not erase an eligible predecessor (Sol R3 S3).
+    T``), then drop any eligible event that another **eligible** event
+    supersedes, then resolve.  Filtering deliberately does **not** require the
+    row to be the current belief: a correction that only becomes public in the
+    future must not erase an eligible predecessor (Sol R3 S3).  Supersession is
+    applied among the eligible events, so a correction that is public at ``T``
+    always beats the event it corrects, whichever of the two was published
+    first (Opus R4 MAJOR 1).
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from typing import Iterable, List, Mapping, Optional, Tuple
 
+from config.data_sources import validate_data_source
 from sec_kg.model import ensure_utc, normalize_unicode
 
 UTC = timezone.utc
@@ -89,7 +94,13 @@ def normalise_view(view) -> TemporalView:
 
 @dataclass(frozen=True)
 class AttributeEvent:
-    """One insert-only row of an ``*_events`` log."""
+    """One insert-only row of an ``*_events`` log.
+
+    ``data_source`` is required and validated against the one provider
+    vocabulary (``RULE-data-source-column``): a submissions-sourced name is
+    ``sec_edgar``, a Company-Facts ``entityName`` is ``sec_companyfacts`` and a
+    classification derived here is ``derived``.
+    """
 
     event_id: str
     entity_id: str
@@ -98,6 +109,7 @@ class AttributeEvent:
     valid_from: datetime
     valid_to: Optional[datetime]
     recorded_at: datetime
+    data_source: str
     public_available_at: Optional[datetime] = None
     supersedes_event_id: Optional[str] = None
     evidence_id: Optional[str] = None
@@ -109,6 +121,11 @@ class AttributeEvent:
             raise IntervalError("entity_id must not be blank")
         if not normalize_unicode(str(self.attribute)):
             raise IntervalError("attribute must not be blank")
+        try:
+            data_source = validate_data_source(self.data_source)
+        except ValueError as error:
+            raise IntervalError(f"event {self.event_id}: {error}") from error
+        object.__setattr__(self, "data_source", data_source)
         object.__setattr__(self, "event_id", normalize_unicode(str(self.event_id)))
         object.__setattr__(self, "entity_id", normalize_unicode(str(self.entity_id)))
         object.__setattr__(self, "attribute", normalize_unicode(str(self.attribute)))
@@ -243,6 +260,30 @@ def _publicly_eligible(
     return available is not None and available <= knowledge_time
 
 
+def _drop_publicly_superseded(
+    intervals: Iterable[DerivedInterval],
+) -> Tuple[DerivedInterval, ...]:
+    """Remove every eligible event that an *also eligible* event supersedes.
+
+    Supersession is applied **among the events visible in the requested view**,
+    before business time is resolved (Opus R4 MAJOR 1).  Otherwise a superseded
+    event whose correction became public later keeps winning on its own public
+    timestamp and the public view leaks a value the record had already
+    corrected.  A correction that is not yet eligible is not in the set, so it
+    still cannot erase an eligible predecessor (Sol R3 S3).
+    """
+    kept = tuple(intervals)
+    eligible_ids = {interval.event.event_id for interval in kept}
+    superseded: set = {
+        interval.event.supersedes_event_id
+        for interval in kept
+        if interval.event.supersedes_event_id in eligible_ids
+    }
+    return tuple(
+        interval for interval in kept if interval.event.event_id not in superseded
+    )
+
+
 def visible_intervals(
     events: Iterable[AttributeEvent],
     entity_id: str,
@@ -250,7 +291,12 @@ def visible_intervals(
     knowledge_time: datetime,
     attribute: Optional[str] = None,
 ) -> Tuple[DerivedInterval, ...]:
-    """Belief rows visible in *view* at *knowledge_time*, before business time."""
+    """Belief rows visible in *view* at *knowledge_time*, before business time.
+
+    ``public_as_of`` filters on public availability first and then applies
+    supersession among the surviving events, so a public correction beats the
+    event it corrects regardless of which of the two became public first.
+    """
     mode = normalise_view(view)
     moment = _as_datetime(knowledge_time, "knowledge_time")
     wanted_entity = normalize_unicode(str(entity_id))
@@ -271,6 +317,8 @@ def visible_intervals(
         else:
             if _publicly_eligible(interval, moment):
                 selected.append(interval)
+    if mode is TemporalView.PUBLIC_AS_OF:
+        selected = list(_drop_publicly_superseded(selected))
     selected.sort(key=lambda interval: (interval.event.valid_from, interval.event.event_id))
     return tuple(selected)
 

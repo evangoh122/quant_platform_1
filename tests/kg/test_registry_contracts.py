@@ -157,6 +157,7 @@ def test_join_registry_business_time_availability_and_cardinality():
             valid_from=dt(2019, 1, 1),
             valid_to=dt(2021, 6, 1),
             observed_at=dt(2021, 6, 1),
+            data_source=data_sources.CONFIG,
         ),
         registry.SecuritySymbolBridge(
             provider="massive",
@@ -165,6 +166,7 @@ def test_join_registry_business_time_availability_and_cardinality():
             valid_from=dt(2021, 6, 1),
             valid_to=None,
             observed_at=dt(2021, 6, 1),
+            data_source=data_sources.CONFIG,
         ),
     ]
     registry.validate_bridge_rows(bridges)
@@ -215,11 +217,13 @@ def test_join_registry_business_time_availability_and_cardinality():
                     provider="massive", symbol="AAPL", security_id=old_security,
                     valid_from=dt(2019, 1, 1), valid_to=None,
                     observed_at=dt(2019, 1, 1),
+                    data_source=data_sources.CONFIG,
                 ),
                 registry.SecuritySymbolBridge(
                     provider="massive", symbol="AAPL", security_id=new_security,
                     valid_from=dt(2021, 6, 1), valid_to=None,
                     observed_at=dt(2021, 6, 1),
+                    data_source=data_sources.CONFIG,
                 ),
             ]
         )
@@ -489,3 +493,155 @@ def test_edge_registry_endpoints_identity_and_serialization():
         "company:c1"
     )
     assert publication.row_owner({"edge_type": "INFERRED_PEER"}) == "cross-company"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# R4 — unregistered tables, per-time cardinality, bridge data_source
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_is_available_rejects_unregistered_tables():
+    with pytest.raises(registry.UnknownTableError):
+        registry.is_available("gold_not_a_table", dt(2024, 1, 2), dt(2024, 1, 3))
+    with pytest.raises(registry.UnknownTableError):
+        registry.is_available("gold_not_a_table", None, dt(2024, 1, 3))
+    # A registered table still answers by its declared availability.
+    assert registry.is_available(
+        "bridge_security_symbol", dt(2024, 1, 2), dt(2024, 1, 2)
+    )
+    assert not registry.is_available(
+        "bridge_security_symbol", dt(2024, 1, 3), dt(2024, 1, 2)
+    )
+
+
+def test_cardinality_is_evaluated_per_time():
+    columns = dict(
+        left_column="symbol",
+        right_column="security_id",
+        interval_columns=("valid_from", "valid_to"),
+    )
+    reused = [
+        {
+            "symbol": "AAPL",
+            "security_id": "sec-old",
+            "valid_from": dt(2019, 1, 1),
+            "valid_to": dt(2021, 6, 1),
+        },
+        {
+            "symbol": "AAPL",
+            "security_id": "sec-new",
+            "valid_from": dt(2021, 6, 1),
+            "valid_to": None,
+        },
+    ]
+    # A ticker reused at non-overlapping times maps to one security per instant.
+    registry.check_cardinality("bridge_security_symbol", reused, **columns)
+
+    # Overlapping windows are still a violation, with the same rows.
+    overlapping = [reused[0], dict(reused[1], valid_from=dt(2021, 1, 1))]
+    with pytest.raises(registry.CardinalityViolation):
+        registry.check_cardinality("bridge_security_symbol", overlapping, **columns)
+
+    # An open-ended first window overlaps everything that follows.
+    open_first = [dict(reused[0], valid_to=None), reused[1]]
+    with pytest.raises(registry.CardinalityViolation):
+        registry.check_cardinality("bridge_security_symbol", open_first, **columns)
+
+    # Without interval columns every row is treated as concurrent (strict n:1).
+    with pytest.raises(registry.CardinalityViolation):
+        registry.check_cardinality(
+            "bridge_security_symbol",
+            reused,
+            left_column="symbol",
+            right_column="security_id",
+        )
+
+    # One security across both windows is never a cardinality violation.
+    same_security = [reused[0], dict(reused[1], security_id="sec-old")]
+    registry.check_cardinality("bridge_security_symbol", same_security, **columns)
+
+    # The interval columns are required once per-time evaluation is requested.
+    with pytest.raises(registry.CardinalityViolation):
+        registry.check_cardinality(
+            "bridge_security_symbol",
+            [
+                {"symbol": "AAPL", "security_id": "sec-old"},
+                {"symbol": "AAPL", "security_id": "sec-new"},
+            ],
+            **columns,
+        )
+
+
+def test_one_to_one_cardinality_is_evaluated_per_time():
+    columns = dict(
+        left_column="chunk_id",
+        right_column="document_id",
+        interval_columns=("valid_from", "valid_to"),
+    )
+    # Both directions allow a value to be reused at non-overlapping times.
+    sequential = [
+        {
+            "chunk_id": "chunk-1",
+            "document_id": "doc-1",
+            "valid_from": dt(2019, 1, 1),
+            "valid_to": dt(2021, 1, 1),
+        },
+        {
+            "chunk_id": "chunk-1",
+            "document_id": "doc-2",
+            "valid_from": dt(2021, 1, 1),
+            "valid_to": None,
+        },
+    ]
+    registry.check_cardinality("silver_sec_sections", sequential, **columns)
+
+    reattached = [
+        sequential[0],
+        {
+            "chunk_id": "chunk-2",
+            "document_id": "doc-1",
+            "valid_from": dt(2021, 1, 1),
+            "valid_to": None,
+        },
+    ]
+    registry.check_cardinality("silver_sec_sections", reattached, **columns)
+
+    # The reverse (one document -> two chunks) overlap is caught too.
+    with pytest.raises(registry.CardinalityViolation):
+        registry.check_cardinality(
+            "silver_sec_sections",
+            [sequential[0], dict(reattached[1], valid_from=dt(2020, 6, 1))],
+            **columns,
+        )
+
+    # An invalid interval is reported, never silently treated as open-ended.
+    with pytest.raises(registry.CardinalityViolation):
+        registry.check_cardinality(
+            "silver_sec_sections",
+            [dict(sequential[0], valid_to=dt(2018, 1, 1))],
+            **columns,
+        )
+
+
+def test_symbol_bridge_rows_require_a_validated_data_source():
+    values = dict(
+        provider="massive",
+        symbol="AAPL",
+        security_id="sec-1",
+        valid_from=dt(2020, 1, 1),
+        valid_to=None,
+        observed_at=dt(2020, 1, 1),
+    )
+    with pytest.raises(TypeError):
+        registry.SecuritySymbolBridge(**values)
+    # '' / None / an unknown spelling / a provider the bridge table does not
+    # declare are all rejected; the bridge is hand-maintained config.
+    for broken in (None, "", "Massive", "massive"):
+        with pytest.raises(registry.BridgeViolation):
+            registry.SecuritySymbolBridge(data_source=broken, **values)
+    good = registry.SecuritySymbolBridge(
+        data_source=data_sources.CONFIG, **values
+    )
+    assert good.data_source == data_sources.CONFIG
+    assert registry.get_contract("bridge_security_symbol").data_sources == (
+        data_sources.CONFIG,
+    )

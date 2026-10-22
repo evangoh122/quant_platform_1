@@ -13,12 +13,21 @@ Two encoders coexist (KG_DATA_MODEL_v4 §C, §D):
   Instrument (venue contract), CryptoAsset, Period (explicit type) and Fact
   (a Fact id embeds its Period id, so it migrates with Period).
 
+``Concept`` is the one deliberate deviation from the ``KG_DATA_MODEL_v4`` §C
+list of null-safe kinds: its identity already existed as a v1 tuple
+(``taxonomy`` + ``concept``, both required and case-preserved), it has **no
+nullable field**, and re-encoding it would re-mint every Concept id for no
+identity gain.  It therefore stays on the v1 encoder and is listed in
+``V1_KINDS``.  A future kind that gains a nullable component must not follow
+this precedent.
+
 Importing this module has no side effects and needs no third-party package.
 """
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import date
 from typing import (
     Any,
     Dict,
@@ -31,6 +40,7 @@ from typing import (
     Tuple,
 )
 
+from config.data_sources import DERIVED, validate_data_source
 from sec_kg.model import (
     chunk_id_from_parts,
     company_id as _v1_company_id,
@@ -157,9 +167,20 @@ def normalise_period_type(period_type: str) -> str:
 
 
 def normalise_iso_date(value: Optional[str], label: str) -> str:
+    """Validate a canonical ``YYYY-MM-DD`` date that really exists.
+
+    A well-shaped but impossible date (``2024-13-45``, ``2024-02-30``) is
+    rejected here rather than silently minting an unreachable Period id.
+    """
     text = _normalise_required(label, value)
     if len(text) != 10 or text[4] != "-" or text[7] != "-":
         raise IdentityError(f"{label} must be an ISO date (YYYY-MM-DD): {value!r}")
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        raise IdentityError(
+            f"{label} is not a real calendar date: {value!r}"
+        ) from None
     return text
 
 
@@ -484,8 +505,18 @@ class IdentityCollision:
         )
 
 
-def _key_sort_value(key: Sequence[Optional[str]]) -> Tuple[str, ...]:
-    return tuple("" if part is None else str(part) for part in key)
+def _key_sort_value(key: Sequence[Optional[str]]) -> Tuple[Tuple[bool, str], ...]:
+    """Total sort key for a natural key that keeps ``None`` distinct from ``""``.
+
+    A plain ``str(part)`` (or ``part or ""``) collapses a typed NULL into the
+    empty string, which both hides a real collision and, once the raw tuples
+    are sorted, can compare ``None`` with ``str`` and raise ``TypeError``.  The
+    pair ``(part is None, "" if part is None else str(part))`` is a total order
+    over typed parts and keeps the two distinct (Sol R4 P2).
+    """
+    return tuple(
+        (part is None, "" if part is None else str(part)) for part in key
+    )
 
 
 def check_collisions(
@@ -495,7 +526,11 @@ def check_collisions(
 
     ``records`` are ``(natural_key, entity_id)`` pairs.  Grouping is per
     ``(kind, identity_version)`` so a v1 id and a v2 id never "collide" merely
-    because the hex digests were produced by different encoders.
+    because the hex digests were produced by different encoders.  Natural keys
+    are compared as **typed** tuples: ``("instrument", "hl", None, "BTC")`` and
+    ``("instrument", "hl", "", "BTC")`` are two different keys that happen to
+    render alike, so mapping them to one id is still a collision, and sorting
+    them never compares ``None`` with ``str``.
     """
     by_key: Dict[Tuple[str, str, Tuple[str, ...]], List[str]] = {}
     by_id: Dict[Tuple[str, str, str], List[Tuple[str, ...]]] = {}
@@ -532,11 +567,16 @@ def check_collisions(
                     natural_key=None,
                     entity_id=entity,
                     entity_ids=(entity,),
-                    natural_keys=tuple(sorted(keys)),
+                    natural_keys=tuple(sorted(keys, key=_key_sort_value)),
                 )
             )
     collisions.sort(
-        key=lambda c: (c.direction, c.kind, str(c.natural_key), str(c.entity_id))
+        key=lambda c: (
+            c.direction,
+            c.kind,
+            tuple(_key_sort_value(c.natural_key or ())),
+            str(c.entity_id),
+        )
     )
     return collisions
 
@@ -616,13 +656,19 @@ def resolve_alias(aliases: Mapping[str, str], entity_id: str) -> str:
 
 @dataclass(frozen=True)
 class IdentityMigration:
-    """One row of ``kg_identity_migration(old_id, new_id, kind, generation_id)``."""
+    """One row of ``kg_identity_migration(old_id, new_id, kind, generation_id)``.
+
+    ``data_source`` is required and validated (``RULE-data-source-column``); an
+    identity migration is computed in this project from the two id encoders, so
+    it carries ``derived``.
+    """
 
     kind: str
     old_id: str
     new_id: str
     generation_id: str
     identity_version: str
+    data_source: str
     reason: str = "identity_change"
 
     def __post_init__(self) -> None:
@@ -636,6 +682,11 @@ class IdentityMigration:
             raise MigrationError("migration requires a generation_id")
         if self.kind not in IDENTITY_VERSION_BY_KIND:
             raise MigrationError(f"unknown migration kind: {self.kind!r}")
+        try:
+            data_source = validate_data_source(self.data_source)
+        except ValueError as error:
+            raise MigrationError(f"migration {self.kind}: {error}") from error
+        object.__setattr__(self, "data_source", data_source)
 
     def as_row(self) -> Dict[str, str]:
         return {
@@ -644,6 +695,7 @@ class IdentityMigration:
             "kind": self.kind,
             "identity_version": self.identity_version,
             "generation_id": self.generation_id,
+            "data_source": self.data_source,
             "reason": self.reason,
         }
 
@@ -662,6 +714,7 @@ def migrate_period(
         new_id=entity_id(new_key),
         generation_id=generation_id,
         identity_version=IDENTITY_VERSION_V2,
+        data_source=DERIVED,
         reason="period_type_explicit",
     )
 
@@ -680,6 +733,7 @@ def migrate_security(
         new_id=entity_id(new_key),
         generation_id=generation_id,
         identity_version=IDENTITY_VERSION_V2,
+        data_source=DERIVED,
         reason="security_issuer_and_class",
     )
 
@@ -717,6 +771,7 @@ def derive_fact_migration(
         new_id=new_fact,
         generation_id=generation_id,
         identity_version=IDENTITY_VERSION_V2,
+        data_source=DERIVED,
         reason="fact_embeds_period",
     )
 

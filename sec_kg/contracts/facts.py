@@ -15,7 +15,10 @@ nothing collapses.  ``dimensions_hash`` is ``∅`` when the source carries no
 XBRL context dimensions (documented in the design).
 
 Order is fixed everywhere: **filter** by the requested view first, then
-**reconcile** among the eligible rows only.
+**reconcile** among the eligible rows only.  Linking follows the same rule for
+its reference data: a concept -> metric mapping or evidence row that is not
+visible at the requested knowledge time cannot link a fact or make it
+ambiguous.
 """
 from __future__ import annotations
 
@@ -510,16 +513,45 @@ class LinkCandidate:
     ``metric_id`` is the *mapped* metric for the assertion's concept (the
     concept -> metric mapping is versioned separately); a candidate whose
     mapping is unknown cannot compete.
+
+    A candidate also carries the **visibility** of the mapping/evidence row
+    that produced it, because a mapping that is not visible in the requested
+    view must not influence linking (Opus R4 MAJOR 3 / Sol R4 P2):
+
+    ``public_available_at``
+        when the mapping became public; ``None`` means unverified, which is
+        never eligible in ``public_as_of``;
+    ``system_from``/``system_to``
+        the derived system interval of the mapping row, used by
+        ``system_replay``.  An unknown ``system_from`` is never eligible.
     """
 
     assertion: AssertionKey
     value_raw: str
     metric_id: str
     decimals: int = 0
+    public_available_at: Optional[datetime] = None
+    system_from: Optional[datetime] = None
+    system_to: Optional[datetime] = None
 
     def __post_init__(self) -> None:
         _required("metric_id", self.metric_id)
         _required("value_raw", self.value_raw)
+        if self.public_available_at is not None:
+            object.__setattr__(
+                self,
+                "public_available_at",
+                ensure_utc(self.public_available_at),
+            )
+        if self.system_from is not None:
+            object.__setattr__(self, "system_from", ensure_utc(self.system_from))
+        if self.system_to is not None:
+            system_to = ensure_utc(self.system_to)
+            if self.system_from is not None and system_to <= self.system_from:
+                raise FactError(
+                    "candidate system_to must be after system_from"
+                )
+            object.__setattr__(self, "system_to", system_to)
 
     @property
     def company_id(self) -> str:
@@ -541,6 +573,39 @@ class LinkCandidate:
     def dimensions_hash(self) -> str:
         return self.assertion.series.dimensions_hash
 
+    def visible_in(self, view, knowledge_time: datetime) -> bool:
+        """Is this candidate's mapping/evidence row visible in *view* at *T*?"""
+        mode = normalise_view(view)
+        moment = ensure_utc(knowledge_time)
+        if mode is TemporalView.SYSTEM_REPLAY:
+            if self.system_from is None:
+                return False
+            return self.system_from <= moment and (
+                self.system_to is None or moment < self.system_to
+            )
+        return (
+            self.public_available_at is not None
+            and self.public_available_at <= moment
+        )
+
+
+def filter_candidates(
+    candidates: Iterable[LinkCandidate], view, knowledge_time: datetime
+) -> Tuple[LinkCandidate, ...]:
+    """Keep only the candidates whose mapping/evidence is visible at *T*.
+
+    Filtering happens **before** any dimension matching, so a future or
+    unverified mapping can neither link a fact nor make it ambiguous, in either
+    query mode.
+    """
+    mode = normalise_view(view)
+    moment = ensure_utc(knowledge_time)
+    return tuple(
+        candidate
+        for candidate in candidates
+        if candidate.visible_in(mode, moment)
+    )
+
 
 @dataclass(frozen=True)
 class LinkResult:
@@ -556,19 +621,26 @@ class LinkResult:
 def values_match(left: Any, right: Any, decimals: int = 0) -> bool:
     """Match two decimals at the assertion's stated scale.
 
-    ``decimals == 0`` means the assertion is precise to the unit, so the values
-    must be equal; at ``decimals >= 1`` a difference within one unit of the last
-    stated decimal is accepted (rounding in the narrative text).
+    ``decimals`` is the XBRL ``decimals`` attribute and **may be negative**:
+    ``-3`` states the value in thousands and ``-6`` in millions, exactly like a
+    positive value states it in tenths/hundredths.  The tolerance is half a unit
+    of that stated scale (``10 ** -decimals / 2``), i.e. the rounding interval
+    of the assertion, so ``-3`` accepts a 400 difference and rejects 600.
+    ``decimals == 0`` keeps the exact comparison: an assertion precise to the
+    unit must not absorb a sub-unit difference (Opus R4 MINOR 8).
     """
-    if decimals < 0:
-        raise FactError("decimals must be >= 0")
+    if not isinstance(decimals, int) or isinstance(decimals, bool):
+        raise FactError(
+            f"decimals must be an int (XBRL decimals may be negative), got "
+            f"{decimals!r}"
+        )
     left_value = _as_decimal(left)
     right_value = _as_decimal(right)
     if left_value is None or right_value is None:
         return False
     if decimals == 0:
         return left_value == right_value
-    tolerance = Decimal(10) ** -decimals
+    tolerance = (Decimal(10) ** -decimals) / 2
     return abs(left_value - right_value) <= tolerance
 
 
@@ -588,15 +660,23 @@ def link_extracted_fact(
     fact: ExtractedFact,
     candidates: Iterable[LinkCandidate],
     *,
+    view,
+    knowledge_time: datetime,
     decimals: Optional[int] = None,
 ) -> LinkResult:
     """Link an extracted fact to a unique Company-Facts assertion or reject.
 
-    Every dimension of the assertion key must agree — company, metric, period
-    (including its type), unit, XBRL dimensions — and the value must match at
-    the stated decimal scale.  Anything ambiguous stays unlinked.
+    Candidates are first filtered by visibility in *view* at *knowledge_time*:
+    a concept -> metric mapping (or its evidence row) that is not yet public, or
+    whose availability is unknown, does not exist for this query and therefore
+    cannot influence the result.  Every dimension of the surviving assertions
+    must then agree — company, metric, period (including its type), unit, XBRL
+    dimensions — and the value must match at the stated decimal scale.  Anything
+    ambiguous stays unlinked.
     """
-    pool = list(candidates)
+    mode = normalise_view(view)
+    moment = ensure_utc(knowledge_time)
+    pool = list(filter_candidates(candidates, mode, moment))
     if not pool:
         return LinkResult(None, LINK_NO_CANDIDATE)
 

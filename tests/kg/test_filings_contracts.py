@@ -39,7 +39,7 @@ def equal_ingest_rows():
             record_key="b",
             form_type="10-K",
             accepted_ts=dt(2024, 1, 28, 12),
-            company_name=None,
+            bronze_company_label=None,
             primary_doc=None,
             **common,
         ),
@@ -47,7 +47,7 @@ def equal_ingest_rows():
             record_key="a",
             form_type="10-K/A",
             accepted_ts=dt(2024, 1, 28, 11),
-            company_name=None,
+            bronze_company_label=None,
             primary_doc=None,
             **common,
         ),
@@ -55,7 +55,7 @@ def equal_ingest_rows():
             record_key="c",
             form_type="10-Q",
             accepted_ts=dt(2024, 1, 28, 10),
-            company_name=None,
+            bronze_company_label=None,
             primary_doc=None,
             **common,
         ),
@@ -74,7 +74,7 @@ def earlier_ingest_rows():
             form_type="10-K",
             filing_date="2024-01-31",
             accepted_ts=dt(2024, 1, 31, 23),
-            company_name="NVIDIA Corporation",
+            bronze_company_label="NVIDIA Corporation",
             primary_doc="primary.htm",
             filing_url="https://www.sec.gov/Archives/edgar/data/1045810/y-index.htm",
         ),
@@ -86,7 +86,7 @@ def earlier_ingest_rows():
             form_type="10-Q",
             filing_date="2024-01-31",
             accepted_ts=dt(2024, 1, 31, 22),
-            company_name="NVIDIA Corporation",
+            bronze_company_label="NVIDIA Corporation",
             primary_doc="primary.htm",
             filing_url="https://www.sec.gov/Archives/edgar/data/1045810/y-index.htm",
         ),
@@ -110,8 +110,11 @@ def test_filing_dedup_equal_ingest_missing_metadata_shuffle():
     assert deduped.cik == CIK
     assert deduped.source_row_count == 3
     # Absent metadata becomes null plus a quality issue, never an invented value.
-    assert deduped.company_name is None
+    assert deduped.bronze_company_label is None
     assert deduped.primary_doc is None
+    # The bronze column is surfaced as a label, never as a registrant name.
+    assert "bronze_company_label" in deduped.as_row()
+    assert "company_name" not in deduped.as_row()
     # Nullable evidence-only fields are null without an issue.
     assert deduped.period_of_report is None
     assert deduped.amendment_target is None
@@ -120,7 +123,7 @@ def test_filing_dedup_equal_ingest_missing_metadata_shuffle():
         issue.field for issue in result.issues
         if issue.accession == ACCESSION and issue.kind == filings.ISSUE_MISSING
     }
-    assert missing == {"company_name", "primary_doc"}
+    assert missing == {"bronze_company_label", "primary_doc"}
     conflicts = {
         issue.field: issue for issue in result.issues
         if issue.accession == ACCESSION and issue.kind == filings.ISSUE_CONFLICT
@@ -138,7 +141,7 @@ def test_filing_dedup_equal_ingest_missing_metadata_shuffle():
     assert later.record_key == "z"
     assert later.form_type == "10-K"
     assert later.accepted_ts == dt(2024, 1, 31, 23)
-    assert later.company_name == "NVIDIA Corporation"
+    assert later.bronze_company_label == "NVIDIA Corporation"
     assert later.primary_doc == "primary.htm"
 
     # Every ingestion permutation yields byte-identical rows and issues.
@@ -161,7 +164,7 @@ def test_filing_dedup_equal_ingest_missing_metadata_shuffle():
             form_type="10-K",
             filing_date="2024-01-28",
             accepted_ts=dt(2024, 1, 28, 12),
-            company_name="NVIDIA Corporation",
+            bronze_company_label="NVIDIA Corporation",
             primary_doc="primary.htm",
             filing_url="https://www.sec.gov/Archives/edgar/data/1045810/x-index.htm",
         )

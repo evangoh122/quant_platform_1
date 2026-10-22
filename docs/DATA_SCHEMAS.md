@@ -798,10 +798,13 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   (config/data_sources.py).
 ## data_source vocabulary (owner rule 2026-10-22)
 
-Every table, view, config row, snapshot record and KG node/edge/evidence row
-produced by this project carries `data_source STRING NOT NULL` (Python/JSON: a
-required `data_source` field) holding exactly one code from
-`config/data_sources.py`:
+**Scope: rows produced on or after 2026-10-22.**  Tables, views, config rows,
+snapshots and KG rows that already existed before that date do **not** gain the
+column and are not retrofitted; the requirement applies to every row this
+project produces from that date onwards.  For those new rows, every table, view,
+config row, snapshot record and KG node/edge/evidence row carries
+`data_source STRING NOT NULL` (Python/JSON: a required `data_source` field)
+holding exactly one code from `config/data_sources.py`:
 
     massive          Massive (Polygon) S3 flat files / REST
     sec_edgar        SEC EDGAR filings and the submissions API

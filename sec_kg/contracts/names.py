@@ -15,8 +15,10 @@ precedence entirely.  Precedence is:
 
 Inclusive source dates are converted explicitly to half-open UTC intervals
 (``to`` + 1 day at 00:00Z).  Gaps between former-name intervals stay gaps: no
-name is inferred across them.  Ties at one instant resolve by rank, then by the
-lexicographically smaller evidence id.
+name is inferred across them.  Ties at one instant resolve by the **lowest**
+rank — 1 is the strongest, matching the precedence list above — then by the
+lexicographically smaller evidence id.  ``RANK_OBSERVATION`` is only ever used
+for the observation-only list and never competes with a label interval.
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ NAME_SOURCE_FORMER = "former_name"
 NAME_SOURCE_CURRENT = "current_name"
 NAME_SOURCE_OBSERVATION = "company_facts_observation"
 
+#: Precedence ranks: 1 is the strongest, matching the v4 §A list order above.
 RANK_FORMER = 1
 RANK_CURRENT = 2
 RANK_OBSERVATION = 3
@@ -170,10 +173,11 @@ class NameHistory:
         covering = [interval for interval in self.intervals if interval.covers(moment)]
         if not covering:
             return None
-        # Higher rank wins, then the smaller evidence id, then the later start.
+        # Lowest rank wins (1 = strongest in the v4 §A precedence list), then
+        # the smaller evidence id, then the later start.
         covering.sort(
             key=lambda interval: (
-                -interval.rank,
+                interval.rank,
                 interval.evidence_id,
                 -interval.valid_from.timestamp(),
                 interval.name,
