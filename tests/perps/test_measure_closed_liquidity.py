@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request as urlrequest
 
@@ -79,7 +79,9 @@ def test_measure_nvda_fixture():
     assert result["bars"] == 98
     assert result["weekend_bars"] == 89
     assert result["first_bar"] == "2026-09-04"
-    assert result["covered_weekends"] == 1
+    assert result["eligible_weekends"] == 1
+    assert result["pre_listing_weekends"] == 0
+    assert result["missing_weekends"] == 0
     # Friday 16:00 ET -> Tuesday 09:30 ET (Labor Day) is 89.5 expected hours and
     # the fixture has 89 one-hour bars inside the break, so the mean divides by
     # the expected hours (the half hour before the opening print is missing).
@@ -87,9 +89,12 @@ def test_measure_nvda_fixture():
     # Provider bars end 1 ms before the next hour, so the observed duration is a
     # hair under 89 h; the missing half hour before the opening print dominates.
     assert result["weekend_gap_hours"] == pytest.approx(0.5, abs=1e-3)
+    assert result["missing_hours"] == pytest.approx(0.5, abs=1e-3)
     assert result["weekend_coverage"] == pytest.approx(89 / 89.5, abs=1e-4)
     assert result["weekend_usd_per_h"] == pytest.approx(300_000 * 85 / 89.5)
-    assert result["zero_volume_weekend_share"] == pytest.approx(4 / 89.5)
+    # Four bars have zero volume and the missing half hour counts as a fifth
+    # zero-notional half hour, so missing data drives the zero-volume share too.
+    assert result["zero_volume_weekend_share"] == pytest.approx(4.5 / 89.5, abs=1e-4)
     assert result["closed_usd_per_h"] > 0
     assert result["closed_bars"] + result["open_bars"] == result["bars"]
 
@@ -136,9 +141,13 @@ def test_tier_is_withheld_below_eighty_percent_weekend_coverage():
     assert measure._window_hours(windows[0]) == pytest.approx(65.5)
 
     def one_bar_with_notional(notional: float) -> dict:
+        # Place the bar at the start of the break: the first bar is the listing
+        # bound, so a bar later in the break would exclude the earlier hours as
+        # pre-listing and change the denominator.
+        start = windows[0][0]
         candle = measure.Candle(
-            start_ts=datetime(2026, 1, 10, 0, 0, tzinfo=UTC),
-            end_ts=datetime(2026, 1, 10, 1, 0, tzinfo=UTC),
+            start_ts=start,
+            end_ts=start + timedelta(hours=1),
             open=1.0,
             high=1.0,
             low=1.0,
@@ -149,7 +158,7 @@ def test_tier_is_withheld_below_eighty_percent_weekend_coverage():
         return measure.measure_candles([candle], windows)
 
     small = one_bar_with_notional(10_000.0)
-    assert small["weekend_coverage"] == pytest.approx(1 / 65.5)
+    assert small["weekend_coverage"] == pytest.approx(1 / 65.5, abs=1e-6)
     row = measure._proposal_row(
         identifier="NVDA",
         symbol="xyz:NVDA",
@@ -232,15 +241,21 @@ def test_retry_backoff_has_injected_jitter():
 
 def test_sparse_and_new_flags_from_fixture():
     universe = load_perp_universe()
-    windows = measure.weekend_windows_for(
-        universe.liquidity_window.start, universe.liquidity_window.end
-    )
+    # The KSTR fixture covers one weekend (Friday 2026-09-18 -> Monday 09-21);
+    # measure exactly that break so the zero-volume share is about the fixture,
+    # not about weekends the recording never covered.
+    windows = measure.weekend_windows_for(date(2026, 9, 14), date(2026, 9, 21))
+    assert len(windows) == 1
     measurement = measure.measure_candles(_candles("KSTR"), windows)
     assert measurement["first_bar"] == "2026-09-17"
     assert measurement["weekend_bars"] == 65
+    assert measurement["eligible_weekends"] == 1
+    assert measurement["pre_listing_weekends"] == 0
+    assert measurement["missing_weekends"] == 0
     assert measurement["expected_hours"] == pytest.approx(65.5)
-    # Zero-volume share divides by the expected hours, not by the bar count.
-    assert measurement["zero_volume_weekend_share"] == pytest.approx(20 / 65.5)
+    # Zero-volume share divides by the expected hours, not by the bar count, and
+    # the missing half hour counts as zero volume.
+    assert measurement["zero_volume_weekend_share"] == pytest.approx(20.5 / 65.5)
     assert measurement["weekend_usd_per_h"] == pytest.approx(12_000 * 45 / 65.5)
 
     proposal = measure.build_proposal(
@@ -254,9 +269,91 @@ def test_sparse_and_new_flags_from_fixture():
     row = next(row for row in proposal["companies"] if row["id"] == "KSTR")
     assert row["proposed_tier"] == "D"
     assert row["proposed_flags"] == ["new", "sparse"]
-    assert row["zero_volume_weekend_share"] == pytest.approx(20 / 65.5, abs=1e-4)
+    assert row["zero_volume_weekend_share"] == pytest.approx(20.5 / 65.5, abs=1e-4)
     assert proposal["commodities"]
     assert all(row["proposed_tier"] is None for row in proposal["commodities"])
+
+
+def test_every_eligible_weekend_counts_even_with_no_bars():
+    # Two eligible breaks inside the window: a normal weekend (65.5 h) and the
+    # Labor Day weekend (89.5 h) = 155 expected hours.  The fixture has bars in
+    # the FIRST break only; the second is missing, not absent.
+    windows = measure.weekend_windows_for(date(2026, 8, 24), date(2026, 9, 10))
+    assert len(windows) == 2
+    assert [measure._window_hours(window) for window in windows] == [65.5, 89.5]
+    start, _ = windows[0]
+    candles = [
+        measure.Candle(
+            start_ts=start + timedelta(hours=hour),
+            end_ts=start + timedelta(hours=hour + 1),
+            open=1.0,
+            high=1.0,
+            low=1.0,
+            close=1.0,
+            volume=1_000.0,
+            trades=1,
+        )
+        for hour in range(65)
+    ]
+    result = measure.measure_candles(candles, windows)
+    assert result["eligible_weekends"] == 2
+    assert result["pre_listing_weekends"] == 0
+    assert result["missing_weekends"] == 1
+    assert result["expected_hours"] == pytest.approx(155.0)
+    assert result["observed_hours"] == pytest.approx(65.0)
+    assert result["missing_hours"] == pytest.approx(90.0)
+    assert result["weekend_coverage"] == pytest.approx(65 / 155, abs=1e-4)  # ≈ 42%
+    assert result["weekend_usd_per_h"] == pytest.approx(1_000 * 65 / 155)
+    # The 90 missing hours are zero-notional hours and therefore zero volume.
+    assert result["zero_volume_weekend_share"] == pytest.approx(90 / 155)
+
+    row = measure._proposal_row(
+        identifier="NVDA",
+        symbol="xyz:NVDA",
+        underlying_type="equity",
+        data_source="hyperliquid",
+        current_tier="A",
+        current_flags=[],
+        measurement=result,
+        # After the first bar, so `new` is not raised and this isolates `sparse`.
+        window_start=date(2026, 9, 1),
+    )
+    assert row["proposed_tier"] is None
+    assert "coverage" in row["tier_withheld_reason"]
+    assert row["weekend_coverage"] == pytest.approx(65 / 155, abs=1e-4)
+    # Missing hours drive the sparse flag even though every observed bar traded.
+    assert row["proposed_flags"] == ["sparse"]
+
+
+def test_pre_listing_breaks_are_not_expected():
+    windows = measure.weekend_windows_for(date(2026, 8, 24), date(2026, 9, 10))
+    assert len(windows) == 2
+    # The first bar sits at the start of the SECOND break, so the first break is
+    # pre-listing (not expected at all) and only the second is eligible.
+    start, end = windows[1]
+    candles = [
+        measure.Candle(
+            start_ts=start,
+            end_ts=start + timedelta(hours=1),
+            open=1.0,
+            high=1.0,
+            low=1.0,
+            close=1.0,
+            volume=2_000.0,
+            trades=1,
+        )
+    ]
+    result = measure.measure_candles(candles, windows)
+    assert result["pre_listing_weekends"] == 1
+    assert result["eligible_weekends"] == 1
+    assert result["missing_weekends"] == 0
+    assert result["expected_hours"] == pytest.approx(89.5)
+    assert end - start == timedelta(hours=89.5)
+    assert result["weekend_coverage"] == pytest.approx(1 / 89.5)
+    # With no first bar at all there is no listing bound: nothing is expected.
+    none = measure.measure_candles([], windows)
+    assert none["eligible_weekends"] == 0
+    assert none["weekend_usd_per_h"] is None
 
 
 def test_dry_run_makes_zero_network_calls(monkeypatch, capsys):
@@ -307,8 +404,17 @@ def test_fixture_mode_writes_proposal_and_never_edits_config(
     assert proposal["window"]["start"] == "2026-08-26"
     assert "is not modified" in proposal["note"]
     rows = {row["id"]: row for row in proposal["companies"]}
-    assert rows["NVDA"]["proposed_tier"] == "A"
+    # The fixtures cover a single weekend inside an eight-week window, so the
+    # missing weekends are now counted against coverage and the tier is withheld.
+    assert rows["NVDA"]["proposed_tier"] is None
+    assert "coverage" in rows["NVDA"]["tier_withheld_reason"]
+    assert rows["NVDA"]["expected_hours"] == pytest.approx(482.5)
+    assert rows["NVDA"]["missing_weekends"] == 6
+    assert rows["NVDA"]["pre_listing_weekends"] == 1
     assert rows["KSTR"]["proposed_flags"] == ["new", "sparse"]
+    assert rows["KSTR"]["proposed_tier"] is None
+    assert rows["KSTR"]["pre_listing_weekends"] == 3
+    assert rows["KSTR"]["missing_weekends"] == 4
     assert rows["SNDK"]["proposed_tier"] is None
     assert len(proposal["commodities"]) == 8
     assert "wrote" in capsys.readouterr().out

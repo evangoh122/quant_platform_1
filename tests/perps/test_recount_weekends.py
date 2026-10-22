@@ -2,8 +2,9 @@
 
 The small fixture is a hand-built probe document with one long-history
 instrument, one late listing and one instrument the probe could not resolve.
-The recorded 2026-10-21 probe is also asserted when it is present in
-``.agents/requests/`` so the plan's numbers stay tied to the measurement.
+The recorded 2026-10-21 probe is committed as ``docs/data/perps_history_probe.json``
+(public Hyperliquid data only) and is asserted unconditionally, so the plan's
+numbers are checked in CI rather than only when a local facts file exists.
 """
 from __future__ import annotations
 
@@ -24,9 +25,9 @@ _FIXTURE = (
 )
 _RECORDED_PROBE = (
     Path(__file__).resolve().parents[2]
-    / ".agents"
-    / "requests"
-    / "FACTS-perps-history-probe-2026-10-21.json"
+    / "docs"
+    / "data"
+    / "perps_history_probe.json"
 )
 
 
@@ -89,10 +90,30 @@ def test_effective_n_is_the_weekend_count_not_the_row_count():
     power = report["power"]
     assert power["effective_n"] == 30
     assert power["pooled_rows"] == 37
-    assert power["mde"]["partial_r"] == pytest.approx(0.5392, abs=1e-4)
-    assert power["mde"]["delta_r2"] == pytest.approx(0.2907, abs=1e-4)
+    # Fisher-z is a bound on a PARTIAL CORRELATION: the z value must be mapped
+    # back with tanh, so r is 0.492 at N = 30 and the partial R² is 0.242.
+    assert power["mde"]["partial_r"] == pytest.approx(0.4924, abs=1e-4)
+    assert power["mde"]["partial_r2"] == pytest.approx(0.2424, abs=1e-4)
+    # ΔR² = partial r² × (1 − R²_base); the default reports the upper bound.
+    assert power["mde"]["delta_r2"] == pytest.approx(0.2424, abs=1e-4)
+    assert power["r2_base"] == 0.0
     # Pooling rows inside a weekend understates the detectable effect.
     assert power["pooled_rows_mde"]["partial_r"] < power["mde"]["partial_r"]
+
+
+def test_mde_uses_tanh_and_labels_partial_r2_versus_delta_r2():
+    # Mutating the tanh conversion back to the raw z value reproduces 0.539 at
+    # N = 30 and must fail these bounds.
+    assert recount.mde(30)["partial_r"] == pytest.approx(0.49, abs=0.01)
+    assert recount.mde(49)["partial_r"] == pytest.approx(0.39, abs=0.01)
+    assert recount.mde(18)["partial_r"] == pytest.approx(0.6190, abs=1e-4)
+    assert recount.mde(18)["partial_r2"] == pytest.approx(0.3831, abs=1e-4)
+    # ΔR² is the increment to the multiple R², so it shrinks with the baseline.
+    scaled = recount.mde(30, r2_base=0.25)
+    assert scaled["partial_r2"] == pytest.approx(0.2424, abs=1e-4)
+    assert scaled["delta_r2"] == pytest.approx(0.2424 * 0.75, abs=1e-4)
+    with pytest.raises(recount.RecountError, match="r2_base"):
+        recount.mde(30, r2_base=1.0)
 
 
 def test_mde_uses_the_fisher_z_quantiles():
@@ -149,18 +170,27 @@ def test_cli_rejects_a_missing_probe(tmp_path):
     assert recount.main(["--probe", str(tmp_path / "absent.json")]) == 2
 
 
-@pytest.mark.skipif(
-    not _RECORDED_PROBE.is_file(), reason="recorded 2026-10-21 probe not present"
-)
 def test_recorded_2026_10_21_probe_recounts_1871_and_1538_company_weekends():
-    # Reproduces the numbers quoted in docs/data/PERPS_WEEKEND_PLAN.md §6.1:
+    # Reproduces the numbers quoted in docs/data/PERPS_WEEKEND_PLAN.md §2.5/§6.1
+    # against the committed public probe document (docs/data/perps_history_probe.json):
     # 1d-based 1,871 company-weekends vs 1h-based 1,538 over 30 weekends.
-    report = recount.build_report(
-        json.loads(_RECORDED_PROBE.read_text(encoding="utf-8"))
+    assert _RECORDED_PROBE.is_file(), (
+        "docs/data/perps_history_probe.json must be committed so CI asserts the "
+        "panel numbers (Opus MINOR-3)"
     )
+    document = json.loads(_RECORDED_PROBE.read_text(encoding="utf-8"))
+    assert document["version"] == 1
+    assert document["generated_at"] == "2026-10-21T20:00:52.381708+00:00"
+    assert len(document["hyperliquid"]["instruments"]) == 78
+    report = recount.build_report(document)
     assert report["streams"][recount.STREAM_1D]["company_weekends"] == 1871
     assert report["streams"][recount.STREAM_1H]["company_weekends"] == 1538
     assert report["streams"][recount.STREAM_1H]["distinct_weekends"] == 30
     assert report["streams"][recount.STREAM_1D]["distinct_weekends"] == 49
     assert report["one_hour_floor"]["weekends_unbuildable_from_1h"] == 19
     assert report["power"]["effective_n"] == 30
+    # The panel's 30 weekends are the pre-registration basis (§6.2): the first
+    # twelve train, the last eighteen are the out-of-time evaluation weekends.
+    weekends = recount.weekend_ids(date(2026, 3, 27), date(2026, 10, 16))
+    assert len(weekends) == 30
+    assert weekends[12:] == recount.weekend_ids(date(2026, 6, 19), date(2026, 10, 16))

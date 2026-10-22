@@ -18,16 +18,23 @@ Method
   from ``closed_usd_per_h``; bars are partitioned into ``closed_bars`` and
   ``open_bars`` (any overlap with a session).
 * ``weekend_usd_per_h`` divides the weekend notional by the **expected** hours
-  of the covered weekend breaks, not by the number of bars returned: a missing
-  hour is a real zero-notional hour and must not raise the mean.  The same
-  denominator drives ``zero_volume_weekend_share`` and ``weekend_gap_hours``
-  (``expected - observed``), and ``weekend_coverage`` is the observed share.
+  of every **eligible post-listing** weekend break in the measurement window,
+  not by the number of bars returned: a missing hour is a real zero-notional
+  hour and must not raise the mean, so a weekend with no bars at all still
+  contributes its expected hours.  The same denominator drives
+  ``zero_volume_weekend_share`` and ``weekend_gap_hours`` (``expected -
+  observed``), and ``weekend_coverage`` is the observed share.  Missing hours
+  count as zero-volume hours, so they also drive the ``sparse`` flag.
 * Weekend breaks come from :func:`config.market_calendar.weekend_window`, so a
   Monday holiday ends the window on Tuesday 09:30 ET and a Friday holiday
-  (e.g. Good Friday) starts it on Thursday 16:00 ET.  Only breaks that contain
-  at least one bar are used for the expected-hours denominator (an instrument
-  listed mid-window is measured over the weekends it existed for and carries
-  the ``new`` flag).
+  (e.g. Good Friday) starts it on Thursday 16:00 ET.
+* **Pre-listing is not missing.**  The first observed bar is the only listing
+  bound the measurement has (the API has no listing date), so a break that ends
+  before it is *pre-listing* and contributes no expected hours; a break after it
+  is *eligible* and contributes its full expected hours even when it has no
+  bars.  ``pre_listing_weekends`` and ``missing_weekends`` report the two counts
+  separately, and an instrument listed mid-break is measured from its first bar
+  (conservative: the rest of that break still counts as expected).
 * Tiers (``A >= 250k``, ``B >= 50k``, ``C >= 10k``, ``D < 10k``) and flags
   (``new`` = first bar after the window start, ``sparse`` = more than 25% of
   expected weekend hours with zero volume) come from the loader's shared rules.
@@ -281,23 +288,31 @@ def measure_candles(
 ) -> Dict[str, Any]:
     """Compute closed-market liquidity metrics for one instrument.
 
-    Both ``weekend_usd_per_h`` and ``zero_volume_weekend_share`` use the
-    **expected** hours of the covered weekend breaks as the denominator, so an
-    hour with no bar counts as a zero-notional hour instead of disappearing
-    from the mean.
+    ``weekend_usd_per_h``, ``zero_volume_weekend_share`` and
+    ``weekend_coverage`` all use the **expected** hours of every *eligible
+    post-listing* weekend break as the denominator.  A break counts even when it
+    has no bars: an hour with no bar is a zero-notional hour, and a weekend with
+    no bars is a missing weekend, not an absent one.  Breaks that end before the
+    first observed bar are **pre-listing** and are not expected at all.  The
+    first bar is only a lower bound on the listing (the API has no listing
+    date), so a break that straddles the first bar is measured from that bar.
     """
     empty: Dict[str, Any] = {
         "bars": 0,
         "first_bar": None,
+        "listing_bound_ts": None,
         "weekend_bars": 0,
         "weekend_usd_per_h": None,
         "closed_usd_per_h": None,
         "open_usd_per_h": None,
         "closed_bars": 0,
         "open_bars": 0,
-        "covered_weekends": 0,
+        "eligible_weekends": 0,
+        "pre_listing_weekends": 0,
+        "missing_weekends": 0,
         "expected_hours": None,
         "observed_hours": None,
+        "missing_hours": None,
         "weekend_gap_hours": None,
         "weekend_coverage": None,
         "zero_volume_weekend_share": None,
@@ -305,15 +320,25 @@ def measure_candles(
     ordered = sorted(candles, key=lambda candle: candle.start_ts)
     if not ordered:
         return empty
+    listing_bound = ordered[0].start_ts
     weekend = [candle for candle in ordered if in_weekend(candle, windows)]
-    covered_windows = [
-        window
-        for window in windows
-        if any(in_weekend(candle, (window,)) for candle in weekend)
-    ]
-    expected_hours = sum(_window_hours(window) for window in covered_windows)
+    eligible: List[Tuple[datetime, datetime]] = []
+    pre_listing = 0
+    has_bar: List[bool] = []
+    for window in windows:
+        if window[1] <= listing_bound:
+            pre_listing += 1
+            continue
+        # Restate the break on the instrument's observed life: hours before the
+        # first bar are pre-listing, not missing data.
+        eligible.append((max(window[0], listing_bound), window[1]))
+        has_bar.append(any(in_weekend(candle, (window,)) for candle in weekend))
+    expected_hours = sum(_window_hours(window) for window in eligible)
     observed_hours = sum(candle.hours for candle in weekend)
-    zero_hours = sum(candle.hours for candle in weekend if candle.volume == 0)
+    missing_hours = max(0.0, expected_hours - observed_hours)
+    # Missing hours are zero-notional hours: they must depress the mean and the
+    # coverage, and they must count towards the sparse flag.
+    zero_hours = sum(candle.hours for candle in weekend if candle.volume == 0) + missing_hours
     coverage = observed_hours / expected_hours if expected_hours > 0 else None
     closed = [candle.notional for candle in ordered if bar_is_fully_closed(candle, path)]
     opened = [
@@ -323,6 +348,7 @@ def measure_candles(
     return {
         "bars": len(ordered),
         "first_bar": ordered[0].start_ts.date().isoformat(),
+        "listing_bound_ts": listing_bound.isoformat(),
         "weekend_bars": len(weekend),
         "weekend_usd_per_h": (
             weekend_notional / expected_hours if expected_hours > 0 else None
@@ -331,9 +357,12 @@ def measure_candles(
         "open_usd_per_h": _mean(opened),
         "closed_bars": len(closed),
         "open_bars": len(opened),
-        "covered_weekends": len(covered_windows),
+        "eligible_weekends": len(eligible),
+        "pre_listing_weekends": pre_listing,
+        "missing_weekends": sum(1 for found in has_bar if not found),
         "expected_hours": expected_hours if expected_hours > 0 else None,
         "observed_hours": observed_hours,
+        "missing_hours": missing_hours if expected_hours > 0 else None,
         "weekend_gap_hours": (
             expected_hours - observed_hours if expected_hours > 0 else None
         ),
@@ -375,7 +404,7 @@ def _proposal_row(
     proposed_tier: Optional[str] = None
     withheld_reason: Optional[str] = None
     if weekend is None:
-        withheld_reason = "no weekend bars in the measured breaks"
+        withheld_reason = "no eligible post-listing weekend break in the measured window"
     elif coverage is not None and float(coverage) < MIN_WEEKEND_COVERAGE:
         withheld_reason = (
             f"weekend bar coverage {float(coverage):.1%} of the expected hours is "
@@ -413,7 +442,12 @@ def _proposal_row(
         "zero_volume_weekend_share": _round(zero_share, 4),
         "weekend_coverage": _round(coverage, 4),
         "expected_hours": _round(measurement.get("expected_hours"), 2),
+        "missing_hours": _round(measurement.get("missing_hours"), 2),
         "weekend_gap_hours": _round(measurement.get("weekend_gap_hours"), 2),
+        "eligible_weekends": measurement.get("eligible_weekends", 0),
+        "missing_weekends": measurement.get("missing_weekends", 0),
+        "pre_listing_weekends": measurement.get("pre_listing_weekends", 0),
+        "listing_bound_ts": measurement.get("listing_bound_ts"),
         "first_bar": first_bar,
         "bars": measurement.get("bars", 0),
     }
@@ -486,7 +520,7 @@ def build_proposal(
             "D": "< C",
             "sparse_zero_volume_share_above": SPARSE_ZERO_VOLUME_SHARE,
             "min_weekend_coverage": MIN_WEEKEND_COVERAGE,
-            "denominator": "expected_hours_of_covered_weekend_breaks",
+            "denominator": "expected_hours_of_eligible_post_listing_weekend_breaks",
         },
         "companies": companies,
         "commodities": commodities,

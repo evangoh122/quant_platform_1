@@ -36,16 +36,24 @@ The panel has one row per ``(weekend, instrument)``, but each weekend is a
 single common shock (one macro/crypto event), so the panel is **clustered by
 weekend**.  The honest effective N is the number of distinct weekends, not the
 row count.  The script reports both and derives a minimum detectable effect
-(MDE) with the Fisher-z approximation for a partial correlation (two-sided
+(MDE) with the Fisher-z approximation for a **partial correlation** (two-sided
 alpha = 0.05, power = 0.80):
 
-    r_mde = (z_{1-alpha/2} + z_power) / sqrt(N_eff - 3)
-    dR2_mde = r_mde^2
+    r_mde        = tanh((z_{1-alpha/2} + z_power) / sqrt(N_eff - 3))
+    partial_r2   = r_mde^2
+    delta_r2     = partial_r2 * (1 - R2_base)
+
+The raw Fisher-z value is *not* a correlation (it is unbounded above 1), so it
+is converted back with ``tanh``: at N_eff = 30 the bound is r ≈ 0.49, not 0.54.
+``partial_r2`` is the partial R² of the **added block**, which is not the same
+as the increment to the model's multiple R²: the increment is
+``partial_r2 * (1 - R2_base)`` and shrinks as the baseline explains more.
 
 This is an approximation, not a substitute for a simulation, but it is enough to
 show that the study cannot detect a small incremental R².  ``n_eff`` is the
 weekend count; the pooled row count is printed only as the wrong (anticonservative)
-comparison it is.
+comparison it is.  The pre-registered primary test's own power uses only its
+evaluation weekends (docs/data/PERPS_WEEKEND_PLAN.md §6.2), not this panel count.
 
 Usage::
 
@@ -179,23 +187,47 @@ def probe_generated_at(document: Mapping[str, Any]) -> datetime:
     return parse_utc(str(raw))
 
 
-def mde(neff: int, *, alpha: float = 0.05, power: float = 0.8) -> Dict[str, float]:
-    """Minimum detectable partial correlation / incremental R² at *neff*.
+def mde(
+    neff: int,
+    *,
+    alpha: float = 0.05,
+    power: float = 0.8,
+    r2_base: float = 0.0,
+) -> Dict[str, float]:
+    """Smallest detectable partial correlation and the implied ΔR² at *neff*.
 
-    Fisher-z approximation: ``r * sqrt(n - 3)`` is approximately standard normal
-    under the null, so the detectable correlation is
-    ``(z_{1-alpha/2} + z_power) / sqrt(n - 3)``.
+    The Fisher-z bound is a bound on a **partial correlation** ``r``, not on R²:
+    ``atanh(r) * sqrt(n - 3)`` is approximately standard normal under the null,
+    so the detectable correlation is
+    ``tanh((z_{1-alpha/2} + z_power) / sqrt(n - 3))``.  The raw z value is
+    unbounded and must be converted back; at ``n = 30`` the bound is
+    ``r ≈ 0.492`` (not 0.539 as the untransformed value suggested).
+
+    ``partial_r2 = r**2`` is the partial R² of the added block.  The increment to
+    the model's multiple R² is ``delta_r2 = partial_r2 * (1 - r2_base)``, where
+    ``r2_base`` is the baseline R² for the same rows; the default 0 reports the
+    upper bound (the increment if the baseline explained nothing).
     """
     if neff <= 4:
         raise RecountError(f"neff must be > 4 for the Fisher-z approximation, got {neff}")
     if not (0 < alpha < 1) or not (0 < power < 1):
         raise RecountError("alpha and power must be in (0, 1)")
+    if not (0 <= r2_base < 1):
+        raise RecountError(f"r2_base must be in [0, 1), got {r2_base}")
     if alpha == 0.05 and power == 0.8:
         z_alpha, z_power = Z_975, Z_80
     else:
         z_alpha, z_power = _z_quantile(1 - alpha / 2), _z_quantile(power)
-    r = (z_alpha + z_power) / math.sqrt(neff - 3)
-    return {"n_eff": neff, "partial_r": r, "delta_r2": r * r}
+    z = (z_alpha + z_power) / math.sqrt(neff - 3)
+    partial_r = math.tanh(z)
+    partial_r2 = partial_r * partial_r
+    return {
+        "n_eff": neff,
+        "partial_r": partial_r,
+        "partial_r2": partial_r2,
+        "r2_base": r2_base,
+        "delta_r2": partial_r2 * (1.0 - r2_base),
+    }
 
 
 def _z_quantile(probability: float) -> float:
@@ -317,6 +349,8 @@ def build_report(
         "effective_n_basis": "distinct 1h buildable weekends (weekend clusters)",
         "effective_n": effective_n,
         "mde": power,
+        "delta_r2_basis": "partial_r2 * (1 - r2_base); r2_base = 0 is the upper bound",
+        "r2_base": 0.0,
         "pooled_rows": one_hour["company_weekends"],
         "pooled_rows_mde": (
             mde(one_hour["company_weekends"])
@@ -328,7 +362,9 @@ def build_report(
         "note": (
             "Rows in the same weekend share one macro/crypto shock, so the row "
             "count is not the effective N; the pooled-row MDE is shown only to "
-            "demonstrate the anticonservative comparison."
+            "demonstrate the anticonservative comparison. The pre-registered "
+            "primary test is powered on its evaluation weekends only "
+            "(docs/data/PERPS_WEEKEND_PLAN.md §6.2)."
         ),
     }
     return report
@@ -373,8 +409,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append(
             f"Effective N = {power['effective_n']} weekend clusters → smallest "
             f"detectable partial r {power['mde']['partial_r']:.2f} "
-            f"(ΔR² {power['mde']['delta_r2']:.2f}) at 80% power, two-sided 5%. "
-            f"{pooled_text}"
+            f"(partial r² {power['mde']['partial_r2']:.2f}; ΔR² = partial r² × "
+            f"(1 − R²_base), {power['mde']['delta_r2']:.2f} at R²_base 0) "
+            f"at 80% power, two-sided 5%. {pooled_text}"
         )
     return "\n".join(lines)
 
