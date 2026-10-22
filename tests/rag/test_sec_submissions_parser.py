@@ -1,11 +1,14 @@
 """tests/rag/test_sec_submissions_parser.py — pure parser tests for KG-0.
 
-Covers ``sec_kg/submissions.py`` against three recorded, real-shaped SEC
-submissions payloads:
+Covers ``sec_kg/submissions.py`` against recorded, real-shaped SEC submissions
+payloads:
 
-* ``with_former_names.json`` — current name + two former-name intervals
+* ``with_former_names.json`` — current name + two former-name intervals in the
+  live API's ISO-8601 format (``2001-04-02T00:00:00.000Z``)
 * ``multi_ticker_share_class.json`` — multiple tickers including a share class
 * ``no_tickers.json`` — no tickers and no former names
+* ``same_former_name_two_periods.json`` — one former name published in two
+  periods (the name was reused after an intervening name)
 
 No network, Databricks or Spark is required.
 """
@@ -94,6 +97,90 @@ def test_former_names_are_parsed_in_order_with_inclusive_dates():
             "to_date": "2001-04-01",
         },
     ]
+
+
+def test_former_names_accept_the_real_iso_timestamp_api_format():
+    """The live API publishes formerNames[].from/.to as ISO-8601 midnight UTC.
+
+    The recorded fixture stores the real format
+    (``2001-04-02T00:00:00.000Z``); the parser keeps the published calendar date
+    and never shifts it by a day or into an exclusive bound.
+    """
+    payload = _load("with_former_names.json")
+    assert payload["formerNames"][0]["from"] == "2001-04-02T00:00:00.000Z"
+    assert payload["formerNames"][1]["to"] == "2001-04-01T00:00:00.000Z"
+
+    record = parse_registrant(payload, OBSERVED_AT)
+
+    assert [fn.from_date for fn in record.former_names] == [
+        "2001-04-02",
+        "1995-01-03",
+    ]
+    assert [fn.to_date for fn in record.former_names] == [
+        "2014-06-30",
+        "2001-04-01",
+    ]
+    # Inclusive as published: no +1 day exclusive conversion.
+    assert record.former_names[0].to_date == "2014-06-30"
+    assert record.to_dict()["former_names"][0]["from_date"] == "2001-04-02"
+
+
+def test_former_name_dates_accept_iso_and_plain_month_day_formats():
+    payload = {
+        "cik": "42",
+        "name": "Dual Format Corp.",
+        "formerNames": [
+            {
+                "name": "Iso Corp.",
+                "from": "2001-04-02T00:00:00.000Z",
+                "to": "2014-06-30T00:00:00.000Z",
+            },
+            {"name": "Plain Corp.", "from": "1995-01-03", "to": "2001-04-01"},
+            {
+                "name": "Open Corp.",
+                "from": "2020-02-29T00:00:00.000Z",
+                "to": None,
+            },
+        ],
+    }
+
+    record = parse_registrant(payload, OBSERVED_AT)
+
+    assert [(fn.from_date, fn.to_date) for fn in record.former_names] == [
+        ("2001-04-02", "2014-06-30"),
+        ("1995-01-03", "2001-04-01"),
+        ("2020-02-29", None),
+    ]
+
+
+def test_same_former_name_in_two_periods_stays_two_entries():
+    """A reused name is two intervals, not one: from_date distinguishes them."""
+    record = parse_registrant(
+        _load("same_former_name_two_periods.json"), OBSERVED_AT
+    )
+
+    assert record.cik10 == "0000654321"
+    atlas = [fn for fn in record.former_names if fn.name == "Atlas Re Corp."]
+    assert [fn.from_date for fn in atlas] == ["1987-01-02", "2010-01-04"]
+    assert [fn.to_date for fn in atlas] == ["1999-12-31", "2018-06-29"]
+    assert len(record.former_names) == 3
+    # Distinct (name, from_date) keys: the two periods would collapse otherwise.
+    assert len({(fn.name, fn.from_date) for fn in atlas}) == 2
+
+
+def test_unrecognised_former_name_date_is_kept_verbatim():
+    """An unknown future format must stay visible, not become None."""
+    record = parse_registrant(
+        {
+            "cik": "42",
+            "formerNames": [
+                {"name": "Odd Corp.", "from": "FY2001", "to": "unknown"}
+            ],
+        },
+        OBSERVED_AT,
+    )
+    assert record.former_names[0].from_date == "FY2001"
+    assert record.former_names[0].to_date == "unknown"
 
 
 def test_multiple_tickers_including_share_class_preserved_in_order():

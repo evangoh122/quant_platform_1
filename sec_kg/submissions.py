@@ -8,8 +8,11 @@ registrant fields the knowledge graph needs:
 
 * ``cik10`` — the CIK zero-padded to ten digits (join key)
 * ``name`` — the registrant's *current* legal name
-* ``former_names`` — ``[{name, from_date, to_date}]`` exactly as published
-  (the SEC ``from`` / ``to`` dates are inclusive and are never shifted)
+* ``former_names`` — ``[{name, from_date, to_date}]`` as published: the SEC
+  ``from`` / ``to`` values are inclusive and are never shifted.  The API
+  publishes them as ISO-8601 midnight-UTC timestamps
+  (``2001-04-02T00:00:00.000Z``); the parser keeps the published calendar date
+  (``2001-04-02``) and drops only the redundant time component.
 * ``sic`` / ``sic_description``
 * ``tickers`` / ``exchanges`` — observations at ingest time, in payload order
 * ``state_of_incorporation`` / ``fiscal_year_end`` / ``entity_type``
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
@@ -122,6 +126,30 @@ def _opt_str(value: Any) -> Optional[str]:
     return text or None
 
 
+# The submissions API publishes former-name intervals as ISO-8601 midnight-UTC
+# timestamps ("2001-04-02T00:00:00.000Z"); plain "YYYY-MM-DD" also appears in
+# older payloads and in our own fixtures/tests.
+_ISO_CALENDAR_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})(?:[T ].*)?")
+
+
+def _sec_date(value: Any) -> Optional[str]:
+    """Return the published SEC calendar date (``YYYY-MM-DD``), or ``None``.
+
+    A full ISO-8601 timestamp is truncated to its date part, which drops only a
+    midnight-UTC time component: the calendar date is never shifted by a day, a
+    timezone, or an inclusive/exclusive conversion.  Values that match neither
+    shape are returned verbatim (stripped) rather than fabricated or dropped, so
+    a future SEC format stays visible downstream instead of becoming NULL.
+    """
+    text = _opt_str(value)
+    if text is None:
+        return None
+    match = _ISO_CALENDAR_DATE.fullmatch(text)
+    if match:
+        return match.group(1)
+    return text
+
+
 def _str_list(value: Any) -> List[str]:
     """Normalise a JSON list of strings, preserving payload order.
 
@@ -165,9 +193,10 @@ def parse_registrant(
             former_names.append(
                 FormerName(
                     name=entry_name,
-                    # ``from`` / ``to`` are inclusive and stay exactly as given.
-                    from_date=_opt_str(entry.get("from")),
-                    to_date=_opt_str(entry.get("to")),
+                    # ``from`` / ``to`` are inclusive and stay on the published
+                    # calendar date (ISO-8601 timestamps are date-truncated).
+                    from_date=_sec_date(entry.get("from")),
+                    to_date=_sec_date(entry.get("to")),
                 )
             )
 

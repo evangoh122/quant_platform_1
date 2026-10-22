@@ -743,9 +743,10 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   Natural key: (cik, payload_sha256).  Append-only: the writer only INSERTs
   when the key is absent, so reruns with an unchanged payload are no-ops.
   payload is the raw JSON text exactly as fetched; fetched_at is the
-  observation time (never back-dated).
+  observation time, stamped when the response completes (never before the
+  request and never back-dated).
 
-### silver_sec_registrant  (14 cols)
+### silver_sec_registrant  (15 cols)
   cik10                              string
   payload_sha256                     string
   name                               string
@@ -760,13 +761,18 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   ingest_run_id                      string
   data_source                        string NOT NULL
   processed_ts                       timestamp
+  is_latest                          boolean
 
-  One row per (cik, payload_sha256) parsed from bronze_sec_submissions.
-  404 misses (payload IS NULL) are excluded.  name is the current legal name;
-  sic is kept as a string (leading zeros are significant); fiscal_year_end is
-  the SEC MMDD value verbatim.  tickers/exchanges are observations at
-  observed_at (ingest time) and are never back-dated.  data_source is always
-  'sec_edgar' (config/data_sources.py).
+  One row per (cik10, payload_sha256) parsed from bronze_sec_submissions, so a
+  CIK has many rows by design (one per distinct payload) — that is the identity
+  history.  is_latest is TRUE on the row with the newest observed_at per cik10
+  (payload_sha256 breaks ties): filter is_latest for the current attributes and
+  use observed_at as-of for history.
+  404 misses (payload IS NULL) are excluded.  name is the current legal name
+  as of that payload; sic is kept as a string (leading zeros are significant);
+  fiscal_year_end is the SEC MMDD value verbatim.  tickers/exchanges are
+  observations at observed_at (ingest time) and are never back-dated.
+  data_source is always 'sec_edgar' (config/data_sources.py).
 
 ### silver_sec_registrant_former_names  (9 cols)
   cik10                              string
@@ -779,7 +785,11 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   data_source                        string NOT NULL
   processed_ts                       timestamp
 
-  One row per (cik, payload_sha256, former name), exploded from
-  payload.formerNames.  from_date/to_date are the SEC from/to dates inclusive,
-  cast as given (no +/- 1 day adjustment).  data_source is always 'sec_edgar'
-  (config/data_sources.py).
+  One row per (cik10, payload_sha256, former_name, from_date), exploded from
+  payload.formerNames.  from_date is part of the key because a registrant can
+  reuse a name across two periods (A -> B -> A); the same name published for
+  two periods yields two rows.  The SEC publishes the bounds as ISO-8601
+  midnight-UTC timestamps ("2001-04-02T00:00:00.000Z"); from_date/to_date keep
+  the published calendar date (to_date(substring(..., 1, 10))) and stay
+  inclusive as published (no +/- 1 day adjustment).  data_source is always
+  'sec_edgar' (config/data_sources.py).

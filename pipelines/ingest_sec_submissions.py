@@ -406,6 +406,10 @@ def run_ingest_submissions(
     All external dependencies are injectable so the pipeline is testable
     offline.  A live run requires ``writer``; returning a dry-run success for a
     requested live run would silently skip ingestion.
+
+    ``fetched_at`` is read from ``now_fn`` only after a response completes — the
+    successful body, or the final 404 — never before the request, so a
+    Retry-After cooldown or retry backoff cannot back-date the observation.
     """
     if not run_id:
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -480,12 +484,15 @@ def run_ingest_submissions(
         buffered = []
 
     for cik in normalized:
-        fetched_at = _now()
         try:
             text = client.get_text(build_source_url(cik))
         except SecClientError as exc:
             if exc.status_code == 404:
-                # Recorded miss: the CIK has no submissions document.
+                # Recorded miss: the CIK has no submissions document.  The
+                # observation time is stamped when the final response arrives,
+                # not before the request, so rate-limit waits and retries can
+                # never back-date it.
+                fetched_at = _now()
                 buffered.append(miss_row(cik, run_id, fetched_at))
                 summary.ciks_missing += 1
                 if len(buffered) >= WRITE_BATCH_SIZE:
@@ -502,6 +509,11 @@ def run_ingest_submissions(
             )
             logger.error("CIK %s: fetch failed (%s)", cik, exc.status_code)
             continue
+
+        # The successful response has completed: stamp the observation now, so
+        # the timestamp covers the Retry-After cooldown and every retry that
+        # preceded this response instead of the moment before the request.
+        fetched_at = _now()
 
         key = (cik, payload_sha256(text.encode("utf-8")))
         if key in seen_keys:

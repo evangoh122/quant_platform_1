@@ -513,7 +513,7 @@ def test_sec_registrant_slice_is_declared():
         "bronze_sec_submissions": {"cik", "payload_sha256"},
         "silver_sec_registrant": {"cik10", "payload_sha256"},
         "silver_sec_registrant_former_names": {
-            "cik10", "payload_sha256", "former_name"
+            "cik10", "payload_sha256", "former_name", "from_date"
         },
     }
     for table, keys in required_keys.items():
@@ -523,6 +523,20 @@ def test_sec_registrant_slice_is_declared():
 
     # fetched_at is the bronze system time; public availability is unknown.
     assert tables["bronze_sec_submissions"]["pit_column"] == "fetched_at"
+    bronze_pit_rule = tables["bronze_sec_submissions"]["pit_rule"]
+    assert "not used for point-in-time joins" in bronze_pit_rule
+    assert "never back-dated" in bronze_pit_rule
+
+    # Many rows per CIK by design; is_latest is the documented current-row mark.
+    registrant = tables["silver_sec_registrant"]
+    assert "many rows per cik" in registrant["grain"].lower()
+    assert "is_latest" in registrant["column_meanings"]
+    assert "is_latest" in registrant["current_rule"]
+    # from_date completes the former-name key (a name can be reused).
+    former_names = tables["silver_sec_registrant_former_names"]
+    assert "from_date" in former_names["grain"]
+    assert "from_date" in former_names["interval_rule"]
+
     # company_name in the filings table is a ticker, not a company name.
     filing_note = tables["bronze_sec_filings_v2"]["company_name_note"]
     assert "TICKER" in filing_note and "company_name" in filing_note
@@ -534,6 +548,8 @@ def test_sec_registrant_slice_is_declared():
         "silver_sec_registrant",
         "silver_sec_registrant_former_names",
     ]
+    assert "filter is_latest for current attributes" in joins["cik_to_registrant"]["rule"]
+    assert "observed_at as-of for history" in joins["cik_to_registrant"]["rule"]
 
     terms = documents["business_terms.yaml"]["terms"]
     assert {"registrant", "former_name", "sic_code"} <= set(terms)

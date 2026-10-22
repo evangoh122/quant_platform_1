@@ -21,13 +21,13 @@
   "formerNames": [
     {
       "name": "Northwind Semiconductor Corp.",
-      "from": "2001-04-02",
-      "to": "2014-06-30"
+      "from": "2001-04-02T00:00:00.000Z",
+      "to": "2014-06-30T00:00:00.000Z"
     },
     {
       "name": "Northwind Devices, Inc.",
-      "from": "1995-01-03",
-      "to": "2001-04-01"
+      "from": "1995-01-03T00:00:00.000Z",
+      "to": "2001-04-01T00:00:00.000Z"
     }
   ],
   "addresses": {

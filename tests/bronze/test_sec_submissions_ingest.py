@@ -10,13 +10,17 @@ Covered contracts:
 * fair-access headers come from ``SEC_EDGAR_USER_AGENT`` (no hard-coded email)
 * 404 -> recorded miss; other failures are reported and not written
 * retries with backoff before success
+* ``fetched_at`` is stamped when the response completes, never before it
 * append-only idempotency on ``(cik, payload_sha256)``
 * rate limiter clamped to <= 8 req/s
-* silver SQL / job definition / run_silver_gold registration static checks
+* silver SQL, job definition and run_silver_gold registration incl. the
+  missing-bronze SKIP and the ``is_latest`` / former-name key contracts
 """
 from __future__ import annotations
 
+import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,7 +41,7 @@ from pipelines.ingest_sec_submissions import (
     run_ingest_submissions,
 )
 from pipelines.sec_rag_ingest import HttpResponse, RateLimiter
-from sec_kg.submissions import MISS_PAYLOAD_SHA256, payload_sha256
+from sec_kg.submissions import MISS_PAYLOAD_SHA256, parse_registrant, payload_sha256
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "sec_submissions"
@@ -75,6 +79,21 @@ class RecordingClock(FakeClock):
     def __init__(self, start: float = 1000.0):
         super().__init__(start)
         self.starts: list[float] = []
+
+
+class ClockBackedNow:
+    """Wall clock derived from the injected monotonic clock.
+
+    Lets a test see exactly *when* the ingestion stamped a row: any
+    Retry-After cooldown or retry backoff advances ``clock.now``, so a
+    pre-request timestamp is distinguishable from a completion timestamp.
+    """
+
+    def __init__(self, clock: FakeClock):
+        self._clock = clock
+
+    def __call__(self) -> datetime:
+        return datetime.fromtimestamp(self._clock.now, tz=timezone.utc)
 
 
 class FakeHttpClient:
@@ -301,6 +320,90 @@ def test_retry_with_backoff_then_success():
     # first retry backoff is 2**0 = 1 second
     assert clock.now >= 1001.0
     assert len(writer.rows) == 1
+
+
+def test_fetched_at_is_the_completion_time_after_a_retry_after_cooldown():
+    """Regression: ``fetched_at`` must be stamped when the response completes.
+
+    The fake API answers 503 + Retry-After: 60 and then 200; the injected
+    monotonic clock advances by the cooldown.  Mutation: stamping before the
+    request (the old behaviour) stores the pre-cooldown time and fails here.
+    """
+    url = build_source_url("1234567")
+    http = FakeHttpClient(
+        {
+            url: [
+                HttpResponse(503, "busy", {"Retry-After": "60"}),
+                HttpResponse(200, FIXTURE_TEXT),
+            ]
+        }
+    )
+    writer = FakeWriter()
+    clock = FakeClock()
+    started_at = datetime.fromtimestamp(clock.now, tz=timezone.utc)
+
+    result = run_ingest_submissions(
+        catalog="cat",
+        schema="sch",
+        ciks=["1234567"],
+        live=True,
+        run_id="run-1",
+        http_client=http,
+        writer=writer,
+        clock=clock,
+        now_fn=ClockBackedNow(clock),
+    )
+
+    completed_at = datetime.fromtimestamp(clock.now, tz=timezone.utc)
+    assert result["ciks_fetched"] == 1
+    assert len(http.calls) == 2
+    assert completed_at > started_at, "the Retry-After cooldown must advance time"
+    assert writer.rows[0]["fetched_at"] == completed_at
+    assert writer.rows[0]["fetched_at"] != started_at
+
+
+class AdvancingHttpClient(FakeHttpClient):
+    """Fake client that advances the clock *after* producing the response.
+
+    Models the real latency: the response is complete only once ``get`` has
+    returned, so a timestamp read after the call is the completion time.
+    """
+
+    def __init__(self, responses, clock: FakeClock, advance: float = 5.0):
+        super().__init__(responses)
+        self._clock = clock
+        self._advance = advance
+
+    def get(self, url: str, headers: dict, timeout: float = 30.0) -> HttpResponse:
+        response = super().get(url, headers, timeout)
+        self._clock.now += self._advance
+        return response
+
+
+def test_fetched_at_for_a_final_404_is_the_response_time():
+    """A recorded miss is stamped when the 404 completes, not when it starts."""
+    url = build_source_url("1234567")
+    clock = FakeClock()
+    http = AdvancingHttpClient({url: [HttpResponse(404, "Not Found")]}, clock)
+    writer = FakeWriter()
+
+    result = run_ingest_submissions(
+        catalog="cat",
+        schema="sch",
+        ciks=["1234567"],
+        live=True,
+        run_id="run-1",
+        http_client=http,
+        writer=writer,
+        clock=clock,
+        now_fn=ClockBackedNow(clock),
+    )
+
+    assert result["ciks_missing"] == 1
+    assert writer.rows[0]["fetched_at"] == datetime.fromtimestamp(
+        clock.now, tz=timezone.utc
+    )
+    assert writer.rows[0]["http_status"] == 404
 
 
 def test_permanent_failure_is_reported_without_write():
@@ -531,6 +634,7 @@ def test_silver_registrant_columns_and_types(silver_sql):
         "observed_at",
         "ingest_run_id",
         "processed_ts",
+        "is_latest",
     ]:
         assert token in silver_sql, f"missing column: {token}"
 
@@ -541,6 +645,20 @@ def test_silver_registrant_columns_and_types(silver_sql):
     assert "PARTITION BY cik, payload_sha256" in window
     # 404 misses (payload IS NULL) never reach silver.
     assert "WHERE payload IS NOT NULL" in window
+
+
+def test_silver_registrant_marks_the_latest_payload_per_cik(silver_sql):
+    """Many rows per CIK by design; ``is_latest`` marks the newest payload.
+
+    The window is asserted exactly: mutation (dropping the window, partitioning
+    by the payload key instead of cik10, or using ASC) fails here.
+    """
+    window = " ".join(silver_sql.split())
+    assert (
+        "ROW_NUMBER() OVER ( PARTITION BY p.cik10 "
+        "ORDER BY p.observed_at DESC, p.payload_sha256 DESC ) = 1 AS is_latest"
+        in window
+    )
 
 
 def test_silver_tables_carry_the_sec_edgar_data_source(silver_sql):
@@ -597,12 +715,51 @@ def test_silver_former_names_is_exploded_and_inclusive(silver_sql):
     assert "former_name" in window
     assert "from_date" in window
     assert "to_date" in window
-    assert "CAST(fn.`from` AS DATE)" in window
-    assert "CAST(fn.`to` AS DATE)" in window
+    # The SEC publishes formerNames[].from/.to as ISO-8601 midnight-UTC
+    # timestamps ("2001-04-02T00:00:00.000Z"); the calendar date is taken
+    # explicitly instead of relying on a raw string -> date cast.
+    assert "to_date(substring(fn.`from`, 1, 10))" in window
+    assert "to_date(substring(fn.`to`, 1, 10))" in window
     # Inclusive as published: no +/- 1 day adjustment anywhere.
     assert "DATE_SUB" not in window.upper()
     assert "DATE_ADD" not in window.upper()
     assert "- 1 DAY" not in window.upper()
+
+
+def test_silver_former_names_key_includes_from_date(silver_sql):
+    """A reused name needs from_date in the key or two periods collapse."""
+    window = " ".join(silver_sql.split())
+    assert (
+        "PARTITION BY e.cik, e.payload_sha256, e.former_name, e.from_date"
+        in window
+    )
+
+
+def test_same_former_name_in_two_periods_is_two_rows(silver_sql):
+    """The recorded payload publishes 'Atlas Re Corp.' in two periods.
+
+    Both rows must survive: the dedupe key read from the SQL keeps from_date,
+    and the parser emits two distinct keys for the payload.
+    """
+    window = " ".join(silver_sql.split())
+    partition = re.search(
+        r"PARTITION BY e\.cik, e\.payload_sha256, e\.former_name, e\.from_date",
+        window,
+    )
+    assert partition, "former-name dedupe must key on (cik, payload_sha256, former_name, from_date)"
+
+    payload = json.loads(
+        (FIXTURES / "same_former_name_two_periods.json").read_text(encoding="utf-8")
+    )
+    names = parse_registrant(payload, NOW).former_names
+    atlas_periods = [
+        (fn.name, fn.from_date) for fn in names if fn.name == "Atlas Re Corp."
+    ]
+    assert len(atlas_periods) == 2
+    assert len(set(atlas_periods)) == 2, "both periods must be distinct rows"
+    # Proof the from_date component is what keeps them apart: without it the
+    # two periods collapse into a single key and one row would be dropped.
+    assert len({name for name, _from in atlas_periods}) == 1
 
 
 def test_silver_step_is_registered_in_runner():
@@ -611,6 +768,96 @@ def test_silver_step_is_registered_in_runner():
         '("silver_sec_registrant", "silver/09_silver_sec_registrant.sql", "sql")'
         in runner
     )
+
+
+# ── run_silver_gold: missing bronze source must SKIP, not abort ──────────────
+
+_SILVER_STEPS_WITHOUT_KG0 = [
+    "silver_ohlcv",
+    "silver_ohlcv_quarantine_batch",
+    "silver_options_quotes",
+    "silver_options_trades",
+    "silver_sec_sections",
+    "silver_sec_entities",
+    "silver_cot_positions",
+    "silver_ohlcv_day_adjusted",
+    "data_quality_breaks",
+]
+
+
+def _drive_runner_silver(monkeypatch, *, bronze_exists) -> list[str]:
+    """Run ``main(--only silver)`` with a fake Spark and a recording executor.
+
+    ``bronze_exists`` is True/False for a working catalog check, or None to make
+    the check itself raise (permissions-style failure).  Every executed step is
+    returned in order; no real SQL is ever run.
+    """
+    import pipelines.run_silver_gold as runner
+
+    executed: list[str] = []
+
+    class _Catalog:
+        def tableExists(self, fqn: str) -> bool:
+            assert fqn == f"{runner.FQN}.bronze_sec_submissions", fqn
+            if bronze_exists is None:
+                raise RuntimeError("PERMISSION_DENIED")
+            return bronze_exists
+
+    class _FakeSpark:
+        def __init__(self):
+            self.catalog = _Catalog()
+
+        def sql(self, statement: str):  # pragma: no cover - must not be reached
+            raise AssertionError(f"unexpected SQL in the step loop: {statement}")
+
+    spark = _FakeSpark()
+    monkeypatch.setattr(runner, "get_spark", lambda: spark)
+    monkeypatch.setattr(runner, "register_universe", lambda s: ["AAA"])
+    monkeypatch.setattr(
+        runner, "run_step", lambda s, name, path, kind, syms: executed.append(name)
+    )
+    monkeypatch.setattr(runner, "count", lambda s, t: 0)
+    monkeypatch.setattr(sys, "argv", ["run_silver_gold.py", "--only", "silver"])
+
+    runner.main()
+    return executed
+
+
+def test_runner_skips_kg0_step_when_bronze_table_is_absent(monkeypatch, capsys):
+    """BLOCKING regression (Opus M-1 / Sol P1): a shared refresh must not abort.
+
+    Mutation: removing the existence check from the step loop executes the KG-0
+    step here and the exact ``executed`` list assertion fails.
+    """
+    executed = _drive_runner_silver(monkeypatch, bronze_exists=False)
+    out = capsys.readouterr().out
+
+    assert executed == _SILVER_STEPS_WITHOUT_KG0
+    assert "silver_sec_registrant" not in executed
+    assert "SKIP silver_sec_registrant" in out
+    assert "bronze_sec_submissions" in out
+
+
+def test_runner_runs_kg0_step_when_bronze_table_exists(monkeypatch, capsys):
+    """Once the owner has run the live ingest, the step runs in its slot."""
+    executed = _drive_runner_silver(monkeypatch, bronze_exists=True)
+    out = capsys.readouterr().out
+
+    index = executed.index("silver_sec_registrant")
+    assert executed[index - 1] == "silver_sec_entities"
+    assert executed[index + 1] == "silver_cot_positions"
+    assert executed[index + 2] == "silver_ohlcv_day_adjusted"
+    assert "SKIP silver_sec_registrant" not in out
+
+
+def test_runner_attempts_kg0_step_when_the_existence_check_fails(monkeypatch, capsys):
+    """A broken check must attempt the step, never silently skip real work."""
+    executed = _drive_runner_silver(monkeypatch, bronze_exists=None)
+    out = capsys.readouterr().out
+
+    assert "silver_sec_registrant" in executed
+    assert "WARNING: cannot check" in out
+    assert "SKIP silver_sec_registrant" not in out
 
 
 # ── Job definition ───────────────────────────────────────────────────────────
@@ -632,3 +879,24 @@ def test_job_is_manual_and_single_concurrency():
     assert "--catalog" in params and "--schema" in params
     # The job stays dry-run; a live run passes --live explicitly.
     assert "--live" not in params
+
+
+def test_job_comment_documents_the_full_python_params_live_invocation():
+    """``--python-params`` replaces the task parameters, so the owner must repeat
+    the whole list.  A comment that shows only ``--live`` would lose --catalog,
+    --schema and the User-Agent secret scope/key on a live run."""
+    text = JOBS_PATH.read_text(encoding="utf-8")
+    marker = "# KG-0 registrant identity."
+    assert marker in text
+    comment = text[text.index(marker):text.index("sec_submissions_ingest:")]
+
+    assert "--python-params" in comment
+    assert "REPLACES" in comment
+    for flag in (
+        "--catalog",
+        "--schema",
+        "--user-agent-secret-scope",
+        "--user-agent-secret-key",
+        "--live",
+    ):
+        assert flag in comment, f"live-run comment must show {flag}"

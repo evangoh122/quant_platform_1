@@ -117,9 +117,14 @@ resources:
               - "pyyaml>=6.0"
 
     # KG-0 registrant identity.  No schedule: the job is triggered explicitly by
-    # the owner.  It stays in --dry-run unless the run supplies --live (e.g.
-    # `databricks jobs run-now ... --python-params '["--live"]'`), so a trigger
-    # cannot write shared tables by accident.
+    # the owner.  It stays in --dry-run unless the run supplies --live, so a
+    # trigger cannot write shared tables by accident.
+    # `--python-params` REPLACES the task parameters listed below, so a live run
+    # must repeat the full list, not just --live:
+    #   databricks jobs run-now <job-id> --python-params \
+    #     '["--catalog","<catalog>","--schema","<schema>",\
+    #       "--user-agent-secret-scope","evangoh_capstone",\
+    #       "--user-agent-secret-key","sec_edgar_user_agent","--live"]'
     sec_submissions_ingest:
       name: quant-platform-sec-submissions-ingest-${bundle.target}
       max_concurrent_runs: 1
