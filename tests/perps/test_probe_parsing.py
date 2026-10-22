@@ -6,6 +6,7 @@ exercised through injected fake clients and recorded fixtures.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from urllib import request as urlrequest
 
@@ -264,6 +265,37 @@ def test_rate_limiter_caps_at_two_requests_per_second():
     assert limiter.min_interval == pytest.approx(0.5)
     with pytest.raises(probe.ProbeError, match="<= 2.0"):
         probe.RateLimiter(3.0)
+
+
+def test_retry_backoff_has_injected_jitter():
+    rng = random.Random(7)
+    client = probe.HttpClient(
+        backoff_seconds=1.0, jitter_fraction=0.5, rng=rng, max_rps=2.0
+    )
+    delays = [client._delay(attempt) for attempt in range(6)]
+    # Exact schedule: exponential base times (1 + 0.5 * injected draw), with the
+    # draws taken in attempt order, so random.Random(7) pins every wait.
+    assert delays == pytest.approx(
+        [
+            1.1619163824165812,
+            2.150849173924502,
+            5.301868946079708,
+            8.289745146670171,
+            20.287056034453514,
+            37.85102267060137,
+        ]
+    )
+    for attempt, delay in enumerate(delays):
+        base = 2 ** attempt
+        assert base < delay <= base * 1.5
+    # A zero jitter fraction keeps the deterministic exponential schedule.
+    fixed = probe.HttpClient(
+        backoff_seconds=1.0,
+        jitter_fraction=0.0,
+        rng=random.Random(7),
+        max_rps=2.0,
+    )
+    assert [fixed._delay(attempt) for attempt in range(4)] == [1.0, 2.0, 4.0, 8.0]
 
 
 class _FakeClient:
