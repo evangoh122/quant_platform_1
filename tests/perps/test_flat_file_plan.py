@@ -178,6 +178,7 @@ def test_late_fill_corrections_are_stamped_when_their_contents_become_observable
             "equals bar close for a first bar",
             "first bar's information_available_ts = bar_end_ts",
             "first bar carries information_available_ts = bar_end_ts",
+            "1h bar is available at its bar_end_ts",
         ):
             assert stale not in normalised, (name, stale)
         # A first (backfilled) bar is never usable before its source archive or
@@ -195,3 +196,11 @@ def test_flat_file_reader_is_design_only_in_p0():
         "scripts/perps/hl_flat_files.py does not exist in P0: the P1 flat-file "
         "reader is design-only here (docs/data/PERPS_WEEKEND_PLAN.md §4.4)"
     )
+
+
+def test_architecture_diagram_uses_the_first_bar_availability_rule():
+    """The perps architecture diagram must not stamp Silver bars at bar_end alone
+    (Codex Sol on PR #80): a backfilled bar is not usable before its source archive."""
+    html = (ROOT / "docs" / "data" / "perps_architecture.html").read_text(encoding="utf-8")
+    assert "info_available = bar_end_ts<" not in html
+    assert "info_available = max(bar_end, source avail.)" in html

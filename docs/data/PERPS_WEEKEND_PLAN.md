@@ -554,8 +554,9 @@ family (§6.2), never a post-hoc exclusion.
 
 ### 3.1 Point-in-time convention
 
-Perp bars are 24/7 UTC. A 1h bar is available at its `bar_end_ts`, so a feature
-at cutoff `T` may use only bars with `bar_end_ts <= T`; a first bar's
+Perp bars are 24/7 UTC. A 1h bar is never available before its `bar_end_ts`, so a
+feature at cutoff `T` may use only bars with `information_available_ts <= T` (which
+implies `bar_end_ts <= T`); a first bar's
 `information_available_ts = max(bar_end_ts, availability of the archive object or
 source fills it was built from)`, so a backfilled bar is never usable before its
 contents were observable. A late-fill correction is
