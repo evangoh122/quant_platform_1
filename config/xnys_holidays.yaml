@@ -1,0 +1,503 @@
+# config/xnys_holidays.yaml — static NYSE calendar, 2000-2035.
+#
+# GENERATED FILE — do not edit by hand. Regenerate with:
+#   python -m config.market_calendar --write
+# and verify with:
+#   python -m config.market_calendar --check
+#
+# Full closures are rule-derived from NYSE Rule 7.2 and the NYSE
+# trading-hours calendar (https://www.nyse.com/markets/hours-calendars):
+#   new_years_day: January 1; Sunday to Monday, Saturday not observed [NYSE Rule 7.2]
+#   martin_luther_king_day: third Monday in January [NYSE Rule 7.2]
+#   washingtons_birthday: third Monday in February [NYSE Rule 7.2]
+#   good_friday: Friday before Easter Sunday [NYSE Rule 7.2]
+#   memorial_day: last Monday in May [NYSE Rule 7.2]
+#   juneteenth: June 19 from 2022; Saturday to Friday, Sunday to Monday [NYSE Rule 7.2 (2022 amendment)]
+#   independence_day: July 4; Saturday to Friday, Sunday to Monday [NYSE Rule 7.2]
+#   labor_day: first Monday in September [NYSE Rule 7.2]
+#   thanksgiving_day: fourth Thursday in November [NYSE Rule 7.2]
+#   christmas_day: December 25; Saturday to Friday, Sunday to Monday [NYSE Rule 7.2]
+#   day_after_thanksgiving: early close 13:00 the Friday after Thanksgiving [NYSE Rule 7.2; NYSE trading hours]
+#   independence_day_eve: early close 13:00 on July 3 when it is a trading day (from 2013; before 2013 a Thursday July 4 moved the early close to Friday July 5) [NYSE trading hours]
+#   christmas_eve: early close 13:00 on December 24 when it is a trading day (2013+; pre-2013 entries are unverified best-effort) [NYSE trading hours]
+#
+# Ad-hoc closures (attacks, weather, national days of mourning) are
+# listed under special_closures with their announcement citation and
+# are NOT rule-derived.
+version: 1
+timezone: America/New_York
+coverage:
+  start: "2000-01-01"
+  end: "2035-12-31"
+regular_session:
+  open: "09:30"
+  close: "16:00"
+early_close:
+  close: "13:00"
+
+rules:
+  - id: new_years_day
+    description: "January 1; Sunday to Monday, Saturday not observed"
+    source: "NYSE Rule 7.2"
+  - id: martin_luther_king_day
+    description: "third Monday in January"
+    source: "NYSE Rule 7.2"
+  - id: washingtons_birthday
+    description: "third Monday in February"
+    source: "NYSE Rule 7.2"
+  - id: good_friday
+    description: "Friday before Easter Sunday"
+    source: "NYSE Rule 7.2"
+  - id: memorial_day
+    description: "last Monday in May"
+    source: "NYSE Rule 7.2"
+  - id: juneteenth
+    description: "June 19 from 2022; Saturday to Friday, Sunday to Monday"
+    source: "NYSE Rule 7.2 (2022 amendment)"
+  - id: independence_day
+    description: "July 4; Saturday to Friday, Sunday to Monday"
+    source: "NYSE Rule 7.2"
+  - id: labor_day
+    description: "first Monday in September"
+    source: "NYSE Rule 7.2"
+  - id: thanksgiving_day
+    description: "fourth Thursday in November"
+    source: "NYSE Rule 7.2"
+  - id: christmas_day
+    description: "December 25; Saturday to Friday, Sunday to Monday"
+    source: "NYSE Rule 7.2"
+  - id: day_after_thanksgiving
+    description: "early close 13:00 the Friday after Thanksgiving"
+    source: "NYSE Rule 7.2; NYSE trading hours"
+  - id: independence_day_eve
+    description: "early close 13:00 on July 3 when it is a trading day (from 2013; before 2013 a Thursday July 4 moved the early close to Friday July 5)"
+    source: "NYSE trading hours"
+  - id: christmas_eve
+    description: "early close 13:00 on December 24 when it is a trading day (2013+; pre-2013 entries are unverified best-effort)"
+    source: "NYSE trading hours"
+
+full_closures:
+  - {date: "2000-01-17", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2000-02-21", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2000-04-21", name: "Good Friday", rule: good_friday}
+  - {date: "2000-05-29", name: "Memorial Day", rule: memorial_day}
+  - {date: "2000-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2000-09-04", name: "Labor Day", rule: labor_day}
+  - {date: "2000-11-23", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2000-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2001-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2001-01-15", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2001-02-19", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2001-04-13", name: "Good Friday", rule: good_friday}
+  - {date: "2001-05-28", name: "Memorial Day", rule: memorial_day}
+  - {date: "2001-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2001-09-03", name: "Labor Day", rule: labor_day}
+  - {date: "2001-11-22", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2001-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2002-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2002-01-21", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2002-02-18", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2002-03-29", name: "Good Friday", rule: good_friday}
+  - {date: "2002-05-27", name: "Memorial Day", rule: memorial_day}
+  - {date: "2002-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2002-09-02", name: "Labor Day", rule: labor_day}
+  - {date: "2002-11-28", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2002-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2003-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2003-01-20", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2003-02-17", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2003-04-18", name: "Good Friday", rule: good_friday}
+  - {date: "2003-05-26", name: "Memorial Day", rule: memorial_day}
+  - {date: "2003-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2003-09-01", name: "Labor Day", rule: labor_day}
+  - {date: "2003-11-27", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2003-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2004-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2004-01-19", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2004-02-16", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2004-04-09", name: "Good Friday", rule: good_friday}
+  - {date: "2004-05-31", name: "Memorial Day", rule: memorial_day}
+  - {date: "2004-07-05", name: "Independence Day", rule: independence_day}
+  - {date: "2004-09-06", name: "Labor Day", rule: labor_day}
+  - {date: "2004-11-25", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2004-12-24", name: "Christmas Day", rule: christmas_day}
+  - {date: "2005-01-17", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2005-02-21", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2005-03-25", name: "Good Friday", rule: good_friday}
+  - {date: "2005-05-30", name: "Memorial Day", rule: memorial_day}
+  - {date: "2005-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2005-09-05", name: "Labor Day", rule: labor_day}
+  - {date: "2005-11-24", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2005-12-26", name: "Christmas Day", rule: christmas_day}
+  - {date: "2006-01-02", name: "New Year's Day", rule: new_years_day}
+  - {date: "2006-01-16", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2006-02-20", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2006-04-14", name: "Good Friday", rule: good_friday}
+  - {date: "2006-05-29", name: "Memorial Day", rule: memorial_day}
+  - {date: "2006-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2006-09-04", name: "Labor Day", rule: labor_day}
+  - {date: "2006-11-23", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2006-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2007-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2007-01-15", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2007-02-19", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2007-04-06", name: "Good Friday", rule: good_friday}
+  - {date: "2007-05-28", name: "Memorial Day", rule: memorial_day}
+  - {date: "2007-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2007-09-03", name: "Labor Day", rule: labor_day}
+  - {date: "2007-11-22", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2007-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2008-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2008-01-21", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2008-02-18", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2008-03-21", name: "Good Friday", rule: good_friday}
+  - {date: "2008-05-26", name: "Memorial Day", rule: memorial_day}
+  - {date: "2008-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2008-09-01", name: "Labor Day", rule: labor_day}
+  - {date: "2008-11-27", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2008-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2009-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2009-01-19", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2009-02-16", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2009-04-10", name: "Good Friday", rule: good_friday}
+  - {date: "2009-05-25", name: "Memorial Day", rule: memorial_day}
+  - {date: "2009-07-03", name: "Independence Day", rule: independence_day}
+  - {date: "2009-09-07", name: "Labor Day", rule: labor_day}
+  - {date: "2009-11-26", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2009-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2010-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2010-01-18", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2010-02-15", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2010-04-02", name: "Good Friday", rule: good_friday}
+  - {date: "2010-05-31", name: "Memorial Day", rule: memorial_day}
+  - {date: "2010-07-05", name: "Independence Day", rule: independence_day}
+  - {date: "2010-09-06", name: "Labor Day", rule: labor_day}
+  - {date: "2010-11-25", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2010-12-24", name: "Christmas Day", rule: christmas_day}
+  - {date: "2011-01-17", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2011-02-21", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2011-04-22", name: "Good Friday", rule: good_friday}
+  - {date: "2011-05-30", name: "Memorial Day", rule: memorial_day}
+  - {date: "2011-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2011-09-05", name: "Labor Day", rule: labor_day}
+  - {date: "2011-11-24", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2011-12-26", name: "Christmas Day", rule: christmas_day}
+  - {date: "2012-01-02", name: "New Year's Day", rule: new_years_day}
+  - {date: "2012-01-16", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2012-02-20", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2012-04-06", name: "Good Friday", rule: good_friday}
+  - {date: "2012-05-28", name: "Memorial Day", rule: memorial_day}
+  - {date: "2012-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2012-09-03", name: "Labor Day", rule: labor_day}
+  - {date: "2012-11-22", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2012-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2013-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2013-01-21", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2013-02-18", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2013-03-29", name: "Good Friday", rule: good_friday}
+  - {date: "2013-05-27", name: "Memorial Day", rule: memorial_day}
+  - {date: "2013-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2013-09-02", name: "Labor Day", rule: labor_day}
+  - {date: "2013-11-28", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2013-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2014-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2014-01-20", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2014-02-17", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2014-04-18", name: "Good Friday", rule: good_friday}
+  - {date: "2014-05-26", name: "Memorial Day", rule: memorial_day}
+  - {date: "2014-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2014-09-01", name: "Labor Day", rule: labor_day}
+  - {date: "2014-11-27", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2014-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2015-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2015-01-19", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2015-02-16", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2015-04-03", name: "Good Friday", rule: good_friday}
+  - {date: "2015-05-25", name: "Memorial Day", rule: memorial_day}
+  - {date: "2015-07-03", name: "Independence Day", rule: independence_day}
+  - {date: "2015-09-07", name: "Labor Day", rule: labor_day}
+  - {date: "2015-11-26", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2015-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2016-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2016-01-18", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2016-02-15", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2016-03-25", name: "Good Friday", rule: good_friday}
+  - {date: "2016-05-30", name: "Memorial Day", rule: memorial_day}
+  - {date: "2016-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2016-09-05", name: "Labor Day", rule: labor_day}
+  - {date: "2016-11-24", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2016-12-26", name: "Christmas Day", rule: christmas_day}
+  - {date: "2017-01-02", name: "New Year's Day", rule: new_years_day}
+  - {date: "2017-01-16", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2017-02-20", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2017-04-14", name: "Good Friday", rule: good_friday}
+  - {date: "2017-05-29", name: "Memorial Day", rule: memorial_day}
+  - {date: "2017-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2017-09-04", name: "Labor Day", rule: labor_day}
+  - {date: "2017-11-23", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2017-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2018-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2018-01-15", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2018-02-19", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2018-03-30", name: "Good Friday", rule: good_friday}
+  - {date: "2018-05-28", name: "Memorial Day", rule: memorial_day}
+  - {date: "2018-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2018-09-03", name: "Labor Day", rule: labor_day}
+  - {date: "2018-11-22", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2018-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2019-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2019-01-21", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2019-02-18", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2019-04-19", name: "Good Friday", rule: good_friday}
+  - {date: "2019-05-27", name: "Memorial Day", rule: memorial_day}
+  - {date: "2019-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2019-09-02", name: "Labor Day", rule: labor_day}
+  - {date: "2019-11-28", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2019-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2020-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2020-01-20", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2020-02-17", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2020-04-10", name: "Good Friday", rule: good_friday}
+  - {date: "2020-05-25", name: "Memorial Day", rule: memorial_day}
+  - {date: "2020-07-03", name: "Independence Day", rule: independence_day}
+  - {date: "2020-09-07", name: "Labor Day", rule: labor_day}
+  - {date: "2020-11-26", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2020-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2021-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2021-01-18", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2021-02-15", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2021-04-02", name: "Good Friday", rule: good_friday}
+  - {date: "2021-05-31", name: "Memorial Day", rule: memorial_day}
+  - {date: "2021-07-05", name: "Independence Day", rule: independence_day}
+  - {date: "2021-09-06", name: "Labor Day", rule: labor_day}
+  - {date: "2021-11-25", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2021-12-24", name: "Christmas Day", rule: christmas_day}
+  - {date: "2022-01-17", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2022-02-21", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2022-04-15", name: "Good Friday", rule: good_friday}
+  - {date: "2022-05-30", name: "Memorial Day", rule: memorial_day}
+  - {date: "2022-06-20", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2022-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2022-09-05", name: "Labor Day", rule: labor_day}
+  - {date: "2022-11-24", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2022-12-26", name: "Christmas Day", rule: christmas_day}
+  - {date: "2023-01-02", name: "New Year's Day", rule: new_years_day}
+  - {date: "2023-01-16", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2023-02-20", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2023-04-07", name: "Good Friday", rule: good_friday}
+  - {date: "2023-05-29", name: "Memorial Day", rule: memorial_day}
+  - {date: "2023-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2023-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2023-09-04", name: "Labor Day", rule: labor_day}
+  - {date: "2023-11-23", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2023-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2024-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2024-01-15", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2024-02-19", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2024-03-29", name: "Good Friday", rule: good_friday}
+  - {date: "2024-05-27", name: "Memorial Day", rule: memorial_day}
+  - {date: "2024-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2024-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2024-09-02", name: "Labor Day", rule: labor_day}
+  - {date: "2024-11-28", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2024-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2025-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2025-01-20", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2025-02-17", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2025-04-18", name: "Good Friday", rule: good_friday}
+  - {date: "2025-05-26", name: "Memorial Day", rule: memorial_day}
+  - {date: "2025-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2025-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2025-09-01", name: "Labor Day", rule: labor_day}
+  - {date: "2025-11-27", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2025-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2026-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2026-01-19", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2026-02-16", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2026-04-03", name: "Good Friday", rule: good_friday}
+  - {date: "2026-05-25", name: "Memorial Day", rule: memorial_day}
+  - {date: "2026-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2026-07-03", name: "Independence Day", rule: independence_day}
+  - {date: "2026-09-07", name: "Labor Day", rule: labor_day}
+  - {date: "2026-11-26", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2026-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2027-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2027-01-18", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2027-02-15", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2027-03-26", name: "Good Friday", rule: good_friday}
+  - {date: "2027-05-31", name: "Memorial Day", rule: memorial_day}
+  - {date: "2027-06-18", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2027-07-05", name: "Independence Day", rule: independence_day}
+  - {date: "2027-09-06", name: "Labor Day", rule: labor_day}
+  - {date: "2027-11-25", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2027-12-24", name: "Christmas Day", rule: christmas_day}
+  - {date: "2028-01-17", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2028-02-21", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2028-04-14", name: "Good Friday", rule: good_friday}
+  - {date: "2028-05-29", name: "Memorial Day", rule: memorial_day}
+  - {date: "2028-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2028-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2028-09-04", name: "Labor Day", rule: labor_day}
+  - {date: "2028-11-23", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2028-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2029-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2029-01-15", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2029-02-19", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2029-03-30", name: "Good Friday", rule: good_friday}
+  - {date: "2029-05-28", name: "Memorial Day", rule: memorial_day}
+  - {date: "2029-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2029-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2029-09-03", name: "Labor Day", rule: labor_day}
+  - {date: "2029-11-22", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2029-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2030-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2030-01-21", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2030-02-18", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2030-04-19", name: "Good Friday", rule: good_friday}
+  - {date: "2030-05-27", name: "Memorial Day", rule: memorial_day}
+  - {date: "2030-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2030-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2030-09-02", name: "Labor Day", rule: labor_day}
+  - {date: "2030-11-28", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2030-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2031-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2031-01-20", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2031-02-17", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2031-04-11", name: "Good Friday", rule: good_friday}
+  - {date: "2031-05-26", name: "Memorial Day", rule: memorial_day}
+  - {date: "2031-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2031-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2031-09-01", name: "Labor Day", rule: labor_day}
+  - {date: "2031-11-27", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2031-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2032-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2032-01-19", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2032-02-16", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2032-03-26", name: "Good Friday", rule: good_friday}
+  - {date: "2032-05-31", name: "Memorial Day", rule: memorial_day}
+  - {date: "2032-06-18", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2032-07-05", name: "Independence Day", rule: independence_day}
+  - {date: "2032-09-06", name: "Labor Day", rule: labor_day}
+  - {date: "2032-11-25", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2032-12-24", name: "Christmas Day", rule: christmas_day}
+  - {date: "2033-01-17", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2033-02-21", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2033-04-15", name: "Good Friday", rule: good_friday}
+  - {date: "2033-05-30", name: "Memorial Day", rule: memorial_day}
+  - {date: "2033-06-20", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2033-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2033-09-05", name: "Labor Day", rule: labor_day}
+  - {date: "2033-11-24", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2033-12-26", name: "Christmas Day", rule: christmas_day}
+  - {date: "2034-01-02", name: "New Year's Day", rule: new_years_day}
+  - {date: "2034-01-16", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2034-02-20", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2034-04-07", name: "Good Friday", rule: good_friday}
+  - {date: "2034-05-29", name: "Memorial Day", rule: memorial_day}
+  - {date: "2034-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2034-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2034-09-04", name: "Labor Day", rule: labor_day}
+  - {date: "2034-11-23", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2034-12-25", name: "Christmas Day", rule: christmas_day}
+  - {date: "2035-01-01", name: "New Year's Day", rule: new_years_day}
+  - {date: "2035-01-15", name: "Martin Luther King, Jr. Day", rule: martin_luther_king_day}
+  - {date: "2035-02-19", name: "Washington's Birthday", rule: washingtons_birthday}
+  - {date: "2035-03-23", name: "Good Friday", rule: good_friday}
+  - {date: "2035-05-28", name: "Memorial Day", rule: memorial_day}
+  - {date: "2035-06-19", name: "Juneteenth National Independence Day", rule: juneteenth}
+  - {date: "2035-07-04", name: "Independence Day", rule: independence_day}
+  - {date: "2035-09-03", name: "Labor Day", rule: labor_day}
+  - {date: "2035-11-22", name: "Thanksgiving Day", rule: thanksgiving_day}
+  - {date: "2035-12-25", name: "Christmas Day", rule: christmas_day}
+
+early_closes:
+  - {date: "2000-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2000-11-24", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2001-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2001-11-23", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2001-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2002-07-05", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2002-11-29", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2002-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2003-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2003-11-28", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2003-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2004-11-26", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2005-11-25", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2006-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2006-11-24", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2007-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2007-11-23", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2007-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2008-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2008-11-28", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2008-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2009-11-27", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2009-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2010-11-26", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2011-11-25", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2012-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2012-11-23", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2012-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2013-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2013-11-29", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2013-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2014-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2014-11-28", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2014-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2015-11-27", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2015-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2016-11-25", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2017-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2017-11-24", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2018-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2018-11-23", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2018-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2019-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2019-11-29", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2019-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2020-11-27", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2020-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2021-11-26", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2022-11-25", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2023-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2023-11-24", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2024-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2024-11-29", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2024-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2025-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2025-11-28", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2025-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2026-11-27", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2026-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2027-11-26", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2028-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2028-11-24", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2029-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2029-11-23", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2029-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2030-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2030-11-29", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2030-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2031-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2031-11-28", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2031-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+  - {date: "2032-11-26", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2033-11-25", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2034-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2034-11-24", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2035-07-03", name: "Independence Day eve", rule: independence_day_eve, close: "13:00"}
+  - {date: "2035-11-23", name: "Day after Thanksgiving", rule: day_after_thanksgiving, close: "13:00"}
+  - {date: "2035-12-24", name: "Christmas Eve", rule: christmas_eve, close: "13:00"}
+
+special_closures:
+  - {date: "2001-09-11", name: "September 11 attacks (day 1)", source: "NYSE closed 2001-09-11 through 2001-09-14; reopened 2001-09-17"}
+  - {date: "2001-09-12", name: "September 11 attacks (day 2)", source: "NYSE closed 2001-09-11 through 2001-09-14; reopened 2001-09-17"}
+  - {date: "2001-09-13", name: "September 11 attacks (day 3)", source: "NYSE closed 2001-09-11 through 2001-09-14; reopened 2001-09-17"}
+  - {date: "2001-09-14", name: "September 11 attacks (day 4)", source: "NYSE closed 2001-09-11 through 2001-09-14; reopened 2001-09-17"}
+  - {date: "2004-06-11", name: "National day of mourning for Ronald Reagan", source: "NYSE announcement, 2004-06-09"}
+  - {date: "2007-01-02", name: "National day of mourning for Gerald Ford", source: "NYSE announcement, 2006-12-29"}
+  - {date: "2012-10-29", name: "Hurricane Sandy (day 1)", source: "NYSE closed 2012-10-29 and 2012-10-30"}
+  - {date: "2012-10-30", name: "Hurricane Sandy (day 2)", source: "NYSE closed 2012-10-29 and 2012-10-30"}
+  - {date: "2018-12-05", name: "National day of mourning for George H. W. Bush", source: "NYSE announcement, 2018-12-02"}
+  - {date: "2025-01-09", name: "National day of mourning for Jimmy Carter", source: "NYSE announcement, 2024-12-30"}

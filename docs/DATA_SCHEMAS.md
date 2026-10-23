@@ -616,6 +616,10 @@ missing or unknown value. `config/universe.yaml` and `config/tickers.yaml` preda
   split_ratio is new-shares / old-shares (20.0 for AMZN 20:1, 0.1 for 1:10 reverse).
   information_available_ts is ex-date 09:30 America/New_York converted to naive UTC.
   A same-key correction with different split_ratio is a conflict and is not silently applied.
+  NO dividend amounts are stored: the table has no dividend amount/currency column, so a
+  consumer that needs a total-return adjustment is split-adjusted only until dividend
+  ingestion is added (P1 prerequisite for the perps open-gap label; see
+  docs/data/PERPS_WEEKEND_PLAN.md §Target).
 
   Source: Massive REST API only (source='massive').  Key via Databricks secret scope
           evangoh_capstone/massive_s3_secret_key or env var MASSIVE_API_KEY.
@@ -817,3 +821,121 @@ holding exactly one code from `config/data_sources.py`:
 `validate_data_source` rejects an empty, unknown or non-string code, and a row
 that mixes providers is two rows. This PR adds contracts only: no table, view or
 DDL is created yet.
+
+### Perp tables (planned P2 — not deployed; flat-file backfill is P1)
+
+No perps table exists on this branch yet; the design is in docs/data/PERPS_WEEKEND_PLAN.md §4.
+History is planned from flat files (owner decision 2026-10-22), not from an API forward-capture
+job: Hyperliquid requester-pays S3 fills (`node_fills_by_block`, older `node_fills`/`node_trades`)
+aggregated into our own 1m/15m/1h trade-price bars, `asset_ctxs/<date>.csv.lz4` for
+funding/OI/mark/oracle (field list TO VERIFY), `misc_events_by_block` funding events, optional L2
+snapshots, and Binance Vision archives for the controls. The design for
+`scripts/perps/hl_flat_files.py` (streaming lz4, dry-run cost print, `--live` required) is
+docs/data/PERPS_WEEKEND_PLAN.md §4.4; no such code exists in P0.
+Every perps table, when it lands, carries:
+
+  instrument_type                    string NOT NULL   -- always 'perpetual_future' (config/perp_universe.INSTRUMENT_TYPE)
+  underlying_type                    string NOT NULL   -- equity | etf | fund | preferred | commodity | crypto
+  underlying_symbol                  string NOT NULL   -- tracked ticker/commodity (e.g. NVDA, gold, BTC)
+  venue                              string NOT NULL   -- hyperliquid | binance_usdm
+  contract_symbol                    string NOT NULL   -- venue contract symbol (same value as symbol)
+  data_source                        string NOT NULL   -- one provider code from config/data_sources.py
+
+  Meaning: these rows are perpetual futures (derivatives), so instrument_type is
+    'perpetual_future' on every row and is never inherited from the underlying;
+    underlying_symbol records what the perp tracks (a listed equity/ETF/fund/
+    preferred ticker, a commodity, or BTC/ETH) and contract_symbol is the venue
+    contract, not the underlying's ticker.  A perp is never merged into the
+    Security it tracks.  Required columns and rule: RULE-perps-are-derivatives
+    (owner 2026-10-22); schema detail in docs/data/PERPS_WEEKEND_PLAN.md §4.
+
+  Meaning (data_source): the upstream system that produced the row; one code per row, never null.
+    hyperliquid  -> bronze_perp_fills, bronze_perp_candles, bronze_perp_asset_ctxs,
+                    bronze_perp_funding, bronze_perp_oi_snapshots,
+                    silver_perp_bars_1h, silver_perp_funding
+    binance_um   -> bronze_binance_um_klines, bronze_binance_um_funding, bronze_binance_um_metrics
+    derived      -> gold_weekend_perp_features (perp inputs hyperliquid; equity/options inputs massive;
+                    record the input sources in lineage)
+  Vocabulary (config/data_sources.py): massive, sec_edgar, sec_companyfacts, hyperliquid,
+    binance_um, config, derived.  The Unity Catalog column comment names the code and that path.
+
+  Flat-file provenance (every flat-file perps table): source string NOT NULL
+    ('flat_file_backfill' | 'api_capture' | 's3_backfill' | 'forward_snapshot', per table) and
+    archive_key (the object the row came from), so a bar or context row is reproducible from the
+    archive.  Bars are built from fills by TRADE time in UTC (bar_start = floor(trade_ts/interval),
+    bar_end = the interval boundary), deduplicated on the trade id (symbol, tid) — one row per
+    trade, because a node fill record can be emitted once per counterparty; fill_hash only when the
+    archive has no trade id — never interpolated.  A first
+    bar carries information_available_ts = max(bar_end_ts, availability of the archive
+    object or source fills it was built from) — a backfilled bar is never usable before its
+    contents were observable.  A late fill re-emits the affected bar as an
+    append-only correction, and that correction's information_available_ts is when the correcting
+    contents became observable — the latest arrival/ingest timestamp of the late fills, or of
+    the archive object that delivered them — not bar_end: bar_end stays the interval
+    boundary, so a point-in-time join cannot use the correction before it existed.
+  bronze_perp_fills:  per-fill trade prints (trade_ts, fill_id, fill_hash, price, size, notional,
+    side, block_time, source, archive_key, payload_hash) + the derivative column set + data_source.
+  bronze_perp_asset_ctxs: per-(date, coin) context rows (observed_date, funding_rate, open_interest,
+    mark_px, oracle_px, premium, source, archive_key, payload_hash) + the derivative column set +
+    data_source='hyperliquid'.  Field list TO VERIFY before population; the loader fails closed on
+    a missing expected field.
+  bronze_perp_candles: fill-built 1m/15m/1h (+ 1d history checks) with source/archive_key; 1m is no
+    longer limited by the API's ~3.5-day retention, so no forward capture is required.
+  bronze_perp_oi_snapshots: source='s3_backfill' (from verified asset_ctxs) or
+    'forward_snapshot' (P4 poller); starts empty, and oi_* stays nullable until populated.
+  bronze_perp_funding: source='flat_file_backfill' (misc_events_by_block) or 'api_capture'
+    (only if approved), with archive_key for the object the row came from.
+
+  Scope applies to the Binance control tables too: bronze_binance_um_klines/funding/metrics
+    carry venue=binance_usdm, instrument_type=perpetual_future, underlying_type=crypto,
+    underlying_symbol=BTC/ETH and contract_symbol=symbol, so no control row can be read as spot.
+    Binance Vision monthly archives are uploaded approximately monthly; this repository carries
+    no sourced Binance statement about update timeliness or completeness, so a missing month is
+    a recorded gap, not an empty month.
+
+  Weekend label (gold_weekend_perp_features, docs/data/PERPS_WEEKEND_PLAN.md §Target/§4.3).
+    ONE executable formula, identical to the plan and config/perp_universe.yaml:
+      label_split_factor = Π split_ratio for splits with ex_date = session_date   (new shares / old shares; 1.0 when none)
+      open_gap = session_open * label_split_factor / prev_session_close - 1
+    session_open is the raw CONSOLIDATED open of the first regular session after the break
+    (silver_ohlcv_day_adjusted.open, from the Massive daily aggregate) — the first trade on any
+    US venue, NOT the primary-listing (NYSE/Nasdaq) opening auction print; the two can differ.
+    prev_session_close is the raw consolidated close of the prior session (Thursday's on a
+    Friday-holiday weekend). A 2:1 split (split_ratio 2.0) with prev close 100.00 and open 50.00
+    gives 50.00 * 2.0 / 100.00 - 1 = 0.00%.
+    The label is SPLIT-ADJUSTED ONLY: bronze_corporate_actions has no dividend amounts, so
+    dividend ingestion is a P1 prerequisite; the dividend_unadjusted flag is therefore not
+    populated until that ingestion lands (no all-false flag is shipped). A split effective at
+    the open flags split_weekend and is excluded from the primary evaluation.
+    Prediction cutoffs are rows: sun_1800 (PRIMARY confirmatory; H1 is one-sided), sun_2000
+    (secondary, confounded by the ES/NQ reopen at 18:00 ET), mon_0400, mon_0900
+    (secondary; mon_0900 may be claimed only with ES/NQ futures + overnight ATS + pre-market in
+    its baseline).
+
+    Primary evaluation statistic (docs/data/PERPS_WEEKEND_PLAN.md §6.2). The Clark-West-adjusted
+    loss differential (with the squared forecast difference added back) decides SIGNIFICANCE ONLY.
+    The effect size reported next to it is the UNADJUSTED out-of-time R² gain
+    mean(MSE_base - MSE_full) / mean(MSE_base) over the 18 evaluation weekends, with weekend means
+    weighted equally; the Clark-West ratio is never reported as the effect size. The
+    power simulation (§6.2.1) is a draft, finalised in P6; it estimates its DGP only
+    on the 12 pinned training weekends (2026-03-27..2026-06-12) and treats population
+    ΔR² in {0.005, 0.01, 0.02} as the plausible set. That DGP uses the FULL-model OLS
+    residuals (open_gap on the baseline AND the five perp features), so the residual
+    is orthogonal to both designs, s = u'E[Zε] = 0 and κ = 0 is the true
+    no-incremental-predictability null (population ΔR² = 0). A target population
+    ΔR² maps to the scale κ = sqrt(ΔR² * σ²_ε / ((1 - ΔR²) * q)) with q = u'Σ_{Z|X}u taken from
+    the perp features residualised on the baseline design (weekend-weighted); grid values are the
+    population unadjusted out-of-time gain of the refit full model over the refit baseline, and
+    the simulation reports realised gains beside each target. Each simulated evaluation slot uses
+    that evaluation weekend's actual instrument set (availability only); rows are drawn per
+    instrument from training weekends that contain it and instruments absent from all training
+    weekends are excluded and counted.
+
+  Buildable panel (docs/data/PERPS_WEEKEND_PLAN.md §2.5, §6.1):
+    1h API-only lower bound 1,538 company-weekends / 30 weekends (measured 2026-10-21);
+    upper bound 1,871 / 49 weekends only if fills cover HIP-3 from listing (UNVERIFIED).
+
+  Unity Catalog metadata (every perps table):
+    TABLE COMMENT starts "Perpetual futures (derivatives), not equities:"
+    table tags: instrument_type=perpetual_future, asset_class=derivative
+    price column comments: "perp mark/trade price, not the stock price"

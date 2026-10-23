@@ -1,0 +1,2870 @@
+{
+  "version": 1,
+  "generated_at": "2026-10-21T20:00:52.381708+00:00",
+  "mode": "live",
+  "probe": {
+    "start": "2025-01-01T00:00:00+00:00",
+    "coarse_days": 60,
+    "max_steps": 60,
+    "rate_limit_rps": 2.0
+  },
+  "hyperliquid": {
+    "endpoint": "https://api.hyperliquid.xyz/info",
+    "instruments": [
+      {
+        "ticker": "SNDK",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:SNDK",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1768176000000,
+            "first_iso": "2026-01-12T00:00:00+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 44,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1768230000059,
+            "first_iso": "2026-01-12T15:00:00.059000+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "NVDA",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:NVDA",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1762905600000,
+            "first_iso": "2025-11-12T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 45,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1762981200057,
+            "first_iso": "2025-11-12T21:00:00.057000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "GOOGL",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:GOOGL",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1763424000000,
+            "first_iso": "2025-11-18T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 39,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1763485200013,
+            "first_iso": "2025-11-18T17:00:00.013000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "MU",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:MU",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1766102400000,
+            "first_iso": "2025-12-19T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 8,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1766163600109,
+            "first_iso": "2025-12-19T17:00:00.109000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 175,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "META",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:META",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1763596800000,
+            "first_iso": "2025-11-20T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 37,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1763650800022,
+            "first_iso": "2025-11-20T15:00:00.022000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "TSLA",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:TSLA",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1762992000000,
+            "first_iso": "2025-11-13T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 44,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1763046000014,
+            "first_iso": "2025-11-13T15:00:00.014000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "INTC",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:INTC",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1764720000000,
+            "first_iso": "2025-12-03T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 24,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1764774000020,
+            "first_iso": "2025-12-03T15:00:00.020000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "NBIS",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:NBIS",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1781013600000,
+            "first_iso": "2026-06-09T14:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 370,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1780963200000,
+            "first_iso": "2026-06-09T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 16,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1781013600014,
+            "first_iso": "2026-06-09T14:00:00.014000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 370,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "MRNA",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:MRNA",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1787144400000,
+            "first_iso": "2026-08-19T13:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 107,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1787097600000,
+            "first_iso": "2026-08-19T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 5,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1787148000018,
+            "first_iso": "2026-08-19T14:00:00.018000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 106,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "AMD",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:AMD",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1764806400000,
+            "first_iso": "2025-12-04T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 23,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1764860400047,
+            "first_iso": "2025-12-04T15:00:00.047000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CRCL",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:CRCL",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1765756800000,
+            "first_iso": "2025-12-15T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 12,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1765814400063,
+            "first_iso": "2025-12-15T16:00:00.063000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 272,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "MRVL",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:MRVL",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1777914000000,
+            "first_iso": "2026-05-04T17:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1231,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777852800000,
+            "first_iso": "2026-05-04T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 52,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1777914000041,
+            "first_iso": "2026-05-04T17:00:00.041000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CRWV",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:CRWV",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774605600000,
+            "first_iso": "2026-03-27T10:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 710,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1769472000000,
+            "first_iso": "2026-01-27T00:00:00+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 29,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1769526000074,
+            "first_iso": "2026-01-27T15:00:00.074000+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CBRS",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:CBRS",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1777597200000,
+            "first_iso": "2026-05-01T01:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1319,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777593600000,
+            "first_iso": "2026-05-01T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 55,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1777600800073,
+            "first_iso": "2026-05-01T02:00:00.073000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "AMZN",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:AMZN",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1763424000000,
+            "first_iso": "2025-11-18T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 39,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1763488800026,
+            "first_iso": "2025-11-18T18:00:00.026000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "AAPL",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:AAPL",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1763683200000,
+            "first_iso": "2025-11-21T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 36,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1763737200047,
+            "first_iso": "2025-11-21T15:00:00.047000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "MSFT",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:MSFT",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1763510400000,
+            "first_iso": "2025-11-19T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 38,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1763564400004,
+            "first_iso": "2025-11-19T15:00:00.004000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "MSTR",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:MSTR",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1764633600000,
+            "first_iso": "2025-12-02T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 25,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1764691200048,
+            "first_iso": "2025-12-02T16:00:00.048000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "RKLB",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:RKLB",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1777924800000,
+            "first_iso": "2026-05-04T20:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1228,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777852800000,
+            "first_iso": "2026-05-04T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 52,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1777928400052,
+            "first_iso": "2026-05-04T21:00:00.052000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "NFLX",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:NFLX",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1765152000000,
+            "first_iso": "2025-12-08T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 19,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1765206000011,
+            "first_iso": "2025-12-08T15:00:00.011000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 441,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "DELL",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:DELL",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1780336800000,
+            "first_iso": "2026-06-01T18:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 558,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1780272000000,
+            "first_iso": "2026-06-01T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 24,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1780340400027,
+            "first_iso": "2026-06-01T19:00:00.027000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "IREN",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:IREN",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1787061600000,
+            "first_iso": "2026-08-18T14:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 130,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1787011200000,
+            "first_iso": "2026-08-18T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 6,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1787065200028,
+            "first_iso": "2026-08-18T15:00:00.028000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 129,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "COIN",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:COIN",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1764028800000,
+            "first_iso": "2025-11-25T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 32,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1764093600054,
+            "first_iso": "2025-11-25T18:00:00.054000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "HOOD",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:HOOD",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1764115200000,
+            "first_iso": "2025-11-26T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 31,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1764169200012,
+            "first_iso": "2025-11-26T15:00:00.012000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "BABA",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:BABA",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774605600000,
+            "first_iso": "2026-03-27T10:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 710,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1768435200000,
+            "first_iso": "2026-01-15T00:00:00+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 41,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1768489200001,
+            "first_iso": "2026-01-15T15:00:00.001000+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "BE",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:BE",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1782144000000,
+            "first_iso": "2026-06-22T16:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 56,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1782086400000,
+            "first_iso": "2026-06-22T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 3,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1782147600020,
+            "first_iso": "2026-06-22T17:00:00.020000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 55,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "PLTR",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:PLTR",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1763078400000,
+            "first_iso": "2025-11-14T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 43,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1763136000014,
+            "first_iso": "2025-11-14T16:00:00.014000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "TSM",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:TSM",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774605600000,
+            "first_iso": "2026-03-27T10:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 710,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1770076800000,
+            "first_iso": "2026-02-03T00:00:00+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 22,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1770130800025,
+            "first_iso": "2026-02-03T15:00:00.025000+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "LITE",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:LITE",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1777903200000,
+            "first_iso": "2026-05-04T14:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1234,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777852800000,
+            "first_iso": "2026-05-04T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 52,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1777906800062,
+            "first_iso": "2026-05-04T15:00:00.062000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "AVGO",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:AVGO",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1780495200000,
+            "first_iso": "2026-06-03T14:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 514,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1780444800000,
+            "first_iso": "2026-06-03T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 22,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1780498800049,
+            "first_iso": "2026-06-03T15:00:00.049000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "ORCL",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:ORCL",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1764892800000,
+            "first_iso": "2025-12-05T00:00:00+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 22,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1764946800036,
+            "first_iso": "2025-12-05T15:00:00.036000+00:00",
+            "requests": 6,
+            "window_start_ms": 1761609600000,
+            "window_end_ms": 1766793599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "AAOI",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:AAOI",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1787068800000,
+            "first_iso": "2026-08-18T16:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 128,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1787011200000,
+            "first_iso": "2026-08-18T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 6,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1787072400026,
+            "first_iso": "2026-08-18T17:00:00.026000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 127,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "ARM",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:ARM",
+        "tier": "liquid",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1779379200000,
+            "first_iso": "2026-05-21T16:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 824,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1779321600000,
+            "first_iso": "2026-05-21T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 35,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1779379200025,
+            "first_iso": "2026-05-21T16:00:00.025000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "WDC",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:WDC",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1781024400000,
+            "first_iso": "2026-06-09T17:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 367,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1780963200000,
+            "first_iso": "2026-06-09T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 16,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1781024400048,
+            "first_iso": "2026-06-09T17:00:00.048000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 367,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CRWD",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:CRWD",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1787090400000,
+            "first_iso": "2026-08-18T22:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 122,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1787011200000,
+            "first_iso": "2026-08-18T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 6,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1787090400016,
+            "first_iso": "2026-08-18T22:00:00.016000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 122,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "BB",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:BB",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1779818400000,
+            "first_iso": "2026-05-26T18:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 702,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1779753600000,
+            "first_iso": "2026-05-26T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 30,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1779822000056,
+            "first_iso": "2026-05-26T19:00:00.056000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "GME",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:GME",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1777852800000,
+            "first_iso": "2026-05-04T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1248,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777852800000,
+            "first_iso": "2026-05-04T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 52,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1777856400063,
+            "first_iso": "2026-05-04T01:00:00.063000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "AMAT",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:AMAT",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1782741600000,
+            "first_iso": "2026-06-29T14:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 1330,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1782691200000,
+            "first_iso": "2026-06-29T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 56,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1782745200041,
+            "first_iso": "2026-06-29T15:00:00.041000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "ASML",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:ASML",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1780063200000,
+            "first_iso": "2026-05-29T14:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 634,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1780012800000,
+            "first_iso": "2026-05-29T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 27,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1780066800047,
+            "first_iso": "2026-05-29T15:00:00.047000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "BOT",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:BOT",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1782500400000,
+            "first_iso": "2026-06-26T19:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 1397,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1782432000000,
+            "first_iso": "2026-06-26T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 59,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1782504000001,
+            "first_iso": "2026-06-26T20:00:00.001000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "HIMS",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:HIMS",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774609200000,
+            "first_iso": "2026-03-27T11:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 709,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1774396800000,
+            "first_iso": "2026-03-25T00:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 32,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1774465200037,
+            "first_iso": "2026-03-25T19:00:00.037000+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "LLY",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:LLY",
+        "tier": "medium",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1774396800000,
+            "first_iso": "2026-03-25T00:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 32,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1774461600075,
+            "first_iso": "2026-03-25T18:00:00.075000+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "QCOM",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:QCOM",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1782140400000,
+            "first_iso": "2026-06-22T15:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 57,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1782086400000,
+            "first_iso": "2026-06-22T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 3,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1782144000016,
+            "first_iso": "2026-06-22T16:00:00.016000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 56,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CRDO",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:CRDO",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1784289600000,
+            "first_iso": "2026-07-17T12:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 900,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1784246400000,
+            "first_iso": "2026-07-17T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 38,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1784293200060,
+            "first_iso": "2026-07-17T13:00:00.060000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "NET",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:NET",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1787079600000,
+            "first_iso": "2026-08-18T19:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 125,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1787011200000,
+            "first_iso": "2026-08-18T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 6,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1787083200006,
+            "first_iso": "2026-08-18T20:00:00.006000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 124,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "SMCI",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:SMCI",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1786708800000,
+            "first_iso": "2026-08-14T12:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 228,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1786665600000,
+            "first_iso": "2026-08-14T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 10,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1786712400063,
+            "first_iso": "2026-08-14T13:00:00.063000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 227,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "NOK",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:NOK",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1781539200000,
+            "first_iso": "2026-06-15T16:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 224,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1781481600000,
+            "first_iso": "2026-06-15T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 10,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1781542800050,
+            "first_iso": "2026-06-15T17:00:00.050000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 223,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "STRC",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:STRC",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1782165600000,
+            "first_iso": "2026-06-22T22:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 50,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1782086400000,
+            "first_iso": "2026-06-22T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 3,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1782165600001,
+            "first_iso": "2026-06-22T22:00:00.001000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 50,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "BMNR",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:BMNR",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1788548400000,
+            "first_iso": "2026-09-04T19:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 1129,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1788480000000,
+            "first_iso": "2026-09-04T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 48,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1788552000122,
+            "first_iso": "2026-09-04T20:00:00.122000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "IBM",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:IBM",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1780322400000,
+            "first_iso": "2026-06-01T14:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 562,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1780272000000,
+            "first_iso": "2026-06-01T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 24,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1780326000039,
+            "first_iso": "2026-06-01T15:00:00.039000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "NOW",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:NOW",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1780585200000,
+            "first_iso": "2026-06-04T15:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 489,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1780531200000,
+            "first_iso": "2026-06-04T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 21,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1780585200006,
+            "first_iso": "2026-06-04T15:00:00.006000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 489,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "TTWO",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:TTWO",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1788436800000,
+            "first_iso": "2026-09-03T12:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 1161,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1788393600000,
+            "first_iso": "2026-09-03T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 49,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1788440400007,
+            "first_iso": "2026-09-03T13:00:00.007000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "SHAZ",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:SHAZ",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1783357200000,
+            "first_iso": "2026-07-06T17:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 1159,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1783296000000,
+            "first_iso": "2026-07-06T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 49,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1783360800024,
+            "first_iso": "2026-07-06T18:00:00.024000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "TWST",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:TWST",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1791313200000,
+            "first_iso": "2026-10-06T19:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 362,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1791244800000,
+            "first_iso": "2026-10-06T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 16,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1791316800056,
+            "first_iso": "2026-10-06T20:00:00.056000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 361,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "COHR",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:COHR",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1784289600000,
+            "first_iso": "2026-07-17T12:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 900,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1784246400000,
+            "first_iso": "2026-07-17T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 38,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1784293200060,
+            "first_iso": "2026-07-17T13:00:00.060000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "GLW",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:GLW",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1784289600000,
+            "first_iso": "2026-07-17T12:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 900,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1784246400000,
+            "first_iso": "2026-07-17T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 38,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1784293200060,
+            "first_iso": "2026-07-17T13:00:00.060000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "RIVN",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:RIVN",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1768348800000,
+            "first_iso": "2026-01-14T00:00:00+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 42,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1768402800001,
+            "first_iso": "2026-01-14T15:00:00.001000+00:00",
+            "requests": 7,
+            "window_start_ms": 1766793600000,
+            "window_end_ms": 1771977599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "EBAY",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:EBAY",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1777993200000,
+            "first_iso": "2026-05-05T15:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1209,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777939200000,
+            "first_iso": "2026-05-05T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 51,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1777996800028,
+            "first_iso": "2026-05-05T16:00:00.028000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "LRCX",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:LRCX",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1784552400000,
+            "first_iso": "2026-07-20T13:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 827,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1784505600000,
+            "first_iso": "2026-07-20T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 35,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1784556000049,
+            "first_iso": "2026-07-20T14:00:00.049000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "ZM",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:ZM",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1778011200000,
+            "first_iso": "2026-05-05T20:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1204,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777939200000,
+            "first_iso": "2026-05-05T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 51,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1778014800044,
+            "first_iso": "2026-05-05T21:00:00.044000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "BX",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:BX",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1777924800000,
+            "first_iso": "2026-05-04T20:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 1228,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1777852800000,
+            "first_iso": "2026-05-04T00:00:00+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 52,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1777928400052,
+            "first_iso": "2026-05-04T21:00:00.052000+00:00",
+            "requests": 9,
+            "window_start_ms": 1777161600000,
+            "window_end_ms": 1782345599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "RDDT",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:RDDT",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1787072400000,
+            "first_iso": "2026-08-18T17:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 127,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1787011200000,
+            "first_iso": "2026-08-18T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 6,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1787076000011,
+            "first_iso": "2026-08-18T18:00:00.011000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 126,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "VST",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:VST",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1785862800000,
+            "first_iso": "2026-08-04T17:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 463,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1785801600000,
+            "first_iso": "2026-08-04T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 20,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1785862800035,
+            "first_iso": "2026-08-04T17:00:00.035000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 463,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "COST",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:COST",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774602000000,
+            "first_iso": "2026-03-27T09:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 711,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1774396800000,
+            "first_iso": "2026-03-25T00:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 32,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1774461600075,
+            "first_iso": "2026-03-25T18:00:00.075000+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "IONQ",
+        "venue": "hyperliquid",
+        "dex": "io",
+        "symbol": "io:IONQ",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1789048800000,
+            "first_iso": "2026-09-10T14:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 991,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1788998400000,
+            "first_iso": "2026-09-10T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 42,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1789052400004,
+            "first_iso": "2026-09-10T15:00:00.004000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CIFR",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:CIFR",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1789120800000,
+            "first_iso": "2026-09-11T10:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 971,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1789084800000,
+            "first_iso": "2026-09-11T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 41,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1789124400046,
+            "first_iso": "2026-09-11T11:00:00.046000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "DKNG",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:DKNG",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1774609200000,
+            "first_iso": "2026-03-27T11:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 709,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1774396800000,
+            "first_iso": "2026-03-25T00:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 32,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1774450800062,
+            "first_iso": "2026-03-25T15:00:00.062000+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "STX",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:STX",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1784808000000,
+            "first_iso": "2026-07-23T12:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 756,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1784764800000,
+            "first_iso": "2026-07-23T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 32,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1784808000099,
+            "first_iso": "2026-07-23T12:00:00.099000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "GEV",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:GEV",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1785949200000,
+            "first_iso": "2026-08-05T17:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 439,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1785888000000,
+            "first_iso": "2026-08-05T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 19,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1785952800014,
+            "first_iso": "2026-08-05T18:00:00.014000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 438,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "MELI",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:MELI",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1787572800000,
+            "first_iso": "2026-08-24T12:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 1400,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1787529600000,
+            "first_iso": "2026-08-24T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 59,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1787576400041,
+            "first_iso": "2026-08-24T13:00:00.041000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "SOFI",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:SOFI",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1788260400000,
+            "first_iso": "2026-09-01T11:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 1209,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1788220800000,
+            "first_iso": "2026-09-01T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 51,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1788264000019,
+            "first_iso": "2026-09-01T12:00:00.019000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "KSTR",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:KSTR",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1789477200000,
+            "first_iso": "2026-09-15T13:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 869,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1789430400000,
+            "first_iso": "2026-09-15T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 37,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1789480800005,
+            "first_iso": "2026-09-15T14:00:00.005000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "GPRO",
+        "venue": "hyperliquid",
+        "dex": "io",
+        "symbol": "io:GPRO",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1788267600000,
+            "first_iso": "2026-09-01T13:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 1208,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1788220800000,
+            "first_iso": "2026-09-01T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 51,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1788271200043,
+            "first_iso": "2026-09-01T14:00:00.043000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "UMC",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:UMC",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1791295200000,
+            "first_iso": "2026-10-06T14:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 367,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1791244800000,
+            "first_iso": "2026-10-06T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 16,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1791298800024,
+            "first_iso": "2026-10-06T15:00:00.024000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 366,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "TER",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:TER",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1785160800000,
+            "first_iso": "2026-07-27T14:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 658,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1785110400000,
+            "first_iso": "2026-07-27T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 28,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1785160800021,
+            "first_iso": "2026-07-27T14:00:00.021000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "BIRD",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:BIRD",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1776355200000,
+            "first_iso": "2026-04-16T16:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 224,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1776297600000,
+            "first_iso": "2026-04-16T00:00:00+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 10,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1776358800013,
+            "first_iso": "2026-04-16T17:00:00.013000+00:00",
+            "requests": 8,
+            "window_start_ms": 1771977600000,
+            "window_end_ms": 1777161599999,
+            "records_in_first_page": 223,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CVX",
+        "venue": "hyperliquid",
+        "dex": "xyz",
+        "symbol": "xyz:CVX",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1789668000000,
+            "first_iso": "2026-09-17T18:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 818,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1789603200000,
+            "first_iso": "2026-09-17T00:00:00+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 35,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1789671600007,
+            "first_iso": "2026-09-17T19:00:00.007000+00:00",
+            "requests": 11,
+            "window_start_ms": 1787529600000,
+            "window_end_ms": 1792612852381,
+            "records_in_first_page": 500,
+            "truncated": false
+          }
+        }
+      },
+      {
+        "ticker": "CIEN",
+        "venue": "hyperliquid",
+        "dex": "para",
+        "symbol": "para:CIEN",
+        "tier": "thin",
+        "streams": {
+          "candle_1h": {
+            "first_ms": 1786107600000,
+            "first_iso": "2026-08-07T13:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 395,
+            "truncated": false
+          },
+          "candle_1d": {
+            "first_ms": 1786060800000,
+            "first_iso": "2026-08-07T00:00:00+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 17,
+            "truncated": false
+          },
+          "funding": {
+            "first_ms": 1786107600003,
+            "first_iso": "2026-08-07T13:00:00.003000+00:00",
+            "requests": 10,
+            "window_start_ms": 1782345600000,
+            "window_end_ms": 1787529599999,
+            "records_in_first_page": 395,
+            "truncated": false
+          }
+        }
+      }
+    ]
+  },
+  "binance_usdm": {
+    "endpoint": "https://data.binance.vision",
+    "instruments": [
+      {
+        "ticker": "BTCUSDT",
+        "venue": "binance_usdm",
+        "symbol": "BTCUSDT",
+        "streams": {
+          "klines_1h": {
+            "error": "no monthly archives",
+            "prefix": "data/futures/um/monthly/klines/BTCUSDT/1h/"
+          },
+          "funding_rate": {
+            "error": "no monthly archives",
+            "prefix": "data/futures/um/monthly/fundingRate/BTCUSDT/"
+          },
+          "metrics": {
+            "error": "no monthly archives",
+            "prefix": "data/futures/um/monthly/metrics/BTCUSDT/"
+          }
+        }
+      },
+      {
+        "ticker": "ETHUSDT",
+        "venue": "binance_usdm",
+        "symbol": "ETHUSDT",
+        "streams": {
+          "klines_1h": {
+            "error": "no monthly archives",
+            "prefix": "data/futures/um/monthly/klines/ETHUSDT/1h/"
+          },
+          "funding_rate": {
+            "error": "no monthly archives",
+            "prefix": "data/futures/um/monthly/fundingRate/ETHUSDT/"
+          },
+          "metrics": {
+            "error": "no monthly archives",
+            "prefix": "data/futures/um/monthly/metrics/ETHUSDT/"
+          }
+        }
+      }
+    ]
+  },
+  "notes": {
+    "open_interest": "Hyperliquid's public info API serves current open interest only (metaAndAssetCtxs.openInterest, and clearinghouseState for a user); it does not serve historical OI. Options for the owner: (a) forward snapshots - poll metaAndAssetCtxs on a schedule into bronze_perp_oi_snapshots (starts when the poller is deployed; no back-history); (b) backfill from Hyperliquid's published node-data archive on S3 if the owner enables requester-pays access (verify licence, retention and egress cost first); (c) use a candle-derived proxy, which is not OI and must be labelled as such. This probe does not attempt an OI history fetch."
+  }
+}

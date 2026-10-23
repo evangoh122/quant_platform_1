@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Perps Weekend Research Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+
+    .pulse-dot {
+      width: 12px; height: 12px; background: #22d3ee; border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+
+    svg { width: 100%; min-width: 980px; display: block; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+
+    .toolbar { display: flex; gap: 0.5rem; margin-left: auto; flex-shrink: 0; align-items: center; }
+    .toolbar-toggle {
+      background: transparent; border: none; color: #475569; cursor: pointer;
+      font-size: 1.25rem; line-height: 1; padding: 0.25rem 0.5rem;
+      border-radius: 0.375rem; transition: color 0.2s, background 0.2s;
+    }
+    .toolbar-toggle:hover { color: #94a3b8; background: rgba(30, 41, 59, 0.5); }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button {
+      background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; color: #94a3b8;
+      padding: 0.375rem 0.75rem; border-radius: 0.375rem; font-family: inherit;
+      font-size: 0.75rem; cursor: pointer; transition: all 0.2s; white-space: nowrap;
+    }
+    .toolbar-actions button:hover { background: rgba(51, 65, 85, 0.8); color: white; border-color: #475569; }
+
+    @media print {
+      body { background: #020617; padding: 1rem; }
+      .toolbar { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Perps Weekend Research Architecture</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">P0 v5 plan · 78 company perps + 8 commodity perps + Binance USD-M controls · perps are derivatives · all downstream components planned (dashed)</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1180 950">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowhead-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ================= ARROWS (drawn first, behind boxes) ================= -->
+        <!-- P0 probe reads the providers -->
+        <line x1="387" y1="136" x2="387" y2="164" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead)"/>
+
+        <!-- provider -> ingestion -->
+        <line x1="310" y1="230" x2="310" y2="274" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 440 230 L 440 252 L 582 252 L 582 274" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="715" y1="230" x2="715" y2="274" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 470 230 L 470 258 L 1030 258 L 1030 274" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- PIT equity/options baselines and SEC mapping -> gold -->
+        <path d="M 900 230 L 900 244 L 1165 244 L 1165 687 L 1144 687" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead-rose)"/>
+
+        <!-- ingestion -> bronze -->
+        <line x1="352" y1="346" x2="352" y2="390" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="582" y1="346" x2="582" y2="390" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 805 346 L 805 360 L 1035 360 L 1035 390" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 1100 346 L 1100 376 L 812 376 L 812 390" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- bronze -> silver -->
+        <line x1="352" y1="480" x2="352" y2="524" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="582" y1="480" x2="582" y2="524" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="812" y1="480" x2="812" y2="524" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead)"/>
+
+        <!-- silver -> gold -->
+        <line x1="360" y1="594" x2="360" y2="638" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="597" y1="594" x2="597" y2="638" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="827" y1="594" x2="827" y2="638" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead)"/>
+        <line x1="1035" y1="480" x2="1035" y2="638" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- gold -> research -->
+        <line x1="377" y1="734" x2="377" y2="778" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 900 734 L 900 758 L 500 758 L 500 778" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="510" y1="818" x2="521" y2="818" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="795" y1="818" x2="806" y2="818" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- config -> pipeline -->
+        <line x1="215" y1="300" x2="241" y2="300" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrowhead)"/>
+        <line x1="215" y1="660" x2="241" y2="660" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrowhead)"/>
+
+        <!-- ================= P0 LANE ================= -->
+        <rect x="245" y="80" width="285" height="56" rx="6" fill="#0f172a"/>
+        <rect x="245" y="80" width="285" height="56" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="387" y="101" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">P0 probe_history.py</text>
+        <text x="387" y="117" fill="#94a3b8" font-size="8" text-anchor="middle">dry-run default · --live needs network · ≤ 2 req/s</text>
+
+        <rect x="545" y="80" width="280" height="56" rx="6" fill="#0f172a"/>
+        <rect x="545" y="80" width="280" height="56" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="685" y="101" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">P0 check_universe.py</text>
+        <text x="685" y="117" fill="#94a3b8" font-size="8" text-anchor="middle">report-only · ETF / fund / preferred / unmapped</text>
+
+        <rect x="840" y="80" width="300" height="56" rx="6" fill="#0f172a"/>
+        <rect x="840" y="80" width="300" height="56" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="990" y="101" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">P0 plan + liquidity + diagram</text>
+        <text x="990" y="117" fill="#94a3b8" font-size="8" text-anchor="middle">PERPS_WEEKEND_PLAN.md · measure_closed_liquidity.py</text>
+
+        <!-- ================= SOURCES ================= -->
+        <rect x="245" y="168" width="230" height="62" rx="6" fill="#0f172a"/>
+        <rect x="245" y="168" width="230" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="360" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">Hyperliquid S3 flat files</text>
+        <text x="360" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">node_fills_by_block · asset_ctxs · events</text>
+        <text x="360" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">requester-pays · ~monthly · HIP-3 unverified</text>
+
+        <rect x="495" y="168" width="230" height="62" rx="6" fill="#0f172a"/>
+        <rect x="495" y="168" width="230" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="610" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">Binance Vision</text>
+        <text x="610" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">USD-M monthly + daily archives</text>
+        <text x="610" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">full 1m · fundingRate · metrics</text>
+
+        <rect x="745" y="168" width="190" height="62" rx="6" fill="#0f172a"/>
+        <rect x="745" y="168" width="190" height="62" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="840" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">Equity / options gold</text>
+        <text x="840" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">Friday close, returns, IV, skew</text>
+        <text x="840" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">with information_available_ts</text>
+
+        <rect x="955" y="168" width="185" height="62" rx="6" fill="#0f172a"/>
+        <rect x="955" y="168" width="185" height="62" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="1048" y="190" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">SEC CIK / KG</text>
+        <text x="1048" y="206" fill="#94a3b8" font-size="7.5" text-anchor="middle">company_tickers offline map</text>
+        <text x="1048" y="220" fill="#94a3b8" font-size="7.5" text-anchor="middle">security dimension bridge</text>
+
+        <!-- ================= INGESTION ================= -->
+        <rect x="245" y="278" width="215" height="68" rx="6" fill="#0f172a"/>
+        <rect x="245" y="278" width="215" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="352" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">hl_flat_files (P1)</text>
+        <text x="352" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">streaming lz4 · dry-run cost gate</text>
+        <text x="352" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">fills → own 1m/15m/1h bars</text>
+
+        <rect x="475" y="278" width="215" height="68" rx="6" fill="#0f172a"/>
+        <rect x="475" y="278" width="215" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="582" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ingest_perp_funding</text>
+        <text x="582" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">misc_events_by_block (+ API check)</text>
+        <text x="582" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">rate + interval per row</text>
+
+        <rect x="705" y="278" width="200" height="68" rx="6" fill="#0f172a"/>
+        <rect x="705" y="278" width="200" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="805" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ingest_binance_um</text>
+        <text x="805" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">klines 1m/1h · funding · metrics</text>
+        <text x="805" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">checksum · bounded range</text>
+
+        <rect x="920" y="278" width="220" height="68" rx="6" fill="#0f172a"/>
+        <rect x="920" y="278" width="220" height="68" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="1030" y="300" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">snapshot_perp_oi</text>
+        <text x="1030" y="316" fill="#94a3b8" font-size="8" text-anchor="middle">forward poll (P4)</text>
+        <text x="1030" y="330" fill="#94a3b8" font-size="8" text-anchor="middle">no fabricated history</text>
+
+        <!-- ================= BRONZE ================= -->
+        <rect x="245" y="394" width="215" height="86" rx="6" fill="#0f172a"/>
+        <rect x="245" y="394" width="215" height="86" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="352" y="416" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">bronze_perp_candles</text>
+        <text x="352" y="434" fill="#94a3b8" font-size="7.5" text-anchor="middle">NK venue, contract_symbol, start</text>
+        <text x="352" y="448" fill="#94a3b8" font-size="7.5" text-anchor="middle">instrument_type=perpetual_future</text>
+        <text x="352" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">underlying_type · payload_hash</text>
+
+        <rect x="475" y="394" width="215" height="86" rx="6" fill="#0f172a"/>
+        <rect x="475" y="394" width="215" height="86" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="582" y="416" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">bronze_perp_funding</text>
+        <text x="582" y="434" fill="#94a3b8" font-size="7.5" text-anchor="middle">NK venue, symbol, funding_time</text>
+        <text x="582" y="448" fill="#94a3b8" font-size="7.5" text-anchor="middle">funding_rate · premium</text>
+        <text x="582" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">funding_interval_hours</text>
+
+        <rect x="705" y="394" width="215" height="86" rx="6" fill="#0f172a"/>
+        <rect x="705" y="394" width="215" height="86" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="812" y="416" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">bronze_perp_oi_snapshots</text>
+        <text x="812" y="434" fill="#94a3b8" font-size="7.5" text-anchor="middle">NK venue, symbol, observed_at</text>
+        <text x="812" y="448" fill="#94a3b8" font-size="7.5" text-anchor="middle">open_interest · mark · oracle</text>
+        <text x="812" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">source = s3_backfill / forward_snapshot</text>
+
+        <rect x="935" y="394" width="205" height="86" rx="6" fill="#0f172a"/>
+        <rect x="935" y="394" width="205" height="86" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="1037" y="416" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">bronze_binance_um_*</text>
+        <text x="1037" y="434" fill="#94a3b8" font-size="7.5" text-anchor="middle">klines 1h · funding · metrics</text>
+        <text x="1037" y="448" fill="#94a3b8" font-size="7.5" text-anchor="middle">BTCUSDT · ETHUSDT controls</text>
+        <text x="1037" y="466" fill="#a78bfa" font-size="7.5" text-anchor="middle">archive_key lineage</text>
+
+        <!-- ================= SILVER ================= -->
+        <rect x="245" y="528" width="230" height="66" rx="6" fill="#0f172a"/>
+        <rect x="245" y="528" width="230" height="66" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="360" y="550" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">silver_perp_bars_1h</text>
+        <text x="360" y="566" fill="#94a3b8" font-size="8" text-anchor="middle">info_available = max(bar_end, source avail.)</text>
+        <text x="360" y="580" fill="#94a3b8" font-size="8" text-anchor="middle">instrument_type · no forward fill</text>
+
+        <rect x="490" y="528" width="215" height="66" rx="6" fill="#0f172a"/>
+        <rect x="490" y="528" width="215" height="66" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="597" y="550" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">silver_perp_funding</text>
+        <text x="597" y="566" fill="#94a3b8" font-size="8" text-anchor="middle">info_available = funding_time</text>
+        <text x="597" y="580" fill="#94a3b8" font-size="8" text-anchor="middle">dedupe by natural key</text>
+
+        <rect x="720" y="528" width="215" height="66" rx="6" fill="#0f172a"/>
+        <rect x="720" y="528" width="215" height="66" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="827" y="550" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">QA: gaps · DST · dedupe</text>
+        <text x="827" y="566" fill="#94a3b8" font-size="8" text-anchor="middle">weekend_window() from NYSE file</text>
+        <text x="827" y="580" fill="#94a3b8" font-size="8" text-anchor="middle">flags, never silent interpolation</text>
+
+        <!-- ================= GOLD ================= -->
+        <rect x="245" y="642" width="575" height="92" rx="8" fill="#0f172a"/>
+        <rect x="245" y="642" width="575" height="92" rx="8" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="532" y="666" fill="white" font-size="11.5" font-weight="600" text-anchor="middle">gold_weekend_perp_features</text>
+        <text x="532" y="685" fill="#94a3b8" font-size="8" text-anchor="middle">Friday close → Monday open window · PIT join · label only at window end</text>
+        <text x="532" y="701" fill="#94a3b8" font-size="8" text-anchor="middle">perp_ features · realized vol · funding · OI (nullable)</text>
+        <text x="532" y="720" fill="#a78bfa" font-size="7.5" text-anchor="middle">instrument_type=perpetual_future · NK weekend_id, security_id</text>
+
+        <rect x="835" y="642" width="305" height="92" rx="8" fill="#0f172a"/>
+        <rect x="835" y="642" width="305" height="92" rx="8" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="987" y="666" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">baselines + crypto controls</text>
+        <text x="987" y="685" fill="#94a3b8" font-size="8" text-anchor="middle">Friday equity / options as-of close</text>
+        <text x="987" y="701" fill="#94a3b8" font-size="8" text-anchor="middle">BTC / ETH same UTC weekend window</text>
+        <text x="987" y="720" fill="#fbbf24" font-size="7.5" text-anchor="middle">provider-symbol bridge → security_id</text>
+
+        <!-- ================= RESEARCH ================= -->
+        <rect x="245" y="782" width="265" height="70" rx="6" fill="#0f172a"/>
+        <rect x="245" y="782" width="265" height="70" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="377" y="804" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">research notebooks</text>
+        <text x="377" y="820" fill="#94a3b8" font-size="8" text-anchor="middle">out-of-time split by weekend_id</text>
+        <text x="377" y="834" fill="#94a3b8" font-size="8" text-anchor="middle">reproducible snapshot</text>
+
+        <rect x="525" y="782" width="270" height="70" rx="6" fill="#0f172a"/>
+        <rect x="525" y="782" width="270" height="70" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="660" y="804" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">ablations</text>
+        <text x="660" y="820" fill="#94a3b8" font-size="8" text-anchor="middle">equity/options → +crypto → +perps</text>
+        <text x="660" y="834" fill="#94a3b8" font-size="8" text-anchor="middle">honest H0 allowed</text>
+
+        <rect x="810" y="782" width="330" height="70" rx="6" fill="#0f172a"/>
+        <rect x="810" y="782" width="330" height="70" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="975" y="804" fill="white" font-size="10.5" font-weight="600" text-anchor="middle">owner gate</text>
+        <text x="975" y="820" fill="#94a3b8" font-size="8" text-anchor="middle">no signal publication, no shared-table writes</text>
+        <text x="975" y="834" fill="#94a3b8" font-size="8" text-anchor="middle">separate approval for P2+ activation</text>
+
+        <!-- ================= CONFIG BOUNDARY ================= -->
+        <rect x="20" y="70" width="195" height="520" rx="12" fill="rgba(251, 191, 36, 0.03)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="32" y="90" fill="#fbbf24" font-size="9" font-weight="600">CONFIG / CALENDAR</text>
+
+        <rect x="35" y="102" width="165" height="50" rx="6" fill="#0f172a"/>
+        <rect x="35" y="102" width="165" height="50" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="117" y="121" fill="white" font-size="9" font-weight="600" text-anchor="middle">perp_universe.yaml</text>
+        <text x="117" y="137" fill="#94a3b8" font-size="7.5" text-anchor="middle">78 co + 8 commodities + 2 ctrl</text>
+
+        <rect x="35" y="164" width="165" height="50" rx="6" fill="#0f172a"/>
+        <rect x="35" y="164" width="165" height="50" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="117" y="183" fill="white" font-size="9" font-weight="600" text-anchor="middle">xnys_holidays.yaml</text>
+        <text x="117" y="199" fill="#94a3b8" font-size="7.5" text-anchor="middle">2000-2035 · rule-derived</text>
+
+        <rect x="35" y="226" width="165" height="50" rx="6" fill="#0f172a"/>
+        <rect x="35" y="226" width="165" height="50" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="117" y="245" fill="white" font-size="9" font-weight="600" text-anchor="middle">market_calendar.py</text>
+        <text x="117" y="261" fill="#94a3b8" font-size="7.5" text-anchor="middle">weekend_window · DST</text>
+
+        <rect x="35" y="288" width="165" height="50" rx="6" fill="#0f172a"/>
+        <rect x="35" y="288" width="165" height="50" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="117" y="307" fill="white" font-size="9" font-weight="600" text-anchor="middle">check_universe.py</text>
+        <text x="117" y="323" fill="#94a3b8" font-size="7.5" text-anchor="middle">ETF / preferred / unmapped</text>
+
+        <rect x="35" y="350" width="165" height="50" rx="6" fill="#0f172a"/>
+        <rect x="35" y="350" width="165" height="50" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="117" y="369" fill="white" font-size="9" font-weight="600" text-anchor="middle">provider bridge</text>
+        <text x="117" y="385" fill="#94a3b8" font-size="7.5" text-anchor="middle">xyz:NVDA → NVDA</text>
+
+        <rect x="35" y="412" width="165" height="50" rx="6" fill="#0f172a"/>
+        <rect x="35" y="412" width="165" height="50" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4"/>
+        <text x="117" y="431" fill="white" font-size="9" font-weight="600" text-anchor="middle">PIT invariants</text>
+        <text x="117" y="447" fill="#94a3b8" font-size="7.5" text-anchor="middle">no future data in features</text>
+
+        <text x="35" y="492" fill="#64748b" font-size="7.5">Calendar and universe are</text>
+        <text x="35" y="505" fill="#64748b" font-size="7.5">consumed by every stage.</text>
+        <text x="35" y="518" fill="#64748b" font-size="7.5">Config changes are owner</text>
+        <text x="35" y="531" fill="#64748b" font-size="7.5">decisions, never silent.</text>
+
+        <!-- ================= LEGEND (outside all boundaries) ================= -->
+        <text x="35" y="884" fill="white" font-size="10" font-weight="600">Legend</text>
+
+        <rect x="35" y="896" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="57" y="904" fill="#94a3b8" font-size="8">External source</text>
+
+        <rect x="175" y="896" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="197" y="904" fill="#94a3b8" font-size="8">Ingestion job (planned)</text>
+
+        <rect x="345" y="896" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="367" y="904" fill="#94a3b8" font-size="8">Bronze / Silver / Gold table</text>
+
+        <rect x="565" y="896" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="587" y="904" fill="#94a3b8" font-size="8">Security / QA / owner gate</text>
+
+        <rect x="760" y="896" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="782" y="904" fill="#94a3b8" font-size="8">Config / research</text>
+
+        <line x1="920" y1="901" x2="946" y2="901" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="954" y="904" fill="#94a3b8" font-size="8">PIT / mapping flow</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Weekend window (NYSE, America/New_York)</h3>
+        </div>
+        <ul>
+          <li>• start = last close before Saturday 00:00 ET</li>
+          <li>• end = next open after start</li>
+          <li>• Monday holiday → Tuesday open</li>
+          <li>• Friday holiday / Good Friday → Thursday close</li>
+          <li>• early close 13:00 ET: day after Thanksgiving, Jul 3, Dec 24</li>
+          <li>• 2000-2035 static YAML, DST-correct via zoneinfo</li>
+          <li>• tiers A-D on closed-market USD/hour; new/sparse flags</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Sources and limits</h3>
+        </div>
+        <ul>
+          <li>• Hyperliquid requester-pays S3: fills, asset_ctxs, funding events, optional L2</li>
+          <li>• Binance Vision: full 1m history for BTC/ETH controls</li>
+          <li>• 8 commodity perps + physical/futures ETF wrappers</li>
+          <li>• flat-file backfill (P1), no API forward capture; archive ~monthly, HIP-3 unverified</li>
+          <li>• dry-run cost print before any download; --live required; profile name only</li>
+          <li>• API stays probe/measurement: 15m/1h rolling 5k cap, 1m ~3.5 days</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>Point-in-time and governance</h3>
+        </div>
+        <ul>
+          <li>• feature availability ≤ prediction_ts</li>
+          <li>• label known only at the Monday open</li>
+          <li>• perps are derivatives: instrument_type = perpetual_future</li>
+          <li>• never merged into the underlying Security node</li>
+          <li>• BTC/ETH controls are mandatory, not optional</li>
+          <li>• provider bridge → KG security dimension</li>
+          <li>• no signal publication without owner approval</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      P0 v5 · perps weekend research · flat-file history (Hyperliquid requester-pays S3 + Binance Vision) · 78 company + 8 commodity perpetual futures + BTCUSDT/ETHUSDT controls · all downstream components planned/dashed
+    </p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'diagram.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#020617', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('diagram.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>

@@ -53,9 +53,33 @@ EXTERNAL_SCHEMA_CONTRACTS = {
 }
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """``SafeLoader`` that rejects duplicate mapping keys.
+
+    ``yaml.safe_load`` silently keeps only the last occurrence of a duplicated
+    key, so a term defined twice (``etf_kind`` did this) loses the earlier
+    definition and its aliases/critical_rule without any test noticing. The
+    duplicate is rejected at parse time here instead.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            seen = set()
+            for key_node, _ in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"duplicate mapping key {key!r}", key_node.start_mark
+                    )
+                seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def _documents():
     return {
-        path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
+        path.name: yaml.load(  # noqa: S506 - SafeLoader subclass
+            path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader
+        )
         for path in sorted(ONTOLOGY.glob("*.yaml"))
     }
 
@@ -374,6 +398,35 @@ def test_no_duplicate_terms():
     assert len(normalized) == len(set(normalized))
 
 
+@pytest.mark.parametrize("path", sorted(ONTOLOGY.glob("*.yaml")), ids=lambda p: p.name)
+def test_ontology_yaml_rejects_duplicate_mapping_keys(path):
+    """A term defined twice must fail to load, not silently lose the first one.
+
+    ``test_no_duplicate_terms`` only sees the parsed mapping, where PyYAML has
+    already dropped the earlier duplicate. Loading through ``_UniqueKeyLoader``
+    catches the duplicate itself.
+    """
+    document = yaml.load(  # noqa: S506 - SafeLoader subclass
+        path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader
+    )
+    assert document is not None, path.name
+
+
+def test_unique_key_loader_rejects_a_duplicate_term():
+    text = (
+        "terms:\n"
+        "  etf_kind:\n"
+        "    definition: first\n"
+        "    aliases: [ETF backing kind]\n"
+        "  etf_kind:\n"
+        "    definition: second\n"
+    )
+    # The plain loader hides the duplicate (this is the bug being guarded).
+    assert yaml.safe_load(text)["terms"]["etf_kind"]["definition"] == "second"
+    with pytest.raises(yaml.YAMLError, match="duplicate mapping key 'etf_kind'"):
+        yaml.load(text, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+
+
 def test_business_term_aliases_have_one_owner():
     terms = _documents()["business_terms.yaml"]["terms"]
     owners = {}
@@ -384,6 +437,23 @@ def test_business_term_aliases_have_one_owner():
             assert previous == term, (
                 f"{label!r} is owned by both {previous!r} and {term!r}"
             )
+
+
+def test_options_underlying_stays_a_ticker_alias_and_perps_are_scoped():
+    """The options `underlying` column must not be redefined by the perps track.
+
+    notebooks/01_ingest_market_data.py writes an `underlying` column of tickers,
+    so NL-to-SQL for options needs `underlying` to resolve to ticker; the perp
+    concept is `perp_underlying` instead.
+    """
+    terms = _documents()["business_terms.yaml"]["terms"]
+    ticker_aliases = {
+        _normalize_business_term(alias) for alias in terms["ticker"]["aliases"]
+    }
+    assert "underlying" in ticker_aliases
+    assert "underlying" not in terms
+    assert "perp_underlying" in terms
+    assert "options" in terms["perp_underlying"]["definition"].lower()
 
 
 @pytest.mark.parametrize("table", sorted(_documents()["table_semantics.yaml"]["tables"]))

@@ -50,6 +50,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | Streaming DLT pipeline | Yes | Local validation | Not deployed or run |
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
 | IBKR paper execution | Scaffold | Partial | Not live |
+| Weekend perps research (planned) | Loader, calendar and measurement tooling only (flat-file reader is design only) | Yes (offline) | Not deployed — no ingestion job, no shared tables, no signals |
 
 Dates are the last recorded verification; this repository does not assert the current state of the app, Lakebase, or the warehouse.
 
@@ -69,6 +70,71 @@ Dates are the last recorded verification; this repository does not assert the cu
 6. Every Lakebase write also lands in `analytics_outbox` in the same transaction; a Delta job merges those events into
    analytics tables that the app's analytics page reads.
 
+## Weekend perps research (planned/in progress)
+
+Research scaffolding only: nothing is ingested on a schedule, no shared tables are written and no signal is published.
+The instruments are **perpetual futures (derivatives)** traded on Hyperliquid HIP-3 and Binance USD-M, not the equities,
+ETFs or spot commodities they track; they are never merged into the equity security. The owner-selected universe is
+[`config/perp_universe.yaml`](config/perp_universe.yaml) (v4: 78 company perps, 8 commodity perps paired with Massive
+ETFs, and BTCUSDT/ETHUSDT controls), validated by `config/perp_universe.py`; closed-market liquidity is measured while
+the NYSE is shut, with the weekend window derived from [`config/market_calendar.py`](config/market_calendar.py).
+History is planned from **flat files**, per the owner decision of 2026-10-22: Hyperliquid's requester-pays S3 archive
+(trades in `s3://hl-mainnet-node-data/node_fills_by_block`, aggregated into our own `1m`/`15m`/`1h` trade-price bars;
+`asset_ctxs` for funding/OI/mark/oracle with its field list still **to verify**; `misc_events_by_block` funding events;
+optional L2 snapshots) plus Binance Vision archives for the controls. There is **no API forward-capture job**: the
+Hyperliquid info API stays a probe/measurement tool. Design and schemas are in
+[`docs/data/PERPS_WEEKEND_PLAN.md`](docs/data/PERPS_WEEKEND_PLAN.md), including the
+`scripts/perps/hl_flat_files.py` reader design (streaming lz4, dry-run cost print before any download, `--live`
+required, credentials only from the AWS profile chain) — design only, no implementation in P0.
+Archive caveats are carried verbatim: uploads are **roughly monthly** with "no guarantee of timely updates and data may be
+missing", and **HIP-3 (`xyz`/`para`/`io`) coverage is unverified** until a sample object is checked (owner-approved,
+requester-pays). Fill records are deduplicated on the trade id (`tid`), because one trade can be emitted once per
+counterparty; the P1 gate verifies that on a sample and reconciles aggregated volume against `candleSnapshot` over an
+overlapping window.
+Every universe row, probe/liquidity record and planned perps table carries one `data_source` provider code
+(`hyperliquid`, `binance_um`, …) defined once in [`config/data_sources.py`](config/data_sources.py); the loader
+rejects a missing, unknown or venue-contradicting code, and every perps table carries the derivative column set
+(`instrument_type`, `underlying_type`, `underlying_symbol`, `venue`, `contract_symbol`).
+The 2026-10-21 history probe measured Hyperliquid daily/funding back to each listing (NVDA from 2025-11-12); its public
+output is committed as [`docs/data/perps_history_probe.json`](docs/data/perps_history_probe.json) and
+`tests/perps/test_recount_weekends.py` asserts the recount in CI. That JSON is a **pre-rule snapshot**: it predates the
+`data_source` rule, so it carries no `data_source` field, and its Binance rows record the pre-fix S3 listing
+(`no monthly archives`), so the 2020-01/2021-12 Binance starts come from the coordinator's HTTP 200 checks, not from that
+file. Its `1h` recount is an **API-only lower bound**: the public API serves at most 5,000 candles per interval, so
+`1h` reaches back only to 2026-03-27 on the oldest instruments
+and the window rolls forward ([`scripts/perps/recount_weekends.py`](scripts/perps/recount_weekends.py) gives 1,871
+company-weekends on `1d` history but **1,538 company-weekends over 30 distinct weekends** on API-only `1h` coverage;
+19 weekends / 333 company-weekends are `1d`-only). If the fills archive covers HIP-3 from listing — unverified — the
+buildable panel returns to the daily-history **upper bound of ~1,871 company-weekends over 49 weekends**, still
+weekend-clustered. Binance Vision archives still carry the control klines/funding from 2020-01 and metrics from 2021-12.
+With 30-49 weekend clusters the effective N is the weekend count, not the row count, and the Fisher-z bound is converted
+back with `tanh`: as an **illustrative single-coefficient bound** at 80% power and a two-sided 5% test, the panel can
+detect partial r ≈ 0.49 (partial r² 0.24) at N_eff = 30 and r ≈ 0.39 (partial r² 0.15) at N_eff = 49, not the 0.54/0.41
+the untransformed z suggested. Those numbers are **not the power of the primary test**. The **pre-registered primary
+test** fixed in the plan (§6.2) is a **one-sided** test of the joint five-feature perp block over 18 weekend clusters,
+using a Clark-West-adjusted loss differential and a wild-cluster-bootstrap-t; its power is **undetermined** until the
+power simulation in the plan (**draft; finalised in P6**, §6.2.1: DGP estimated **only** on the 12 pinned training
+weekends, from the **full-model** OLS of `open_gap` on the baseline **and** the five perp features so its residual is
+orthogonal to both designs and population ΔR² = 0 is the true no-incremental-predictability null, a joint circular block
+bootstrap of whole weekend-instrument rows, deterministic per-instrument alignment to each evaluation weekend's actual
+instrument set, 18 evaluation weekends, the 5-feature block, one-sided 5%, 2,000 Monte Carlo replications with 999
+bootstrap replications, the calibration `κ = sqrt(ΔR² · σ²_ε / ((1 − ΔR²) · q))` with `q = u'Σ_{Z|X}u` the variance of
+the injected index **after residualising the perp features on the baseline design**, and reporting of the realised gains
+next to their targets along with size, power curve and minimum detectable ΔR²) runs before any result is inspected. The
+Clark-West ratio decides **significance only**; the effect size reported
+is the **unadjusted** out-of-time ratio `mean(MSE_base − MSE_full) / mean(MSE_base)` over the 18 evaluation weekends,
+with an explicit plausible set of population ΔR² in {0.005, 0.01, 0.02}. The baseline is the Friday **regular-session**
+close + crypto: Friday equity extended hours (16:00-20:00 ET) and the last ES/NQ hour (to 17:00 ET Friday) trade before
+`sun_1800` and are listed as confounders, and Friday-holiday weekends (2026-07-03) stay in the primary, flagged, with a
+pre-declared sensitivity exclusion. The later cutoffs (`mon_0400`, `mon_0900`) stay exploratory until ES/NQ futures,
+overnight ATS and pre-market bars are in their baseline.
+Liquidity tiers are descriptive only (measured 2026-08-26..2026-10-21, i.e. look-ahead): any model input uses trailing
+point-in-time liquidity, and the denominator counts every eligible post-listing weekend break — an empty weekend is
+missing data, not full coverage. The opening-gap label uses one formula,
+`open_gap = session_open * label_split_factor / prev_session_close - 1`, with the new/old split ratio as the factor;
+`session_open` is the **consolidated** first regular-session print, not the listing-exchange opening auction. It is
+**split-adjusted only**: `bronze_corporate_actions` has no dividend amounts, so dividend ingestion is a P1 prerequisite.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -82,6 +148,7 @@ Dates are the last recorded verification; this repository does not assert the cu
 | `sec_kg/contracts/` | KG-A executable contracts (identity and ids, bitemporal events, fact linking, join/edge registry, publication CAS, perp Instruments); pure Python with offline tests — no table or job yet |
 | `resources/`, `databricks.yml`, `app.yaml` | Databricks Asset Bundle: jobs, app, resources |
 | `strategies/`, `ml/` | Research code (backtests, evidence, models) |
+| `config/`, `scripts/perps/` | Perp universe/calendar config; probe, closed-market liquidity measurement and the flat-file reader design (research scaffolding) |
 | `evals/` | RAG evaluation harness |
 | `config/` | Environment settings, ticker/universe YAML, and the `data_source` provider vocabulary (`config/data_sources.py`) |
 | `tests/` | Offline test suite |
