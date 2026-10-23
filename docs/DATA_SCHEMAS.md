@@ -863,8 +863,12 @@ Every perps table, when it lands, carries:
     ('flat_file_backfill' | 'api_capture' | 's3_backfill' | 'forward_snapshot', per table) and
     archive_key (the object the row came from), so a bar or context row is reproducible from the
     archive.  Bars are built from fills by TRADE time in UTC (bar_start = floor(trade_ts/interval),
-    information_available_ts = bar_end), deduplicated on fill id/hash, never interpolated; a late
-    fill re-emits the affected bar as an append-only correction.
+    bar_end = the interval boundary), deduplicated on fill id/hash, never interpolated.  A first
+    bar carries information_available_ts = bar_end.  A late fill re-emits the affected bar as an
+    append-only correction, and that correction's information_available_ts is when the correcting
+    contents became observable — the latest arrival/ingest timestamp of the late fills, or of
+    the archive object that delivered them — not bar_end: bar_end stays the interval
+    boundary, so a point-in-time join cannot use the correction before it existed.
   bronze_perp_fills:  per-fill trade prints (trade_ts, fill_id, fill_hash, price, size, notional,
     side, block_time, source, archive_key, payload_hash) + the derivative column set + data_source.
   bronze_perp_asset_ctxs: per-(date, coin) context rows (observed_date, funding_rate, open_interest,

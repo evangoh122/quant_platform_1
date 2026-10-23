@@ -249,11 +249,44 @@ def _binance_monthly_prefix(symbol: str, stream: str) -> str:
     raise ProbeError(f"unknown Binance stream {stream!r}")
 
 
-def _binance_daily_prefix(monthly_key: str) -> str:
-    """Turn a monthly key into the daily prefix for the same stream."""
+# Binance Vision archive filenames differ per stream: use the same symbol-<stem>-
+# shape here and in the daily prefix so the plan and the live request agree.
+_BINANCE_FILE_STEMS = {
+    "klines_1h": "1h",
+    "funding_rate": "fundingRate",
+    "metrics": "metrics",
+}
 
-    return re.sub(r"\d{4}-\d{2}\.zip$", "", monthly_key).replace(
-        "/monthly/", "/daily/"
+
+def _binance_daily_prefix(monthly_key: str) -> str:
+    """Turn a monthly key into the daily prefix for the same stream and month.
+
+    The month stays in the prefix (``.../BTCUSDT-1h-YYYY-MM-``) so a listing
+    covers only the first month's daily archives.  Dropping it would match every
+    month, over-count ``daily_archives_in_first_month`` and page through the
+    whole archive history at the rate-limit cost.
+    """
+
+    match = re.search(r"(\d{4}-\d{2})\.zip$", monthly_key)
+    if match is None:
+        raise ProbeError(f"not a monthly archive key: {monthly_key!r}")
+    stem = monthly_key[: match.start()].replace("/monthly/", "/daily/")
+    return f"{stem}{match.group(1)}-"
+
+
+def binance_daily_first_month_prefix(symbol: str, stream: str) -> str:
+    """Daily prefix for the first month of *stream*, with a month placeholder.
+
+    Composed from the same directory and file-stem rules the live probe reads out
+    of an archive key, so the dry-run plan shows exactly the request
+    ``probe_binance`` sends instead of re-deriving the shape by hand.
+    """
+
+    monthly_prefix = _binance_monthly_prefix(symbol, stream)
+    file_stem = _BINANCE_FILE_STEMS[stream]
+    return (
+        f"{monthly_prefix.replace('/monthly/', '/daily/')}"
+        f"{symbol}-{file_stem}-{{first-month}}-"
     )
 
 
@@ -305,11 +338,11 @@ def plan_requests(
                     )
                 )
             for stream in _BINANCE_STREAMS:
-                prefix = _binance_monthly_prefix(symbol, stream)
+                daily_prefix = binance_daily_first_month_prefix(symbol, stream)
                 plan.append(
                     PlannedRequest(
                         method="GET",
-                        url=binance_listing_url(prefix + "{first-month}-"),
+                        url=binance_listing_url(daily_prefix),
                         body=None,
                         purpose=(
                             f"{symbol} {stream} daily listing for the first month"

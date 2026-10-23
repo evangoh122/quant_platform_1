@@ -1057,6 +1057,36 @@ def _parse_document(document: Any, source: Path | str) -> PerpUniverse:
     )
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """``SafeLoader`` that rejects duplicate mapping keys.
+
+    ``yaml.safe_load`` keeps only the last occurrence of a duplicate key without
+    raising, and every row of ``config/perp_universe.yaml`` is a single-line flow
+    mapping: a copy-paste error with two ``symbol:`` or two ``tier:`` keys in one
+    row would load silently with the later value. ``_check_keys`` cannot see it
+    because it inspects the already-merged dict, so the duplicate is rejected at
+    parse time here instead.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            seen = set()
+            for key_node, _ in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                try:
+                    duplicate = key in seen
+                except TypeError as exc:  # pragma: no cover - unhashable key
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"unhashable mapping key {key!r}", key_node.start_mark
+                    ) from exc
+                if duplicate:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"duplicate mapping key {key!r}", key_node.start_mark
+                    )
+                seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load_perp_universe(path: str | Path | None = None) -> PerpUniverse:
     """Load and validate the perp universe.
 
@@ -1081,7 +1111,7 @@ def load_perp_universe(path: str | Path | None = None) -> PerpUniverse:
         ) from exc
 
     try:
-        document = yaml.safe_load(text)
+        document = yaml.load(text, Loader=_UniqueKeySafeLoader)  # noqa: S506 - SafeLoader subclass
     except yaml.YAMLError as exc:
         raise PerpUniverseError(f"{resolved}: invalid YAML: {exc}") from exc
     return _parse_document(document, resolved)

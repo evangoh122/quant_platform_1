@@ -347,6 +347,51 @@ def test_probe_live_orchestrates_hyperliquid_and_binance(monkeypatch):
     assert "current open interest only" in result["notes"]["open_interest"]
 
 
+def test_binance_daily_prefix_keeps_the_month():
+    """The daily prefix must be month-scoped, not the whole stream history."""
+    monthly_key = "data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2019-09.zip"
+    prefix = probe._binance_daily_prefix(monthly_key)
+    assert prefix == "data/futures/um/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2019-09-"
+    # Only that month's daily archives can match the prefix.
+    assert prefix.endswith("2019-09-")
+    assert not prefix.endswith("BTCUSDT-1h-")
+    # A key without a month cannot produce a bounded prefix.
+    with pytest.raises(probe.ProbeError, match="not a monthly archive key"):
+        probe._binance_daily_prefix("data/futures/um/daily/klines/BTCUSDT/1h/")
+    for stream in ("funding_rate", "metrics"):
+        monthly = probe._binance_monthly_prefix("BTCUSDT", stream)
+        stem = probe._BINANCE_FILE_STEMS[stream]
+        prefix = probe._binance_daily_prefix(f"{monthly}BTCUSDT-{stem}-2020-01.zip")
+        assert prefix.endswith(f"BTCUSDT-{stem}-2020-01-"), (stream, prefix)
+        assert prefix.startswith(monthly.replace("/monthly/", "/daily/")), (stream, prefix)
+
+
+def test_dry_run_plan_shows_the_live_daily_listing_request():
+    """The plan entry must equal the request ``probe_binance`` actually sends."""
+    universe = load_perp_universe()
+    plan = probe.plan_requests(universe, start="2025-01-01")
+    for stream in ("klines_1h", "funding_rate", "metrics"):
+        plan_prefix = probe.binance_daily_first_month_prefix("BTCUSDT", stream)
+        assert "{first-month}" in plan_prefix
+        monthly_prefix = probe._binance_monthly_prefix("BTCUSDT", stream)
+        assert plan_prefix.startswith(monthly_prefix.replace("/monthly/", "/daily/"))
+        planned = [
+            request
+            for request in plan
+            if request.url == probe.binance_listing_url(plan_prefix)
+        ]
+        assert planned, stream
+        assert planned[0].follow_up is True
+        # Rendering the plan's placeholder with the real first month yields
+        # exactly the prefix the live probe builds from an archive key.
+        month = "2019-09"
+        stem = probe._BINANCE_FILE_STEMS[stream]
+        live_prefix = probe._binance_daily_prefix(
+            f"{monthly_prefix}BTCUSDT-{stem}-{month}.zip"
+        )
+        assert plan_prefix.replace("{first-month}", month) == live_prefix
+
+
 def test_probe_binance_reads_every_listing_page():
     class _PagedBinanceClient:
         def __init__(self) -> None:
@@ -375,6 +420,22 @@ def test_probe_binance_reads_every_listing_page():
     assert out["klines_1h"]["first_day"] == "2019-09-08"
     assert out["klines_1h"]["daily_archives_in_first_month"] == 3
     assert any("marker=" in url for url in client.urls)
+
+
+def test_probe_binance_requests_only_the_first_month_of_daily_archives():
+    """The live probe's daily request is month-scoped and counts that month only."""
+    universe = load_perp_universe()
+    client = _FakeClient()
+    out = probe.probe_binance(client, universe.controls[0])
+    # The klines monthly listing is the only one the fixture answers with
+    # archives, so that is the only stream whose daily listing is requested.
+    daily_urls = [url for url, _ in client.requests if "/daily/" in url]
+    assert len(daily_urls) == 1
+    assert "BTCUSDT-1h-2019-09-" in daily_urls[0]
+    # The 2019-11 ETHUSDT archive in the fixture is outside the prefix.
+    assert "ETHUSDT" not in daily_urls[0]
+    assert out["klines_1h"]["daily_archives_in_first_month"] == 3
+    assert out["klines_1h"]["first_daily_key"].endswith("BTCUSDT-1h-2019-09-08.zip")
 
 
 def test_render_markdown_tables_and_oi_note():

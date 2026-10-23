@@ -327,7 +327,9 @@ Caveats for the Binance Vision archives:
   files) and retried; a checksum mismatch fails the run.
 
 The probe lists monthly archives, then refines the first month to the first
-available **daily** archive. It records the archive key, month and day. Rate
+available **daily** archive, listing only that month's daily prefix
+(`.../daily/.../<symbol>-<stream>-YYYY-MM-`) so the reported count and the paging
+are bounded to that month. It records the archive key, month and day. Rate
 limit and retries are the same as Hyperliquid.
 
 The archive hostname serves the HTML download site, so the probe lists the
@@ -553,8 +555,12 @@ family (§6.2), never a post-hoc exclusion.
 ### 3.1 Point-in-time convention
 
 Perp bars are 24/7 UTC. A 1h bar is available at its `bar_end_ts`, so a feature
-at cutoff `T` may use only bars with `bar_end_ts <= T`; `information_available_ts
-= bar_end_ts` (conservative). No forward fill: a missing bar is a flag.
+at cutoff `T` may use only bars with `bar_end_ts <= T`; a first bar's
+`information_available_ts = bar_end_ts` (conservative). A late-fill correction is
+not available at `bar_end_ts`: it carries `information_available_ts` = when the
+correcting contents became observable (the latest arrival/ingest timestamp of the
+late fills), while `bar_end_ts` stays the interval boundary. No forward fill: a
+missing bar is a flag.
 
 ### 3.2 Prediction cutoffs, alignment and baselines
 
@@ -843,7 +849,7 @@ Same derivative columns (`venue`, `instrument_type`, `underlying_type`,
 | `open`,`high`,`low`,`close` | DECIMAL(28,10) | perp **trade (last)** price, **not** the stock price, mark or oracle |
 | `volume` | DECIMAL(28,10) | |
 | `trade_count` | BIGINT | |
-| `information_available_ts` | TIMESTAMP | `bar_end_ts` (conservative) |
+| `information_available_ts` | TIMESTAMP | `bar_end_ts` for a first bar (conservative); a late-fill correction uses when its contents became observable, never `bar_end_ts` |
 | `source` | STRING | `flat_file_backfill` (fills-built) / `api_capture` (only if approved) |
 | `ingest_ts` | TIMESTAMP | latest selected observation |
 | `quality_flags` | ARRAY<STRING> | `gap`, `stale`, `duplicate`, `split_suspect` |
@@ -1016,8 +1022,9 @@ idempotent.
 **Bar construction rules.**
 
 - Bucket by **trade time in UTC**: `bar_start_ts = floor(trade_ts / interval)`,
-  `bar_end_ts = bar_start_ts + interval`, `information_available_ts = bar_end_ts`
-  (conservative). Block time is stored on the fill but is never the bucket key.
+  `bar_end_ts = bar_start_ts + interval`, and a first bar's
+  `information_available_ts = bar_end_ts` (conservative). Block time is stored on
+  the fill but is never the bucket key.
 - `open` = first fill price, `high`/`low` = max/min, `close` = last fill price,
   `volume` = sum of sizes, `trade_count` = fill count; `notional` is summed from
   `price * size`.
@@ -1029,7 +1036,10 @@ idempotent.
   collapsed volume is reconciled against `candleSnapshot` over an overlapping
   window before the rebuild is trusted.
 - Out-of-order or late fills re-emit the affected bar as an append-only
-  correction in Bronze; Silver selects the latest valid observation.
+  correction in Bronze; the correction's `information_available_ts` is when the
+  correcting contents became observable (the latest arrival/ingest timestamp of
+  the late fills), never `bar_end_ts`, which stays the interval boundary. Silver
+  selects the latest valid observation.
 - No interpolation, no forward fill: a bar with no fills does not exist and is a
   gap; `weekend_coverage`/`perp_gap_count` report it.
 - Identity columns on every row: `data_source='hyperliquid'`,
@@ -1503,7 +1513,7 @@ simulation, and no confirmatory claim may be made before then.
 | **P0 (this round)** | `config/perp_universe.yaml` v4 + typed loader (instrument_type, underlying_type, commodities, tiers A-D, flags); static NYSE calendar; `scripts/perps/check_universe.py`; `scripts/perps/probe_history.py`; `scripts/perps/measure_closed_liquidity.py`; `scripts/perps/recount_weekends.py`; this plan (including the §4.4 flat-file reader design); architecture diagram; ontology terms; tests. | `pytest -q -m "not spark and not lakebase and not databricks"` (plain and with pyspark blocked); probe/measure `--dry-run`; no pandas/duckdb imports; calendar `--check`; loader loads 78 companies + 8 commodities + 2 controls; every row/record carries a valid `data_source` from `config/data_sources.py`; recount reproduces 1,871/1,538 company-weekends; ontology test green; no code path in P0 touches the network. |
 | **P1 (flat-file backfill)** | **`scripts/perps/hl_flat_files.py` as designed in §4.4**: Hyperliquid requester-pays S3 fills (`node_fills_by_block`, older `node_fills`/`node_trades`) rebuilt into our own `1m`/`15m`/`1h` trade-price bars; `asset_ctxs` for funding/OI/mark/oracle **after** its field list is verified; `misc_events_by_block` funding events; optional L2 sample; Binance Vision controls. Plus the HIP-3 coverage check on one sample object, the universe survivorship audit, the per-dex oracle open-question verification, **dividend ingestion (amount, currency, ex-date) so the label can stop being split-only**, and a decision + ingestion plan for the overnight baselines (US pre-market equity bars, overnight equity ATS sessions and CME equity-index futures ES/NQ; CME Globex for commodities). **No API forward-capture job.** | Dry-run prints the object list + estimated requester-pays transfer cost and performs **no object downloads** (`ListObjectsV2` listing only); `--live` is required to download and honours `--max-cost-usd`/`--max-bytes`; bars bucket by trade time in UTC, dedupe on the trade id (`tid`) and pass the fixture tests (UTC-midnight boundary, duplicate counterparty `tid`, late fill); the sample object verifies the field names and whether each trade appears once per counterparty, and **aggregated volume is reconciled against `candleSnapshot` over an overlapping window**; re-running a manifest is idempotent; HIP-3 coverage and the `asset_ctxs` field list are recorded from a sample object; the survivorship list is recorded with sources; each open question in §2.6 is either answered with a cited source or still marked open; the overnight (ES/NQ + ATS + pre-market) decision is recorded before P6 claims "beyond pre-market". |
 | **P2** | Bronze loaders for the P1 reader (fills, fill-built candles, asset contexts if verified, funding, Binance USD-M archives), manifests, idempotency, bounded backfill, archive checksums; DQ report on missing months and duplicate fills. | Re-running a run id creates zero duplicate Bronze rows; requester-pays cost stays inside the approved cap; partial writes retryable; checksum mismatch fails the run; DQ report on missing/duplicate bars and archive gaps. |
-| **P3** | Silver normalization: 1h bars, funding, QA flags (gaps, DST, stale marks, split suspects), canonical dedupe. | Natural keys unique; `information_available_ts` equals bar close; QA counts match Bronze source counts; no forward fill. |
+| **P3** | Silver normalization: 1h bars, funding, QA flags (gaps, DST, stale marks, split suspects), canonical dedupe. | Natural keys unique; `information_available_ts` equals bar close for a first bar and the correction's own observation time for a late fill (never `bar_end_ts`); QA counts match Bronze source counts; no forward fill. |
 | **P4** | OI: verified `asset_ctxs` backfill into `bronze_perp_oi_snapshots` (`source='s3_backfill'`), plus optional forward `metaAndAssetCtxs` snapshots (`source='forward_snapshot'`); optional L2 depth sample. | Field list verified before backfill; snapshot cadence documented; no fabricated history; `oi_change_pct` null when endpoints missing. |
 | **P5** | `gold_weekend_perp_features`: weekend windows, four prediction cutoffs, PIT trailing liquidity, equity/options baselines, BTC/ETH controls, the `prev_session_close`/`session_open`/`label_split_factor` label; mapping bridge. | Window boundaries match `market_calendar` fixtures; every row passes `information_available_ts <= prediction_ts`; label never in feature columns; `open_gap = session_open * label_split_factor / prev_session_close - 1` reproducible from the stored raw prints and factor; split/dividend weekend flags set; reconciliation counts. |
 | **P6** | Research evaluation: the power simulation (draft, §6.2.1; finalised and validated with the P6 implementation) run **before** any evaluation loss is inspected, baseline models (Friday equity/options; + crypto; + perps), the pre-registered primary comparison (§6.2), out-of-time metrics, ablations, notebook, owner review. | Pre-registered metrics and correction; the §6.2.1 power simulation reported (size, power curve, minimum detectable ΔR²_oot) before the evaluation; N_eff reported; model selection inside training folds; final out-of-time block untouched until evaluation; no signal publication; reproducible notebook and data snapshot; honest negative result allowed. |

@@ -388,6 +388,48 @@ def test_rejects_is_equity_true(tmp_path):
         load_perp_universe(_write_document(tmp_path, document))
 
 
+def test_rejects_duplicate_mapping_keys(tmp_path):
+    """A copy-pasted key inside one flow mapping must fail, not silently merge.
+
+    PyYAML keeps only the last occurrence of a duplicated key, and every row in
+    ``config/perp_universe.yaml`` is a single-line flow mapping, so a second
+    ``symbol:`` or ``tier:`` in one row would otherwise load with the later
+    value. This is the negative control for the strict loader.
+    """
+    text = _REAL_CONFIG.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    index = next(
+        i for i, line in enumerate(lines) if line.lstrip().startswith("- {commodity:")
+    )
+    needle = 'symbol: "'
+    assert needle in lines[index]
+    lines[index] = lines[index].replace(
+        needle, 'symbol: "xyz:DUPLICATE", ' + needle, 1
+    )
+    target = tmp_path / "perp_universe.yaml"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # The plain loader hides the duplicate: this test's premise.
+    plain = yaml.safe_load(target.read_text(encoding="utf-8"))
+    original = yaml.safe_load(text)
+    assert plain["commodities"][0]["symbol"] == original["commodities"][0]["symbol"]
+    with pytest.raises(PerpUniverseError, match="duplicate mapping key 'symbol'"):
+        load_perp_universe(target)
+
+
+def test_rejects_duplicate_mapping_keys_nested(tmp_path):
+    """The same guard applies outside flow mappings (nested block mappings)."""
+    target = tmp_path / "perp_universe.yaml"
+    target.write_text(
+        "version: 4\n"
+        "instrument_defaults: {instrument_type: perpetual_future}\n"
+        "instrument_defaults: {instrument_type: perpetual_future}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PerpUniverseError, match="duplicate mapping key"):
+        load_perp_universe(target)
+
+
 def test_rejects_bad_selected_at(tmp_path):
     document = _base_document()
     document["selected_at"] = "21-10-2026"

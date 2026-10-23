@@ -13,6 +13,7 @@ not exist in P0).
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -22,6 +23,7 @@ PLAN = ROOT / "docs" / "data" / "PERPS_WEEKEND_PLAN.md"
 README = ROOT / "README.md"
 SCHEMAS = ROOT / "docs" / "DATA_SCHEMAS.md"
 ONTOLOGY = ROOT / "ontology" / "business_terms.yaml"
+ONTOLOGY_README = ROOT / "ontology" / "README.md"
 FLAT_FILE_MODULE = ROOT / "scripts" / "perps" / "hl_flat_files.py"
 
 DERIVATIVE_COLUMNS = (
@@ -135,6 +137,41 @@ def test_ontology_has_the_flat_file_vocabulary():
         assert name in terms, name
     assert "requester-pays" in terms["flat_file_archive"]["definition"].lower()
     assert "never the mark" in terms["append_only_fill_bar"]["critical_rule"].lower()
+
+
+def test_late_fill_corrections_are_stamped_when_their_contents_become_observable():
+    """A late-fill correction is not available at ``bar_end``.
+
+    The bar end is the interval boundary; the correction's
+    ``information_available_ts`` is when the correcting contents became
+    observable (the latest arrival/ingest timestamp of the late fills). Stamping
+    it at ``bar_end`` would let a point-in-time join use the correction before it
+    existed. The same rule must be stated in DATA_SCHEMAS, the ontology README,
+    the ``append_only_fill_bar`` term and the plan.
+    """
+    term = yaml.safe_load(ONTOLOGY.read_text(encoding="utf-8"))["terms"][
+        "append_only_fill_bar"
+    ]
+    documents = {
+        "docs/DATA_SCHEMAS.md": SCHEMAS.read_text(encoding="utf-8"),
+        "ontology/README.md": ONTOLOGY_README.read_text(encoding="utf-8"),
+        "ontology/business_terms.yaml:append_only_fill_bar": " ".join(
+            [term["definition"], term["critical_rule"]]
+        ),
+        "docs/data/PERPS_WEEKEND_PLAN.md": PLAN.read_text(encoding="utf-8"),
+    }
+    for name, text in documents.items():
+        normalised = re.sub(r"\s+", " ", text.replace("`", "")).lower()
+        assert "append-only correction" in normalised, name
+        assert "became observable" in normalised, name
+        assert "arrival/ingest" in normalised, name
+        assert "interval boundary" in normalised, name
+        assert re.search(r"(not|never) bar_end", normalised), name
+        # The superseded wording stamped every bar (corrections included) at
+        # bar_end; it must not come back.
+        assert (
+            "the bar carries information_available_ts = bar_end_ts" not in normalised
+        ), name
 
 
 def test_flat_file_reader_is_design_only_in_p0():
