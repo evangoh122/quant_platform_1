@@ -30,3 +30,42 @@ knowledge_graph:
     HAS_PRODUCT: {from: Company, to: Product, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
     HAS_CUSTOMER: {from: Company, to: Customer, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: "optional_llm_enrichment (off by default; empty unless enabled)"}
     SUPERSEDES: {from: XbrlFact, to: XbrlFact, evidence_table: silver_sec_entities, pit: "valid_from == accepted_ts", populated_by: deterministic, condition: "Within the series identity (cik, concept, period_start, period_end, unit), ordered by (accepted_ts, accession), a later accepted fact with a different value supersedes the previous fact; this series identity is not the XbrlFact node identity."}
+  # Proposed vocabulary for the KG-C builder. The live enums above are
+  # unchanged (NodeType/EdgeType in sec_kg/model.py do not yet carry these), so
+  # the deterministic_counts above stay as declared; nothing in this block is
+  # populated or queried before KG-C ships. Executable contracts live in
+  # sec_kg/contracts/ and are tested offline.
+  contract_v2:
+    status: proposed
+    applies_in: KG-C
+    design_of_record: .agents/requests/KG_DATA_MODEL_v4.md
+    live_enums_changed: false
+    rule: "v4 amends the vocabulary: bitemporal event logs with derived system intervals, explicit period_type in Period identity, perps as Instrument nodes that are never merged with the Security they track, and a data_source on every row. pit_rule above is unchanged until KG-C ships the builder."
+    identity:
+      versioning: "The v1 encoder is unchanged for Company/Filing/Section/Chunk/Metric/Concept; a null-safe kgid:v2 encoder is used only for Security v2, Instrument, CryptoAsset and Period v2 (and facts embedding a Period id)."
+      security: "(issuer_company_id, share_class_code)"
+      instrument: "(venue, dex_or_market, contract_symbol); instrument_type, underlying_type and underlying are attributes, never part of the identity"
+      period: "(period_type in {instant, duration}, start, end); an instant has start = null and the type comes from source semantics, never from start == end"
+    temporal:
+      events: "insert-only *_events(entity_id, attribute, value, valid_from, valid_to, recorded_at, supersedes_event_id)"
+      derived_intervals: "system_from/system_to are derived from recorded_at plus supersession and are never updated in place"
+      public_vs_system: "public_as_of keeps events with public_available_at <= T; system_replay keeps system_from <= T < system_to; both filter by knowledge time first, then resolve business time"
+    ownership:
+      global_nodes: [Metric, Period, Concept, CryptoAsset]
+      instrument: "an Instrument is owned by the company of the Security it tracks; an Instrument whose underlying is a CryptoAsset is global"
+      stale_subset: "a subset build is rejected when a member's classification observation changed, because cross-company INFERRED_PEER edges would go stale"
+    data_source:
+      vocabulary: config/data_sources.py
+      codes: [massive, sec_edgar, sec_companyfacts, hyperliquid, binance_um, config, derived]
+      rule: "every KG node, edge and evidence row carries one non-null, validated provider code"
+    node_kinds_v2:
+      Security: {identity: [issuer_company_id, share_class_code], populated_by: "proposed (KG-C)"}
+      Instrument: {identity: [venue, dex_or_market, contract_symbol], attributes: [instrument_type, underlying_type, underlying], populated_by: "proposed (KG-C, KG-F rows)"}
+      CryptoAsset: {identity: [asset_code], populated_by: "proposed (KG-C)"}
+    edge_types_v2:
+      HAS_SECURITY: {from: Company, to: Security, evidence: mapping_observation, populated_by: "proposed (KG-C)"}
+      LISTED_AS: {from: Security, to: Instrument, evidence: mapping_observation, populated_by: "proposed (KG-C)", condition: "perps are derivatives: this links the contract to the equity it tracks; the two nodes are never merged"}
+      UNDERLIES: {from: CryptoAsset, to: Instrument, evidence: mapping_observation, populated_by: "proposed (KG-C)"}
+      AMENDS: {from: Filing, to: Filing, evidence: filing, populated_by: "proposed (KG-C)", condition: "amending accession -> amended accession"}
+      INFERRED_PEER: {from: Company, to: Company, evidence: classification, populated_by: "proposed (KG-C)", condition: "symmetric; stored once with the lower id first; data_source is derived"}
+    perps_rule: "Hyperliquid and Binance USD-M contracts are Instrument nodes with instrument_type = perpetual_future, never the equity, ETF, fund or preferred they track; underlying_type classifies the tracked asset (equity, etf, fund, preferred, commodity or crypto)."
