@@ -1085,13 +1085,17 @@ class TestRunbookDocs:
         """The mint failure and the connect failure are separate rows, each
         mapped to its own cause, using the error strings verbatim."""
         text = self._RUNBOOK.read_text(encoding="utf-8")
-        assert "| `Lakebase credential mint failed`" in text
+        assert "| `Lakebase credential mint failed (<ExceptionType>)`" in text
         assert "| `Lakebase connection failed`" in text
+        # the runner re-raises only the exception type (cause suppressed), so the
+        # detailed db/lakebase.py variants must not be promised to operators
+        assert "mint failed via SDK" not in text
+        assert "mint timed out" not in text
         # the old wrong mapping (connect failure -> mint cause) must be gone
         assert "| `Lakebase connection failed` | Credential mint failed |" not in text
         # mint row: token mint causes; connect row: connect-step causes
         mint_line = next(ln for ln in text.splitlines()
-                         if ln.startswith("| `Lakebase credential mint failed`"))
+                         if ln.startswith("| `Lakebase credential mint failed (<ExceptionType>)`"))
         conn_line = next(ln for ln in text.splitlines()
                          if ln.startswith("| `Lakebase connection failed`"))
         assert "Token mint failed" in mint_line
