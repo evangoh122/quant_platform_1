@@ -128,6 +128,9 @@ export function useTourHost(currentScreen?: string, onNavigate?: TourNavigationH
       const scheduleAutoStart = () => {
         mainTimerRef.current = window.setTimeout(() => {
           if (manualStartRef.current) return;
+          // The viewport can change during the 600 ms delay (rotation, resize,
+          // devtools responsive mode); re-check before opening the dimming modal.
+          if (isNarrowViewport()) return;
           const tour = TOUR_MAP[autoTour];
           if (tour && tourSeen(tour.key)) return;
           startTour(autoTour);

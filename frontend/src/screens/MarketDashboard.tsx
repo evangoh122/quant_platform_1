@@ -207,13 +207,20 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
           {/* Line */}
           <path d={linePath} fill="none" stroke="currentColor" strokeWidth={1.5} className="text-[var(--accent)]" />
 
-          {/* X-axis labels */}
+          {/* X-axis labels: anchor the end ticks inward so the first/last
+              date labels stay inside the SVG viewport instead of clipping. */}
           {tickIndices.map((i) => (
             <text
               key={`tick-${i}`}
               x={getX(i)}
               y={height - 5}
-              textAnchor="middle"
+              textAnchor={
+                i === tickIndices[0]
+                  ? 'start'
+                  : i === tickIndices[tickIndices.length - 1]
+                    ? 'end'
+                    : 'middle'
+              }
               className="fill-slate-400"
               style={{ fontSize: CHART_AXIS_FONT_SIZE }}
             >

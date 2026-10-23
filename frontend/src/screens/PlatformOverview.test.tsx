@@ -1,7 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
-import { PlatformOverview } from './PlatformOverview';
+import { PlatformOverview, EvidenceCard } from './PlatformOverview';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const css: string = readFileSync(join(__dirname, '../index.css'), 'utf-8');
 
 describe('PlatformOverview', () => {
   it('renders Platform Overview as the landing content with snapshot labels', () => {
@@ -99,6 +105,32 @@ describe('PlatformOverview', () => {
     expect(screen.getByText('4')).toBeInTheDocument();
     expect(screen.getByText('Lakebase')).toBeInTheDocument();
     expect(screen.getByText('Spark bronze/silver/gold')).toBeInTheDocument();
+  });
+
+  it('wraps a long unbreakable evidence value at a 320 px width', () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { value: 320, writable: true, configurable: true });
+
+    try {
+      const longValue = `Lakebase-${'x'.repeat(80)}`;
+      render(<EvidenceCard label="Operational model" value={longValue} />);
+
+      const value = screen.getByText(longValue);
+      expect(value.className).toContain('break-anywhere');
+      expect(value.className).toContain('min-w-0');
+      expect(value.className).not.toContain('truncate');
+      expect(value.className).not.toContain('whitespace-nowrap');
+
+      // The class only helps if the shared rule actually wraps long tokens.
+      expect(css).toMatch(/\.break-anywhere\s*\{[^}]*overflow-wrap:\s*anywhere/);
+      expect(css).toMatch(/\.break-anywhere\s*\{[^}]*word-break:\s*break-word/);
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        value: originalInnerWidth,
+        writable: true,
+        configurable: true,
+      });
+    }
   });
 
   it('navigates to each rubric destination on click', async () => {

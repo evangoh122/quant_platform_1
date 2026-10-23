@@ -123,11 +123,12 @@ names its section's category instead of repeating the title
 renders below 12 px (13 px `text-xs` captions), including inside the scaled SVG
 price chart and architecture diagram: each declares a minimum render width equal
 to its viewBox width, so a 12-unit label is never smaller than 12 CSS px and
-narrow viewports scroll inside the chart or diagram card instead. No screen
-scrolls horizontally between 320 and 768 px:
+narrow viewports scroll inside the chart or diagram card instead.
 `frontend/src/layout/layout-overflow.test.tsx` asserts the shell, column,
-wrapping and type-size guards on all 18 destinations at 320/375/390/768 px, and
-re-derives the rendered type floor from the populated chart and diagram.
+wrapping and type-size guards on all 18 destinations at the four widths it
+covers — 320, 375, 390 and 768 px — and re-derives the rendered type floor from
+the populated chart and diagram. Those are automated DOM/source assertions, not
+a browser pass; a manual browser check across those widths is still owed.
 
 Configuration comes from environment variables / bundle variables (`CATALOG`, `SCHEMA`, `DATABRICKS_WAREHOUSE_ID`,
 `LAKEBASE_INSTANCE`, `AGENT_MODEL_ENDPOINT`); no credentials are committed. Secrets live in a Databricks secret scope.

@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MarketDashboard } from './MarketDashboard';
+import { MarketDashboard, CHART_AXIS_FONT_SIZE, CHART_VIEW_WIDTH } from './MarketDashboard';
 
 const unsortedRows = [
   { symbol: 'AAPL', event_date: '2025-01-10', close: 150, open: 148, high: 152, low: 147, volume: 100, vwap: 149, price_basis: 'adjusted' },
@@ -440,6 +440,45 @@ describe('MarketDashboard', () => {
       const lastCall = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
       expect(String(lastCall[0])).toContain('/api/market/NVDA');
     });
+  });
+
+  it('keeps the first and last date labels inside the chart bounds', async () => {
+    render(<MarketDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: /adjusted close price chart/i })).toBeInTheDocument();
+    });
+
+    const chart = screen.getByRole('img', { name: /adjusted close price chart/i });
+    const dateLabels = Array.from(chart.querySelectorAll('text')).filter((node) =>
+      /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}$/.test(
+        (node.textContent ?? '').trim(),
+      ),
+    );
+    expect(dateLabels.length).toBeGreaterThanOrEqual(2);
+
+    const first = dateLabels[0];
+    const last = dateLabels[dateLabels.length - 1];
+    const firstX = Number(first.getAttribute('x'));
+    const lastX = Number(last.getAttribute('x'));
+    const firstAnchor = first.getAttribute('text-anchor');
+    const lastAnchor = last.getAttribute('text-anchor');
+
+    // Estimate the painted label width from its characters; the assertion is
+    // about the anchor keeping that box inside the 0..CHART_VIEW_WIDTH viewBox.
+    const labelWidth = (label: Element) =>
+      ((label.textContent ?? '').trim().length) * CHART_AXIS_FONT_SIZE * 0.6;
+    const leftEdge = (x: number, anchor: string | null, width: number) =>
+      anchor === 'start' ? x : anchor === 'end' ? x - width : x - width / 2;
+    const rightEdge = (x: number, anchor: string | null, width: number) =>
+      anchor === 'start' ? x + width : anchor === 'end' ? x : x + width / 2;
+
+    expect(firstAnchor).toBe('start');
+    expect(leftEdge(firstX, firstAnchor, labelWidth(first))).toBeGreaterThanOrEqual(0);
+    expect(rightEdge(firstX, firstAnchor, labelWidth(first))).toBeLessThanOrEqual(CHART_VIEW_WIDTH);
+    expect(lastAnchor).toBe('end');
+    expect(leftEdge(lastX, lastAnchor, labelWidth(last))).toBeGreaterThanOrEqual(0);
+    expect(rightEdge(lastX, lastAnchor, labelWidth(last))).toBeLessThanOrEqual(CHART_VIEW_WIDTH);
   });
 
   it('uses UTC midnight for range cutoff to avoid timezone-dependent extra day', async () => {

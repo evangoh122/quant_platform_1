@@ -12,10 +12,10 @@ interface EvidenceCardProps {
   detail?: string;
 }
 
-function EvidenceCard({ label, value, detail }: EvidenceCardProps) {
+export function EvidenceCard({ label, value, detail }: EvidenceCardProps) {
   return (
     <div data-evidence-card className="card-quiet flex min-w-0 flex-col p-5">
-      <p className="text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
+      <p className="break-anywhere min-w-0 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
       <p className="mt-1 text-sm font-medium text-[var(--text-secondary)]">{label}</p>
       {detail && (
         <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">{detail}</p>

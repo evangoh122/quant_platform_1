@@ -524,3 +524,49 @@ describe('First-run tour on mobile', () => {
     });
   });
 });
+
+describe('PageHeader tour action at 320 px (r4)', () => {
+  const originalInnerWidth = window.innerWidth;
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch());
+    localStorage.setItem(APPLICATION_TOUR_KEY, '1');
+    localStorage.setItem(AGENT_TOUR_KEY, '1');
+    localStorage.setItem(ARCHITECTURE_TOUR_KEY, '1');
+    Object.defineProperty(window, 'innerWidth', { value: 320, writable: true, configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'innerWidth', {
+      value: originalInnerWidth,
+      writable: true,
+      configurable: true,
+    });
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it('keeps the full Take a tour label in a wrappable, unclipped action', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const button = screen.getByRole('button', { name: 'Take a tour' });
+    const label = within(button).getByText('Take a tour');
+    const actionRow = button.parentElement!;
+
+    // The 320 px header must give the action its own row, let the button
+    // shrink to it, and wrap the label instead of clipping a nowrap line.
+    expect(actionRow.className).toContain('w-full');
+    expect(actionRow.className).toContain('min-w-0');
+    expect(actionRow.className).toContain('sm:w-auto');
+    expect(actionRow.className).toContain('sm:shrink-0');
+    expect(button.className).toContain('max-w-full');
+    expect(button.className).toContain('min-w-0');
+    expect(button.className).not.toContain('truncate');
+    expect(label.className).toContain('whitespace-normal');
+    expect(label.className).not.toContain('whitespace-nowrap');
+    expect(label).toHaveTextContent(/^Take a tour$/);
+  });
+});

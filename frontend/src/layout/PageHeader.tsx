@@ -56,14 +56,14 @@ export function PageHeader({ currentId, groups, onMenuToggle, onTour }: PageHead
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:shrink-0">
         <button
           data-tour="tour-action"
           onClick={onTour}
-          className="control-target inline-flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition hover:border-[var(--accent)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
+          className="control-target inline-flex max-w-full min-w-0 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition hover:border-[var(--accent)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
         >
           <span aria-hidden="true">&#9678;</span>
-          <span className="whitespace-nowrap">Take a tour</span>
+          <span className="min-w-0 whitespace-normal">Take a tour</span>
         </button>
       </div>
     </header>
