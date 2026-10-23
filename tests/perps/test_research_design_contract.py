@@ -32,6 +32,12 @@ the training **full-model** OLS (baseline **and** the five perp features), so
 `κ = sqrt(ΔR² · σ²_ε / ((1 − ΔR²) · q))`; and instrument alignment is
 deterministic per instrument (no rejection loop, no intersection fallback).
 
+Round 14 (owner decision 2026-10-23) marks the simulation as a **DRAFT**:
+finalised and validated together with the P6 implementation, not yet a
+pre-registered, executable specification; it lists the two Codex Sol open issues
+(aligned-sampling orthogonality and zero/one-instrument slots) and keeps the
+primary test's power UNDETERMINED until the finalised simulation runs.
+
 They are offline and stdlib + PyYAML only. They fail on the pre-round-9 docs.
 """
 from __future__ import annotations
@@ -198,11 +204,56 @@ def test_illustrative_correlation_bounds_are_not_the_primary_tests_power():
     assert "a null is the expected outcome" not in flat
 
 
-def test_primary_power_simulation_is_preregistered_and_specific():
-    """The simulation is executable, training-only and fully pre-registered."""
+def test_primary_power_simulation_is_a_draft_with_its_open_issues():
+    """Round 14 (owner decision 2026-10-23): the simulation is a P6 draft.
+
+    The specification is finalised and validated together with the P6
+    implementation, so the docs must not present it as a pre-registered,
+    executable specification; both Codex Sol open issues must be listed, and the
+    primary test's power stays UNDETERMINED until the finalised simulation runs.
+    Removing the DRAFT label fails this test.
+    """
     flat = _flat(_plan())
-    assert "#### 6.2.1 Pre-registered power simulation" in flat
-    # DGP source: the 12 pinned training weekends only.
+    # The DRAFT label, on the heading and in the opening line.
+    assert "DRAFT" in flat
+    assert "finalised and validated with the P6 implementation" in flat
+    assert "not yet a pre-registered, executable specification" in flat
+    assert "#### 6.2.1 Pre-registered power simulation" not in flat
+    assert "**DRAFT.**" in flat
+    # Exactly the two open issues from the Sol final gate, stated neutrally.
+    assert "Open issues (Codex Sol final gate, 2026-10-23)" in flat
+    assert (
+        "Aligned sampling versus the orthogonality the calibration assumes"
+        in flat
+    )
+    assert (
+        "nearest-following per-weekend instrument alignment changes row "
+        "probabilities in the unbalanced panel"
+    ) in flat
+    assert "(`E[Xε] = E[Zε] = 0`)" in flat
+    assert "need not hold under the aligned sampling measure" in flat
+    assert "`κ = 0` is not a null and the calibration is biased" in flat
+    assert "1.86e-16 before versus 0.135 after alignment" in flat
+    assert "0.0138 at `κ = 0`" in flat
+    assert "0.0322 at target 0.01" in flat
+    assert "0.0753 at target 0.05" in flat
+    assert "aligned sampling distribution (or a balanced design)" in flat
+    assert "Slots with zero or one eligible instrument" in flat
+    assert "fail such replications or prescribe a fixed disposition" in flat
+    # Power is undetermined until P6 runs the finalised simulation.
+    assert "The primary test's power remains UNDETERMINED" in flat
+    assert "until P6 runs the finalised simulation" in flat
+    assert "no confirmatory claim may be made before then" in flat
+    assert "This simulation fixes it" not in flat
+    # README and the schema doc say the same: draft, finalised in P6.
+    readme = _flat(README.read_text(encoding="utf-8"))
+    assert "**draft; finalised in P6**" in readme
+    assert "pre-registered simulation in the plan" not in readme
+    schemas = _flat(SCHEMAS.read_text(encoding="utf-8"))
+    assert "is a draft, finalised in P6" in schemas
+    assert "pre-registered power simulation" not in schemas
+    # The draft still specifies the simulation it will implement: training-only
+    # DGP over the 12 pinned weekends.
     assert "Training-only data-generating process." in flat
     assert "12 pinned training weekends only" in flat
     for weekend in TRAINING_WEEKENDS:
@@ -261,7 +312,7 @@ def test_primary_power_simulation_is_preregistered_and_specific():
     assert "size at population `ΔR² = 0`" in flat
     assert "Monte Carlo standard error" in flat
     assert "seed" in flat
-    # The simulation runs before any P6 loss is inspected.
+    # The finalised simulation runs before any P6 loss is inspected.
     assert "P6 **before** any evaluation loss is inspected" in flat
 
 

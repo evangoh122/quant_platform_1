@@ -1188,8 +1188,8 @@ panel), but that only says which row of an illustrative table applies.
 power calculation for it: the sampling distribution of a joint-block bootstrap-t
 over 18 weekend clusters with a Clark-West adjustment is not the 1-df Fisher-z
 distribution, and the plan has not simulated it. The power is unknown until the
-**pre-registered simulation** in §6.2.1 is run and its result recorded in the P6
-kickoff note **before** any evaluation loss is inspected.
+**power simulation** in §6.2.1 (draft; finalised in P6) is run and its result
+recorded in the P6 kickoff note **before** any evaluation loss is inspected.
 
 Using the 1,538 pooled rows instead would suggest r ≈ 0.07 (ΔR² ≈ 0.005) — an
 anticonservative illusion. P6 must report the effect size and its interval, must
@@ -1316,12 +1316,35 @@ then.
   interval and the correction applied; the pre-registered comparison is reported
   first and unadjusted, then the corrected secondary family.
 
-#### 6.2.1 Pre-registered power simulation (run before any P6 result is inspected)
+#### 6.2.1 Power simulation — DRAFT, finalised and validated with the P6 implementation; not yet a pre-registered, executable specification
 
-The primary test's power is **UNDETERMINED** (§6.1). This simulation fixes it. It
-is specified now, run in P6 **before** any evaluation loss is inspected, and it
-simulates the actual statistic rather than the 1-df heuristic. Every input below
-is fixed before the run; the seed is the only free parameter and is recorded.
+**DRAFT.** This simulation is finalised and validated together with the P6
+implementation, against real code and data; it is not yet a pre-registered,
+executable specification. The primary test's power is **UNDETERMINED** (§6.1) and
+the finalised simulation is what resolves it. It is run in P6 **before** any
+evaluation loss is inspected, and it simulates the actual statistic rather than
+the 1-df heuristic. Every input below is fixed before the run; the seed is the
+only free parameter and is recorded.
+
+**Open issues (Codex Sol final gate, 2026-10-23).** Recorded here as P6 work
+items; neither is resolved by this draft.
+
+1. **Aligned sampling versus the orthogonality the calibration assumes.** The
+   nearest-following per-weekend instrument alignment changes row probabilities
+   in the unbalanced panel, so training residual orthogonality
+   (`E[Xε] = E[Zε] = 0`) and the training covariance need not hold under the
+   aligned sampling measure. When they do not, `κ = 0` is not a null and the
+   calibration is biased. Sol's exact enumeration: orthogonality error 1.86e-16
+   before versus 0.135 after alignment; the population refit gains 0.0138 at
+   `κ = 0`, 0.0322 at target 0.01 and 0.0753 at target 0.05. Resolution in P6:
+   construct the residuals and calibrate under the aligned sampling distribution
+   (or a balanced design).
+2. **Slots with zero or one eligible instrument.** The failure rule does not
+   cover slots with zero or one eligible instrument; P6 must fail such
+   replications or prescribe a fixed disposition.
+
+**The primary test's power remains UNDETERMINED** until P6 runs the finalised
+simulation, and no confirmatory claim may be made before then.
 
 - **Training-only data-generating process.** Estimate the DGP **once, from the 12
   pinned training weekends only**: 2026-03-27, 2026-04-03, 2026-04-10,
@@ -1483,7 +1506,7 @@ is fixed before the run; the seed is the only free parameter and is recorded.
 | **P3** | Silver normalization: 1h bars, funding, QA flags (gaps, DST, stale marks, split suspects), canonical dedupe. | Natural keys unique; `information_available_ts` equals bar close; QA counts match Bronze source counts; no forward fill. |
 | **P4** | OI: verified `asset_ctxs` backfill into `bronze_perp_oi_snapshots` (`source='s3_backfill'`), plus optional forward `metaAndAssetCtxs` snapshots (`source='forward_snapshot'`); optional L2 depth sample. | Field list verified before backfill; snapshot cadence documented; no fabricated history; `oi_change_pct` null when endpoints missing. |
 | **P5** | `gold_weekend_perp_features`: weekend windows, four prediction cutoffs, PIT trailing liquidity, equity/options baselines, BTC/ETH controls, the `prev_session_close`/`session_open`/`label_split_factor` label; mapping bridge. | Window boundaries match `market_calendar` fixtures; every row passes `information_available_ts <= prediction_ts`; label never in feature columns; `open_gap = session_open * label_split_factor / prev_session_close - 1` reproducible from the stored raw prints and factor; split/dividend weekend flags set; reconciliation counts. |
-| **P6** | Research evaluation: the pre-registered power simulation (§6.2.1) run **before** any evaluation loss is inspected, baseline models (Friday equity/options; + crypto; + perps), the pre-registered primary comparison (§6.2), out-of-time metrics, ablations, notebook, owner review. | Pre-registered metrics and correction; the §6.2.1 power simulation reported (size, power curve, minimum detectable ΔR²_oot) before the evaluation; N_eff reported; model selection inside training folds; final out-of-time block untouched until evaluation; no signal publication; reproducible notebook and data snapshot; honest negative result allowed. |
+| **P6** | Research evaluation: the power simulation (draft, §6.2.1; finalised and validated with the P6 implementation) run **before** any evaluation loss is inspected, baseline models (Friday equity/options; + crypto; + perps), the pre-registered primary comparison (§6.2), out-of-time metrics, ablations, notebook, owner review. | Pre-registered metrics and correction; the §6.2.1 power simulation reported (size, power curve, minimum detectable ΔR²_oot) before the evaluation; N_eff reported; model selection inside training folds; final out-of-time block untouched until evaluation; no signal publication; reproducible notebook and data snapshot; honest negative result allowed. |
 
 Dependencies: P1 → P2 → P3 → P4/P5 → P6. P0 is standalone. P1 is no longer
 race-against-the-clock: the archive is durable, although it is uploaded roughly

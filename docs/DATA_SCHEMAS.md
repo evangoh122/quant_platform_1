@@ -909,11 +909,12 @@ Every perps table, when it lands, carries:
     The effect size reported next to it is the UNADJUSTED out-of-time R² gain
     mean(MSE_base - MSE_full) / mean(MSE_base) over the 18 evaluation weekends, with weekend means
     weighted equally; the Clark-West ratio is never reported as the effect size. The
-    pre-registered power simulation (§6.2.1) estimates its DGP only on the 12 pinned training
-    weekends (2026-03-27..2026-06-12) and treats population ΔR² in {0.005, 0.01, 0.02} as the
-    plausible set. That DGP uses the FULL-model OLS residuals (open_gap on the baseline AND the
-    five perp features), so the residual is orthogonal to both designs, s = u'E[Zε] = 0 and κ = 0
-    is the true no-incremental-predictability null (population ΔR² = 0). A target population
+    power simulation (§6.2.1) is a draft, finalised in P6; it estimates its DGP only
+    on the 12 pinned training weekends (2026-03-27..2026-06-12) and treats population
+    ΔR² in {0.005, 0.01, 0.02} as the plausible set. That DGP uses the FULL-model OLS
+    residuals (open_gap on the baseline AND the five perp features), so the residual
+    is orthogonal to both designs, s = u'E[Zε] = 0 and κ = 0 is the true
+    no-incremental-predictability null (population ΔR² = 0). A target population
     ΔR² maps to the scale κ = sqrt(ΔR² * σ²_ε / ((1 - ΔR²) * q)) with q = u'Σ_{Z|X}u taken from
     the perp features residualised on the baseline design (weekend-weighted); grid values are the
     population unadjusted out-of-time gain of the refit full model over the refit baseline, and
