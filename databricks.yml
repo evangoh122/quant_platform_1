@@ -31,6 +31,13 @@ variables:
   schema:
     description: Unity Catalog schema used by the application and batch jobs.
     default: evangoh_capstone
+  analytics_schedule_pause_status:
+    # Owner decision 2026-10-23: "Keep it paused but give me the option to
+    # schedule." PAUSED is the committed default in every target; pass
+    # --var analytics_schedule_pause_status=UNPAUSED at deploy (or resume the
+    # schedule in the Jobs UI) to turn the nightly run on.
+    description: PAUSED (default) or UNPAUSED for the nightly lakebase_analytics_refresh schedule
+    default: PAUSED
 
 sync:
   # include overrides .gitignore for these paths so that `databricks bundle deploy`
