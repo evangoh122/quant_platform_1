@@ -28,10 +28,35 @@ const degradedResponse = {
   startup: [],
 };
 
+/**
+ * Public-demo payload: both backends are reported disabled and `demo` is true.
+ * `/api/spreads` is not mounted in demo mode, so the Market Spreads
+ * destination must not be offered.
+ */
+const demoResponse = {
+  status: 'degraded',
+  version: '1.0.0',
+  demo: true,
+  dependencies: [
+    { name: 'lakebase', ok: false, detail: 'disabled in public demo', latency_ms: 0, last_error: null, last_ok_at: null, circuit_breaker_state: null },
+    { name: 'delta', ok: false, detail: 'disabled in public demo', latency_ms: 0, last_error: null, last_ok_at: null, circuit_breaker_state: null },
+  ],
+  freshness: { state: 'unavailable', table: 'system', detail: '' },
+  role_cache_size: 0,
+  startup: [],
+};
+
 const marketResponse = {
   symbol: 'NVDA',
   ohlcv: { data: [], count: 0, empty: true, source: 'silver_ohlcv_day_adjusted', freshness: { state: 'empty', table: '', detail: '' } },
   options: { data: [], count: 0, empty: true, source: 'gold_options_features', freshness: { state: 'empty', table: '', detail: '' } },
+};
+
+const spreadsResponse = {
+  days: 1000,
+  window_start: '2024-01-02',
+  window_end: '2026-10-01',
+  charts: [],
 };
 
 function mockFetch(body: unknown) {
@@ -41,6 +66,9 @@ function mockFetch(body: unknown) {
     }
     if (url.startsWith('/api/market/')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(marketResponse) });
+    }
+    if (url.startsWith('/api/spreads')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(spreadsResponse) });
     }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
   });
@@ -242,6 +270,55 @@ describe('App — agent tour auto-start guard', () => {
 
     expect(screen.queryByText('Research Agent tour')).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Guided tour' })).not.toBeInTheDocument();
+  });
+});
+
+describe('App - Market Spreads navigation', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('opens the Market Spreads screen from the Research group', async () => {
+    vi.stubGlobal('fetch', mockFetch(healthyResponse));
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Platform Overview' })).toBeInTheDocument();
+    });
+
+    const sidebar = screen.getByRole('complementary');
+    await user.click(within(sidebar).getByRole('button', { name: 'Market Spreads' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Market Spreads' })).toBeInTheDocument();
+    });
+    expect(screen.getByText(/no futures data source in the lakehouse yet/i)).toBeInTheDocument();
+  });
+
+  it('hides the Market Spreads destination in public-demo mode', async () => {
+    vi.stubGlobal('fetch', mockFetch(demoResponse));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Market Spreads' })).not.toBeInTheDocument();
+    });
+    // Only the live-only destination is removed; the rest of Research stays.
+    const sidebar = screen.getByRole('complementary');
+    expect(within(sidebar).getByRole('button', { name: 'Market Explorer' })).toBeInTheDocument();
+    expect(within(sidebar).getByRole('button', { name: 'SEC Research' })).toBeInTheDocument();
+  });
+
+  it('shows the not-available notice instead of the screen in public-demo mode', async () => {
+    vi.stubGlobal('fetch', mockFetch(demoResponse));
+
+    render(<App initialScreen="market-spreads" />);
+
+    expect(await screen.findByText('Not available in the public demo')).toBeInTheDocument();
+    // The charts never render, so no "unavailable" chart grid is shown.
+    expect(screen.queryByText(/no futures data source in the lakehouse yet/i)).not.toBeInTheDocument();
   });
 });
 

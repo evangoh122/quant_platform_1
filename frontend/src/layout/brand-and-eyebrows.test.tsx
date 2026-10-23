@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import App from '../App';
+import { populatedSpreadsResponse } from '../test/spreadsFixture';
 import { APPLICATION_TOUR_KEY, AGENT_TOUR_KEY, ARCHITECTURE_TOUR_KEY } from '../components/tours/tourSteps';
 
 /**
@@ -50,6 +51,12 @@ function mockFetch() {
     if (url === '/api/portfolio') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ positions: emptyEnvelope, orders: emptyEnvelope }) });
     }
+    if (url.startsWith('/api/spreads')) {
+      // The eyebrow guard renders every destination; Market Spreads needs a
+      // real chart payload so its own eyebrow is compared against the heading
+      // that follows it.
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(populatedSpreadsResponse) });
+    }
     if (url.startsWith('/api/market/')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ symbol: 'NVDA', ohlcv: emptyEnvelope, options: emptyEnvelope }) });
     }
@@ -60,6 +67,7 @@ function mockFetch() {
 const DESTINATIONS = [
   'Platform Overview',
   'Market Explorer',
+  'Market Spreads',
   'Options Analytics',
   'SEC Research',
   'AI Research Agent',

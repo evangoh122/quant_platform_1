@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from './api/client';
 import type { HealthResponse } from './api/types';
 import { AppShell, type NavGroup } from './layout/AppShell';
+import { EmptyState } from './components/EmptyState';
 import { MarketDashboard } from './screens/MarketDashboard';
+import { MarketSpreads } from './screens/MarketSpreads';
 import { SignalExplorer } from './screens/SignalExplorer';
 import { OptionsAnalytics } from './screens/OptionsAnalytics';
 import { SecFilingExplorer } from './screens/SecFilingExplorer';
@@ -24,6 +26,7 @@ import { useTourHost, CoachMarks } from './components/tours/TourHost';
 type ScreenId =
   | 'platform-overview'
   | 'market'
+  | 'market-spreads'
   | 'options'
   | 'sec'
   | 'agent'
@@ -50,6 +53,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Research',
     items: [
       { id: 'market', label: 'Market Explorer' },
+      { id: 'market-spreads', label: 'Market Spreads' },
       { id: 'options', label: 'Options Analytics' },
       { id: 'sec', label: 'SEC Research' },
       { id: 'agent', label: 'AI Research Agent' },
@@ -99,11 +103,32 @@ function PlaceholderScreen({ title, tourId }: { title: string; tourId?: string }
   );
 }
 
-export default function App() {
-  const [screen, setScreen] = useState<ScreenId>('platform-overview');
+/**
+ * Destinations that need live lakehouse tables with no public-demo snapshot.
+ * `/api/spreads` is not mounted in demo mode (see `api/main.py`), so offering
+ * Market Spreads there would only reach a 404.
+ */
+const LIVE_ONLY_SCREENS: ReadonlySet<string> = new Set(['market-spreads']);
+
+const LIVE_ONLY_NOTICE = 'Not available in the public demo';
+
+/** Navigation groups with live-only destinations removed while the demo runs. */
+function visibleNavGroups(demo: boolean): NavGroup[] {
+  if (!demo) return NAV_GROUPS;
+  return NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !LIVE_ONLY_SCREENS.has(item.id)),
+  })).filter((group) => group.items.length > 0);
+}
+
+export default function App({ initialScreen = 'platform-overview' }: { initialScreen?: ScreenId } = {}) {
+  const [screen, setScreen] = useState<ScreenId>(initialScreen);
   const [healthData, setHealthData] = useState<HealthResponse | null>(null);
   const handleNavigate = useCallback((id: string) => setScreen(id as ScreenId), []);
   const { activeTour, steps, closeTour, handleTourNavigate } = useTourHost(screen, handleNavigate);
+  // Demo status arrives with /api/health; until it does, behave as live.
+  const demo = healthData?.demo === true;
+  const groups = useMemo(() => visibleNavGroups(demo), [demo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,6 +150,11 @@ export default function App() {
         return <PlatformOverview onNavigate={(id) => setScreen(id as ScreenId)} />;
       case 'market':
         return <MarketDashboard />;
+      case 'market-spreads':
+        // Belt and braces: the destination is hidden in demo mode, and this
+        // guard means the screen never fetches a route the demo app omits.
+        if (demo) return <EmptyState title="Market Spreads" detail={LIVE_ONLY_NOTICE} />;
+        return <MarketSpreads />;
       case 'options':
         return <OptionsAnalytics />;
       case 'sec':
@@ -165,7 +195,7 @@ export default function App() {
   return (
     <>
       <AppShell
-        groups={NAV_GROUPS}
+        groups={groups}
         currentId={screen}
         onNavigate={(id) => setScreen(id as ScreenId)}
         health={healthData}

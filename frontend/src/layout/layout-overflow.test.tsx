@@ -6,7 +6,9 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import App from '../App';
 import { MarketDashboard } from '../screens/MarketDashboard';
+import { MarketSpreads } from '../screens/MarketSpreads';
 import ArchitectureDiagram from '../components/ArchitectureDiagram';
+import { populatedSpreadsResponse } from '../test/spreadsFixture';
 import { APPLICATION_TOUR_KEY, AGENT_TOUR_KEY, ARCHITECTURE_TOUR_KEY } from '../components/tours/tourSteps';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -35,6 +37,7 @@ const VIEWPORTS = [320, 375, 390, 768];
 const DESTINATIONS = [
   'Platform Overview',
   'Market Explorer',
+  'Market Spreads',
   'Options Analytics',
   'SEC Research',
   'AI Research Agent',
@@ -84,6 +87,11 @@ function mockFetch() {
     if (url === '/api/sec/coverage') return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [], count: 0, status: 'ok' }) });
     if (url === '/api/portfolio') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ positions: emptyEnvelope, orders: emptyEnvelope }) });
+    }
+    if (url.startsWith('/api/spreads')) {
+      // Real charts, so the sweep exercises the screen's SVG (and its 12 px
+      // floor) rather than an empty placeholder.
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(populatedSpreadsResponse) });
     }
     if (url.startsWith('/api/market/')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ symbol: 'NVDA', ohlcv: emptyEnvelope, options: emptyEnvelope }) });
@@ -468,6 +476,33 @@ describe('Rendered type floor inside scaled SVG', () => {
 
     expect(svgTextOffenders(svg)).toEqual([]);
     expect(svgRenderScale(svg)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders every populated spreads-chart label at >= 12 px at its declared minimum width', async () => {
+    // The Market Spreads screen is the only screen whose charts come from the
+    // shared `LineChart`. Its labels used to be authored at 9 units on a
+    // `min-width: 300` SVG against a 640-unit viewBox, so every one painted at
+    // 4.22 px. This applies the same rendered-scale guard to all five charts.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(populatedSpreadsResponse),
+    }));
+
+    const { container } = render(<MarketSpreads />);
+    await waitFor(() => {
+      expect(container.querySelectorAll('svg[role="img"]')).toHaveLength(5);
+    });
+
+    const svgs = Array.from(container.querySelectorAll('svg[role="img"]'));
+    for (const svg of svgs) {
+      // 5 value-grid labels + 1-2 direct end labels + 3 date ticks + 1 unit.
+      expect(svg.querySelectorAll('text').length).toBeGreaterThanOrEqual(10);
+      expect(svgRenderScale(svg)).toBeGreaterThanOrEqual(1);
+      expect(svgTextOffenders(svg)).toEqual([]);
+    }
+
+    // The date ticks are real labels, not whitespace that would pass vacuously.
+    expect(svgs[0].textContent ?? '').toMatch(/Sep 29/);
   });
 });
 

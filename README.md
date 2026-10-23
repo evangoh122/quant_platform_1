@@ -135,6 +135,34 @@ missing data, not full coverage. The opening-gap label uses one formula,
 `open_gap = session_open * label_split_factor / prev_session_close - 1`, with the new/old split ratio as the factor;
 `session_open` is the **consolidated** first regular-session print, not the listing-exchange opening auction. It is
 **split-adjusted only**: `bronze_corporate_actions` has no dividend amounts, so dividend ingestion is a P1 prerequisite.
+## Market Spreads screen
+
+`Market Spreads` (Research group, `GET /api/spreads`) draws five charts from data the lakehouse already holds:
+
+| Chart | Source |
+|---|---|
+| USO split-adjusted close | `silver_ohlcv_day_adjusted` (`adj_close`) |
+| US 10Y / 2Y Treasury yields + 10s2s tile | `bronze_fed_series` (`DGS10`, `DGS2`, latest vintage per observation) |
+| RSP / SPY, MAGS / SOXX, MAGS / SMH relative performance | `silver_ohlcv_day_adjusted` |
+
+**Rebased-index caveat:** the relative-performance charts are *not* raw price ratios. The `adj_*` columns are
+global/current-scale split-adjusted levels, approved for returns but not as price-level features, so each pair is
+inner-joined on its common dates, converted to a ratio and rebased to 100 at the first common date of the window. They
+show price return (splits adjusted, dividends not), not total return. Dates missing from one leg are dropped (and
+counted in the UI), never forward-filled, and fewer than two common points is shown as empty rather than zero.
+
+**Futures spread not included:** `CLZ26.NYM` vs `CLZ27.NYM` is not charted because there is no futures data source in
+the lakehouse yet; the screen names the gap instead of inventing prices. The window options are **1M / 3M / 6M /
+All** = **21 / 63 / 126 / 1000 trading days** (252 is the API default). They are trading days, not calendar days,
+approximated as weekdays — exchange holidays are not excluded — and capped at 1000.
+
+**FRED timing:** the 10Y / 2Y chart plots each value at its `observation_date` (the day the rate was measured); a
+constant-maturity rate is published the next business day. The 10s2s tile is a yield spread, so it is quoted in
+percentage points (`pp`), not percent.
+
+**Live-only for now:** every chart reads a lakehouse table, and there are no public-demo snapshot exports for these
+sources yet, so `create_app()` mounts `/api/spreads` only outside demo mode. In the public demo the Market Spreads
+destination is hidden (the frontend reads `demo` from `/api/health`); a demo snapshot export is planned as a separate PR.
 
 ## Repository layout
 
@@ -198,14 +226,15 @@ with the sidebar and the mobile drawer kept navigation-only, and each eyebrow
 names its section's category instead of repeating the title
 (`frontend/src/layout/brand-and-eyebrows.test.tsx` guards both). Text never
 renders below 12 px (13 px `text-xs` captions), including inside the scaled SVG
-price chart and architecture diagram: each declares a minimum render width equal
-to its viewBox width, so a 12-unit label is never smaller than 12 CSS px and
-narrow viewports scroll inside the chart or diagram card instead.
+price chart, the Market Spreads line charts and the architecture diagram: each
+declares a minimum render width equal to its viewBox width, so a 12-unit label is
+never smaller than 12 CSS px and narrow viewports scroll inside the chart or
+diagram card instead.
 `frontend/src/layout/layout-overflow.test.tsx` asserts the shell, column,
-wrapping and type-size guards on all 18 destinations at the four widths it
+wrapping and type-size guards on all 19 destinations at the four widths it
 covers — 320, 375, 390 and 768 px — and re-derives the rendered type floor from
-the populated chart and diagram. Those are automated DOM/source assertions, not
-a browser pass; a manual browser check across those widths is still owed.
+the populated charts and the diagram. Those are automated DOM/source assertions,
+not a browser pass; a manual browser check across those widths is still owed.
 
 Configuration comes from environment variables / bundle variables (`CATALOG`, `SCHEMA`, `DATABRICKS_WAREHOUSE_ID`,
 `LAKEBASE_INSTANCE`, `AGENT_MODEL_ENDPOINT`); no credentials are committed. Secrets live in a Databricks secret scope.
@@ -226,6 +255,11 @@ The public showcase runs as a Docker Space built from
 notes (and the `<HF_NAMESPACE>/<HF_SPACE>` placeholder) are in
 [`docs/HF_SPACE_DEPLOY.md`](docs/HF_SPACE_DEPLOY.md); `scripts/publish_hf_space.sh`
 is dry-run by default and requires `--yes` to upload. Render is retired.
+
+Market Spreads is live-only for now: `/api/spreads` is not mounted in demo mode
+(the five charts read `silver_ohlcv_day_adjusted` and `bronze_fed_series`, which
+have no demo snapshot export yet — a separate, later PR), so the destination is
+hidden when `/api/health` reports `demo: true`.
 
 ## Engineering process
 

@@ -47,6 +47,11 @@ TABLE_COLUMNS: Dict[str, FrozenSet[str]] = {
         "adj_open", "adj_high", "adj_low", "adj_close", "adj_vwap", "adj_volume",
         "return_1d", "information_available_ts",
     }),
+    "bronze_fed_series": frozenset({
+        "series_id", "observation_date", "value", "vintage_date",
+        "information_available_ts", "source", "source_url", "ingest_ts",
+        "raw_value", "revision_class",
+    }),
 }
 
 # ── Columns actually used by each query function ─────────────────────────────
@@ -90,6 +95,11 @@ QUERY_COLUMNS: Dict[str, Dict[str, FrozenSet[str]]] = {
             "lev_money_net", "lev_money_net_chg_1w", "lev_money_pctile_52w",
             "lev_money_zscore_52w", "asset_mgr_net", "asset_mgr_pctile_52w",
             "crowding_score", "regime_label",
+        }),
+    },
+    "fed_series": {
+        "bronze_fed_series": frozenset({
+            "series_id", "observation_date", "value", "vintage_date", "ingest_ts",
         }),
     },
 }
@@ -207,6 +217,7 @@ def validate_actual_queries() -> list[str]:
     intraday_sql, _ = delta_adapter._build_market_features_intraday_query("AAPL", "2025-01-01", "2025-12-31")
     opts_sql, _ = tools_retrieval._build_options_query("AAPL")
     cot_sql, _ = tools_retrieval._build_cot_query("rate")
+    fed_sql, _ = delta_adapter._build_fed_series_query(["DGS10", "DGS2"], "2025-01-01", "2025-12-31")
 
     # Validate each query's columns against the contract
     queries = [
@@ -215,6 +226,7 @@ def validate_actual_queries() -> list[str]:
         ("market_features_intraday", "gold_ohlcv_features", intraday_sql),
         ("get_options_features", "gold_options_features", opts_sql),
         ("get_cot_positioning", "gold_cot_features", cot_sql),
+        ("fed_series", "bronze_fed_series", fed_sql),
     ]
 
     for query_name, table, sql in queries:

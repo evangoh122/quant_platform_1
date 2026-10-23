@@ -63,6 +63,56 @@ export interface MarketSnapshot {
   options: Envelope<OptionsFeature>;
 }
 
+/** `[ISO date, value]` — computed (aligned/rebased) by the API, drawn as-is. */
+export type SpreadPoint = [string, number];
+
+export interface SpreadSeries {
+  key: string;
+  label: string;
+  points: SpreadPoint[];
+  latest_value: number | null;
+  latest_date: string | null;
+  window_pct_change: number | null;
+}
+
+export interface SpreadTile {
+  label: string;
+  value: number | null;
+  as_of: string | null;
+  /**
+   * Unit of the tile value, rendered as-is next to it. A yield spread is in
+   * percentage points (`'pp'`), never percent — the chart's own `unit` is `'%'`
+   * because its y-axis holds yield levels.
+   */
+  unit: string;
+  points: SpreadPoint[];
+}
+
+export interface SpreadChart {
+  chart_id: string;
+  title: string;
+  subtitle: string;
+  kind: 'price' | 'index' | 'yield';
+  /** Unit of the plotted y values: `'%'` (yield levels), `'USD'` or `'index'`. */
+  unit: string;
+  source: string;
+  freshness: Freshness;
+  empty: boolean;
+  series: SpreadSeries[];
+  first_common_date: string | null;
+  dropped_dates: number;
+  as_of: string | null;
+  tile: SpreadTile | null;
+  caption: string;
+}
+
+export interface MarketSpreadsResponse {
+  days: number;
+  window_start: string;
+  window_end: string;
+  charts: SpreadChart[];
+}
+
 export interface WatchlistItem {
   symbol: string;
   created_at: string;
@@ -163,6 +213,8 @@ export interface StartupStage {
 export interface HealthResponse {
   status: 'ok' | 'degraded';
   version: string;
+  /** True in public-demo mode; live-only destinations (Market Spreads) hide. */
+  demo: boolean;
   dependencies: DependencyStatus[];
   freshness: Freshness;
   role_cache_size: number;
