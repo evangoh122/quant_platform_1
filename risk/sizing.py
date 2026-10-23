@@ -147,12 +147,33 @@ def _safe_weight(expr: pl.Expr, valid: pl.Expr) -> pl.Expr:
     )
 
 
+def _date_column_hint(frame: pl.DataFrame, missing: set[str]) -> str:
+    """Explain a missing ``date`` column, naming a custom date column if present."""
+    if "date" not in missing:
+        return ""
+    candidates = [
+        name for name, dtype in frame.schema.items() if dtype == pl.Date
+    ]
+    if not candidates:
+        return ""
+    found = ", ".join(repr(name) for name in candidates)
+    return (
+        f"; frames passed to size() require a 'date' column by contract, found "
+        f"date column {found} - rename it to 'date' before sizing"
+    )
+
+
 def size(
     signal_or_pair: pl.DataFrame | None,
     estimates: pl.DataFrame,
     params: SizingParams | None = None,
 ) -> pl.DataFrame:
     """Return target NAV-fraction weights ``date, w_a, w_b`` for one sizer.
+
+    The date column name is fixed by this public contract (``date``), not read
+    from the config; a frame whose date column has another name is rejected
+    with an error naming that column, so callers rename at this boundary (as
+    :func:`risk.compare.compare_sizers` does).
 
     Args:
         signal_or_pair: long frame ``[date, signal]``.  ``signal`` is the
@@ -172,7 +193,10 @@ def size(
     required = {"date", "vol_a", "vol_b", "corr"}
     missing = required.difference(estimates.columns)
     if missing:
-        raise KeyError(f"estimates missing columns: {sorted(missing)}")
+        raise KeyError(
+            f"estimates missing columns: {sorted(missing)}"
+            + _date_column_hint(estimates, missing)
+        )
 
     est = sorted_by_date(
         estimates.select(
@@ -189,8 +213,12 @@ def size(
             pl.lit(p.default_signal, dtype=pl.Float64).alias("signal"),
         )
     else:
-        if "signal" not in signal_or_pair.columns:
-            raise KeyError("signal_or_pair must contain a 'signal' column")
+        missing_signal = {"date", "signal"}.difference(signal_or_pair.columns)
+        if missing_signal:
+            raise KeyError(
+                f"signal_or_pair missing columns: {sorted(missing_signal)}"
+                + _date_column_hint(signal_or_pair, missing_signal)
+            )
         signal_frame = sorted_by_date(
             signal_or_pair.select(
                 pl.col("date"),

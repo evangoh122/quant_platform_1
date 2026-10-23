@@ -25,20 +25,30 @@ result = backtest_vol_pair(panel, weights, cfg.backtest, columns=cfg.columns)
 table = compare_sizers(panel, cfg)                            # all four sizers
 ```
 
-`panel` is a long frame with `date` (`pl.Date`) and adjusted `open_a`,
-`close_a`, `open_b`, `close_b` columns. Run the experiment with
-`python -m risk.run_compare`; it writes `risk/results/p1_compare.md`.
+`panel` is a long frame with one `pl.Date` column (named by `columns.date`)
+and adjusted `open_a`, `close_a`, `open_b`, `close_b` columns (named by
+`columns`). Run the experiment with `python -m risk.run_compare`; it writes
+`risk/results/p1_compare.md`.
 
 Row order is not trusted. Every frame-level entry point (`estimate_pair`,
 `label_regimes`, `size`, `build_signal`, `compare_sizers`,
-`backtest_vol_pair`, `performance_metrics`) sorts its input stably by `date`
-and rejects duplicate and null dates with a clear error (a row with no date
-cannot be placed in time), so a shuffled frame produces exactly the
+`backtest_vol_pair`, `performance_metrics`) sorts its input stably by its date
+column (the configured `columns.date` name, or the frame's only `pl.Date`
+column) and rejects duplicate and null dates with a clear error (a row with no
+date cannot be placed in time), so a shuffled frame produces exactly the
 chronological result and a past label can never read a future observation.
 The bare `pl.Expr` helpers (`vol_percentile`, `rolling_vol`,
 `ewma_*`, `price_returns`, ...) are builders, not entry points: they perform
 no sort and assume the caller already ordered rows by date. The shared guard
 lives in `risk/frames.py`.
+
+The configured `columns.date` name is honoured end to end by `estimate_pair`,
+`build_signal`, `label_regimes`, `backtest_vol_pair`, `performance_metrics`,
+`compare_sizers`, the synthetic generator and `python -m risk.run_compare`.
+`size` is the one exception: its public contract is the fixed `date, w_a, w_b`
+frame, so it rejects another date-column name with an error naming that
+column; `compare_sizers` renames only at that boundary and restores the
+configured name before the backtest.
 
 ## What is estimated
 
@@ -89,7 +99,11 @@ against returns); a single shift would let a weight decided at the close earn
 the overnight gap into its own fill price. It is covered by a shock test and a
 fill-price test. Transaction costs are a configurable 5/10/15 bps per side on
 `sum |delta w|`, with an optional ADV-participation mode implemented in Polars
-and parity-tested against `strategies.cost_model.cost_per_trade`. Borrow is
+and parity-tested against `strategies.cost_model.cost_per_trade`.
+`compare_sizers` is a *flat per-side bps* comparison by definition: it forces
+`cost_mode="flat"` on every row it builds, so a config with
+`backtest.cost_mode: adv` produces exactly the same table as the same config
+with `flat`. Borrow is
 charged only on the short notional of the book **held** over each open-to-open
 interval (`w_a_held`, `w_b_held`) -- the same book that earns `gross_return`,
 not the book filled at that row's open -- using the daily rate from
@@ -115,6 +129,8 @@ assumption).
   plumbing (estimators, lag, floors, caps, costs, reporting), **not alpha**.
   No claim is made about real MAGS/SOXX or any instrument.
 * No pandas bridge in the layer: all data frames are Polars; `strategies.cost_model` is imported only for its scalar cost helpers (the request explicitly allows this); numpy only generates synthetic shocks.
+* Requires `polars >= 1.21.0`: the estimators pass `min_samples` to
+  `ewm_mean`/`rolling_std`, which older releases do not accept.
 
 All parameters live in `risk/config.yaml`; nothing strategy-specific is
 hardcoded in the modules.

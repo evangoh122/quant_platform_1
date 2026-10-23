@@ -270,11 +270,13 @@ def estimate_pair(
 ) -> pl.DataFrame:
     """Estimate pair volatilities, correlation and regime inputs.
 
-    ``panel`` is a long frame with ``date`` (``pl.Date``) and the four adjusted
-    price columns named by ``columns``.  The frame is sorted stably by date
+    ``panel`` is a long frame with one ``pl.Date`` column (named by
+    ``columns.date``) and the four adjusted price columns named by
+    ``columns``.  The frame is sorted stably by date
     before any expression is built and duplicate dates are rejected, so a
     shuffled frame produces exactly the same estimates as the chronological
-    one.  The returned frame keeps ``date`` and adds returns, EWMA
+    one.  The returned frame keeps the configured date column name and adds
+    returns, EWMA
     vols/correlation/covariance, rolling vols for every configured window,
     overnight/intraday vols and the past-only vol percentile of leg A.
     """

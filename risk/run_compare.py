@@ -15,7 +15,7 @@ from pathlib import Path
 
 import polars as pl
 
-from risk.compare import compare_sizers
+from risk.compare import compare_sizers, signal_varies_in_magnitude
 from risk.config import RiskConfig, load_config
 from risk.synthetic import synthetic_pair_panel
 
@@ -47,8 +47,23 @@ def render_markdown(table: pl.DataFrame, config: RiskConfig) -> str:
 
     This is pure formatting: the table has no date column and no trailing
     window, so the date-order guards used by the analysis entry points do not
-    apply here.
+    apply here.  The magnitude sentence is derived from the configured signal
+    mode (the same registry ``build_signal`` uses): ``momentum_z`` varies in
+    magnitude, while the sign-only modes make the two books coincide.
     """
+    if signal_varies_in_magnitude(config.signals.mode):
+        signal_note = (
+            "`vol_target` multiplies the covariance-aware book by the alpha",
+            "magnitude; `covariance_aware` uses its sign. The `momentum_z` reference",
+            "signal varies in magnitude, so the two variants differ.",
+        )
+    else:
+        signal_note = (
+            "`vol_target` multiplies the covariance-aware book by the alpha",
+            "magnitude; `covariance_aware` uses its sign. The configured signal is",
+            "sign-only (|signal| = 1), so both books coincide; identical rows are a",
+            "property of the signal, not a difference in sizing.",
+        )
     lines = [
         "# Phase 1 — volatility-aware sizing vs fixed sizing (synthetic)",
         "",
@@ -66,9 +81,7 @@ def render_markdown(table: pl.DataFrame, config: RiskConfig) -> str:
         "Execution is identical across variants: signal at close t, fill at open",
         "t+1, open-to-open P&L, flat per-side cost plus borrow on short notional.",
         "",
-        "`vol_target` multiplies the covariance-aware book by the alpha",
-        "magnitude; `covariance_aware` uses its sign. The `momentum_z` reference",
-        "signal varies in magnitude, so the two variants differ.",
+        *signal_note,
         "",
         "| " + " | ".join(_COLUMNS) + " |",
         "|" + "|".join(["---"] * len(_COLUMNS)) + "|",
@@ -106,7 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    panel = synthetic_pair_panel(config.experiment, config.estimators.annualization)
+    panel = synthetic_pair_panel(
+        config.experiment, config.estimators.annualization, config.columns
+    )
     table = compare_sizers(panel, config)
     markdown = render_markdown(table, config)
 

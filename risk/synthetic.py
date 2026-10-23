@@ -13,7 +13,7 @@ from datetime import date, timedelta
 import numpy as np
 import polars as pl
 
-from risk.config import ExperimentParams, GarchParams, load_config
+from risk.config import ExperimentParams, GarchParams, PairColumns, load_config
 
 
 def _garch_path(
@@ -41,13 +41,19 @@ def _garch_path(
 def synthetic_pair_panel(
     params: ExperimentParams | None = None,
     annualization: int | None = None,
+    columns: PairColumns | None = None,
 ) -> pl.DataFrame:
-    """Build ``date, open_a, close_a, open_b, close_b`` from seeded GARCH shocks.
+    """Build the pair panel from seeded GARCH shocks.
 
-    ``annualization`` defaults to the estimator annualization in the config so
-    the generated long-run vol matches the units the estimators report.
+    The frame has one ``pl.Date`` column plus adjusted opens/closes for both
+    legs, named by ``columns`` (default: the configured ``PairColumns``), so a
+    config with a renamed date or price column flows through the whole
+    experiment.  ``annualization`` defaults to the estimator annualization in
+    the config so the generated long-run vol matches the units the estimators
+    report.
     """
     p = params or load_config().experiment
+    cols = columns or load_config().columns
     ann = (
         int(annualization)
         if annualization is not None
@@ -79,10 +85,10 @@ def synthetic_pair_panel(
 
     return pl.DataFrame(
         {
-            "date": pl.Series("date", dates, dtype=pl.Date),
-            "open_a": np.exp(log_open_a),
-            "close_a": np.exp(log_close_a),
-            "open_b": np.exp(log_open_b),
-            "close_b": np.exp(log_close_b),
+            cols.date: pl.Series(cols.date, dates, dtype=pl.Date),
+            cols.open_a: np.exp(log_open_a),
+            cols.close_a: np.exp(log_close_a),
+            cols.open_b: np.exp(log_open_b),
+            cols.close_b: np.exp(log_close_b),
         }
     )

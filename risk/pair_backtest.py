@@ -209,10 +209,12 @@ def backtest_vol_pair(
     """Backtest a two-leg target-weight path on adjusted open prices.
 
     Args:
-        prices: long frame with ``date`` (``pl.Date``) and adjusted ``open_a``,
-            ``open_b`` (plus any close columns; only opens drive P&L).
+        prices: long frame with one ``pl.Date`` column (named by
+            ``columns.date``) and adjusted ``open_a``, ``open_b`` (plus any
+            close columns; only opens drive P&L).
         weights: long frame ``date, w_a, w_b`` decided at the close of
-            ``date``.  A weight fills at the next open and only earns from the
+            ``date`` (the date column uses the same configured name).  A weight
+            fills at the next open and only earns from the
             following open-to-open interval (two structural shifts).
         params: backtest parameters (cost bps, borrow bucket, annualization).
         cost_params: ``CostParams`` providing the borrow schedule.
