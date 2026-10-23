@@ -39,7 +39,12 @@ dependencies = [
     "tenacity>=8.2.0",
     "numpy>=1.24.0",
     "pandas>=2.0.0",
-    "polars>=0.20.0",
+    # polars floor is the risk/ layer's requirement, not the historical pin:
+    # risk/estimators.py and risk/compare.py pass `min_samples` to ewm_mean,
+    # ewm_var, rolling_std and rolling_map, which Polars renamed from
+    # `min_periods` in 1.21.0.  risk/README.md documents the same floor and
+    # tests/risk/test_polars_capability.py fails when this line falls below it.
+    "polars>=1.21.0",
     "openai>=1.0.0",
     "langchain-core>=1.2.22",
     "langchain-openai>=0.1.0",

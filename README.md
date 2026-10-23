@@ -49,6 +49,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | Trading signals (`gold_trading_signals` → Signals page) | Yes | Yes | **35 baseline signals published 2026-10-05** by `scripts/publish_baseline_signals.py` (untuned logistic-regression baseline; hold-out metrics are not reported here; pipeline demonstration, no predictive edge claimed) |
 | Streaming DLT pipeline | Yes | Local validation | Not deployed or run |
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
+| Volatility and risk-sizing layer (`risk/`: EWMA estimators, four sizers, pair backtest) | Yes | Yes | Offline research only; seeded synthetic comparison, no real-data run, no profitability claim; no gold tables yet |
 | IBKR paper execution | Scaffold | Partial | Not live |
 | Weekend perps research (planned) | Loader, calendar and measurement tooling only (flat-file reader is design only) | Yes (offline) | Not deployed — no ingestion job, no shared tables, no signals |
 
@@ -149,6 +150,7 @@ missing data, not full coverage. The opening-gap label uses one formula,
 | `resources/`, `databricks.yml`, `app.yaml` | Databricks Asset Bundle: jobs, app, resources |
 | `strategies/`, `ml/` | Research code (backtests, evidence, models) |
 | `config/`, `scripts/perps/` | Perp universe/calendar config; probe, closed-market liquidity measurement and the flat-file reader design (research scaffolding) |
+| `risk/` | Volatility estimators, sizing methods and pair backtest (Polars); research code |
 | `evals/` | RAG evaluation harness |
 | `config/` | Environment settings, ticker/universe YAML, and the `data_source` provider vocabulary (`config/data_sources.py`) |
 | `tests/` | Offline test suite |
@@ -181,6 +183,12 @@ After changing dependencies in `pyproject.toml`, run `uv lock`, then
 CI fails when either the lock or the export is stale. See
 [`docs/CICD.md`](docs/CICD.md#dependency-workflow-uv) for the full workflow
 (including why `ibapi` is installed manually and never locked).
+
+The declared `polars>=1.21.0` floor is set by the `risk/` layer, whose
+estimators pass Polars' `min_samples` keyword (renamed from `min_periods` in
+Polars 1.21.0). `risk/README.md` documents the same floor, and
+`tests/risk/test_polars_capability.py` fails when `pyproject.toml` declares
+anything lower.
 
 The frontend follows the owner's site (evangoh.com) palette, italic-serif
 eyebrows, 16 px cards and a centred 1200 px content column, and it is
@@ -247,3 +255,4 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 - Strategy research reports are descriptive; several are marked `BLOCKED_DATA` (fewer than two complete out-of-sample years).
 - The streaming DLT pipeline is built but not deployed.
 - Published signals come from an untuned logistic-regression baseline; hold-out metrics are not reported here; they demonstrate the features → model → `gold_trading_signals` → app path, not a trading edge. All directions UP.
+- The volatility and risk-sizing layer (`risk/`) is validated on synthetic data only; correlation estimates from short windows are unstable; futures/options volatility strategies (implied vs forecast realized volatility) are planned, not built; no signal or sizing output is published or traded.
