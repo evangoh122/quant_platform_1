@@ -184,6 +184,12 @@ CI fails when either the lock or the export is stale. See
 [`docs/CICD.md`](docs/CICD.md#dependency-workflow-uv) for the full workflow
 (including why `ibapi` is installed manually and never locked).
 
+The declared `polars>=1.21.0` floor is set by the `risk/` layer, whose
+estimators pass Polars' `min_samples` keyword (renamed from `min_periods` in
+Polars 1.21.0). `risk/README.md` documents the same floor, and
+`tests/risk/test_polars_capability.py` fails when `pyproject.toml` declares
+anything lower.
+
 The frontend follows the owner's site (evangoh.com) palette, italic-serif
 eyebrows, 16 px cards and a centred 1200 px content column, and it is
 deliberately dark-only — that brand match is the documented trade-off against
