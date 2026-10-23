@@ -122,7 +122,9 @@ def performance_metrics(
 
     ``sharpe``, ``realized_vol_gross`` and ``realized_vol_net`` all use
     ``params.sharpe_ddof`` as their standard-deviation ``ddof``.  The path is
-    sorted stably by its ``pl.Date`` column and duplicate dates are rejected,
+    sorted stably by its date column (see :func:`risk.frames.date_column`: a
+    ``pl.Date`` column literally named ``date`` when there is one, otherwise
+    the frame's only ``pl.Date`` column) and duplicate dates are rejected,
     because cumulative returns and max drawdown read row order: a shuffled
     daily frame must produce the same statistics as the chronological one.
     """

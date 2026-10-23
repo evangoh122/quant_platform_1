@@ -45,11 +45,32 @@ def require_unique_dates(frame: pl.DataFrame, column: str = "date") -> None:
 
 
 def date_column(frame: pl.DataFrame) -> str:
-    """Return the name of the frame's single ``pl.Date`` column."""
-    names = [name for name, dtype in frame.schema.items() if dtype == pl.Date]
-    if len(names) != 1:
-        raise TypeError(f"expected exactly one pl.Date column, found {names!r}")
-    return names[0]
+    """Return the frame's date column, preferring one literally named ``date``.
+
+    Resolution order:
+
+    1. a column literally named ``date`` when its dtype is ``pl.Date`` -- a
+       frame that keeps its canonical ``date`` still sorts by it even when a
+       join added another ``pl.Date`` column (say ``listing_date``);
+    2. otherwise the frame's single ``pl.Date`` column, whatever its name;
+    3. otherwise raise ``TypeError`` listing the ``pl.Date`` candidates (none,
+       or several with none of them named ``date``).
+
+    Only the first rule changes anything: a frame that was rejected for
+    carrying a second ``pl.Date`` column next to ``date`` is now accepted, and
+    every frame that was accepted before keeps exactly the same column choice.
+    """
+    candidates = [
+        name for name, dtype in frame.schema.items() if dtype == pl.Date
+    ]
+    if "date" in candidates:
+        return "date"
+    if len(candidates) == 1:
+        return candidates[0]
+    raise TypeError(
+        "expected a pl.Date column named 'date' or exactly one pl.Date column, "
+        f"found {candidates!r}"
+    )
 
 
 def sorted_by_date(
@@ -58,12 +79,13 @@ def sorted_by_date(
 ) -> pl.DataFrame:
     """Return ``frame`` in stable ascending date order.
 
-    ``column`` defaults to the frame's only ``pl.Date`` column.  A missing
-    column raises ``KeyError``, a non-date column ``TypeError`` and a null
-    date ``ValueError``; duplicate dates raise ``ValueError`` rather than
-    silently picking one row's position for a trailing window.  Stable
-    sorting keeps the operation deterministic for the rejected duplicate
-    keys and harmless for unique ones.
+    ``column`` defaults to the frame's date column (see :func:`date_column`): a
+    ``pl.Date`` column literally named ``date`` when there is one, otherwise
+    the frame's only ``pl.Date`` column.  A missing column raises ``KeyError``,
+    a non-date column ``TypeError`` and a null date ``ValueError``; duplicate
+    dates raise ``ValueError`` rather than silently picking one row's position
+    for a trailing window.  Stable sorting keeps the operation deterministic
+    for the rejected duplicate keys and harmless for unique ones.
     """
     name = column if column is not None else date_column(frame)
     require_date_column(frame, name)

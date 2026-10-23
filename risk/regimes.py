@@ -43,12 +43,13 @@ def label_regimes(
 ) -> pl.DataFrame:
     """Attach ``vol_pct`` and ``regime`` to an estimates frame.
 
-    The frame is sorted stably by its ``pl.Date`` column -- whatever name
-    ``columns.date`` gives it, so a custom date column works -- before the
-    trailing percentile is computed and is returned in date order, so the label
-    for a date can never be computed from rows that come after it in time.
-    Duplicate dates are rejected: a trailing-window ranking cannot choose
-    between two observations dated the same day.
+    The frame is sorted stably by its date column -- a ``pl.Date`` column
+    literally named ``date`` when there is one, otherwise the frame's only
+    ``pl.Date`` column, so both a custom date name and a joined second date
+    column work -- before the trailing percentile is computed and is returned
+    in date order, so the label for a date can never be computed from rows that
+    come after it in time.  Duplicate dates are rejected: a trailing-window
+    ranking cannot choose between two observations dated the same day.
     """
     p = params or load_config().regimes
     frame = sorted_by_date(estimates)

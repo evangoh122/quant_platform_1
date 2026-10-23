@@ -33,11 +33,17 @@ and adjusted `open_a`, `close_a`, `open_b`, `close_b` columns (named by
 Row order is not trusted. Every frame-level entry point (`estimate_pair`,
 `label_regimes`, `size`, `build_signal`, `compare_sizers`,
 `backtest_vol_pair`, `performance_metrics`) sorts its input stably by its date
-column (the configured `columns.date` name, or the frame's only `pl.Date`
-column) and rejects duplicate and null dates with a clear error (a row with no
+column and rejects duplicate and null dates with a clear error (a row with no
 date cannot be placed in time), so a shuffled frame produces exactly the
 chronological result and a past label can never read a future observation.
-The bare `pl.Expr` helpers (`vol_percentile`, `rolling_vol`,
+The date column is the configured `columns.date` name wherever the entry point
+receives the config (`estimate_pair`, `build_signal`, `compare_sizers`,
+`backtest_vol_pair`); `size` instead uses the fixed name `date` that its public
+contract requires. The two inferring entry points (`label_regimes`,
+`performance_metrics`) resolve it in this order: (1) a column literally named
+`date` whose dtype is `pl.Date`; (2) otherwise the frame's single `pl.Date`
+column; (3) otherwise a `TypeError` naming the `pl.Date` candidates. The bare
+`pl.Expr` helpers (`vol_percentile`, `rolling_vol`,
 `ewma_*`, `price_returns`, ...) are builders, not entry points: they perform
 no sort and assume the caller already ordered rows by date. The shared guard
 lives in `risk/frames.py`.
@@ -130,7 +136,8 @@ assumption).
   No claim is made about real MAGS/SOXX or any instrument.
 * No pandas bridge in the layer: all data frames are Polars; `strategies.cost_model` is imported only for its scalar cost helpers (the request explicitly allows this); numpy only generates synthetic shocks.
 * Requires `polars >= 1.21.0`: the estimators pass `min_samples` to
-  `ewm_mean`/`rolling_std`, which older releases do not accept.
+  `ewm_mean`, `ewm_var`, `rolling_std` and `rolling_map`, which older releases
+  do not accept.
 
 All parameters live in `risk/config.yaml`; nothing strategy-specific is
 hardcoded in the modules.
