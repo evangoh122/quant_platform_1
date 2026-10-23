@@ -148,16 +148,33 @@ other (a stale snapshot winning, both marking delivered).
 
 ## How to check `analytics_cdc_state`
 
-Each successful run writes a row to `analytics_cdc_state` with:
+`analytics_cdc_state` is **best-effort and status-specific**: a convenience
+log of runs, not a delivery ledger. The authoritative delivery record is
+`analytics_outbox.delivered_at` in Lakebase. Each written row carries:
 
 | Column | Description |
 |---|---|
 | `run_id` | ISO timestamp of the run |
-| `completed_at` | ISO timestamp when run completed |
-| `max_event_id` | Highest event_id in the batch |
-| `pending_count` | Events remaining (0 on success) |
-| `source_target_lag_s` | Seconds between last event and run completion |
+| `completed_at` | ISO timestamp when the row was written |
+| `max_event_id` | `success`: highest `event_id` in the delivered batch. `error` and `idle`: `0` (not populated on those paths) |
+| `pending_count` | `success` and `idle`: `0`. `error`: number of events claimed by the failed batch — they stay re-claimable |
+| `source_target_lag_s` | `success`: seconds between the last claimed event's `occurred_at` and run completion. `error` and `idle`: `0.0` |
 | `status` | `success`, `error`, or `idle` |
+
+Values per status come from `run_pipeline`:
+
+- `success` — written **after** `mark_delivered` has committed and outside
+  the delivery-failure handler (see [Idempotency](#idempotency)).
+- `error` — written when the pipeline raises before `mark_delivered`; the
+  events were re-marked failed (`delivered_at` stays NULL) and remain
+  re-claimable.
+- `idle` — the run claimed 0 events.
+
+**A successful batch can have no state row at all.** The `success` write is
+best-effort: if it fails after delivery, the run logs `record_state failed
+after delivery (...)` and stays successful without writing any row. A missing
+row is therefore not evidence of failure — check the run logs and
+`analytics_outbox.delivered_at` instead.
 
 Query the latest state:
 
@@ -171,7 +188,14 @@ ORDER BY completed_at DESC LIMIT 5;
 - **Delta MERGE**: `merge_events_to_delta` MERGEs on `event_id` — duplicate
   delivery creates no duplicate rows.
 - **Analytics recompute**: affected dates are deleted then re-inserted from
-  the merged Delta table. Double-count from replay is impossible.
+  the merged Delta table. This makes duplicate *delivery* of the same
+  `event_id` double-count-free (the Delta MERGE is keyed on `event_id` and
+  every recompute restarts from the merged table). It does **not** make a
+  plain re-insert safe: `analytics_outbox.event_id` is generated
+  (`BIGINT GENERATED ALWAYS AS IDENTITY`), so re-inserting already-processed
+  events mints new ids, the Delta MERGE treats them as new rows, and the date
+  recompute counts the logical event twice. Replay must re-queue the
+  ORIGINAL rows — see [Re-process specific dates](#re-process-specific-dates).
 - **Delivery confirmation**: events are marked `delivered_at` ONLY after the
   full pipeline (Delta MERGE + analytics recompute) succeeds. A crash before
   confirmation leaves events re-claimable.
@@ -193,18 +217,54 @@ python -m pipelines.lakebase_analytics \
   --catalog {catalog} --schema {schema} --batch-size 100 --max-batches 1
 ```
 
-### Full catch-up
+### Bounded catch-up
+
+`run_batches` stops after `--max-batches` even when more work remains, so
+this command can leave pending events after 20 batches — it is **not** a
+full catch-up:
 
 ```bash
 python -m pipelines.lakebase_analytics \
   --catalog {catalog} --schema {schema} --batch-size 5000 --max-batches 20
 ```
 
+Rerun it (or raise `--max-batches`) until a run reports `claimed 0 events`
+(the `idle` state row): only then is the backlog drained.
+
 ### Re-process specific dates
 
-Events are re-computed per affected UTC date. To force a recompute of a
-specific date, you would need to temporarily re-insert events into the outbox
-(advanced — requires DBA access).
+Events are re-computed per affected UTC date. `analytics_outbox.event_id` is
+generated at insert time (`BIGINT GENERATED ALWAYS AS IDENTITY`), so the
+**only** supported replay re-queues the ORIGINAL rows and preserves their
+`event_id`. The pipeline re-claims any row whose `delivered_at` is NULL —
+exactly the reset `mark_failed` performs on a failed batch — so no new code
+path is involved:
+
+1. Identify the original rows in Lakebase (Postgres — see
+   [Pending outbox events](#pending-outbox-events) for the connection and
+   schema), e.g. by `event_id` range or by `occurred_at` date and
+   `source_pk`.
+2. Reset delivery status on exactly those rows (requires DBA/write access to
+   `analytics_outbox`):
+
+   ```sql
+   UPDATE analytics_outbox
+   SET delivered_at = NULL, last_error = NULL
+   WHERE event_id BETWEEN {first_event_id} AND {last_event_id};
+   ```
+
+3. Rerun the pipeline (manual single-batch or bounded catch-up above). The
+   rows are re-claimed in `event_id` order, MERGEd on their original
+   `event_id` (no new Delta rows), and the affected UTC dates are deleted
+   and recomputed from `lakebase_change_events`.
+
+**Never re-insert events to force a recompute.** A plain insert assigns a NEW
+generated `event_id`, the Delta MERGE treats the row as a new event, and the
+date recompute double-counts the logical event. There is no CLI flag or
+function that re-queues a date range automatically (this runbook previously
+suggested re-inserting rows; that path double-counts and is not supported).
+If the original rows have been deleted from `analytics_outbox`, no supported
+replay remains for their dates.
 
 ## Verification queries
 
@@ -239,9 +299,19 @@ ORDER BY event_id;
 
 ### Pending outbox events
 
+`analytics_outbox` is a **Lakebase (Postgres)** table, not a Databricks
+catalog table: run this query on the Lakebase database (psql or a psycopg
+connection like `db/lakebase.py`'s), **not** in Databricks SQL. The table is
+created in the `public` schema (`db/migrations/004_analytics_outbox.sql`);
+connect with a `search_path` that includes `public` (the app's connections
+set `search_path` to `LAKEBASE_SCHEMA`, default `public` — `db/lakebase.py`)
+or qualify the table as `public.analytics_outbox`. The role needs `SELECT` on
+the table: its ACL revokes all privileges from `PUBLIC`, so use the table
+owner or a role explicitly granted `SELECT`.
+
 ```sql
 SELECT COUNT(*) AS pending
-FROM analytics_outbox
+FROM public.analytics_outbox
 WHERE delivered_at IS NULL;
 ```
 
@@ -250,9 +320,11 @@ WHERE delivered_at IS NULL;
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `LAKEBASE_URL not set` (old behavior) | Running old code | Upgrade to current version |
-| `Lakebase credential mint failed` (also `Lakebase credential mint failed via SDK`, `Lakebase credential mint timed out` — from `db/lakebase.py`) | Token mint failed: SDK/CLI/permissions, or `databricks-sdk < 0.56.0` | Check Databricks auth / CLI / instance permissions; raise the `databricks-sdk` floor to `>= 0.56.0` |
+| `Lakebase credential mint failed` (also `Lakebase credential mint failed via SDK`, `Lakebase credential mint timed out` — from `db/lakebase.py`) | Token mint failed: SDK/CLI/permissions, or `databricks-sdk` below `0.57.0` (0.56.0 mints but its `DatabaseCredential` lacks `expiration_time`) | Check Databricks auth / CLI / instance permissions; raise the `databricks-sdk` floor to `>= 0.57.0` |
 | `Lakebase connection failed` (from `pipelines/lakebase_analytics.py` — the connect step, after the token mint succeeded) | Connect step failed: network / host / role / SSL | Check network reachability, `LAKEBASE_HOST`, database role, and SSL mode |
-| High `source_target_lag_s` | Batch size too small or job paused | Increase `--max-batches` |
+| High `source_target_lag_s`, schedule paused or never enabled | No runs happen while the job schedule is PAUSED, so `--max-batches` has no effect | Run on demand (`databricks bundle run lakebase_analytics_refresh`) or enable the schedule ([Pausing and unpausing](#pausing-and-unpausing)) |
+| High `source_target_lag_s`, `--batch-size` too small | Each batch claims too few events for the event rate | Increase `--batch-size` |
+| High `source_target_lag_s`, backlog larger than one run's allowance | A single run processes at most `--max-batches` × `--batch-size` events | Increase `--max-batches` (work allowed in one run) and/or rerun until a run claims 0 events |
 | `idle` state, no events | Outbox empty | Normal if no writes occurred |
 | `another runner holds the lock` | A second runner (scheduled or manual) is active | Normal: the second run exits 0 and the active runner processes the events |
 | Repeated retries | Transient DB/Delta failure | Check job logs in Databricks |

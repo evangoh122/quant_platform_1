@@ -318,16 +318,20 @@ def test_lakebase_analytics_job_env_declares_runtime_imports():
 # db/lakebase.py:_mint_token_via_sdk calls
 # WorkspaceClient().database.generate_database_credential(instance_names=[...],
 # request_id=...), which lives in databricks.sdk.service.database and first
-# exists in databricks-sdk 0.56.0. Older floors are satisfied by the preinstalled
+# exists in databricks-sdk 0.56.0, and then reads
+# DatabaseCredential.expiration_time (db/lakebase.py:65), which only exists
+# from databricks-sdk 0.57.0. Older floors are satisfied by the preinstalled
 # serverless SDK, which never upgrades, so the mint would fail on every run.
-_DATABRICKS_SDK_MIN_VERSION = (0, 56, 0)
+_DATABRICKS_SDK_MIN_VERSION = (0, 57, 0)
 
 
 def test_lakebase_analytics_job_databricks_sdk_floor():
-    """The declared databricks-sdk lower bound must be >= 0.56.0.
+    """The declared databricks-sdk lower bound must be >= 0.57.0.
 
     Parses the declared version specifier and asserts its ``>=`` floor covers
-    the generate_database_credential API. Fails when the floor is e.g. 0.20.0.
+    DatabaseCredential.expiration_time. Fails when the floor is e.g. 0.20.0
+    or 0.56.0 (whose DatabaseCredential has ``token`` but no
+    ``expiration_time``).
     """
     cfg = _load_jobs_config()
     job = cfg.get("resources", {}).get("jobs", {}).get("lakebase_analytics_refresh", {})
@@ -353,8 +357,8 @@ def test_lakebase_analytics_job_databricks_sdk_floor():
     floor += (0,) * (3 - len(floor))
     assert floor >= _DATABRICKS_SDK_MIN_VERSION, (
         f"databricks-sdk floor {floor} is below {_DATABRICKS_SDK_MIN_VERSION}: "
-        f"databricks.sdk.service.database.DatabaseAPI.generate_database_credential"
-        f"(instance_names=, request_id=) first exists in 0.56.0; got {spec!r}"
+        f"databricks.sdk.service.database.DatabaseCredential.expiration_time "
+        f"(read by db/lakebase.py) only exists from 0.57.0; got {spec!r}"
     )
 
 

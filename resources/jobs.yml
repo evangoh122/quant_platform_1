@@ -206,7 +206,10 @@ resources:
               - "psycopg[binary]>=3.1"
               - "psycopg-pool>=3.1"
               # db.lakebase calls WorkspaceClient().database.generate_database_credential(
-              #     instance_names=[...], request_id=...) via databricks.sdk.service.database;
-              # that API first exists in databricks-sdk 0.56.0. A lower floor is satisfied by
-              # the preinstalled serverless SDK and never upgrades, so minting fails every run.
-              - "databricks-sdk>=0.56.0"
+              #     instance_names=[...], request_id=...) via databricks.sdk.service.database
+              # and then reads DatabaseCredential.expiration_time (db/lakebase.py). The API
+              # first exists in databricks-sdk 0.56.0, but DatabaseCredential.expiration_time
+              # only exists from 0.57.0 — with 0.56.0 the mint raises on cred.expiration_time.
+              # A lower floor is satisfied by the preinstalled serverless SDK and never
+              # upgrades, so minting fails every run.
+              - "databricks-sdk>=0.57.0"
