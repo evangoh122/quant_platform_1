@@ -84,7 +84,20 @@ export const KIND_LABELS: Record<ComponentKind, string> = {
 export const DIAGRAM_WIDTH = 1160;
 export const DIAGRAM_HEIGHT = 960;
 
-const NODE_WIDTH = 220;
+/**
+ * Rendered scale floor. The SVG is authored in `DIAGRAM_WIDTH` user units, so a
+ * 12-unit label is only 12 CSS px while the SVG renders at or above its
+ * viewBox width. At the previous 720 px minimum the whole canvas was scaled to
+ * 0.62 and every 10-unit label rendered at ~6 px. The minimum render width is
+ * therefore the viewBox width: the surrounding `overflow-x-auto` figure
+ * scrolls on narrower viewports instead of shrinking the text, and the SVG
+ * grows beyond it on wider ones. `layout-overflow.test.tsx` re-derives
+ * `fontSize * rendered scale` from the DOM and enforces the 12 px floor.
+ */
+export const DIAGRAM_MIN_RENDER_WIDTH = DIAGRAM_WIDTH;
+
+/** Wide enough that a 12-unit label and a 12-unit sublabel fit inside a box. */
+const NODE_WIDTH = 240;
 const NODE_HEIGHT = 64;
 const COLUMN_1 = 48;
 const COLUMN_2 = 328;
@@ -341,11 +354,17 @@ const DIAGRAM_TITLE = 'Architecture diagram: built platform and planned perps pi
 const DIAGRAM_DESCRIPTION =
   'Data flows from external providers (Massive, SEC, CFTC, FRED) through Spark into Delta Lake bronze, silver and gold tables. FastAPI serves the React research UI and the AI agent, which uses typed tools. The agent writes research notes and audit records to Lakebase, which feeds analytics_outbox, Spark analytics and Delta analytics. MLflow records model runs in the offline ML ablation lane only and is not part of the deployed stack. A separate dashed section shows the planned perps pipeline — Hyperliquid HIP-3 API and Binance futures archives into bronze_perps_*, silver_perp_* and gold_weekend_perp_features for weekend signal comparison in MLflow. Planned components are not deployed to production.';
 
-/** In-SVG text floor: 10 px is the smallest size the HIG legibility rule allows. */
-export const SUBLABEL_FONT_SIZE = 10;
-export const TAG_FONT_SIZE = 10;
-export const BOUNDARY_LABEL_FONT_SIZE = 10;
-export const LEGEND_FONT_SIZE = 10;
+/**
+ * In-SVG type floor: 12 user units. Because the SVG never renders narrower
+ * than its viewBox (`DIAGRAM_MIN_RENDER_WIDTH`), 12 user units are always at
+ * least 12 CSS px — the HIG `typography.md` minimum. Nothing inside the
+ * diagram may declare a smaller size.
+ */
+export const TYPE_FLOOR_USER_UNITS = 12;
+export const SUBLABEL_FONT_SIZE = TYPE_FLOOR_USER_UNITS;
+export const TAG_FONT_SIZE = TYPE_FLOOR_USER_UNITS;
+export const BOUNDARY_LABEL_FONT_SIZE = TYPE_FLOOR_USER_UNITS;
+export const LEGEND_FONT_SIZE = TYPE_FLOOR_USER_UNITS;
 
 function nodeById(id: string): DiagramNode {
   const node = NODES.find((candidate) => candidate.id === id);
@@ -379,17 +398,19 @@ export function edgePath(from: DiagramNode, to: DiagramNode): string {
   return `M ${fromCenterX} ${startY} V ${midY} H ${toCenterX} V ${endY}`;
 }
 
-/** Node label baselines shared with the layout tests. */
+/** Node label baselines shared with the layout tests. Baselines are spaced for
+ *  12-unit text: label cap height and sublabel descenders must not collide. */
 export function nodeTextBaselines(node: DiagramNode): { label: number; sublabel: number; tag?: number } {
   if (node.kind === 'planned') {
-    return { label: node.y + 24, sublabel: node.y + 40, tag: node.y + 55 };
+    return { label: node.y + 25, sublabel: node.y + 42, tag: node.y + 59 };
   }
-  return { label: node.y + 26, sublabel: node.y + 43 };
+  return { label: node.y + 25, sublabel: node.y + 43 };
 }
 
-/** Long table names step down to 10.5 px so they stay inside a 220 px box. */
-export function nodeLabelFontSize(node: DiagramNode): number {
-  return node.label.length > 22 ? 10.5 : 12;
+/** Labels stay at the 12-unit floor at every width: long table names fit
+ *  because the boxes are `NODE_WIDTH` wide, not because the type shrinks. */
+export function nodeLabelFontSize(_node: DiagramNode): number {
+  return TYPE_FLOOR_USER_UNITS;
 }
 
 export default function ArchitectureDiagram() {
@@ -399,7 +420,8 @@ export default function ArchitectureDiagram() {
         role="img"
         aria-labelledby={`${TITLE_ID} ${DESC_ID}`}
         viewBox={`0 0 ${DIAGRAM_WIDTH} ${DIAGRAM_HEIGHT}`}
-        className="h-auto w-full min-w-[720px]"
+        className="h-auto w-full"
+        style={{ minWidth: DIAGRAM_MIN_RENDER_WIDTH }}
         xmlns="http://www.w3.org/2000/svg"
       >
         <title id={TITLE_ID}>{DIAGRAM_TITLE}</title>

@@ -19,6 +19,22 @@ const RANGE_OPTIONS = [
   { label: 'All', days: 0 },
 ] as const;
 
+/**
+ * Chart geometry. The plot is authored in a 600 x 200 viewBox, so SVG user
+ * units only equal CSS pixels while the SVG renders at its viewBox width or
+ * wider. The wrapper scrolls horizontally instead of shrinking below
+ * `CHART_MIN_RENDER_WIDTH`: at a 560 px render width the 12-unit axis labels
+ * came out at 11.2 px, under the HIG 12 px legibility floor. Every chart label
+ * keeps that floor because `CHART_MIN_RENDER_WIDTH === CHART_VIEW_WIDTH`.
+ *
+ * `layout-overflow.test.tsx` re-derives this ratio from the rendered DOM and
+ * asserts `fontSize * rendered scale >= 12` for every label.
+ */
+export const CHART_VIEW_WIDTH = 600;
+export const CHART_VIEW_HEIGHT = 200;
+export const CHART_MIN_RENDER_WIDTH = CHART_VIEW_WIDTH;
+export const CHART_AXIS_FONT_SIZE = 12;
+
 const ohlcvColumns: Column<OHLCVFeature>[] = [
   { key: 'ts', header: 'Date', render: (r) => r.event_date || '—' },
   { key: 'open', header: 'Open', render: (r) => (r.open ?? '—').toString() },
@@ -110,8 +126,8 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
   const closeRange = maxClose - minClose || 1;
   const maxVol = volumes.length > 0 ? Math.max(...volumes) : 1;
 
-  const width = 600;
-  const height = 200;
+  const width = CHART_VIEW_WIDTH;
+  const height = CHART_VIEW_HEIGHT;
   const padding = { top: 10, right: 50, bottom: 30, left: 10 };
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
@@ -146,10 +162,12 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
           className="w-full"
           role="img"
           aria-label={`Adjusted close price chart for ${symbol}`}
-          // The plot keeps a legible 12 px axis minimum: below ~560 px the
-          // wrapper scrolls horizontally instead of shrinking the labels into
-          // illegibility (HIG typography.md minimum sizes).
-          style={{ minWidth: 560, maxHeight: 220 }}
+          // The plot keeps a legible 12 px axis minimum: at any width the SVG
+          // renders at or above its 600-unit viewBox, so a 12-unit label is
+          // never smaller than 12 CSS px; narrower wrappers scroll
+          // horizontally instead of shrinking the labels into illegibility
+          // (HIG typography.md minimum sizes).
+          style={{ minWidth: CHART_MIN_RENDER_WIDTH, maxHeight: 220 }}
         >
           {/* Grid lines */}
           {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
@@ -158,7 +176,7 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
             return (
               <g key={frac}>
                 <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="currentColor" strokeOpacity={0.08} />
-                <text x={width - padding.right + 4} y={y + 3} className="fill-slate-400" style={{ fontSize: 12 }}>
+                <text x={width - padding.right + 4} y={y + 3} className="fill-slate-400" style={{ fontSize: CHART_AXIS_FONT_SIZE }}>
                   {val.toFixed(1)}
                 </text>
               </g>
@@ -197,7 +215,7 @@ function AdjCloseChart({ rows, symbol }: { rows: OHLCVFeature[]; symbol: string 
               y={height - 5}
               textAnchor="middle"
               className="fill-slate-400"
-              style={{ fontSize: 12 }}
+              style={{ fontSize: CHART_AXIS_FONT_SIZE }}
             >
               {formatDate(filtered[i].event_date)}
             </text>

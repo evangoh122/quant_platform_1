@@ -308,7 +308,10 @@ describe('ArchitectureDiagram', () => {
     expect(node('gold_weekend').kind).toBe('planned');
   });
 
-  it('keeps every in-SVG label at or above the 10 px legibility floor', () => {
+  it('keeps every in-SVG label at or above the 12 px rendered legibility floor', () => {
+    // The diagram never renders narrower than its viewBox, so 12 user units
+    // are >= 12 CSS px. The rendered-scale proof for production components
+    // lives in layout-overflow.test.tsx.
     const { container } = render(<ArchitectureDiagram />);
 
     const texts = Array.from(container.querySelectorAll('svg text'));
@@ -316,7 +319,7 @@ describe('ArchitectureDiagram', () => {
     for (const text of texts) {
       const size = Number(text.getAttribute('font-size'));
       expect(Number.isFinite(size)).toBe(true);
-      expect(size).toBeGreaterThanOrEqual(10);
+      expect(size).toBeGreaterThanOrEqual(12);
     }
   });
 });

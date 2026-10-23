@@ -5,6 +5,8 @@ import { render, screen, fireEvent, waitFor, within, act } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import App from '../App';
+import { MarketDashboard } from '../screens/MarketDashboard';
+import ArchitectureDiagram from '../components/ArchitectureDiagram';
 import { APPLICATION_TOUR_KEY, AGENT_TOUR_KEY, ARCHITECTURE_TOUR_KEY } from '../components/tours/tourSteps';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -230,16 +232,26 @@ function walkTsx(dir: string): string[] {
 describe('Source floors: type size and fixed widths', () => {
   const files = walkTsx(SRC_DIR);
 
-  it('no source file renders text below 12px', () => {
+  it('no source file declares text below 12px', () => {
+    // Covers every way a component can declare a type size: Tailwind arbitrary
+    // values and scale classes, `fontSize`/`font-size` declarations (inline
+    // style or SVG presentation attribute) and module-level `*_FONT_SIZE`
+    // constants. The rendered-scale guard below additionally proves those
+    // declared sizes survive SVG viewBox scaling.
+    const patterns = [
+      /text-\[(\d+(?:\.\d+)?)px\]/g,
+      /fontSize:\s*(\d+(?:\.\d+)?)/g,
+      /font-size:\s*(\d+(?:\.\d+)?)px/g,
+      /\b[A-Z][A-Z0-9_]*_FONT_SIZE\s*=\s*(\d+(?:\.\d+)?)/g,
+    ];
     const offenders: string[] = [];
     for (const file of files) {
       const content = readFileSync(file, 'utf-8');
       const rel = file.replace(SRC_DIR + '/', '');
-      for (const match of content.matchAll(/text-\[(\d+)px\]/g)) {
-        if (parseInt(match[1], 10) < 12) offenders.push(`${rel}: ${match[0]}`);
-      }
-      for (const match of content.matchAll(/fontSize:\s*(\d+)/g)) {
-        if (parseInt(match[1], 10) < 12) offenders.push(`${rel}: fontSize ${match[1]}`);
+      for (const pattern of patterns) {
+        for (const match of content.matchAll(pattern)) {
+          if (Number(match[1]) < 12) offenders.push(`${rel}: ${match[0]}`);
+        }
       }
     }
     expect(offenders).toEqual([]);
@@ -259,6 +271,203 @@ describe('Source floors: type size and fixed widths', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * Rendered type floor for SVG text.
+ *
+ * A 12-unit label is only 12 CSS px while its SVG renders at (or above) the
+ * viewBox width. jsdom has no layout engine, so the rendered scale is derived
+ * from the sizing that fixes the floor: an SVG that stretches (`w-full`) but
+ * declares `min-width` can never render narrower than that minimum, so
+ * `scale = minWidth / viewBoxWidth` is the worst case at any viewport. The
+ * smallest size a label can actually paint at is
+ * `declaredSize * scale` — that, not the authored number, has to clear 12 px.
+ */
+const TYPE_FLOOR_PX = 12;
+const ROOT_FONT_PX = 16; // browser default (index.css only re-states 16 px on phones)
+
+const TAILWIND_TEXT_VARS: Record<string, string> = {
+  'text-xs': '--text-xs',
+  'text-sm': '--text-sm',
+  'text-base': '--text-base',
+  'text-lg': '--text-lg',
+  'text-xl': '--text-xl',
+  'text-2xl': '--text-2xl',
+  'text-3xl': '--text-3xl',
+};
+
+function pxValue(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = String(value).trim().match(/^(\d+(?:\.\d+)?)(?:px)?$/);
+  return match ? Number(match[1]) : null;
+}
+
+function cssRemValue(cssVar: string): number | null {
+  const match = css.match(new RegExp(`${cssVar}\\s*:\\s*([\\d.]+)rem`));
+  return match ? Number(match[1]) * ROOT_FONT_PX : null;
+}
+
+function classDeclaredFontSize(el: Element): number | null {
+  const cls = typeof el.className === 'string' ? el.className : el.getAttribute('class') ?? '';
+  const arbitrary = [...cls.matchAll(/(?:^|\s)text-\[(\d+(?:\.\d+)?)px\]/g)];
+  if (arbitrary.length > 0) return Number(arbitrary[arbitrary.length - 1][1]);
+  for (const token of cls.split(/\s+/)) {
+    if (token === 'text-label') {
+      return pxValue((css.match(/\.text-label\s*\{[^}]*font-size:\s*(\d+(?:\.\d+)?)px/) ?? [])[1]);
+    }
+    const cssVar = TAILWIND_TEXT_VARS[token];
+    if (cssVar) return cssRemValue(cssVar);
+  }
+  return null;
+}
+
+/** Nearest declared size on the element or an ancestor `<g>`. jsdom does not
+ *  resolve Tailwind classes or presentation attributes, so a missing
+ *  declaration is reported as missing instead of silently inheriting 16 px. */
+function declaredFontSize(el: Element): number | null {
+  let node: Element | null = el;
+  while (node) {
+    const fromAttribute = pxValue(node.getAttribute('font-size'));
+    if (fromAttribute !== null) return fromAttribute;
+    const inline = (node as unknown as { style?: CSSStyleDeclaration }).style;
+    const fromStyle = pxValue(inline?.fontSize);
+    if (fromStyle !== null) return fromStyle;
+    const fromClass = classDeclaredFontSize(node);
+    if (fromClass !== null) return fromClass;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function svgRenderScale(svg: Element): number {
+  const viewBox = svg.getAttribute('viewBox');
+  expect(viewBox, 'an SVG containing text must declare a viewBox').toBeTruthy();
+  const viewBoxWidth = Number(viewBox!.trim().split(/[\s,]+/)[2]);
+  expect(Number.isFinite(viewBoxWidth)).toBe(true);
+  expect(viewBoxWidth).toBeGreaterThan(0);
+
+  const classMin = [
+    ...(svg.getAttribute('class') ?? '').matchAll(/(?:^|\s)min-w-\[(\d+(?:\.\d+)?)px\]/g),
+  ].map((match) => Number(match[1]));
+  const inlineMin = pxValue((svg as unknown as { style?: CSSStyleDeclaration }).style?.minWidth);
+  const minWidth = inlineMin ?? (classMin.length > 0 ? Math.max(...classMin) : null);
+  expect(
+    minWidth,
+    'a stretching SVG containing text must declare min-width so it cannot shrink below its viewBox',
+  ).not.toBeNull();
+
+  return (minWidth as number) / viewBoxWidth;
+}
+
+function svgTextOffenders(svg: Element): string[] {
+  const scale = svgRenderScale(svg);
+  const offenders: string[] = [];
+  for (const text of Array.from(svg.querySelectorAll('text'))) {
+    const size = declaredFontSize(text);
+    const label = (text.textContent ?? '').trim().slice(0, 40);
+    if (size === null) {
+      offenders.push(`<text>"${label}" declares no size (scale ${scale.toFixed(3)})`);
+      continue;
+    }
+    const rendered = size * scale;
+    if (rendered < TYPE_FLOOR_PX) {
+      offenders.push(`<text>"${label}" ${size}u x ${scale.toFixed(3)} = ${rendered.toFixed(2)}px`);
+    }
+  }
+  return offenders;
+}
+
+const populatedRows = Array.from({ length: 12 }, (_, index) => {
+  const day = String(index + 1).padStart(2, '0');
+  const close = 100 + index * 2.5;
+  return {
+    symbol: 'NVDA',
+    event_date: `2026-03-${day}`,
+    open: close - 1,
+    high: close + 2,
+    low: close - 2,
+    close,
+    volume: 1_000_000 + index * 50_000,
+    vwap: close - 0.5,
+    price_basis: 'adjusted',
+  };
+});
+
+const populatedMarketResponse = {
+  symbol: 'NVDA',
+  ohlcv: {
+    data: populatedRows,
+    count: populatedRows.length,
+    empty: false,
+    source: 'silver_ohlcv_day_adjusted',
+    freshness: { state: 'fresh', table: 'silver_ohlcv_day_adjusted', detail: '12 rows' },
+  },
+  options: {
+    data: [],
+    count: 0,
+    empty: true,
+    source: 'gold_options_features',
+    freshness: { state: 'empty', table: 'gold_options_features', detail: '0 rows' },
+  },
+};
+
+describe('Rendered type floor inside scaled SVG', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(populatedMarketResponse),
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it('flags an 11-unit label as a 11 px offender instead of passing vacuously', () => {
+    const host = document.createElement('div');
+    host.innerHTML =
+      '<svg viewBox="0 0 600 200" style="min-width: 600px">' +
+      '<text font-size="11">too small</text><text font-size="12">floor</text></svg>';
+    const svg = host.querySelector('svg')!;
+
+    const offenders = svgTextOffenders(svg);
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toContain('11u x 1.000 = 11.00px');
+
+    svg.querySelector('text')!.setAttribute('font-size', '12');
+    expect(svgTextOffenders(svg)).toEqual([]);
+  });
+
+  it('renders every architecture-diagram label at >= 12 px at its real scale', () => {
+    const { container } = render(<ArchitectureDiagram />);
+    const svg = container.querySelector('svg');
+    expect(svg).toBeTruthy();
+
+    // 34 labels were authored below the floor (and scaled to ~6 px) before
+    // this guard: sublabels, PLANNED tags, boundary titles and the legend.
+    expect(svg!.querySelectorAll('text').length).toBeGreaterThanOrEqual(30);
+    expect(svgTextOffenders(svg!)).toEqual([]);
+    expect(svgRenderScale(svg!)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders every populated market-chart label at >= 12 px at its declared minimum width', async () => {
+    const { container } = render(<MarketDashboard />);
+    await waitFor(() => {
+      expect(container.querySelector('svg[role="img"]')).toBeTruthy();
+    });
+
+    const svg = container.querySelector('svg[role="img"]')!;
+    const texts = Array.from(svg.querySelectorAll('text'));
+    // 5 price-grid labels + 5 date ticks for a 12-row series.
+    expect(texts.length).toBeGreaterThanOrEqual(10);
+    expect(texts.some((text) => /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(text.textContent ?? ''))).toBe(true);
+
+    expect(svgTextOffenders(svg)).toEqual([]);
+    expect(svgRenderScale(svg)).toBeGreaterThanOrEqual(1);
   });
 });
 
