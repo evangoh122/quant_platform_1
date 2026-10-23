@@ -88,7 +88,7 @@ def test_plan_requires_trade_time_bucketing_dedupe_and_append_only_corrections()
     assert "reconcile" in text.lower()
     assert "candleSnapshot" in text
     assert "append-only correction" in text
-    assert "information_available_ts = bar_end_ts" in text
+    assert "information_available_ts = max(bar_end_ts, availability of the archive object or" in text
     assert "No interpolation, no forward fill" in text
 
 
@@ -172,6 +172,12 @@ def test_late_fill_corrections_are_stamped_when_their_contents_become_observable
         assert (
             "the bar carries information_available_ts = bar_end_ts" not in normalised
         ), name
+        # A first (backfilled) bar is never usable before its source archive or
+        # fills were observable (CodeRabbit on PR #80).
+        assert re.search(
+            r"first bar carries information_available_ts = max\(bar_end(_ts)?, availability of the archive object",
+            normalised,
+        ) or "first bar's information_available_ts = max(bar_end_ts, availability of the archive object" in normalised, name
 
 
 def test_flat_file_reader_is_design_only_in_p0():

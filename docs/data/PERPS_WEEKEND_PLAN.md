@@ -556,7 +556,9 @@ family (§6.2), never a post-hoc exclusion.
 
 Perp bars are 24/7 UTC. A 1h bar is available at its `bar_end_ts`, so a feature
 at cutoff `T` may use only bars with `bar_end_ts <= T`; a first bar's
-`information_available_ts = bar_end_ts` (conservative). A late-fill correction is
+`information_available_ts = max(bar_end_ts, availability of the archive object or
+source fills it was built from)`, so a backfilled bar is never usable before its
+contents were observable. A late-fill correction is
 not available at `bar_end_ts`: it carries `information_available_ts` = when the
 correcting contents became observable (the latest arrival/ingest timestamp of the
 late fills), while `bar_end_ts` stays the interval boundary. No forward fill: a
@@ -1023,7 +1025,8 @@ idempotent.
 
 - Bucket by **trade time in UTC**: `bar_start_ts = floor(trade_ts / interval)`,
   `bar_end_ts = bar_start_ts + interval`, and a first bar's
-  `information_available_ts = bar_end_ts` (conservative). Block time is stored on
+  `information_available_ts = max(bar_end_ts, availability of the archive object or
+  source fills it was built from)`. Block time is stored on
   the fill but is never the bucket key.
 - `open` = first fill price, `high`/`low` = max/min, `close` = last fill price,
   `volume` = sum of sizes, `trade_count` = fill count; `notional` is summed from

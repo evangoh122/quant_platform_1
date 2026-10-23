@@ -864,7 +864,9 @@ Every perps table, when it lands, carries:
     archive_key (the object the row came from), so a bar or context row is reproducible from the
     archive.  Bars are built from fills by TRADE time in UTC (bar_start = floor(trade_ts/interval),
     bar_end = the interval boundary), deduplicated on fill id/hash, never interpolated.  A first
-    bar carries information_available_ts = bar_end.  A late fill re-emits the affected bar as an
+    bar carries information_available_ts = max(bar_end_ts, availability of the archive
+    object or source fills it was built from) — a backfilled bar is never usable before its
+    contents were observable.  A late fill re-emits the affected bar as an
     append-only correction, and that correction's information_available_ts is when the correcting
     contents became observable — the latest arrival/ingest timestamp of the late fills, or of
     the archive object that delivered them — not bar_end: bar_end stays the interval
