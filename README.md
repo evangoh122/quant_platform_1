@@ -138,8 +138,9 @@ is dry-run by default and requires `--yes` to upload. Render is retired.
 ## Engineering process
 
 Changes are implemented by the scheduled coder — MiMo or DeepSeek, selected by UTC peak hours — and independently
-validated by the other model, then gated by exactly one final reviewer: Codex Sol for routine work or Claude Opus
-for complex or critical changes, followed by CodeRabbit review (see root `AGENTS.md` for the full chain).
+validated by the other model, then gated by exactly one final reviewer: Codex Sol for every change, with Claude
+Opus 5.5 only as a recorded fallback when Sol cannot run because of a token limit, usage limit, rate limit, or quota limit, followed by CodeRabbit review
+(see root `AGENTS.md` for the full chain).
 Every PR also updates this README (or states in the PR why no change is needed) and, when it changes tables, terms, joins
 or knowledge-graph node/edge types, its slice of `ontology/` in the same commit (see root `AGENTS.md`).
 Security: dependency audit (`pip-audit`, `npm audit`) and secret scanning run in CI —
