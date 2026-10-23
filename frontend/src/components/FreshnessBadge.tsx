@@ -11,7 +11,7 @@ export function FreshnessBadge({ freshness }: { freshness: Freshness }) {
   const label = freshness.state === 'unavailable' ? 'unavailable' : `${freshness.state} · ${freshness.table}`;
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${STATE_STYLES[freshness.state]}`}
+      className={`inline-flex max-w-full items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATE_STYLES[freshness.state]}`}
       title={freshness.detail}
     >
       {label}

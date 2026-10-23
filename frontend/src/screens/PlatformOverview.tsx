@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { Eyebrow } from '../components/Eyebrow';
 
 interface PlatformOverviewProps {
   onNavigate: (id: string) => void;
@@ -12,15 +12,15 @@ interface EvidenceCardProps {
   detail?: string;
 }
 
-function EvidenceCard({ label, value, detail }: EvidenceCardProps) {
+export function EvidenceCard({ label, value, detail }: EvidenceCardProps) {
   return (
-    <div data-evidence-card className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 shadow-sm">
-      <p className="text-2xl font-bold text-[var(--text-primary)]">{value}</p>
+    <div data-evidence-card className="card-quiet flex min-w-0 flex-col p-5">
+      <p className="break-anywhere min-w-0 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
       <p className="mt-1 text-sm font-medium text-[var(--text-secondary)]">{label}</p>
       {detail && (
-        <p className="mt-1 text-xs text-[var(--text-muted)]">{detail}</p>
+        <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">{detail}</p>
       )}
-      <p className="mt-2 text-xs text-[var(--text-muted)]">
+      <p className="text-label break-anywhere mt-3">
         Recorded snapshot: {SNAPSHOT_DATE} (not a live verification)
       </p>
     </div>
@@ -39,12 +39,28 @@ function RubricCard({ title, description, target, onNavigate }: RubricCardProps)
     <button
       type="button"
       onClick={() => onNavigate(target)}
-      className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-left shadow-sm transition hover:border-[var(--accent)] hover:shadow-md"
+      className="card-quiet min-w-0 p-4 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
     >
       <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
-      <p className="mt-1 text-xs text-[var(--text-muted)]">{description}</p>
-      <p className="mt-2 text-xs font-medium text-[var(--accent)]">View &rarr;</p>
+      <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">{description}</p>
+      <p className="mt-3 font-mono text-xs text-[var(--accent)]">View &rarr;</p>
     </button>
+  );
+}
+
+interface SectionHeadingProps {
+  eyebrow: string;
+  title: string;
+}
+
+function SectionHeading({ eyebrow, title }: SectionHeadingProps) {
+  return (
+    <div className="mb-5 min-w-0">
+      <Eyebrow className="mb-3">{eyebrow}</Eyebrow>
+      <h2 className="text-xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-2xl">
+        {title}
+      </h2>
+    </div>
   );
 }
 
@@ -55,7 +71,7 @@ interface StepperStageProps {
 
 function StepperStage({ label, isLast }: StepperStageProps) {
   return (
-    <li className="flex items-center gap-2">
+    <li className="flex min-w-0 items-center gap-2">
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-xs font-bold text-[var(--accent-ink)]">
         &#10003;
       </span>
@@ -89,34 +105,39 @@ const RUBRIC_CARDS: { title: string; description: string; target: string }[] = [
 
 export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
   return (
-    <div className="space-y-8">
-      <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm">
-        <h1 className="text-2xl font-bold text-[var(--text-primary)]">
+    <div className="space-y-10 sm:space-y-14">
+      {/* Featured hero: display heading, light lead paragraph, one filled
+          primary action and quiet text links — the site's hero rhythm — kept
+          inside the dashboard's evidence-first wording. */}
+      <section className="card-featured p-5 sm:p-8 lg:p-10">
+        <Eyebrow>evidence-first quant research</Eyebrow>
+        <h1 className="mt-4 min-w-0 text-3xl font-semibold leading-tight tracking-tight text-[var(--text-primary)] sm:text-5xl lg:text-6xl">
           Quant Research Platform
         </h1>
-        <p className="mt-3 max-w-3xl text-sm leading-relaxed text-[var(--text-secondary)]">
+        <p className="mt-5 max-w-2xl text-base font-light leading-relaxed text-[var(--text-secondary)] sm:text-lg">
           Market and regulatory records transformed through Spark, searched through
           a governed AI agent, and audited through Lakebase and Delta analytics.
         </p>
-        <div className="mt-5 flex flex-wrap gap-3">
+        <div className="mt-8 flex flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-5">
           <button
             type="button"
             onClick={() => onNavigate('agent')}
-            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] shadow-sm transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+            className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-[var(--accent-ink)] transition hover:bg-[var(--accent-fill-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] sm:w-auto"
           >
             Ask the Research Agent
           </button>
           <button
             type="button"
             onClick={() => onNavigate('market')}
-            className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] shadow-sm transition hover:bg-[var(--surface-raised)]"
+            className="inline-flex min-h-[44px] items-center gap-2 rounded-[var(--radius-sm)] text-left text-sm font-medium text-[var(--text-secondary)] underline-offset-4 transition hover:text-[var(--accent-bright)] hover:underline"
           >
             Explore Market Data
+            <span aria-hidden="true">&rarr;</span>
           </button>
           <button
             type="button"
             onClick={() => onNavigate('architecture')}
-            className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] shadow-sm transition hover:bg-[var(--surface-raised)]"
+            className="inline-flex min-h-[44px] items-center gap-2 rounded-[var(--radius-sm)] text-left text-sm font-medium text-[var(--text-muted)] underline-offset-4 transition hover:text-[var(--accent-bright)] hover:underline"
           >
             View Architecture &amp; Tests
           </button>
@@ -124,9 +145,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
       </section>
 
       <section>
-        <h2 className="mb-4 text-lg font-semibold text-[var(--text-primary)]">
-          Verified Evidence
-        </h2>
+        <SectionHeading eyebrow="what is already proven" title="Verified Evidence" />
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <EvidenceCard label="Market & regulatory records" value="287M+" detail="Across Massive, SEC, CFTC, and FRED sources" />
           <EvidenceCard label="Options records" value="152.1M" detail="Put/call volume, IV surfaces, and OI concentration" />
@@ -138,9 +157,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
       </section>
 
       <section>
-        <h2 className="mb-4 text-lg font-semibold text-[var(--text-primary)]">
-          Platform Pipeline
-        </h2>
+        <SectionHeading eyebrow="how data moves" title="Platform Pipeline" />
         <nav aria-label="Pipeline stages">
           <ol className="flex flex-wrap items-center gap-3">
             {PIPELINE_STAGES.map((stage, i) => (
@@ -151,9 +168,7 @@ export function PlatformOverview({ onNavigate }: PlatformOverviewProps) {
       </section>
 
       <section>
-        <h2 className="mb-4 text-lg font-semibold text-[var(--text-primary)]">
-          Explore the Platform
-        </h2>
+        <SectionHeading eyebrow="start anywhere" title="Explore the Platform" />
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {RUBRIC_CARDS.map((card) => (
             <RubricCard

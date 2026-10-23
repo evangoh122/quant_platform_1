@@ -20,6 +20,22 @@ const TOUR_MAP: Record<string, { key: string; steps: CoachStep[] }> = {
 
 export type TourNavigationHandler = (screenId: string) => void;
 
+/** Mobile-width media query used by the shell's breakpoints (lg sidebar = 1024). */
+const NARROW_VIEWPORT_QUERY = '(max-width: 767px)';
+
+/**
+ * HIG layout.md › Adapting to screen size: on a phone the first screen should
+ * be the content, not a dimming modal. The tour still starts from the header's
+ * "Take a tour" action, and the desktop auto-start is unchanged.
+ */
+function isNarrowViewport(): boolean {
+  if (typeof window.matchMedia === 'function' && window.matchMedia(NARROW_VIEWPORT_QUERY).matches) {
+    return true;
+  }
+  const width = typeof window.innerWidth === 'number' ? window.innerWidth : 0;
+  return width > 0 && width < 768;
+}
+
 function allTourTargetsPresent(tourSteps: CoachStep[]): boolean {
   for (const step of tourSteps) {
     if (step.selector && !document.querySelector(step.selector)) return false;
@@ -88,6 +104,9 @@ export function useTourHost(currentScreen?: string, onNavigate?: TourNavigationH
     ).matches;
     if (prefersReducedMotion) return;
 
+    // Never auto-open (and dim) the tour on a phone-width viewport.
+    if (isNarrowViewport()) return;
+
     const autoTour =
       !tourSeen(APPLICATION_TOUR_KEY)
         ? 'application'
@@ -109,6 +128,9 @@ export function useTourHost(currentScreen?: string, onNavigate?: TourNavigationH
       const scheduleAutoStart = () => {
         mainTimerRef.current = window.setTimeout(() => {
           if (manualStartRef.current) return;
+          // The viewport can change during the 600 ms delay (rotation, resize,
+          // devtools responsive mode); re-check before opening the dimming modal.
+          if (isNarrowViewport()) return;
           const tour = TOUR_MAP[autoTour];
           if (tour && tourSeen(tour.key)) return;
           startTour(autoTour);

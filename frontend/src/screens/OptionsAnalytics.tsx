@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Eyebrow } from '../components/Eyebrow';
 import { SymbolPicker } from '../components/SymbolPicker';
 import { api } from '../api/client';
 import type { MarketSnapshot, OptionsFeature } from '../api/types';
@@ -48,8 +49,11 @@ export function OptionsAnalytics() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Options Analytics</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <Eyebrow>volatility and flow</Eyebrow>
+          <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Options Analytics</h1>
+        </div>
         {data && <FreshnessBadge freshness={data.options.freshness} />}
       </div>
 

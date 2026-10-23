@@ -797,6 +797,64 @@ describe('useTourHost — manual tour lifecycle (r15)', () => {
   });
 });
 
+describe('useTourHost — viewport re-check before delayed auto-start (r4)', () => {
+  const originalInnerWidth = window.innerWidth;
+
+  function setViewportWidth(width: number) {
+    Object.defineProperty(window, 'innerWidth', { value: width, writable: true, configurable: true });
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(max-width: 767px)' && width < 768,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  }
+
+  afterEach(() => {
+    Object.defineProperty(window, 'innerWidth', {
+      value: originalInnerWidth,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it('does not auto-start when the viewport narrows during the 600 ms delay', () => {
+    vi.useFakeTimers();
+    setViewportWidth(1200);
+    const { result } = renderHook(() => useTourHost());
+
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(result.current.activeTour).toBeNull();
+
+    // Resize to phone width after mount but before the delayed callback fires.
+    setViewportWidth(390);
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.activeTour).toBeNull();
+  });
+
+  it('still auto-starts when the viewport stays wide through the delay', () => {
+    vi.useFakeTimers();
+    setViewportWidth(1200);
+    const { result } = renderHook(() => useTourHost());
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(result.current.activeTour).toBe('application');
+  });
+});
+
 describe('useTourHost — resume unseen Agent tour after manual tour closes (r19)', () => {
   it('manual tour during auto-start delay → close → unseen Agent tour resumes after fresh 600 ms', () => {
     vi.useFakeTimers();

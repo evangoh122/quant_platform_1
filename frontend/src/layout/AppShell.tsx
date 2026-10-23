@@ -49,14 +49,14 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
   ) ?? false;
 
   return (
-    <div className="flex min-h-screen bg-[var(--canvas)] text-[var(--text-primary)]">
+    <div className="app-shell flex min-h-screen overflow-x-clip bg-[var(--canvas)] text-[var(--text-primary)]">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[9999] focus:rounded-[var(--radius-sm)] focus:bg-[var(--accent)] focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--accent-ink)] focus:shadow-lg"
       >
         Skip to main content
       </a>
-      <div {...(mobileOpen ? { inert: '', 'aria-hidden': true } : {})}>
+      <div {...(mobileOpen ? { inert: '', 'aria-hidden': true } : {})} className="shrink-0">
         <Sidebar
           groups={groups}
           currentId={currentId}
@@ -83,9 +83,13 @@ export function AppShell({ groups, currentId, onNavigate, health, children }: Ap
           onTour={handleTour}
         />
 
-        <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 p-[var(--space-6)]">
-          <StatusBanner lakebaseDown={lakebaseDown} />
-          {children}
+        <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">
+          {/* One centred column for every screen: no card can be wider than the
+              viewport, and every screen shares the site's side rhythm. */}
+          <div className="content-column">
+            <StatusBanner lakebaseDown={lakebaseDown} />
+            {children}
+          </div>
         </main>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { api } from '../api/client';
+import { Eyebrow } from '../components/Eyebrow';
 import type { AnalyticsResponse, Envelope, HealthResponse, HealthTraceResponse, AnalyticsItem, TraceEvent } from '../api/types';
 import { useApi } from '../hooks/useApi';
 import { Card } from '../components/Card';
@@ -16,9 +17,9 @@ function AnalyticsSection({ title, envelope }: { title: string; envelope: Envelo
       ) : (
         <ul className="space-y-1 text-sm">
           {envelope.data.map((item) => (
-            <li key={item.metric} className="flex justify-between">
-              <span className="text-[var(--text-secondary)]">{item.metric || item.detail}</span>
-              <span className="font-medium">{item.value?.toString() ?? '—'}</span>
+            <li key={item.metric} className="flex flex-wrap justify-between gap-2">
+              <span className="min-w-0 break-words text-[var(--text-secondary)]">{item.metric || item.detail}</span>
+              <span className="shrink-0 font-medium">{item.value?.toString() ?? '—'}</span>
             </li>
           ))}
         </ul>
@@ -33,12 +34,12 @@ function SlowStagesList({ events }: { events: TraceEvent[] }) {
     <Card title="Slowest Recent Stages" subtitle={`${events.length} slow event(s) > 2s`}>
       <ul className="space-y-1 text-sm">
         {events.map((e, i) => (
-          <li key={i} className="flex justify-between">
-            <span className="text-[var(--text-secondary)]">
+          <li key={i} className="flex flex-wrap justify-between gap-2">
+            <span className="min-w-0 break-words text-[var(--text-secondary)]">
               {e.ok ? '' : '! '}{e.name}
               {e.error ? ` (${e.error})` : ''}
             </span>
-            <span className="font-medium">{e.elapsed_ms.toFixed(0)}ms</span>
+            <span className="shrink-0 font-medium">{e.elapsed_ms.toFixed(0)}ms</span>
           </li>
         ))}
       </ul>
@@ -49,12 +50,12 @@ function SlowStagesList({ events }: { events: TraceEvent[] }) {
 function DependencyCard({ d }: { d: { name: string; ok: boolean; detail: string; latency_ms: number | null; last_error: string | null; last_ok_at: number | null; circuit_breaker_state: string | null } }) {
   const lastOk = d.last_ok_at ? new Date(d.last_ok_at * 1000).toLocaleTimeString() : 'never';
   return (
-    <div className="rounded border p-3 space-y-1">
-      <div className="flex items-center justify-between">
-        <span className="font-medium">{d.name}</span>
+    <div className="min-w-0 space-y-1 rounded border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="min-w-0 break-words font-medium">{d.name}</span>
         <span className={d.ok ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}>{d.ok ? 'ok' : 'down'}</span>
       </div>
-      <div className="text-xs text-[var(--text-muted)] space-y-0.5">
+      <div className="break-anywhere text-xs text-[var(--text-muted)] space-y-0.5">
         <div>Latency: {d.latency_ms != null ? `${d.latency_ms.toFixed(0)}ms` : '—'}</div>
         {d.last_error && <div className="text-[var(--negative)]">Error: {d.last_error}</div>}
         <div>Last OK: {lastOk}</div>
@@ -73,7 +74,10 @@ export function SystemHealth() {
 
   return (
     <div data-tour="analytics-evidence" className="space-y-4">
-      <h1 className="text-xl font-semibold">Analytics / System Health</h1>
+      <div className="min-w-0">
+        <Eyebrow>system health</Eyebrow>
+        <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Analytics / System Health</h1>
+      </div>
 
       {health.loading && <LoadingState />}
       {health.error && <ErrorState message={health.error} onRetry={health.reload} />}
@@ -97,9 +101,9 @@ export function SystemHealth() {
               <div data-tour="pipeline-nodes">
                 <ul className="space-y-1 text-sm">
                   {health.data.startup.map((s, i) => (
-                    <li key={i} className="flex justify-between">
-                      <span className="text-[var(--text-secondary)]">{s.name}</span>
-                      <span className="font-medium">{s.elapsed_ms.toFixed(0)}ms</span>
+                    <li key={i} className="flex flex-wrap justify-between gap-2">
+                      <span className="min-w-0 break-words text-[var(--text-secondary)]">{s.name}</span>
+                      <span className="shrink-0 font-medium">{s.elapsed_ms.toFixed(0)}ms</span>
                     </li>
                   ))}
                 </ul>

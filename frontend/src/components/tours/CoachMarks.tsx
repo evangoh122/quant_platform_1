@@ -306,8 +306,8 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
           className="absolute left-1/2 bottom-5 -translate-x-1/2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 shadow-2xl focus:outline-none"
           style={{ width: Math.min(CARD_W, vw - 24) }}
         >
-          <div className="flex items-start justify-between gap-3 mb-2">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+          <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
+            <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
               Step {index + 1} of {steps.length}
             </span>
             <button
@@ -428,8 +428,8 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
         className="absolute rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 shadow-2xl focus:outline-none"
         style={cardStyle}
       >
-        <div className="flex items-start justify-between gap-3 mb-2">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+        <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
+          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
             Step {index + 1} of {steps.length}
           </span>
           <button
@@ -459,7 +459,7 @@ export default function CoachMarks({ steps, run, onClose, onNavigate, currentScr
           ))}
         </div>
 
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <button
             onClick={handleClose}
             className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] bg-transparent border-0 p-0 cursor-pointer"

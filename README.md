@@ -74,7 +74,7 @@ Dates are the last recorded verification; this repository does not assert the cu
 | Path | Purpose |
 |---|---|
 | `api/` | FastAPI app (`api/main.py` is the production entry point), routes, services |
-| `frontend/` | React + Vite + Tailwind SPA |
+| `frontend/` | React + Vite + Tailwind SPA; `frontend/src/index.css` holds the design tokens plus the page-level horizontal-overflow guard, and `frontend/src/components/Eyebrow.tsx` the shared italic-serif section label used on every screen |
 | `agent/` | Agent runtime, tool contracts, retrieval and write tools, guardrails |
 | `db/` | SQL-warehouse adapter, Lakebase client, schema contract, Postgres migrations |
 | `notebooks/`, `pipelines/`, `silver/`, `gold/` | Ingestion jobs and medallion transforms |
@@ -114,6 +114,23 @@ After changing dependencies in `pyproject.toml`, run `uv lock`, then
 CI fails when either the lock or the export is stale. See
 [`docs/CICD.md`](docs/CICD.md#dependency-workflow-uv) for the full workflow
 (including why `ibapi` is installed manually and never locked).
+
+The frontend follows the owner's site (evangoh.com) palette, italic-serif
+eyebrows, 16 px cards and a centred 1200 px content column, and it is
+deliberately dark-only — that brand match is the documented trade-off against
+HIG `dark-mode.md`. One brand mark is shown per view: the top-bar `Q` monogram,
+with the sidebar and the mobile drawer kept navigation-only, and each eyebrow
+names its section's category instead of repeating the title
+(`frontend/src/layout/brand-and-eyebrows.test.tsx` guards both). Text never
+renders below 12 px (13 px `text-xs` captions), including inside the scaled SVG
+price chart and architecture diagram: each declares a minimum render width equal
+to its viewBox width, so a 12-unit label is never smaller than 12 CSS px and
+narrow viewports scroll inside the chart or diagram card instead.
+`frontend/src/layout/layout-overflow.test.tsx` asserts the shell, column,
+wrapping and type-size guards on all 18 destinations at the four widths it
+covers — 320, 375, 390 and 768 px — and re-derives the rendered type floor from
+the populated chart and diagram. Those are automated DOM/source assertions, not
+a browser pass; a manual browser check across those widths is still owed.
 
 Configuration comes from environment variables / bundle variables (`CATALOG`, `SCHEMA`, `DATABRICKS_WAREHOUSE_ID`,
 `LAKEBASE_INSTANCE`, `AGENT_MODEL_ENDPOINT`); no credentials are committed. Secrets live in a Databricks secret scope.

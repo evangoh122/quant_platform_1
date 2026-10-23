@@ -16,16 +16,12 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
         collapsed ? 'w-16' : 'w-56'
       }`}
     >
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-4">
-        {!collapsed && (
-          <div>
-            <div className="text-sm font-bold text-[var(--text-primary)]">QP1</div>
-            <div className="text-xs text-[var(--text-muted)]">Quant Trading Platform</div>
-          </div>
-        )}
+      {/* Navigation-only. The one brand mark lives in the top bar, so the
+          sidebar never repeats it: exactly one brand presentation per view. */}
+      <div className={`flex items-center border-b border-[var(--border)] px-4 py-4 ${collapsed ? 'justify-center' : 'justify-end'}`}>
         <button
           onClick={onToggle}
-          className="control-target rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          className="control-target shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-expanded={!collapsed}
         >
@@ -37,7 +33,10 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
         {groups.map((group) => (
           <div key={group.label} className="mb-2">
             {!collapsed && (
-              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              /* Uppercase tracked group label kept from the original shell, but
+                 at 13 px (text-xs) instead of 10 px: 12 px is the floor for
+                 labels, 13 px the repo's caption size. */
+              <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                 {group.label}
               </div>
             )}

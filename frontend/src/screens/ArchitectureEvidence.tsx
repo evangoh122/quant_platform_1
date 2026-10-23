@@ -1,4 +1,5 @@
 import ArchitectureDiagram from '../components/ArchitectureDiagram';
+import { Eyebrow } from '../components/Eyebrow';
 
 const SNAPSHOT_DATE = '2026-10-05';
 
@@ -62,8 +63,9 @@ const LIMITATIONS = [
 export function ArchitectureEvidence() {
   return (
     <div className="space-y-8">
-      <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-elevated)] p-6">
-        <h1 className="text-2xl font-bold text-[var(--text-primary)]">
+      <section className="card-featured p-6">
+        <Eyebrow>built and checked</Eyebrow>
+        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
           Architecture &amp; Tests
         </h1>
         <p className="mt-2 text-sm text-[var(--text-secondary)]">
@@ -81,27 +83,27 @@ export function ArchitectureEvidence() {
         >
           <ol className="space-y-2 text-sm text-[var(--text-secondary)]" aria-label="Business workflow steps">
             <li className="flex items-start gap-2">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-[10px] font-bold text-[var(--accent-ink)]">1</span>
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-xs font-bold text-[var(--accent-ink)]">1</span>
               <span>User asks a research question</span>
             </li>
             <li className="flex items-start gap-2">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-[10px] font-bold text-[var(--accent-ink)]">2</span>
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-xs font-bold text-[var(--accent-ink)]">2</span>
               <span>Governed retrieval from SEC filings, market data, and options analytics</span>
             </li>
             <li className="flex items-start gap-2">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-[10px] font-bold text-[var(--accent-ink)]">3</span>
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-xs font-bold text-[var(--accent-ink)]">3</span>
               <span>Grounded response with source citations and tool-call evidence</span>
             </li>
             <li className="flex items-start gap-2">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-[10px] font-bold text-[var(--accent-ink)]">4</span>
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-xs font-bold text-[var(--accent-ink)]">4</span>
               <span>Optional: save research note to Lakebase (when agent returns a note_id)</span>
             </li>
             <li className="flex items-start gap-2">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-[10px] font-bold text-[var(--accent-ink)]">5</span>
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-xs font-bold text-[var(--accent-ink)]">5</span>
               <span>Lakebase audit trail</span>
             </li>
             <li className="flex items-start gap-2">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-[10px] font-bold text-[var(--accent-ink)]">6</span>
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-fill)] text-xs font-bold text-[var(--accent-ink)]">6</span>
               <span>Delta analytics materialisation</span>
             </li>
           </ol>
@@ -154,7 +156,7 @@ export function ArchitectureEvidence() {
           <ol className="space-y-2" aria-label="Safety model steps">
             {SAFETY_MODEL_STEPS.map((step, i) => (
               <li key={step} className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[10px] font-bold text-[var(--text-muted)]">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-xs font-bold text-[var(--text-muted)]">
                   {i + 1}
                 </span>
                 <span>{step}</span>

@@ -87,17 +87,18 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
             aria-modal="true"
             aria-label="Navigation"
             onKeyDown={handleTrapFocus}
-            className="absolute inset-y-0 left-0 w-[min(80vw,320px)] overflow-y-auto bg-[var(--surface)] shadow-xl"
+            className="absolute inset-y-0 left-0 w-[min(80vw,320px)] max-w-full overflow-y-auto bg-[var(--surface)] shadow-xl"
           >
-            <div className="border-b border-[var(--border)] px-4 py-4 pl-14">
-              <div className="text-sm font-bold text-[var(--text-primary)]">QP1</div>
-              <div className="text-xs text-[var(--text-muted)]">Quant Trading Platform</div>
-            </div>
+            {/* Navigation-only: the brand mark lives in the top bar, so the
+                drawer never carries a second tile and the two can never show
+                at once. This spacer keeps the first group clear of the fixed
+                menu trigger that overlaps the drawer's top-left corner. */}
+            <div className="h-16 border-b border-[var(--border)]" aria-hidden="true" />
 
             <nav className="p-2">
               {groups.map((group) => (
                 <div key={group.label} className="mb-2">
-                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {group.label}
                   </div>
                   {group.items.map((item) => {
