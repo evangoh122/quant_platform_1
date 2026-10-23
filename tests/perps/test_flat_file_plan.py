@@ -204,3 +204,21 @@ def test_architecture_diagram_uses_the_first_bar_availability_rule():
     html = (ROOT / "docs" / "data" / "perps_architecture.html").read_text(encoding="utf-8")
     assert "info_available = bar_end_ts<" not in html
     assert "info_available = max(bar_end, source avail.)" in html
+
+
+def test_fill_bars_dedupe_on_trade_id_everywhere():
+    """Every fill-bar definition dedupes on the trade id (symbol, tid), never on a
+    fill id/hash that would count both counterparty rows (CodeRabbit on PR #80)."""
+    term = yaml.safe_load(ONTOLOGY.read_text(encoding="utf-8"))["terms"]["append_only_fill_bar"]
+    documents = {
+        "docs/DATA_SCHEMAS.md": SCHEMAS.read_text(encoding="utf-8"),
+        "ontology/README.md": ONTOLOGY_README.read_text(encoding="utf-8"),
+        "ontology/business_terms.yaml:append_only_fill_bar": term["definition"],
+        "docs/data/PERPS_WEEKEND_PLAN.md": PLAN.read_text(encoding="utf-8"),
+    }
+    for name, text in documents.items():
+        normalised = re.sub(r"\s+", " ", text.replace("`", "")).lower()
+        assert "tid" in normalised, name
+        assert "counterparty" in normalised, name
+        assert "deduplicated on fill id/hash" not in normalised, name
+        assert "counted once per id/hash" not in normalised, name

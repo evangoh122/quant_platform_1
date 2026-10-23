@@ -863,7 +863,9 @@ Every perps table, when it lands, carries:
     ('flat_file_backfill' | 'api_capture' | 's3_backfill' | 'forward_snapshot', per table) and
     archive_key (the object the row came from), so a bar or context row is reproducible from the
     archive.  Bars are built from fills by TRADE time in UTC (bar_start = floor(trade_ts/interval),
-    bar_end = the interval boundary), deduplicated on fill id/hash, never interpolated.  A first
+    bar_end = the interval boundary), deduplicated on the trade id (symbol, tid) — one row per
+    trade, because a node fill record can be emitted once per counterparty; fill_hash only when the
+    archive has no trade id — never interpolated.  A first
     bar carries information_available_ts = max(bar_end_ts, availability of the archive
     object or source fills it was built from) — a backfilled bar is never usable before its
     contents were observable.  A late fill re-emits the affected bar as an
