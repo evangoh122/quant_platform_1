@@ -7,14 +7,14 @@ blocks any non-loopback socket, ``databricks.sdk.WorkspaceClient`` and
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from loguru import logger
 
 DATES = ["2024-01-02", "2024-01-03", "2024-01-04"]
 
-REFERENCE_NOW = datetime(2024, 1, 5, 12, 0, tzinfo=timezone.utc)
+REFERENCE_NOW = datetime(2024, 1, 5, 12, 0, tzinfo=UTC)
 
 
 class _FrozenDatetime(datetime):

@@ -8,6 +8,7 @@ import { FreshnessBadge } from '../components/FreshnessBadge';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingState } from '../components/LoadingState';
+import { Eyebrow } from '../components/Eyebrow';
 import { LineChart, type LineChartSeries } from '../components/LineChart';
 
 // The requested window is TRADING days (weekday approximation), not calendar
@@ -138,8 +139,19 @@ export function MarketSpreads() {
     [days],
   );
 
+  // A payload without `charts` (an older or degraded API shape) must degrade to
+  // the empty state: reading `data.charts.map` on it threw a TypeError into the
+  // app shell, which has no error boundary. The futures gap card is static
+  // content about a named gap, so it stays visible either way.
+  const charts = data?.charts ?? [];
+
   return (
     <div className="space-y-4">
+      <div className="min-w-0">
+        <Eyebrow>relative value, not a signal</Eyebrow>
+        <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Cross-asset spreads</h1>
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-[var(--text-muted)]">
           Window: last {days} trading days (weekday approximation — exchange holidays are not
@@ -166,23 +178,20 @@ export function MarketSpreads() {
 
       {loading && <LoadingState label="Loading spreads…" />}
       {error && <ErrorState message={error} onRetry={reload} />}
-      {!loading && !error && data && (
-        <div className="space-y-4">
-          {data.charts.map((chart) => (
-            <SpreadChartCard key={chart.chart_id} chart={chart} />
-          ))}
-
-          <Card title="CLZ26.NYM vs CLZ27.NYM spread">
-            <p className="text-sm text-[var(--text-secondary)]">
-              Not charted: there is no futures data source in the lakehouse yet, so this
-              spread has no verified prices behind it. It is shown here as a named gap
-              rather than a fabricated series.
-            </p>
-          </Card>
-        </div>
-      )}
-      {!loading && !error && !data && (
+      {!loading && !error && charts.length === 0 && (
         <EmptyState title="No spreads data" detail="The API returned no charts." />
+      )}
+      {!loading &&
+        !error &&
+        charts.map((chart) => <SpreadChartCard key={chart.chart_id} chart={chart} />)}
+      {!loading && !error && (
+        <Card title="CLZ26.NYM vs CLZ27.NYM spread">
+          <p className="text-sm text-[var(--text-secondary)]">
+            Not charted: there is no futures data source in the lakehouse yet, so this
+            spread has no verified prices behind it. It is shown here as a named gap
+            rather than a fabricated series.
+          </p>
+        </Card>
       )}
     </div>
   );

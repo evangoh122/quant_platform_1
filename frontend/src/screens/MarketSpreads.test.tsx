@@ -271,6 +271,36 @@ describe('MarketSpreads', () => {
     expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('renders the shared eyebrow, distinct from the heading that follows it', async () => {
+    stubFetch(makeResponse());
+    const { container } = render(<MarketSpreads />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('img')).toHaveLength(5);
+    });
+
+    const eyebrow = container.querySelector('.eyebrow');
+    expect(eyebrow, 'Market Spreads must render the shared Eyebrow').toBeTruthy();
+    expect(eyebrow!.textContent).toBe('relative value, not a signal');
+
+    // #79's rule: an eyebrow names the category, never repeats the title.
+    const heading = screen.getByRole('heading', { name: 'Cross-asset spreads' });
+    expect(eyebrow!.textContent?.toLowerCase()).not.toBe(heading.textContent?.toLowerCase());
+  });
+
+  it('renders the empty state instead of crashing when the payload has no charts', async () => {
+    // The route always sends `charts`; an older or degraded shape may not. The
+    // app shell has no error boundary, so `data.charts.map` used to unmount it.
+    stubFetch({ days: 1000, window_start: '2024-01-02', window_end: '2026-10-01' });
+    render(<MarketSpreads />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No spreads data')).toBeInTheDocument();
+    });
+    expect(screen.getByText('The API returned no charts.')).toBeInTheDocument();
+    expect(screen.queryAllByRole('img')).toHaveLength(0);
+  });
+
   it('uses evidence language only — no BUY/SELL strings', async () => {
     stubFetch(makeResponse());
     render(<MarketSpreads />);

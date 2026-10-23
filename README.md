@@ -214,14 +214,15 @@ with the sidebar and the mobile drawer kept navigation-only, and each eyebrow
 names its section's category instead of repeating the title
 (`frontend/src/layout/brand-and-eyebrows.test.tsx` guards both). Text never
 renders below 12 px (13 px `text-xs` captions), including inside the scaled SVG
-price chart and architecture diagram: each declares a minimum render width equal
-to its viewBox width, so a 12-unit label is never smaller than 12 CSS px and
-narrow viewports scroll inside the chart or diagram card instead.
+price chart, the Market Spreads line charts and the architecture diagram: each
+declares a minimum render width equal to its viewBox width, so a 12-unit label is
+never smaller than 12 CSS px and narrow viewports scroll inside the chart or
+diagram card instead.
 `frontend/src/layout/layout-overflow.test.tsx` asserts the shell, column,
-wrapping and type-size guards on all 18 destinations at the four widths it
+wrapping and type-size guards on all 19 destinations at the four widths it
 covers — 320, 375, 390 and 768 px — and re-derives the rendered type floor from
-the populated chart and diagram. Those are automated DOM/source assertions, not
-a browser pass; a manual browser check across those widths is still owed.
+the populated charts and the diagram. Those are automated DOM/source assertions,
+not a browser pass; a manual browser check across those widths is still owed.
 
 Configuration comes from environment variables / bundle variables (`CATALOG`, `SCHEMA`, `DATABRICKS_WAREHOUSE_ID`,
 `LAKEBASE_INSTANCE`, `AGENT_MODEL_ENDPOINT`); no credentials are committed. Secrets live in a Databricks secret scope.

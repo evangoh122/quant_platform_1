@@ -20,7 +20,7 @@ contracts, never string-built SQL.  Each source is read through
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -164,7 +164,7 @@ def market_spreads(
     days: int = Query(default=_DEFAULT_DAYS, ge=1, le=_MAX_DAYS),
 ) -> MarketSpreadsResponse:
     # Bounded date window: last N trading days (weekday approximation)
-    end_dt = datetime.now(timezone.utc)
+    end_dt = datetime.now(UTC)
     window_end = end_dt.date()
     window_start = start_for_trading_days(window_end, days)
     start_text = window_start.isoformat()
