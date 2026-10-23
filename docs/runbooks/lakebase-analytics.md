@@ -13,8 +13,11 @@ Lakebase (Postgres), MERGEs raw events into a staging Delta table
 
 ## Schedule
 
-The Databricks job `lakebase_analytics_refresh` runs at 02:15 UTC daily
-(`0 15 2 * * ?`). It is **UNPAUSED** by default with:
+The Databricks job `lakebase_analytics_refresh` is defined at 02:15 UTC daily
+(`0 15 2 * * ?`, `timezone_id: UTC`). It is **PAUSED by default** (owner
+decision 2026-10-23: *"Keep it paused but give me the option to schedule"*):
+a deploy ships the job with its schedule paused, so nothing runs nightly until
+the owner opts in. The schedule is otherwise unchanged:
 
 - `max_concurrent_runs: 1` — only one run at a time
 - `max_retries: 2` — up to 2 automatic retries on failure (on the
@@ -27,6 +30,45 @@ The Databricks job `lakebase_analytics_refresh` runs at 02:15 UTC daily
   budget and starve the retries. The run budget is therefore uncapped (a stuck
   run is capped per attempt by the task timeout).
 - **No `email_notifications`** — see [Failure notifications](#failure-notifications).
+
+### Pausing and unpausing
+
+`resources/jobs.yml` binds `schedule.pause_status` to the bundle variable
+`analytics_schedule_pause_status`, declared in `databricks.yml` with the
+description "PAUSED (default) or UNPAUSED for the nightly
+lakebase_analytics_refresh schedule" and the default `PAUSED`. Every committed
+target keeps that default (`tests/test_bundle_sync.py` guards it, including the
+accepted values `PAUSED` / `UNPAUSED`).
+
+Run the job **once, on demand**, without touching the schedule:
+
+```bash
+databricks bundle run lakebase_analytics_refresh -t dev      # or -t prod
+```
+
+**Enable the nightly schedule** with any one of:
+
+1. Deploy with the variable set — no committed change needed:
+
+   ```bash
+   databricks bundle deploy -t dev --var analytics_schedule_pause_status=UNPAUSED
+   ```
+
+   Repeat the `--var` on every later deploy that should keep it enabled: a
+   plain `databricks bundle deploy` restores the committed default `PAUSED`.
+
+2. Set `analytics_schedule_pause_status: UNPAUSED` in the `variables:` block of
+   a target in `databricks.yml`. This is a committed change to the default, so
+   `tests/test_bundle_sync.py` must be updated in the same commit — that guard
+   is what keeps every target `PAUSED` unless the owner changes it deliberately.
+
+3. Resume the schedule in the Databricks Jobs UI for
+   `quant-platform-lakebase-analytics-<target>`. No repository change, but the
+   next bundle deploy re-applies `PAUSED` and pauses it again.
+
+**Pause again** by deploying with `--var analytics_schedule_pause_status=PAUSED`
+(or plain `databricks bundle deploy`, which restores the default), or with
+"Pause" on the job schedule in the Databricks Jobs UI.
 
 ## Failure notifications
 

@@ -54,15 +54,70 @@ def test_sync_exclude_has_pycache():
     assert "**/__pycache__" in excludes
 
 
-def test_lakebase_analytics_job_unpaused():
-    """lakebase_analytics_refresh must have UNPAUSED schedule."""
-    cfg = _load_jobs_config()
-    jobs = cfg.get("resources", {}).get("jobs", {})
+def test_lakebase_analytics_schedule_pause_status_is_a_paused_by_default_variable():
+    """The nightly schedule ships paused, but stays opt-in via a bundle variable.
+
+    Owner decision 2026-10-23: "Keep it paused but give me the option to
+    schedule." ``resources/jobs.yml`` therefore references
+    ``${var.analytics_schedule_pause_status}`` instead of hard-coding a status,
+    ``databricks.yml`` declares that variable with the default ``PAUSED``, and
+    no target may default it to anything else. The Jobs API accepts only
+    ``PAUSED`` and ``UNPAUSED``, so the value is restricted to those two.
+
+    Mutations this catches: hard-coding ``pause_status: UNPAUSED`` (or
+    ``PAUSED``) in resources/jobs.yml, and defaulting the variable to
+    ``UNPAUSED`` in databricks.yml.
+    """
+    allowed = ("PAUSED", "UNPAUSED")
+
+    def status_of(spec, context: str) -> str:
+        # A bundle variable / target variable is either the status itself or a
+        # map carrying it under `default`.
+        if isinstance(spec, dict):
+            spec = spec.get("default")
+        assert spec in allowed, (
+            f"{context} must be one of {allowed}; got {spec!r}"
+        )
+        return spec
+
+    jobs = _load_jobs_config().get("resources", {}).get("jobs", {})
     job = jobs.get("lakebase_analytics_refresh", {})
     schedule = job.get("schedule", {})
-    assert schedule.get("pause_status") == "UNPAUSED", (
-        f"lakebase_analytics_refresh schedule should be UNPAUSED; got {schedule.get('pause_status')}"
+    assert schedule.get("pause_status") == "${var.analytics_schedule_pause_status}", (
+        "lakebase_analytics_refresh schedule.pause_status must reference "
+        "${var.analytics_schedule_pause_status} (PAUSED by default, UNPAUSED "
+        f"on owner opt-in); got {schedule.get('pause_status')!r}"
     )
+
+    cfg = _load_bundle_config()
+    variables = cfg.get("variables") or {}
+    spec = variables.get("analytics_schedule_pause_status")
+    assert spec is not None, (
+        "databricks.yml must declare the bundle variable "
+        f"analytics_schedule_pause_status; declared: {sorted(variables)}"
+    )
+    if isinstance(spec, dict):
+        assert str(spec.get("description", "")).strip(), (
+            "analytics_schedule_pause_status must carry a description"
+        )
+    root_default = status_of(spec, "variables.analytics_schedule_pause_status")
+    assert root_default == "PAUSED", (
+        "variables.analytics_schedule_pause_status must default to PAUSED; "
+        f"got {root_default!r}"
+    )
+
+    targets = cfg.get("targets") or {}
+    assert targets, "databricks.yml must declare at least one target"
+    for target_name in sorted(targets):
+        target_vars = (targets[target_name] or {}).get("variables") or {}
+        target_default = status_of(
+            target_vars.get("analytics_schedule_pause_status", root_default),
+            f"targets.{target_name}.variables.analytics_schedule_pause_status",
+        )
+        assert target_default == "PAUSED", (
+            f"target {target_name} must default analytics_schedule_pause_status "
+            f"to PAUSED; got {target_default!r}"
+        )
 
 
 def test_lakebase_analytics_job_single_concurrency():

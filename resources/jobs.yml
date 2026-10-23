@@ -180,7 +180,9 @@ resources:
       schedule:
         quartz_cron_expression: "0 15 2 * * ?"
         timezone_id: UTC
-        pause_status: UNPAUSED
+        # PAUSED unless the owner opts in via the bundle variable
+        # (see databricks.yml and docs/runbooks/lakebase-analytics.md).
+        pause_status: ${var.analytics_schedule_pause_status}
       tasks:
         - task_key: refresh_analytics
           max_retries: 2

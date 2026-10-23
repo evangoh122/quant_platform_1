@@ -211,6 +211,20 @@ databricks bundle deploy -t dev    # builds frontend/dist + requirements.txt via
 python scripts/smoke_app.py --base-url <app-url>
 ```
 
+The nightly Lakebase analytics job `lakebase_analytics_refresh` (02:15 UTC) is
+**PAUSED by default** (owner decision 2026-10-23: keep it paused, with the
+option to schedule). `databricks.yml` declares the bundle variable
+`analytics_schedule_pause_status` (`PAUSED` default, `UNPAUSED` to enable) and
+`resources/jobs.yml` binds `schedule.pause_status` to it, so a plain deploy
+never starts a nightly run. To refresh the analytics tables, run the job once
+on demand (`databricks bundle run lakebase_analytics_refresh -t <target>`), or
+turn the nightly schedule on with `databricks bundle deploy -t <target> --var
+analytics_schedule_pause_status=UNPAUSED` (or set the variable in a target, or
+resume the schedule in the Databricks Jobs UI). Deploying again without the
+`--var` — or "Pause" in the Jobs UI — pauses it again.
+[`docs/runbooks/lakebase-analytics.md`](docs/runbooks/lakebase-analytics.md)
+has the full procedure and the guard test behind it.
+
 ## Public demo (Hugging Face Space)
 
 The public showcase runs as a Docker Space built from
@@ -234,7 +248,7 @@ see [`docs/SECURITY.md`](docs/SECURITY.md).
 
 - SEC retrieval supports per-ticker queries via lazy loading with SQL-warehouse fallback for Databricks Apps, but corpus coverage is incomplete (230 of 558 tickers had chunks as measured 2026-10-06; see docs/BUSINESS_CASE.md).
 - SEC registrant identity (KG-0, added 2026-10-22): `pipelines/ingest_sec_submissions.py` fetches `data.sec.gov/submissions` into `bronze_sec_submissions`, and `silver/09_silver_sec_registrant.sql` derives `silver_sec_registrant` (one row per distinct payload — filter `is_latest` for the current name, SIC and tickers/exchanges as observed at fetch time) and `silver_sec_registrant_former_names` (inclusive former-name intervals keyed by name and start date). The `sec_submissions_ingest` job is unscheduled and dry-run by default; a live run needs owner approval. The public availability time of a submissions document is unknown here, so these tables are not used for point-in-time joins. `bronze_sec_filings_v2.company_name` holds the canonical ticker, not a company name (`pipelines/sec_rag_ingest.py:1637`), so company names must come from the registrant tables. Every row in these three tables carries `data_source = 'sec_edgar'` from `config/data_sources.py`.
-- The agent and analytics pipeline are minimal versions built for the capstone deadline. The analytics job is run on demand (it needs a short-lived `LAKEBASE_URL` at run time).
+- The agent and analytics pipeline are minimal versions built for the capstone deadline. The analytics job is run on demand (it needs a short-lived `LAKEBASE_URL` at run time); its nightly 02:15 UTC schedule ships **PAUSED** (the `analytics_schedule_pause_status` bundle variable in `databricks.yml`) and stays paused until the owner opts in.
 - Macro (Fed) series are revised values, not first-release vintages.
 - Price adjustment is split-only: distributions/dividends are not adjusted, so an ETF ex-distribution gap stays in
   returns. This matters for the commodity ETF research group (`config/research_symbols.yaml`).
