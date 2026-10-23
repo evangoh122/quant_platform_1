@@ -911,7 +911,16 @@ Every perps table, when it lands, carries:
     weighted equally; the Clark-West ratio is never reported as the effect size. The
     pre-registered power simulation (§6.2.1) estimates its DGP only on the 12 pinned training
     weekends (2026-03-27..2026-06-12) and treats population ΔR² in {0.005, 0.01, 0.02} as the
-    plausible set.
+    plausible set. That DGP uses the FULL-model OLS residuals (open_gap on the baseline AND the
+    five perp features), so the residual is orthogonal to both designs, s = u'E[Zε] = 0 and κ = 0
+    is the true no-incremental-predictability null (population ΔR² = 0). A target population
+    ΔR² maps to the scale κ = sqrt(ΔR² * σ²_ε / ((1 - ΔR²) * q)) with q = u'Σ_{Z|X}u taken from
+    the perp features residualised on the baseline design (weekend-weighted); grid values are the
+    population unadjusted out-of-time gain of the refit full model over the refit baseline, and
+    the simulation reports realised gains beside each target. Each simulated evaluation slot uses
+    that evaluation weekend's actual instrument set (availability only); rows are drawn per
+    instrument from training weekends that contain it and instruments absent from all training
+    weekends are excluded and counted.
 
   Buildable panel (docs/data/PERPS_WEEKEND_PLAN.md §2.5, §6.1):
     1h API-only lower bound 1,538 company-weekends / 30 weekends (measured 2026-10-21);

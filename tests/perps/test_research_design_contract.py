@@ -25,6 +25,13 @@ calibration equation and the plausible ΔR² set), bans the unsupported "larger
 effect" ordering against the Fisher-z heuristic, and separates the Clark-West
 significance decision from the unadjusted effect size P6 reports.
 
+Round 13 calibrates the simulation against the *refit* test: residuals come from
+the training **full-model** OLS (baseline **and** the five perp features), so
+`s = u'E[Zε] = 0` and `κ = 0` is the true no-incremental-predictability null;
+`q = u'Σ_{Z|X}u` uses the **residualised** perp features; the calibration is
+`κ = sqrt(ΔR² · σ²_ε / ((1 − ΔR²) · q))`; and instrument alignment is
+deterministic per instrument (no rejection loop, no intersection fallback).
+
 They are offline and stdlib + PyYAML only. They fail on the pre-round-9 docs.
 """
 from __future__ import annotations
@@ -211,13 +218,27 @@ def test_primary_power_simulation_is_preregistered_and_specific():
     assert "b = 4" in flat
     assert "circularly" in flat
     assert "Politis–White" in flat
-    # Instrument alignment: one source weekend per simulated weekend.
-    assert "actual instrument set of the calendar weekend it represents" in flat
-    assert "whole weekend block draw is rejected and redrawn" in flat
-    assert "intersection" in flat
-    # Fixed direction and the effect-calibration equation.
+    # Round 13: deterministic per-instrument alignment; the rejection loop and
+    # the random-intersection fallback are gone.
+    assert "actual instrument set `I_w` of that evaluation" in flat
+    assert "drawn **per instrument** from training weekends" in flat
+    assert "`E_i = {training weekends containing i}`" in flat
+    assert "block-aligned" in flat
+    assert "excluded from the simulation for that slot" in flat
+    assert "exclusion count is reported per slot and in total" in flat
+    assert "Acceptance/failure rule, stated explicitly" in flat
+    assert "whole weekend block draw is rejected and redrawn" not in flat
+    assert "100 consecutive draws" not in flat
+    assert "shortfall" not in flat
+    assert "no rejection-and-redraw loop" in flat
+    assert "100-draw limit" in flat
+    assert "random intersection fallback" in flat
+    # Block-length wording: 3 non-overlapping blocks over 12 circular starts.
+    assert "3 non-overlapping blocks" in flat
+    assert "12 circular start points" in flat
+    # Fixed direction and the round-13 effect-calibration equation.
     assert "u = (1/√5, …, 1/√5)'" in flat
-    assert "κ = [−s + sqrt(s² + q · ΔR² · σ²_ε / (1 − ΔR²))] / q" in flat
+    assert "κ = sqrt(ΔR² · σ²_ε / ((1 − ΔR²) · q))" in flat
     assert "population unadjusted out-of-time R² gain" in flat
     # The plausible set is declared explicitly.
     assert "plausible = {0.005, 0.01, 0.02}" in flat
@@ -242,6 +263,60 @@ def test_primary_power_simulation_is_preregistered_and_specific():
     assert "seed" in flat
     # The simulation runs before any P6 loss is inspected.
     assert "P6 **before** any evaluation loss is inspected" in flat
+
+
+def test_simulation_calibration_matches_the_refit_test_and_kappa_zero_is_a_null():
+    """Round 13 (Opus MAJOR = Codex Sol P2 #1): κ = 0 must be a true null.
+
+    The calibration has to describe the *refit* comparison: residuals from the
+    training full-model OLS (baseline **and** the five perp features), so the
+    sample covariance ``s = u'E[Zε]`` is zero, ``q`` is the variance of the
+    injected index **after** residualising the perp features on the baseline
+    design, and ``κ = 0`` injects no incremental predictability at all.
+    """
+    flat = _flat(_plan())
+    # Residual source: the full-model OLS, not a baseline-only fit.
+    assert "full-model OLS" in flat
+    assert (
+        "`open_gap` on the pre-declared baseline columns **and** the five perp "
+        "features"
+    ) in flat
+    assert "from that full-model fit" in flat
+    assert "baseline-only OLS" in flat
+    assert "Fit the primary baseline OLS" not in flat
+    assert "drawn baseline residual" not in flat
+    assert "baseline residual `ε̂`" not in flat
+    # s = 0 follows from that fit, so κ = 0 is the no-increment null.
+    assert "X'ε̂ = 0" in flat
+    assert "Z'ε̂ = 0" in flat
+    assert "s = u'E[Zε] = 0" in flat
+    assert "true no-incremental-predictability null" in flat
+    # q uses the residualised perp features, weekend-weighted like the statistic.
+    assert "q = u'Σ_{Z|X}u" in flat
+    assert (
+        "after residualising the five perp features on the baseline design"
+        in flat
+    )
+    assert "weekend-weighted, as the statistic is" in flat
+    assert "q = u'Σ_Z u" not in flat
+    # The s-dependent root is gone; the closed form above replaces it.
+    assert "−s + sqrt(s² + q · ΔR²" not in flat
+    # The grid is the population gain of the REFIT models, and realised gains
+    # are reported next to their targets.
+    assert "population unadjusted out-of-time R² gain of the refit full" in flat
+    assert "model over the refit baseline" in flat
+    assert "makes **small realised gains differ from the target**" in flat
+    assert "realised** unadjusted `ΔR²_oot`" in flat
+    # README and the schema doc repeat the same calibration and null.
+    readme = _flat(README.read_text(encoding="utf-8"))
+    assert "**full-model** OLS" in readme
+    assert "no-incremental-predictability null" in readme
+    assert "κ = sqrt(ΔR² · σ²_ε / ((1 − ΔR²) · q))" in readme
+    schemas = _flat(SCHEMAS.read_text(encoding="utf-8"))
+    assert "FULL-model OLS residuals" in schemas
+    assert "no-incremental-predictability null" in schemas
+    assert "κ = sqrt(ΔR² * σ²_ε / ((1 - ΔR²) * q))" in schemas
+    assert "q = u'Σ_{Z|X}u" in schemas
 
 
 def test_reported_effect_is_unadjusted_and_cw_decides_significance_only():

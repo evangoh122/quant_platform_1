@@ -113,10 +113,15 @@ detect partial r ≈ 0.49 (partial r² 0.24) at N_eff = 30 and r ≈ 0.39 (parti
 the untransformed z suggested. Those numbers are **not the power of the primary test**. The **pre-registered primary
 test** fixed in the plan (§6.2) is a **one-sided** test of the joint five-feature perp block over 18 weekend clusters,
 using a Clark-West-adjusted loss differential and a wild-cluster-bootstrap-t; its power is **undetermined** until the
-pre-registered simulation in the plan (§6.2.1: DGP estimated **only** on the 12 pinned training weekends, a joint
-circular block bootstrap of whole weekend-instrument rows, 18 evaluation weekends, the 5-feature block, one-sided 5%,
-2,000 Monte Carlo replications with 999 bootstrap replications, reporting size, power curve and minimum detectable
-ΔR²) runs before any result is inspected. The Clark-West ratio decides **significance only**; the effect size reported
+pre-registered simulation in the plan (§6.2.1: DGP estimated **only** on the 12 pinned training weekends, from the
+**full-model** OLS of `open_gap` on the baseline **and** the five perp features so its residual is orthogonal to both
+designs and population ΔR² = 0 is the true no-incremental-predictability null, a joint circular block bootstrap of whole
+weekend-instrument rows, deterministic per-instrument alignment to each evaluation weekend's actual instrument set,
+18 evaluation weekends, the 5-feature block, one-sided 5%, 2,000 Monte Carlo replications with 999 bootstrap
+replications, the calibration `κ = sqrt(ΔR² · σ²_ε / ((1 − ΔR²) · q))` with `q = u'Σ_{Z|X}u` the variance of the
+injected index **after residualising the perp features on the baseline design**, and reporting of the realised gains
+next to their targets along with size, power curve and minimum detectable ΔR²) runs before any result is inspected. The
+Clark-West ratio decides **significance only**; the effect size reported
 is the **unadjusted** out-of-time ratio `mean(MSE_base − MSE_full) / mean(MSE_base)` over the 18 evaluation weekends,
 with an explicit plausible set of population ΔR² in {0.005, 0.01, 0.02}. The baseline is the Friday **regular-session**
 close + crypto: Friday equity extended hours (16:00-20:00 ET) and the last ES/NQ hour (to 17:00 ET Friday) trade before

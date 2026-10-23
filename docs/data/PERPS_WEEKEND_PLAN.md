@@ -1326,10 +1326,18 @@ is fixed before the run; the seed is the only free parameter and is recorded.
 - **Training-only data-generating process.** Estimate the DGP **once, from the 12
   pinned training weekends only**: 2026-03-27, 2026-04-03, 2026-04-10,
   2026-04-17, 2026-04-24, 2026-05-01, 2026-05-08, 2026-05-15, 2026-05-22,
-  2026-05-29, 2026-06-05 and 2026-06-12. Fit the primary baseline OLS (the same
-  pre-declared columns) on those 12 weekends and keep its coefficient vector
-  `β̂`, its per-row residual `ε̂`, the baseline design and the five perp
-  features. **No label, residual, fitted value or feature row from any
+  2026-05-29, 2026-06-05 and 2026-06-12. Fit the **full-model OLS** —
+  `open_gap` on the pre-declared baseline columns **and** the five perp
+  features — on those 12 weekends and keep its baseline coefficient vector
+  `β̂`, its per-row residual `ε̂` **from that full-model fit**, the baseline
+  design `X` and the five perp features `Z`. The residual is therefore
+  orthogonal in-sample to **both** designs (`X'ε̂ = 0` and `Z'ε̂ = 0`), so
+  `s = u'E[Zε] = 0` and `κ = 0` is the **true no-incremental-predictability
+  null**: at `κ = 0` the simulated label carries no perp content beyond `X`, and
+  the refit full model and the refit baseline have the same population MSE.
+  Residuals are **never** taken from a baseline-only OLS, whose residuals are
+  correlated with the perp features and would make `κ = 0` an artificial
+  signal. **No label, residual, fitted value or feature row from any
   evaluation weekend — and no weekend earlier than 2026-03-27 — enters the DGP
   for any origin.** Evaluation weekends contribute **availability only**: which
   instruments have a row, hence the row count of a simulated weekend. The
@@ -1337,7 +1345,7 @@ is fixed before the run; the seed is the only free parameter and is recorded.
   labels for earlier evaluation weekends, never their real labels.
 - **Joint circular block bootstrap of whole rows.** The training DGP is one row
   per (weekend, instrument) carrying **all columns together**: the baseline
-  features, the five perp features and the baseline residual `ε̂`. Resample
+  features, the five perp features and the full-model residual `ε̂`. Resample
   **whole weekend-instrument rows by weekend blocks**: draw blocks of `b = 4`
   consecutive training weekends, wrapping circularly from 2026-06-12 back to
   2026-03-27, until the 12 synthetic training weekend slots and the 18 synthetic
@@ -1346,20 +1354,37 @@ is fixed before the run; the seed is the only free parameter and is recorded.
   the baseline features, the five perp features and the residuals is preserved;
   no row is ever spliced from two source weekends. `b = 4` is **fixed** rather
   than estimated because a Politis–White automatic block length is unreliable on
-  12 blocks; four weekends span about one month of macro/crypto conditions and
-  leave three disjoint blocks. Sensitivity runs at `b = 2` and `b = 6` are
-  reported alongside the pre-registered `b = 4`, never instead of it.
-- **Instrument alignment.** Each synthetic weekend is assigned the **actual
-  instrument set of the calendar weekend it represents** (the 12 pinned training
-  sets, then the 18 pinned evaluation sets; availability only, no labels). A
-  drawn weekend is accepted only when it contains every instrument in that set;
-  otherwise the **whole weekend block draw is rejected and redrawn**, so a
-  simulated weekend takes all of its rows from one source weekend and the
-  instrument set is identical across Monte Carlo replications. The rejection
-  count is recorded per weekend. If 100 consecutive draws fail, the weekend uses
-  the **intersection** of the target set and the drawn weekend and the shortfall
-  is reported; a missing instrument is never forward-filled, interpolated or
-  borrowed from another weekend.
+  12 blocks; four weekends span about one month of macro/crypto conditions. With
+  `b = 4` over the 12 training weekends there are **3 non-overlapping blocks /
+  12 circular start points**: the block start is drawn uniformly from the 12
+  circular start points, and a block wraps from 2026-06-12 back to 2026-03-27,
+  so every training weekend can start a block. Sensitivity runs at `b = 2` and
+  `b = 6` are reported alongside the pre-registered `b = 4`, never instead of it.
+- **Instrument alignment (deterministic eligible sets).** Each synthetic slot
+  uses the **actual instrument set of the calendar slot it represents** — the 12
+  pinned training weekends' sets for the synthetic training slots and the
+  **actual instrument set `I_w` of that evaluation weekend** for each simulated
+  evaluation slot (availability only — no labels, no features) — and rows are
+  drawn **per instrument** from training weekends that contain that instrument.
+  For instrument `i` the eligible set is `E_i = {training weekends containing i}`;
+  the source weekend is the first training weekend containing `i` in circular
+  calendar order starting at the **source weekend assigned to that synthetic
+  slot** by the block draw. When that source weekend contains `i` the draw is
+  **block-aligned** and the whole row moves together with the block; otherwise
+  it is the nearest following training weekend containing `i` (circularly), so
+  the draw stays deterministic and no row is ever borrowed, forward-filled,
+  interpolated or taken from a weekend that does not contain its instrument.
+  An instrument in `I_w` whose `E_i` is **empty** — absent from
+  all 12 training weekends — is **excluded from the simulation for that slot**
+  and never imputed; the exclusion count is reported per slot and in total.
+  **Acceptance/failure rule, stated explicitly:** a simulated slot is accepted
+  when its row set is exactly the set it represents minus the instruments with
+  `E_i = ∅`, every row comes from a training weekend that contains that row's
+  instrument, and at least two rows remain; there is **no rejection-and-redraw
+  loop, no random intersection fallback and no 100-draw limit**. The replication
+  fails loudly (never silently continues) if a slot with at least two eligible
+  instruments would keep fewer than two rows, if any row violates the
+  containment rule, or if `q` is not finite and positive.
 - **Labels and effect injection.** For each synthetic row the label is
 
   ```text
@@ -1368,34 +1393,55 @@ is fixed before the run; the seed is the only free parameter and is recorded.
 
   where `x` is the drawn baseline vector, `z` the drawn five perp features
   standardized with the 12-week training means and standard deviations, `ε` the
-  drawn baseline residual, `u = (1/√5, …, 1/√5)'` the **fixed, pre-registered
-  equal-weight direction**, and `κ` the effect scale. The effect is injected only
-  through the joint **5-feature block**, never through a single coefficient.
-- **Effect calibration (population unadjusted out-of-time R² gain).** The effect
-  grid refers to the **population unadjusted out-of-time R² gain of the true
-  model**, with `q = u'Σ_Z u` the variance of the standardized injected index,
-  `s = u'E[Zε]` its covariance with the training residual, and
-  `σ²_ε = E[ε²]`:
+  drawn **full-model** residual, `u = (1/√5, …, 1/√5)'` the **fixed,
+  pre-registered equal-weight direction**, and `κ` the effect scale. No perp
+  main effect is injected: the perp block enters the labels **only** through the
+  injected index `κ·(u'z)`, which is what keeps `κ = 0` a true null. The effect
+  is injected only through the joint **5-feature block**, never through a single
+  coefficient.
+- **Effect calibration (population unadjusted out-of-time R² gain).** Each grid
+  value is the **population unadjusted out-of-time R² gain of the refit full
+  model over the refit baseline** — the population limit of the reported
+  `ΔR²_oot` statistic for the two models refitted inside a replication, not an
+  in-sample gain and not the Clark-West ratio. With full-model residuals
+  `s = u'E[Zε] = 0`, write `q = u'Σ_{Z|X}u` for the variance of the injected
+  index **after residualising the five perp features on the baseline design** in
+  the training window (weekend-weighted, as the statistic is; the synthetic
+  evaluation weekends are drawn from the same training-only DGP, so that
+  covariance is the population evaluation covariance) and
+  `σ²_ε = E[ε²]`. Then
 
   ```text
   ΔR²(κ) = (E[MSE_base] − E[MSE_full]) / E[MSE_base]
-          = (κ²q + 2κs) / (κ²q + 2κs + σ²_ε)
+          = κ²q / (κ²q + σ²_ε)
   ```
 
-  so a target `ΔR²` maps to the scale factor
+  in two lines: the injected index adds `κ²q` of variance that the baseline
+  design does not span, the refit full model recovers all of it, and `σ²_ε`
+  stays unexplained, so the unadjusted gain is `κ²q` over the baseline's
+  `κ²q + σ²_ε`; solving `κ²q(1 − ΔR²) = ΔR²σ²_ε` for the non-negative root gives
+  the scale factor
 
   ```text
-  κ = [−s + sqrt(s² + q · ΔR² · σ²_ε / (1 − ΔR²))] / q
+  κ = sqrt(ΔR² · σ²_ε / ((1 − ΔR²) · q))
   ```
 
-  with `q`, `s` and `σ²_ε` estimated on the 12 training weekends from the same
-  joint row matrix. The positive root is used, so `κ ≥ 0` and the injected effect
-  is in the pre-registered positive direction. If `q` is not finite and positive
-  the replication fails loudly; the direction is never re-chosen.
-- **Design simulated:** the **18 evaluation weekends**, with the panel's actual
-  per-weekend instrument counts (availability only — no labels), the identical
-  row-set rule, `split_weekend` rows dropped, and the same expanding-origin refit
-  per weekend.
+  with `q` and `σ²_ε` estimated on the 12 training weekends from the same joint
+  row matrix. `q` uses the **residualised** perp features, never their raw
+  covariance, because only the component of the index outside the baseline
+  design is incremental. `κ ≥ 0`, so the injected effect is in the
+  pre-registered positive direction. If `q` is not finite and positive the
+  replication fails loudly; the direction is never re-chosen. Estimation noise —
+  the refit models' own estimation error over an expanding origin and the finite
+  evaluation sample — makes **small realised gains differ from the target** (and
+  can push them below zero), so the simulation reports the **realised**
+  unadjusted `ΔR²_oot` per replication next to each target, and a null is read
+  against the realised gain, never against the nominal target alone.
+- **Design simulated:** the **18 evaluation weekends**, each with its actual
+  instrument set `I_w` under the deterministic alignment above (availability
+  only — no labels), the instruments excluded for `E_i = ∅` counted, the
+  identical row-set rule, `split_weekend` rows dropped, and the same
+  expanding-origin refit per weekend.
 - **Test simulated:** the §6.2 procedure — the Clark-West-adjusted `d_w` and its
   centered wild cluster bootstrap-t with Rademacher weights, G = 18 clusters,
   which decide significance, plus the **unadjusted** `ΔR²_oot`, which is the
@@ -1405,7 +1451,9 @@ is fixed before the run; the seed is the only free parameter and is recorded.
   p-value granularity to about ±0.003, which the reported Monte Carlo intervals
   absorb. Nothing else about the statistic or its decision rule changes.
 - **Nominal α:** 0.05, **one-sided** in the pre-registered direction. Size is
-  checked at population `ΔR² = 0`.
+  checked at population `ΔR² = 0`; because the full-model residual makes
+  `κ = 0` the true null, that rejection rate is a genuine size, not a power
+  calculation against a baseline gain the construction itself injected.
 - **Effect grid (population unadjusted `ΔR²`):** 0, 0.005, 0.01, 0.02, 0.05,
   0.10, 0.20. The plan declares **plausible = {0.005, 0.01, 0.02}** for an
   incremental five-feature weekend block; the larger grid points trace the power
@@ -1416,9 +1464,10 @@ is fixed before the run; the seed is the only free parameter and is recorded.
   with its Monte Carlo interval; the **power curve** over the grid with 95%
   Monte Carlo intervals; the **minimum detectable `ΔR²` at 80% power**
   (interpolated on the grid); the Monte Carlo standard error of each power
-  estimate; and the fraction of replications with a positive point estimate.
-  These results become the design's power statement; §6.1 stays the illustrative
-  bounds it is.
+  estimate; the fraction of replications with a positive point estimate; and the
+  **realised** unadjusted `ΔR²_oot` at each grid point (mean and interval)
+  beside its target. These results become the design's power statement; §6.1
+  stays the illustrative bounds it is.
 - **Decision rule, fixed now:** if power at every **plausible** `ΔR²`
   (0.005, 0.01, 0.02) is below 80%, P6 reports the primary test as
   **underpowered** and a null as uninformative. The plan is not re-tuned and no
