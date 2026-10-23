@@ -6,7 +6,8 @@ with its own hard timeout so the endpoint never hangs.
 
 In public-demo mode the handler short-circuits: it never imports ``db.lakebase``
 and never spawns a subprocess, returning 200 fast with both backends reported
-as disabled.
+as disabled.  The response carries ``demo`` so the frontend can hide
+destinations that need live lakehouse tables (Market Spreads).
 """
 from __future__ import annotations
 
@@ -186,6 +187,7 @@ def health() -> HealthResponse:
         return HealthResponse(
             status="degraded",
             version="0.1.0",
+            demo=True,
             dependencies=[_DEMO_DISABLED, _DEMO_DELTA_DISABLED],
             freshness=Freshness(state="unavailable", table="system"),
             role_cache_size=0,
@@ -245,6 +247,7 @@ def health() -> HealthResponse:
     return HealthResponse(
         status=status,
         version="0.1.0",
+        demo=False,
         dependencies=dependencies,
         freshness=Freshness(state="fresh" if status == "ok" else "unavailable", table="system"),
         role_cache_size=lb.get("cache_entries", 0),

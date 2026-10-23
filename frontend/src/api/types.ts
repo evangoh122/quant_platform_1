@@ -213,6 +213,8 @@ export interface StartupStage {
 export interface HealthResponse {
   status: 'ok' | 'degraded';
   version: string;
+  /** True in public-demo mode; live-only destinations (Market Spreads) hide. */
+  demo: boolean;
   dependencies: DependencyStatus[];
   freshness: Freshness;
   role_cache_size: number;

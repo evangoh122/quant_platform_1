@@ -294,6 +294,10 @@ class StartupStage(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     version: str = ""
+    #: ``True`` when the app runs in public-demo mode.  The frontend reads this
+    #: flag to hide destinations that need live lakehouse tables and have no
+    #: demo snapshot (for example Market Spreads).
+    demo: bool = False
     dependencies: List[DependencyStatus] = Field(default_factory=list)
     freshness: Freshness = Field(default_factory=Freshness)
     role_cache_size: int = 0

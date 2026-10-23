@@ -52,7 +52,7 @@ const TEST_GROUPS: NavGroup[] = [
 ];
 
 const healthyHealth = {
-  status: 'ok' as const, version: '1.0.0',
+  status: 'ok' as const, version: '1.0.0', demo: false,
   dependencies: [{ name: 'lakebase', ok: true, detail: 'connected', latency_ms: 5, last_error: null, last_ok_at: Date.now(), circuit_breaker_state: null }],
   freshness: { state: 'fresh' as const, table: '', detail: '' },
   role_cache_size: 0, startup: [],

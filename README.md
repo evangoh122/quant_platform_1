@@ -159,6 +159,10 @@ approximated as weekdays — exchange holidays are not excluded — and capped a
 constant-maturity rate is published the next business day. The 10s2s tile is a yield spread, so it is quoted in
 percentage points (`pp`), not percent.
 
+**Live-only for now:** every chart reads a lakehouse table, and there are no public-demo snapshot exports for these
+sources yet, so `create_app()` mounts `/api/spreads` only outside demo mode. In the public demo the Market Spreads
+destination is hidden (the frontend reads `demo` from `/api/health`); a demo snapshot export is planned as a separate PR.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -243,6 +247,11 @@ The public showcase runs as a Docker Space built from
 notes (and the `<HF_NAMESPACE>/<HF_SPACE>` placeholder) are in
 [`docs/HF_SPACE_DEPLOY.md`](docs/HF_SPACE_DEPLOY.md); `scripts/publish_hf_space.sh`
 is dry-run by default and requires `--yes` to upload. Render is retired.
+
+Market Spreads is live-only for now: `/api/spreads` is not mounted in demo mode
+(the five charts read `silver_ohlcv_day_adjusted` and `bronze_fed_series`, which
+have no demo snapshot export yet — a separate, later PR), so the destination is
+hidden when `/api/health` reports `demo: true`.
 
 ## Engineering process
 

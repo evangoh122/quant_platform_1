@@ -333,7 +333,9 @@ def create_app() -> FastAPI:
     """Application factory.
 
     In public-demo mode, registers only read-only routers (health, signals,
-    market, analytics) and applies security middleware.  Non-demo mode
+    market, analytics) and applies security middleware.  ``/api/spreads`` is
+    live-only: it reads bronze/silver lakehouse tables that have no demo
+    snapshot export yet, so it is never mounted in demo mode.  Non-demo mode
     preserves the full route set and existing CORS behaviour.
 
     On a hosted public platform (``RENDER`` on Render, ``SPACE_ID`` on a
@@ -400,7 +402,6 @@ def create_app() -> FastAPI:
         application.include_router(health.router, prefix="/api/health", tags=["health"])
         application.include_router(signals.router, prefix="/api/signals", tags=["signals"])
         application.include_router(market.router, prefix="/api/market", tags=["market"])
-        application.include_router(spreads.router, prefix="/api/spreads", tags=["spreads"])
         application.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
         application.include_router(sec.router, prefix="/api/sec", tags=["sec"])
         application.include_router(notes.router, prefix="/api/notes", tags=["notes"])
@@ -408,6 +409,11 @@ def create_app() -> FastAPI:
     if not demo:
         from api.routes import agent_chat, orders, portfolio, watchlists
 
+        # Market Spreads is live-only: every chart reads a lakehouse table and
+        # there are no demo snapshot exports for those sources yet (a separate,
+        # later PR adds them).  Mounting it in demo would serve five
+        # "unavailable" charts, so the destination is absent there instead.
+        application.include_router(spreads.router, prefix="/api/spreads", tags=["spreads"])
         application.include_router(agent_chat.router, prefix="/api/agent", tags=["agent"])
         application.include_router(watchlists.router, prefix="/api/watchlists", tags=["watchlists"])
         application.include_router(orders.router, prefix="/api/orders", tags=["orders"])
