@@ -14,17 +14,18 @@
 - [2. Data: what we hold and what Massive offers](#2-data-what-we-hold-and-what-massive-offers)
 - [3. Strategy assessment at $200k](#3-strategy-assessment-at-200k-with-massive-data)
 - [4. ML and statistical methodology](#4-ml-and-statistical-methodology-shared-harness)
-- [5. Per-strategy specifications](#5-per-strategy-specs-shortlist-10k-sizing)
+- [5. Per-strategy specifications](#5-per-strategy-specs-shortlist-200k-sizing)
 - [6. Backtest architecture](#6-backtest-architecture)
 - [7. Transaction cost and slippage model](#7-transaction-cost-and-slippage-model)
 - [8. Performance metrics and evaluation](#8-performance-metrics-and-evaluation)
 - [9. Data and infrastructure](#9-data-and-infrastructure-massive-first)
 - [10. Operationalisation (incl. 10.1a per-trade cap, 10.1b stop-losses)](#10-operationalisation-offline-first-every-live-step-needs-maintainer-approval)
 - [11. Agent reliability and hallucination control](#11-agent-reliability-and-hallucination-control)
-- [12. Phased roadmap, gates and kill criteria](#12-phased-roadmap-gates-and-kill-criteria)
-- [13. Risk, delivery and work packages](#13-risk-delivery-and-work-packages)
-- [14. Unit and execution testing strategy](#14-unit-and-execution-testing-strategy)
-- [15. Open questions and decisions](#15-open-questions-and-decisions)
+- [12. Regime detection and adaptation](#12-regime-detection-and-adaptation)
+- [13. Phased roadmap, gates and kill criteria](#13-phased-roadmap-gates-and-kill-criteria)
+- [14. Risk, delivery and work packages](#14-risk-delivery-and-work-packages)
+- [15. Unit and execution testing strategy](#15-unit-and-execution-testing-strategy)
+- [16. Open questions and decisions](#16-open-questions-and-decisions)
 - [Appendix A. Design review log](#appendix-a-design-review-log)
 
 ---
@@ -1230,7 +1231,7 @@ gap_allowance = max(0, G - stop_distance)        # so WCL_unit = max(stop_distan
 |---|---|
 | Sleeve loss > its budget | Block new risk |
 | Portfolio daily loss > 1.5% NAV | Block new risk |
-| Portfolio drawdown from the high-water mark: **proposed** >= 4% blocks new risk; >= 6% mandatory reduction of open WCL to <= 2.5%; >= 8% liquidates and stops pending re-validation (open decision, Section 15 item 2) | As listed |
+| Portfolio drawdown from the high-water mark: **proposed** >= 4% blocks new risk; >= 6% mandatory reduction of open WCL to <= 2.5%; >= 8% liquidates and stops pending re-validation (open decision, Section 16 item 2) | As listed |
 | Integrity breach (reconciliation, stale input, duplicate, exposure) | Block new risk **and cancel working entries**; resume only after full reconciliation |
 
 - **Kill switch:** a Lakebase flag **or** a local file, failing closed. A tested `halt --all` / `reduce-only` CLI
@@ -1369,13 +1370,248 @@ missing cherry-picked sourced numbers.
 3. a specific tool or model name;
 4. an acronym such as "judge/evaluator" (LLM-as-judge).
 
-This is an **open question** for the maintainer (Section 15).
+This is an **open question** for the maintainer (Section 16).
 
 ---
 
-## 12. Phased roadmap, gates and kill criteria
+## 12. Regime detection and adaptation
 
-### 12.1 Timeline
+**Stance.** A detector can be strictly past-only and still produce an overfit trading policy. With the history
+available, there is **no evidence yet that regime gating adds value**. Reducing exposure can remove winners and
+concentrate the remaining trades.
+
+The program therefore builds regime detection in three layers:
+
+| Layer | Status at launch |
+|---|---|
+| **(1) Telemetry** | Describes conditions |
+| **(2) Mechanical data and execution safeguards** | **Active** |
+| **(3) Market-regime gates** | **Shadow only** until one pre-registered exposure reduction per sleeve earns evidence through the normal gates |
+
+Regime states never switch alpha models or allocate toward "favourable" states. **No LLM or SLM makes regime
+calls** (Section 11).
+
+### 12.1 What "regime" means per sleeve (hypotheses, not facts)
+| Sleeve | Conditions that plausibly hurt it | Sleeve-specific diagnostic (preferred over broad market states) |
+|---|---|---|
+| A6 relative strength | Trend reversals after high-vol drawdowns (momentum crashes) | Per-pair signal decay; ratio drawdown vs causal OOS distribution |
+| A1 ETF pairs | Relationship breaks, persistent residual trends | Causal residual forecast errors, residual persistence, hedge-ratio uncertainty (Kalman variance as a model diagnostic only), recursive CUSUM (Section 5.2) |
+| A4 EAR | High-vol earnings seasons, crowded reactions | Event-date clustering, hedge basis, admission rate |
+| B1 credit spreads | Vol expansion, gap risk, wide or illiquid options markets | Executable quote width and size at the decision. At entry: implied variance from timestamped quotes vs a **past-only HAR forecast** for the forward horizon. Realised-vs-implied is published only **after** the horizon completes, as an ex-post diagnostic |
+| All sleeves | Liquidity crunches, stale or broken data | Field-specific data freshness, quote validity, spread blowouts, fill-rate drift |
+
+**Broad market features are telemetry only:**
+- the existing EWMA vol-percentile labels (`risk/regimes.py`: low/mid/high/unknown, past-only);
+- RSP/SPY breadth (`gold_regime_features`);
+- VIX level (FRED `VIXCLS`, used **from the next session**);
+- VIX/VIX3M term structure: VIX3M history, timing and availability are *unverified*. Indices Starter covers VIX
+  and VIX3M tickers (*verify*).
+- They are not gates. VIX is SPX implied volatility: high VIX or backwardation does not establish that B1 loses,
+  because premiums may compensate.
+
+**Feature contract.** Every feature has a stated universe, timestamp, estimator, warm-up and missing-data
+behaviour before it is used.
+- Revised macro series (FRED) need vintage data (ALFRED) or are excluded.
+- Closing-value features take effect at the **next** eligible session.
+
+### 12.2 Detection methods: what each is for
+| Method | Use | Parameters | Status |
+|---|---|---|---|
+| Rule-based vol state (existing EWMA percentile) | Telemetry; candidate exposure ceiling | One frozen convention (current `risk/config.yaml` thresholds and window). Percentile vs **prior** observations with explicit tie handling. **No threshold optimisation** | Active telemetry |
+| Absolute stress safeguard | Catches prolonged stress that a rolling percentile would normalise | One registered absolute level per feature, justified separately | Shadow |
+| Data/execution health checks | Block new entries on broken inputs | Field-specific freshness: prior-close features 1 session; live quotes seconds. Quote-width and size limits per instrument | **Active** |
+| Strategy decay CUSUM (Section 12.4) | Detects deterioration of a sleeve's own edge | Calibrated by dependent null simulation | **Active, advisory** |
+| Pair relationship monitor | A1/A6 pair-break evidence | Causal residual forecast-error CUSUM + residual persistence + hedge-ratio uncertainty. Calibrated by replaying the full fitting procedure. Rolling ADF non-rejection and the "half-life > 2x" rule are **not** used as break evidence | Shadow, then registered |
+| Markov-switching / HMM (2-3 states) | Research challenger only | Training-only transforms; fixed refit dates; multiple starts; stable state mapping; filtered (causal) probabilities; past published states kept on refit | Optional research; not a delivery dependency |
+| BOCPD | -- | The hazard and likelihood choices dominate the result | **Deferred** |
+| Gaussian mixture | -- | No temporal structure | Not used |
+| Structural-break tests (Chow, Bai-Perron) | Offline diagnosis of past failures | Full-sample by construction | Research diagnostics only, never online |
+| Supervised "strategy works" classifier | -- | Most overfit-prone: labels come from the same P&L, episodes are few, and the regime-definition search is large | **Not used** |
+
+**Decision theory.** Thresholds are set by a **system-level false-intervention budget**, not per-stream ARL0
+targets.
+- **Definition:** under the dependent null, the **expected** number of advisory alarms across all sleeves is <= 2
+  per 252 sessions, with P(>= 5 alarms in 252 sessions) <= 5%.
+- After an alarm, that monitor resets and has a **20-session refractory period**.
+- Calibration uses >= 2,000 dependent simulations, and the 95% Monte Carlo interval of the expected count must lie
+  at or below 2.
+- **Power targets** are pre-registered before calibration, e.g. detect a deterioration of delta within 60 trades
+  with probability >= 0.5, with tolerances.
+- Nothing here guarantees a pathwise maximum.
+- Detection delay is reported as a power curve against specified alternatives (e.g. sleeve expectancy drops by
+  delta standardised units). It is not promised as a fixed number.
+- Missed-trade, idle-capital, whipsaw and restoration costs are part of every evaluation.
+
+### 12.3 Hard problems and how they are handled
+- **Look-ahead:**
+  - only filtered, one-sided states;
+  - train-only normalisation;
+  - historical published states are immutable across refits;
+  - historical universe membership;
+  - PIT joins on publication time, including revisions.
+- **Power:**
+  - 2022-26 holds roughly three stress episodes (2022 bear, 2024-08-05, 2025-04), and that data is already
+    consumed.
+  - Daily observations are not independent regime episodes. Weekly B1 cohorts and clustered A4 events carry even
+    less information.
+  - Any gate test is therefore a long-history (2003-2015 development) exercise for the equity sleeves only. B1
+    gates cannot be validated historically before 2022.
+- **Multiple testing:** every feature, estimator, threshold, action and refit choice counts toward the trial ledger
+  (Section 4.6), discarded variants included. Regime gating is pre-registered in the family YAML as **one**
+  candidate exposure-reduction policy per sleeve.
+- **Evaluation of a gate:**
+  - **Primary endpoint (pre-registered):** the difference in annualised net mean daily P&L, gated minus
+    benchmark, per unit of average gross exposure, over development data. The gate passes only if:
+    - the one-sided 95% paired stationary block bootstrap lower bound (block = max(10, 2 x hold) sessions, 5,000
+      draws) is > 0; **and**
+    - the 99% daily ES is not worse; **and**
+    - the aggregate caps and stress limits still hold at the portfolio level.
+  - **Benchmarks:**
+    - the ungated sleeve;
+    - a **causal matched-exposure** benchmark that scales the ungated sleeve by the gate's ex-ante average
+      ceiling from the *previous* development block, never from realised future gate activity.
+  - Portfolio interactions with binding aggregate caps are included.
+  - DSR is a diagnostic only; it does not repair an incomplete ledger or missing crises.
+- **Holdout discipline:**
+  - Detector, policy table and stress assertions are frozen **before** the 2016-2021 holdout is opened.
+  - **No holdout-dependent replay** (including 2018-02 and 2020-03) runs before the single authorised opening.
+  - Changes after opening need fresh confirmation elsewhere (prospective data).
+
+### 12.4 Strategy decay monitors (active, advisory)
+- **Observation unit (cohort contract):**
+  - One observation per **cohort**: all trades of a sleeve opened in the same decision window (weekly for A6 and
+    B1; per session for A1 and A4).
+  - A cohort is published when its **last** member closes, or at the sleeve's maximum holding period, whichever
+    is first. Open members are then marked to market.
+  - `x_c = (sum of net P&L, realised + marked) / (sum of entry-approved WCL budgets)`. The denominator is frozen at
+    entry, and partial exits stay inside their cohort.
+  - The baseline and calibration use the **same cohort units**.
+  - Losses beyond the budget are flagged separately (Section 10.1a).
+  - **Independent mark-to-market monitoring** of open positions (breakers, stops) runs regardless, because a
+    completed-cohort monitor misses unrealised losses.
+- **Baseline:** the mean mu_0 and scale s_0 (with a pre-defined positive floor) of `x` from the **causal
+  out-of-sample development trades** of the frozen strategy and execution model. Optimised in-sample backtests are
+  never the baseline. Overlapping trades are handled at the cohort level.
+- **Lower CUSUM** (one observation per cohort c):
+
+```text
+z_c = (x_c - mu_0) / s_0
+C_c = max(0, C_{c-1} - z_c - k),  with k = delta / 2
+alarm when C_i > h
+```
+
+  - delta is the minimum economically meaningful deterioration, set per sleeve by the maintainer.
+  - h is calibrated by dependent null simulation and block replay, **including normal losing streaks**, baseline
+    uncertainty, clustering, simultaneous monitors and resets, to meet the system false-intervention budget.
+  - No universal h exists.
+- **Separate monitors:**
+  - **execution decay:** realised/modelled cost (with floors), fill-rate drift and quote-width drift;
+  - **edge decay:** the CUSUM above.
+- **Actions:**
+  - An alarm triggers **review only** at launch.
+  - An alarm-triggered exposure ceiling would be a registered trading policy. It needs the same evidence
+    (Section 12.3) and promotion gates as any other exposure reduction; maintainer approval alone is not enough.
+  - There is **no automatic retirement after N trades**. Retirement follows Section 13.2 kill criteria and
+    maintainer review.
+  - A second alarm is not independent confirmation.
+  - An expectancy *upper* confidence bound below zero, under sequential calibration, is the strong evidence for
+    retirement. A lower bound below zero is not.
+
+### 12.5 Regime service and policy table
+- **Regime state record** (typed, versioned, immutable):
+
+```text
+sleeve, feature_set_version, detector_version, decision_ts, effective_ts,
+source_timestamps (per field), states (per field), health (per field: OK/STALE/MISSING/INVALID),
+policy_version, reason_codes, data_source='derived'
+```
+
+- **Policy table:** each row maps sleeve x explicit condition to:
+  - effective time;
+  - entry permission;
+  - **exposure ceiling (<= 1.0)**;
+  - pending-order action;
+  - existing-position action;
+  - **recovery condition**;
+  - reason code;
+  - status (ACTIVE / SHADOW).
+
+  Priorities are frozen. Correlated cuts **do not multiply** into an accidental shutdown: the minimum ceiling
+  applies, not the product.
+- **Active rows at launch** (mechanical only):
+  - required input STALE, MISSING or INVALID for that sleeve -> no new entries for **that sleeve only** (unless a
+    portfolio dependency fails); existing stops and exits stay active;
+  - quote width or size outside limits -> no new entries in that instrument;
+  - decay-CUSUM alarm -> review flag only.
+- **Shadow rows:**
+  - one pre-registered market-regime exposure reduction per sleeve (e.g. a vol-state "high" ceiling);
+  - logged with their counterfactual effect;
+  - promoted to ACTIVE only after passing the Section 12.3 evaluation and maintainer approval.
+- **Invariants:**
+  - The regime layer can only **reduce** risk or halt. Ceilings are <= 1.0, applied **after** the 0.5%
+    per-trade cap and the aggregate caps, and enforced after quantity rounding (q = 0 means skip).
+  - **Raising risk requires maintainer approval** and is outside the regime service.
+  - Account drawdown breakers (4/6/8%) and mandatory stops are independent and take precedence.
+- **Anti-chatter and recovery:**
+  - **Mechanical health blocks act immediately**, with no hysteresis or dwell.
+    - Pending entry orders in the affected sleeve are **cancelled**.
+    - Stops, exits and breaker actions are never delayed by the regime layer.
+  - **Hysteresis and minimum dwell** (one frozen band, the existing `risk/config.yaml` convention, not optimised)
+    apply only to *market-state* transitions of shadow or approved gates.
+  - **Recovery** means restoring exposure **up to a previously approved ceiling**, never above it. It is
+    automatic, gradual (at most one ceiling step per week) and always intersected with the current health,
+    breaker and risk-limit state. It persists across restarts.
+  - Raising any approved ceiling or cap still requires maintainer approval.
+- **Health monitoring:**
+  - feature drift (PSI as an alert);
+  - state-duration and state-frequency statistics vs development (live vs backtest);
+  - HMM calibration (only if the challenger exists);
+  - detector computation failures;
+  - all routed through the Section 10.4 alerting path.
+
+### 12.6 Stress replays and synthetic generators
+**Events, assertions frozen in advance:**
+
+| Event | Inside held data (2022+)? |
+|---|---|
+| 2008-09/10 | No: needs Massive 2003+ |
+| 2011-08 | No: needs Massive 2003+ |
+| 2015-08-24 | No: needs Massive 2003+ |
+| 2018-02-05 | No: needs Massive 2003+. **Inside the sealed holdout:** replayed only at the single opening |
+| 2020-03 | No: needs Massive 2003+. **Inside the sealed holdout:** replayed only at the single opening |
+| 2022 rates | Yes (options replay from 2022-03-07) |
+| 2024-08-05 | Yes |
+| 2025-04 | Yes |
+
+**Four separate replay types:**
+1. underlying-data replay;
+2. detector replay;
+3. portfolio-accounting replay;
+4. executable-options replay, **only on or after 2022-03-07** with valid contemporaneous quotes. Earlier B1
+   replays are rejected, and B1 fills are never fabricated from daily underlying bars.
+
+**What the replays assert is required behaviour, not P&L:**
+- **entry** WCL <= 0.5% of equity and aggregate **approved** risk <= 5% at every decision;
+- the prescribed 4/6/8% breaker actions fire;
+- realised overshoots (gaps, unavailable quotes, failed stops, liquidation costs) are **recorded and reported, not
+  asserted away**, because stops do not guarantee loss bounds;
+- no regime-driven risk increase;
+- stale-feed and exchange-interruption handling;
+- false alarms and rapid recoveries handled without chatter.
+
+**Synthetic generators** cover:
+- heavy-tailed returns with clustered volatility (GARCH-t);
+- abrupt and gradual vol shifts;
+- temporary shocks;
+- correlation breaks;
+- cointegration breaks (an AR(1) spread turning into a random walk);
+- **misspecified generators**, not only switches drawn from the detector's own model.
+
+---
+
+## 13. Phased roadmap, gates and kill criteria
+
+### 13.1 Timeline
 | Weeks | Work | Exit |
 |---|---|---|
 | 1-4 | WP1 contracts/registry; **WP2 metrics/tearsheet**; WP3 ledger + dividends/withholding/financing; WP4 costs v2 + $200k cost drag; WP5 daily engine + best-execution simulator (G/P1/P2) + legacy parity; WP6 statistics harness | CI green; mutation proofs; final gate |
@@ -1388,9 +1624,13 @@ This is an **open question** for the maintainer (Section 15).
 | 11-15 | Massive step 2-3 -> WP15 XSP/SPX quote trial + event engine + B1 | B1 gate decision at $200k |
 | 13-17 | WP16 allocator + OMS + monitoring; WP17 evidence-backed reporting; WP18 red-team suite | Fault injection passes |
 | >= 17 | WP19 broker adapters (approval) -> paper | Section 10.5 |
+| 6-10 | **WP-RG1** regime telemetry + data-health service; **WP-RG3** policy-table engine (mechanical rows active, regime rows shadow) | Health rows active; telemetry published |
+| After the first sleeve passes research gates | **WP-RG2** decay monitors (advisory CUSUM, execution-decay monitors) | Null calibration meets the false-intervention budget |
+| With the 2003+ data | **WP-RG4** stress-replay and synthetic-generator suite | Frozen assertions pass |
+| Later, optional | WP-RG5 one pre-registered exposure gate per equity sleeve (evaluation); HMM challenger research | Section 12.3 evaluation |
 | Later, conditional | WP20 A4 text-extractor experiment (shadow) | Section 11.3 |
 
-### 12.2 Kill criteria
+### 13.2 Kill criteria
 - **Research:** a failed gate parks the sleeve. Revival needs a new hypothesis family and unseen data.
 - **Live:** the Section 10.4 breakers.
 - **Program:**
@@ -1401,24 +1641,24 @@ This is an **open question** for the maintainer (Section 15).
 
 ---
 
-## 13. Risk, delivery and work packages
+## 14. Risk, delivery and work packages
 
-### 13.1 Portfolio risk
+### 14.1 Portfolio risk
 - **Stress replays:** 2018-02, 2020-03, 2022 H1, 2024-08-05 and 2025-04 replayed on current positions. A replay
   may lose no more than 3% NAV for equities, and options stay within their caps.
 - **ETF gaps:** a 10% SPY gap must stay <= 1% NAV per sleeve.
 - **Perps:** `perpetual_future` if ever used.
 
-### 13.2 Delivery (per repo `AGENTS.md`)
+### 14.2 Delivery (per repo `AGENTS.md`)
 - **Chain:** coder (MiMo or DeepSeek by the peak rule) -> the other model validates -> **Codex Sol final gate**
   (Opus only on a Sol usage-limit fallback) -> draft PR -> CodeRabbit.
 - Every PR updates README.md.
 - Gate runs exclude spark/lakebase/databricks markers.
 - BUILD requests forbid pandas and specify test shapes and mutations.
 
-### 13.3 Work packages
+### 14.3 Work packages
 
-Tests, oracles and the required mutants for each work package are specified in Section 14.9.
+Tests, oracles and the required mutants for each work package are specified in Section 15.9.
 | WP | Scope | Key files | Tests / mutation proofs | Acceptance |
 |---|---|---|---|---|
 | **WP1** | Contracts + immutable run registry + family registry | `strategies/mft/contracts.py`, `registry.py`, `families/*.yaml` | Invalid `data_source`/instrument_type rejected; duplicate runs rejected; future inputs rejected; cap of 12; consumed-period flag. **Mutations:** availability check, cap | Offline; 2022-26 cannot be marked unseen |
@@ -1440,10 +1680,15 @@ Tests, oracles and the required mutants for each work package are specified in S
 | WP18 | Red-team suite | `tests/redteam/` | Poisoned data; instruction-only perturbations; forged targets | All blocked or quarantined |
 | WP19 | Broker adapters (IBKR, Schwab) behind `capabilities()` (**approval**) | `execution/adapters/*` | Capability fail-closed; paper never routed live | Maintainer sign-off |
 | WP20 | A4 text-extractor experiment (conditional, shadow) | `research/extract/*` | Section 11.3 protocol | Shadow-only results |
+| **WP-RG1** | Regime telemetry + field-specific data health: EWMA vol labels (reuse `risk/regimes.py`), breadth, VIX next-session, quote health | `strategies/mft/regime/telemetry.py`, `health.py` | PIT joins on publication time; next-session effect; revision handling; warm-up -> `unknown`; restart persistence | Immutable versioned states; no gate effect |
+| **WP-RG2** | Strategy decay monitors: per-trade lower CUSUM on `x_i`, execution-decay monitors | `strategies/mft/regime/decay.py` | Cohort contract (asynchronous closures, partial exits, marked open members); dependent-null calibration to the defined budget; pre-registered power targets | **Review-only** alarms; no order effect |
+| **WP-RG3** | Policy-table engine: rows, priorities, min-ceiling (not product), ACTIVE/SHADOW, recovery, counterfactual logging | `strategies/mft/regime/policy.py`, `config/regime_policy.yaml` | Ceilings <= 1.0; applied after caps and rounding; stale input -> immediate block + pending-entry cancel for that sleeve only; recovery only up to an approved ceiling | Cannot raise risk; shadow rows have no order effect |
+| **WP-RG4** | Stress-replay + synthetic regime generators | `tests/regime/`, `research/regime_replay.py` | Four replay types; options replays rejected before 2022-03-07; holdout-dated replays locked until the single opening; misspecified generators | Frozen assertions pass; overshoots reported |
+| WP-RG5 | (Optional) evaluate one pre-registered exposure gate per equity sleeve; HMM challenger research | `research/regime_gate_eval.py` | Paired block bootstrap vs ungated and matched-exposure | Promotion only via Section 12.3 + maintainer approval |
 
 ---
 
-## 14. Unit and execution testing strategy
+## 15. Unit and execution testing strategy
 
 **Principle.** Every acceptance test must be **contract-bound and non-vacuous**:
 - the conventions are stated;
@@ -1453,7 +1698,7 @@ Tests, oracles and the required mutants for each work package are specified in S
 
 Green coverage alone is never acceptance evidence.
 
-### 14.1 Pure-function unit tests with independent oracles
+### 15.1 Pure-function unit tests with independent oracles
 - **Oracle specification file.** Each fixture has an entry in `tests/mft/oracles/*.yaml`:
 
 | Field | Content |
@@ -1505,7 +1750,7 @@ Green coverage alone is never acceptance evidence.
   - An exit between the ex-date and the pay date keeps the receivable.
   - Split and reverse split preserve wealth, with fractional-share cash.
 
-### 14.2 Property-based tests (Hypothesis)
+### 15.2 Property-based tests (Hypothesis)
 | Property | Domain qualification |
 |---|---|
 | Cost monotone in the variable-cost multiplier and in order size | Only over the feasible domain: same rounding bucket, no minimum-fee kink, no rejection |
@@ -1529,9 +1774,9 @@ Green coverage alone is never acceptance evidence.
 - The example database is kept locally and failing examples are published as CI artefacts.
 - A scheduled nightly job runs with a rotating seed (outside the gate).
 
-### 14.3 Leakage/PIT tests and mutation proofs
+### 15.3 Leakage/PIT tests and mutation proofs
 - Each work package lists **at least five curated, non-equivalent semantic mutants** covering every critical
-  invariant (Section 14.9). The gate requires **100% of curated mutants killed**. Broad automated mutation scores
+  invariant (Section 15.9). The gate requires **100% of curated mutants killed**. Broad automated mutation scores
   are supplementary.
 - **Evidence per mutant:** baseline pass, exact commit, patch, command, the **named failing assertion**, and
   output.
@@ -1547,7 +1792,7 @@ Green coverage alone is never acceptance evidence.
   - a publication-time vs event-time swap;
   - a month-end selection (the A4 admission rule).
 
-### 14.4 Golden, regression and differential tests
+### 15.4 Golden, regression and differential tests
 - **Frozen synthetic datasets** (Parquet + JSON expected outputs; regeneration requires explicit review):
   - 20 sessions x 4 symbols with one split, one dividend and one delisting;
   - an AR(1) pair with a known half-life;
@@ -1562,7 +1807,7 @@ Green coverage alone is never acceptance evidence.
   - splits preserve wealth;
   - scaling claims are tested only where fees, lots, liquidity and impact allow.
 
-### 14.5 Execution-path tests (FakeBroker, stateful)
+### 15.5 Execution-path tests (FakeBroker, stateful)
 - **Driver:** a deterministic `FakeBroker` plus a Hypothesis stateful model of the broker and OMS. Events may be
   duplicated, reordered, delayed, dropped, contradictory or corrected. Disconnects and durable-write failures are
   injected.
@@ -1593,7 +1838,7 @@ Green coverage alone is never acceptance evidence.
     delivery, partial assignment -> stock position event, deliverable changes, restart replay.
 - **Clock injection** (wall and monotonic) for every deadline. Tests never sleep.
 
-### 14.6 Adapter contract tests (IBKR / Schwab)
+### 15.6 Adapter contract tests (IBKR / Schwab)
 - **One shared suite** runs parameterised over `FakeBroker`, recorded-IBKR cassettes and recorded-Schwab cassettes.
   It covers:
   - `capabilities()` fail-closed (an unsupported capability defaults to false);
@@ -1609,7 +1854,7 @@ Green coverage alone is never acceptance evidence.
 - **Live and paper integration tests are manual and require explicit maintainer approval.** They are never part of
   CI.
 
-### 14.7 Statistical-procedure and security tests
+### 15.7 Statistical-procedure and security tests
 - **Statistics (WP6):**
   - purging by actual label intervals;
   - overlapping observations;
@@ -1625,7 +1870,7 @@ Green coverage alone is never acceptance evidence.
   - fail-closed behaviour during dependency failures;
   - poisoned and instruction-bearing text stays data (the red-team suite, Section 11.2).
 
-### 14.8 CI parity
+### 15.8 CI parity
 - **Gate command:** `pytest -m "not spark and not lakebase and not databricks"`, run identically locally and in
   CI.
 - **Collection integrity:** a test asserts that the marker expression collects every required critical test, so
@@ -1646,7 +1891,45 @@ Green coverage alone is never acceptance evidence.
   - NaN, inf and UNDEFINED are handled explicitly.
   - A tolerance must never change gate eligibility.
 
-### 14.9 Work package -> tests -> required mutants (minimum five per WP)
+### 15.8a Regime-layer tests
+- **Known-answer detection on synthetic planted breaks:**
+  - abrupt and gradual vol shifts, correlation breaks, cointegration breaks, GARCH-t clustering, and misspecified
+    generators;
+  - report the expected alarm count per 252 sessions, P(>= 5 alarms), and the detection-delay distribution, with
+    Monte Carlo intervals;
+  - assert the budget definition in Section 12.2 and the pre-registered power targets.
+- **No look-ahead (property):**
+  - appending or perturbing future data never changes past published states;
+  - **revisions** take effect only from their publication time;
+  - refits never alter historical published states;
+  - normalisation uses training data only.
+- **Discriminating fixture for smoothing:** a series where smoothed and filtered HMM probabilities differ at a
+  known date (only if the HMM challenger exists).
+- **Hysteresis and dwell:** a frozen anti-chatter requirement (at most N state flips on a scripted oscillating
+  series) and exact threshold boundaries.
+- **Recovery:**
+  - a gradual restoration schedule;
+  - persistence across restart.
+- **Policy table (property):**
+  - for any states and positions, effective size <= the size without the regime layer;
+  - ceilings <= 1.0, with the minimum (not the product) applied;
+  - enforcement happens after rounding.
+- **Fail-safe:**
+  - a STALE, MISSING or INVALID required field blocks new entries for the affected sleeve only, and never
+    permissively;
+  - stops and exits continue.
+- **Decay CUSUM:**
+  - sign, reset, refractory period and threshold logic against hand-computed sequences;
+  - cohort publication under asynchronous closures;
+  - the alarm frequency on baseline-drawn paths (including losing streaks) is within the budget's Monte Carlo
+    interval;
+  - an alarm never changes orders at launch.
+- **Mechanical blocks:** take effect in the same cycle (no dwell); cancel pending entries; never delay stops or
+  breaker actions.
+- **Holdout lock:** any replay dated 2016-2021 fails before `open_holdout`.
+- **B1 entry features:** future realised returns cannot change entry-time features.
+
+### 15.9 Work package -> tests -> required mutants (minimum five per WP)
 | WP | Test classes | Curated mutants that must be killed |
 |---|---|---|
 | WP1 contracts/registry | Unit, property (idempotent identity), PIT | Drop availability check; allow 13th config; mark 2022-26 unseen; accept unknown `data_source`; hash ignores config change |
@@ -1662,10 +1945,15 @@ Green coverage alone is never acceptance evidence.
 | WP-AG2 firewall/signer | Security boundary tests | Skip signature check; omit account/environment binding; accept a reused nonce; accept an expired target; execution skips its own risk re-check |
 | WP19 adapters | Shared contract suite | Unsupported capability defaults to true; wrong order-type mapping; partial fill reported as full; paper routed to a live endpoint; unknown field crashes instead of failing closed |
 
+| WP-RG1 telemetry/health | PIT, revision, warm-up, restart tests | Use same-day unavailable VIX; full-sample scaling; permissive default on missing input; ignore revision timestamp; recompute past states on refit |
+| WP-RG2 decay monitors | CUSUM oracles, dependent-null calibration | Flip the CUSUM sign; drop the reset or refractory period; use in-sample backtest as baseline; omit the scale floor; per-trade instead of cohort observations; alarm changes orders |
+| WP-RG3 policy engine | Policy properties, fail-safe, recovery | Ceiling > 1 accepted; product instead of minimum; regime applied before caps/rounding; stale input treated as normal; dwell applied to a mechanical block; recovery above the approved ceiling; shadow row affects orders |
+| WP-RG4 replays/generators | Frozen behaviour assertions | Fabricate B1 fills from daily bars; accept a B1 replay before 2022-03-07; run a holdout-dated replay before opening; assert realised loss <= cap instead of recording overshoot; allow regime-driven risk increase |
+
 The test shape is specified in every BUILD request: literal oracles, named assertions and the mutant list.
 
 ---
-## 15. Open questions and decisions
+## 16. Open questions and decisions
 
 **Resolved and removed:** account size ($200,000 paper) and the options cap (0.5% per trade applies to options
 too).
@@ -1701,7 +1989,14 @@ too).
     and substitute payments (W-8BEN on file?).
 11. **A4 book:** confirm the concentrated 5-name design at about $400 WCL each.
 12. **Agent policy:** approve the Section 11 verdict (no SLM/LLM in decisions; shadow-only extractor later).
-13. **"jev":** what did the maintainer mean (Section 11.3)?
+13. **Regime stance:** approve "telemetry + mechanical safeguards active, market-regime gates shadow-only until
+    one pre-registered exposure reduction per sleeve earns evidence" (Section 12).
+14. **System false-intervention budget** for advisory alarms (proposed: expected <= 2 per 252 sessions across all
+    sleeves, P(>= 5) <= 5%), the per-sleeve minimum deterioration delta, and the power targets for the decay
+    CUSUM.
+15. **VIX3M / term-structure data:** confirm availability and timing (Indices Starter, *verify*) before any
+    term-structure feature is built. It stays telemetry.
+16. **"jev":** what did the maintainer mean (Section 11.3)?
 
 ---
 
@@ -1709,7 +2004,7 @@ too).
 
 The plan was produced through a 13-round structured review between Claude Opus 5.5 (author) and Codex Sol
 (`gpt-6.1-sol`, reviewer) on 2026-10-24. The table records each point of disagreement and how it was resolved.
-"Owner" means the project maintainer. Round R13 (testing strategy) produced Section 14; its WP mapping was
+"Owner" means the project maintainer. Round R13 (testing strategy) produced Section 15; its WP mapping was
 re-keyed to this plan's work-package numbers.
 
 | # | Topic | Opus | Sol | Resolution |
@@ -1762,8 +2057,10 @@ re-keyed to this plan's work-package numbers.
 | 46 | LLM risk veto that only reduces risk | -- | A veto is a trading decision and can raise risk | **Agreed**: shadow-only |
 | 47 | SLM in decisions | No | "Too broad scientifically, sensible operationally"; size is the wrong boundary | **Agreed**: no SLM/LLM in decisions now |
 | 48 | R12 final review of v3 | v3 judged near-final | 12 issues: A4 month-end look-ahead; B1 cohort overlap and warm-up count; crossing-gate vs passive operational policy; SPY/single-name assignment admission; no historical minute data for schedules; joint sizing over 100% NAV; TOM timing; family cap vs schedules; XSP friction arithmetic ($0.0065, not $0.01-0.015); TOM variable cost; FRED/`derived` and split registry schema; agent signing/replay and read-only vs code authoring | **All accepted and fixed** (text tagged "R12 fix"). No open disagreement; the options caps remain an owner decision |
-| 49 | R13 testing strategy | 95% coverage target; literal oracles; fixed seeds | Coverage percentages invite denominator games; oracles need a versioned derivation; at least five curated mutants per WP, 100% killed | **Reviewer**: per-branch coverage of safety paths with a ratchet; oracle spec files; at least five mutants per WP (Section 14) |
+| 49 | R13 testing strategy | 95% coverage target; literal oracles; fixed seeds | Coverage percentages invite denominator games; oracles need a versioned derivation; at least five curated mutants per WP, 100% killed | **Reviewer**: per-branch coverage of safety paths with a ratchet; oracle spec files; at least five mutants per WP (Section 15) |
 | 50 | Per-trade cap (0.5% of equity) | -- | -- | A decision of record added after R13 (an earlier 5% figure was corrected to 0.5%). It was not separately reviewed by Codex Sol. Section 10.1a and its tests follow the reviewed sizing and stress principles (size on stressed loss, skip instead of resize) |
 | 51 | Mandatory stop-losses | -- | -- | A decision of record added after R13. Section 10.1b was not separately reviewed by Codex Sol; it applies the reviewed principles (conservative fills, stop-first intrabar, size on gap, fail-closed) |
 | 52 | Account raised to $200k (R14) | 10% aggregate open WCL with sleeve budgets; "15% per leg" pair stress; impact about 0.6 bps for a thin ETF; SPX fee advantage about 8x | Keep 5% aggregate plus a joint stress-scenario limit; define the pair unit and G_rel explicitly (empirical 7% x 1.25 = 8.75%); impact is 6.1 bps at window volume; no width-based fee claim; Reg-T condor = larger wing; breaker levels must mandate actions | **Reviewer accepted on all points.** 5% aggregate, joint scenario limit, pair-bundle stress, corrected impact, matched-exposure SPX/XSP comparison, breaker 4/6/8% with mandatory actions |
 | 53 | Size-driven vs data-driven verdicts | -- | Size removes implementation barriers, never a failed edge, cost or data gate | **Agreed.** B1/B3/B4 become paper-eligible after gates; B5 moves to backlog; residual stays parked on cost; A2/A3/B2/A5b unchanged; TOM research-only |
+| 54 | Regime detection (R15) | Rule-based multi-dimension gates active; BOCPD alarm; HMM challenger; ARL0 >= 250; example multipliers per sleeve | Detector can be past-only yet the policy overfit; no evidence that gating helps; telemetry + mechanical safeguards first; gates shadow-only; system false-intervention budget; cohort CUSUM from causal OOS baseline; no automatic retirement | **Reviewer accepted.** Section 12 adopts the telemetry-first, shadow-gate design |
+| 55 | R16 review of Section 12 | -- | Holdout-dated replays, 2022-03-07 cutoff, advisory vs ceiling, cohort contract, mechanical blocks immediate, replay assertions vs realised losses, utility endpoint, budget definition, B1 variance causality | **All 9 fixed** |
