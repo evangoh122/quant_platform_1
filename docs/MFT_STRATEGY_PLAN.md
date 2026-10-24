@@ -38,7 +38,7 @@
 | **Data vendor: Massive** (S3 flat files at `files.massive.com`, bucket `flatfiles`, plus REST) | ORATS/ThetaData are dropped. First test whether Massive alone covers the options backtest (Section 9) |
 | **Options in scope, defined-risk only** | Allowed: verticals, iron condors, credit iron butterflies, long (debit) butterflies. **Not allowed:** naked legs, short straddles/strangles, delta-hedged short straddles, 1x2 ratios, risk reversals. Long straddles are replaced by defined-risk debit structures. **Calendars and diagonals are excluded for now** (Section 3.1) |
 | **Best-price execution** (replaces the earlier MOC decision) | Execution minimises implementation shortfall with limit, peg and midpoint-walking orders inside a window, falling back to a marketable limit at a deadline. Gates assume a conservative crossing policy (Section 6.3) |
-| **Per-trade risk cap: 0.5% of portfolio equity** | No single trade's worst-case loss (option max loss + fees, or the stressed gap for equity legs) may exceed 0.5% of current equity (**$1,000 at $200k**). Defined-risk options spreads now fit (e.g. 11-12 XSP $1-wide or 2 XSP $5-wide). Options are **paper-eligible once their research gates pass**; they are no longer backtest-only. Section 10.1a governs every sizing statement in this plan |
+| **Per-trade risk cap: 0.5% of portfolio equity** | No single trade's worst-case loss (option max loss + fees, or the stressed gap for equity legs) may exceed 0.5% of current equity (**$1,000 at $200k**). Defined-risk options spreads now fit. Sized on stressed lifecycle costs (stop exits add exit fees): e.g. 10-12 XSP $1-wide (11 at a $20 credit) or 2 XSP $5-wide. Options are **paper-eligible once their research gates pass**; they are no longer backtest-only. Section 10.1a governs every sizing statement in this plan |
 | **Mandatory stop-loss on every trade** | The 0.5% cap is built in through stops: no order without a pre-defined stop. Sizing = 0.5% equity / (stop distance + slippage + gap allowance). Section 10.1b |
 | **Paper host undecided (IBKR paper or Schwab paperMoney)** | Use a broker-adapter interface, and do not commit to either (Section 10.3) |
 | **Tax** | Capital gains are 0%. Dividend withholding is **30%** (maintainer figure), modelled in every backtest as a ledger cost; shorts pay 100% in lieu (Section 7.7). No other tax work |
@@ -166,7 +166,7 @@ aggregate open-risk cap is 5% (Section 10.1a).
 | Rank | # | Strategy | Data (Massive) | $200k feasibility | Stats vs ML | Main risk | Verdict |
 |---|---|---|---|---|---|---|---|
 | 1 | A6 | ETF relative strength, up to **6 pairs** from RSP/SPY-equivalent, IWM/SPY-eq, SPLV/SPHB, XLK/XLU, EFA/SPY-eq | Stocks Advanced (2003+) + dividends REST | **Feasible.** Each pair is one trade unit at WCL about $500 (legs about $3.3k at planning G = 15%). Fees are negligible. ETF ADV floor $20m | Frozen rule; ridge challenger | A factor tilt; pair stress definition | **G** |
-| 2 | B1 | Defined-risk VRP on **XSP and SPX** (cash-settled European); SPY limited to 1 contract by the assignment rule | Options Advanced (quotes 2022-03+) + Indices Starter (SPX values) | **Contracts now fit**: XSP $1-wide 11-12, $3-wide 3-4, $5-wide 2; SPX $5-wide about 2, $10-wide 1. Executable economics remain unproven (friction gate at 2x costs, quote trial) | HAR-RV + threshold rule | Tail-dominated; no 2018/2020 in the quotes | **C**, paper-eligible once gates pass |
+| 2 | B1 | Defined-risk VRP on **XSP and SPX** (cash-settled European); SPY limited to 1 contract by the assignment rule | Options Advanced (quotes 2022-03+) + Indices Starter (SPX values) | **Contracts now fit** (stressed lifecycle costs): XSP $1-wide 10-12, $3-wide 3-4, $5-wide 2; SPX $5-wide about 2, $10-wide 1. Executable economics remain unproven (friction gate at 2x costs, quote trial) | HAR-RV + threshold rule | Tail-dominated; no 2018/2020 in the quotes | **C**, paper-eligible once gates pass |
 | 3 | A1 | ETF pairs (KRE/XLF, XHB/ITB, GDX/GLD, XLY/XRT, XLE vs XOP; GLD/IAU control), **up to 2 pairs** at WCL about $1,000 | Same as A6 | **Feasible**: legs about $6.6k; borrow availability is checked daily | OLS z rule; Kalman challenger | Crowded; cointegration breaks; stop whipsaw | **C** |
 | 4 | A4 | EAR drift, concentrated: **about 5 names at WCL about $400** (about $2k each, beta-hedged) | Stocks + EDGAR 8-K timestamps (SEC dependency) | **Feasible small book** (about $2k sleeve WCL). A new registration | Sorts / clustered regression; no ML | Timestamp audit; event/hedge clustering | **C** |
 | 5 | B3 | Skew/term with **same-expiry defined-risk structures only** | Options Advanced quotes 2022-03+; IV computed from quotes | Contracts fit as for B1 | Linear signal + one structure | Synchronised surfaces; Reg-T structure recognition | **C**, after B1 |
@@ -209,8 +209,9 @@ aggregate open-risk cap is 5% (Section 10.1a).
   - Assignment creates stock exposure, and the long leg does **not** auto-exercise to cover it.
   - Requirements:
     - assignment detection;
-    - capital or margin to carry 100 shares overnight (about $65k per SPY contract). At $200k, the assignment-notional rule (Section 10.1a) limits SPY to 1 contract, and the broker
-      may force-liquidate);
+    - capital or margin to carry 100 shares overnight (about $65k per SPY contract). At $200k, the
+      assignment-notional rule (Section 10.1a) limits SPY to one 1-contract vertical, and the broker may
+      force-liquidate;
     - a deterministic liquidation policy;
     - **close any short leg whose extrinsic value is below its next dividend before the ex-date**;
     - close everything at T-1.
@@ -416,16 +417,16 @@ the implementation, not the alpha.
      not on width.
   3. **SPY: limited to 1 contract** by the assignment-notional rule (aggregate assignable notional <= 50% of
      equity = $100k; one SPY contract is about $65k). The ex-dividend and T-1 controls also apply.
-- **Contract counts under the $1,000 cap:** XSP $1-wide 11-12, $3-wide 3-4, $5-wide 2; SPX $5-wide about 2,
-  $10-wide 1 (Section 10.1a).
+- **Contract counts under the $1,000 cap** (WCL with stressed lifecycle costs of about $8 per 2-leg spread):
+  XSP $1-wide 10-12 (11 at a $20 credit), $3-wide 3-4, $5-wide 2; SPX $5-wide about 2, $10-wide 1 (Section 10.1a).
 - **Status:** paper-eligible once the research gates, the friction gate and the quote trial pass.
 - **Cohorts:** enter in the **Monday 15:00-15:40 ET** window into **that week's
   Friday** expiry (4 DTE). Exit at XSP Friday cash settlement or the SPY Thursday 15:30 close. The next entry is
   the following Monday.
 - **Signal warm-up:** the percentile uses an expanding window, with a 63-session minimum and 252 sessions once
   available (registered).
-- **Eligible cohorts:** quotes from 2022-03-07 minus the warm-up give about **210 raw cohorts** to 2026-10. After
-  quote failures and holiday weeks, expect about 180-200.
+- **Eligible cohorts:** quotes from 2022-03-07 minus the 63-session warm-up (to about 2022-06) give about **229 raw
+  weekly cohorts** to 2026-10. After quote failures and holiday weeks, expect about 200-220.
 - The cohort count is a **disclosure** (Section 8.5) and drives the power statement. It is not an eligibility
   gate.
 - **Exit variants:**
@@ -435,8 +436,9 @@ the implementation, not the alpha.
   - **(c) Close at 50% of max profit.**
 - **Signal:** IV^2 (computed from quotes) minus the HAR forecast of matched-horizon variance including overnight,
   above its trailing-252d 60th percentile. Events are a registered feature, with no blanket exclusion.
-- **Stress (not backtest):** reprice open packages under the 2018-02 and 2020-03 underlying moves, vol jumps and
-  impaired exits, calibrated from pre-2022 trades and day aggregates plus SPX/VIX history.
+- **Stress (not backtest):** reprice open packages under **parametric** shocks (spot gap, vol jump, impaired exits)
+  calibrated only from data up to 2015-12 and from 2022-03-07 onward. The 2018-02 and 2020-03 episodes lie in the
+  sealed 2016-2021 holdout and enter only as parametric shocks until the single opening.
 - **Holdout:** the 2022-26 quotes are a retrospective frozen-protocol evaluation, followed by prospective
   collection of >= 52 cohorts.
 
@@ -471,6 +473,9 @@ the implementation, not the alpha.
   - Benchmark = the FRED effective fed funds rate. The `fred` code is added **before** any FRED row is
     ingested; `derived` is reserved for transformations. The TOM matched-exposure benchmark includes the same cash yield.
 - **Survivorship:** the universe is rebuilt per date from `gold_tradable_universe`, including delisted names.
+  - **Hindsight bias:** the candidate ETF lists for A6 and A1 were chosen with 2026 knowledge of which ETFs survived
+    and stayed liquid. Results are also reported on a PIT-eligible ETF universe at each date (inception, ADV floor),
+    and the bias is disclosed.
   - **Terminal events:** reconcile the cash consideration, merger conversion or recovery.
   - **Unresolved longs:** a scenario set including **-100%**, and shorts get no symmetric windfall.
   - Results that depend on terminal marks are excluded from promotion.
@@ -487,8 +492,9 @@ Two benchmarks are always recorded (Section 7.1):
 
 Their difference is the delay cost.
 
-**Execution schedules.** Three candidates are registered, run on identical target orders, and count toward the
-family cap:
+**Execution schedules.** Three candidates are compared once, on identical target orders, in the WP14 execution
+study (cost only). That study sits **outside the strategy families**; one schedule is frozen before any strategy
+run:
 
 | Schedule | Window |
 |---|---|
@@ -583,14 +589,16 @@ still cannot show queue priority.
   fill**. On a breach, the lagging leg crosses immediately.
 - **Cancel-both** cancels *working orders*, not inventory: send cancels, await acknowledgements, reconcile late
   fills, then **complete or flatten deterministically**. Entries are worked as 3 paired slices of about 1/3 each.
-- **PDT:** an aborted entry flattened the same day counts as a **day trade** under PDT (3 per 5 sessions under
-  $25k, *verify* the current rule). The sleeve stops opening new entries when only 1 day trade remains.
+- **PDT:** at $200k equity the pattern-day-trader restriction (which applies below $25k in a margin account;
+  *verify* the current FINRA and broker rule) does not bind. An aborted entry flattened the same day is still
+  logged as a day trade.
 - **Backtest:** per-leg P1/G rules, with the legging hedge charged as crossing.
 
 **B1 options (atomic combo orders):**
 - **Conventions:** credit per spread. Natural credit `C_nat = bid_short - ask_long`, summed across both sides for a
   condor. The order fills when `C_nat >= C_L`, the limit credit.
-- **Operational window:** Friday 15:00-15:40 ET.
+- **Operational window:** Monday 15:00-15:40 ET into that week's Friday expiry. **Friday is not an entry window**
+  (no 0DTE entries).
   - Start at package mid and concede one valid tick every 2 minutes, never below the c = 1 price.
   - If the entry is unfilled, **skip the cohort**, logged as missed.
   - SPY risk-reducing exits escalate to marketable combos, then legging-out as a last resort with assignment
@@ -754,7 +762,7 @@ median ADV for a 50-minute window.
 
 | Order | ETF ADV | Impact (Y = 0.5, sigma_d = 1.5%) |
 |---|---|---|
-| $6.6k | $5m (window about $1m) | **6.1 bps** |
+| $6.6k | $5m (window 15% = $0.75m); **below the $20m floor, shown only to illustrate why it is excluded** | **about 7.0 bps** |
 | $3.3k | $20m (window about $3m) | **about 2.5 bps** |
 | $3.3k | SPY-class | < 0.1 bps |
 
@@ -776,10 +784,10 @@ median ADV for a 50-minute window.
 | Structure | Credit (illustrative, *verify*) | WCL/contract | Contracts at $1,000 | Friction/credit | Verdict |
 |---|---|---|---|---|---|
 | SPY $1-wide put spread, T-1 close | $15-20 | $80-85 + costs | **1** (assignment rule) | **24-45%** | Fails the 20% gate |
-| XSP $1-wide put spread, held to settlement | $15-25 | $77-87 | **11-12** | Needs h <= $0.0065 (on a $15 credit) to $0.0165 (on $25) | Conditional on the quote trial |
-| XSP $1-wide iron condor | $30-40 | $63-73 | 13-15 | Similar ratios | Conditional |
-| XSP $3-wide put spread | $45-75 | $227-257 | **3-4** | About 7-15% if h <= $0.01 | Conditional |
-| XSP $5-wide put spread | $60-100 | $402-442 | **2** | About 5-12% if h <= $0.01 | Conditional |
+| XSP $1-wide put spread, held to settlement | $15-25 | $83-93 (stressed lifecycle) | **10-12** | Needs h <= $0.0065 (on a $15 credit) to $0.0165 (on $25) | Conditional on the quote trial |
+| XSP $1-wide iron condor | $30-40 | $76-86 (stressed lifecycle) | 11-13 | Similar ratios | Conditional |
+| XSP $3-wide put spread | $45-75 | $233-263 | **3-4** | About 7-15% if h <= $0.01 | Conditional |
+| XSP $5-wide put spread | $60-100 | $408-448 | **2** | About 5-12% if h <= $0.01 | Conditional |
 | SPX $5-wide put spread | $60-100 | $400-440 + SPX fees | **about 2** | Depends on SPX fees and dollar spreads | Conditional, compared at matched exposure |
 | SPX $10-wide put spread | $150-200 | about $800-850 | **1** | As above | Conditional |
 
@@ -994,14 +1002,17 @@ trades:           run_id, sleeve, trade_id, entry_ts, exit_ts, legs (struct list
 | 2 | **Options Advanced**: first a bounded **XSP/SPX quote trial** (1 month), then bulk download for the B1/B3/B4 research window (2-3 months), then drop. Live quotes come from the broker | $199/mo while active | B1/B3/B4 economics at $200k |
 | 3 | **Indices Starter**, only if XSP proceeds and SPX history/timestamps are confirmed | $49/mo | XSP settlement and IV underlying |
 
-- **First-quarter outlay:** about $430-700 if steps 1-3 run once.
+- **First-quarter outlay** at list, three overlapping months: Stocks Advanced 1 month ($199) + Stocks Starter 2
+  months ($58) + Options Advanced 3 months ($597) + Indices Starter 3 months ($147) = **about $1,001**.
+- **Licensing:** written confirmation is required for **both stocks and options** data, covering retention after
+  downgrade, storage, derived outputs and redistribution.
 - **Data cost vs the account:**
   - Everything at list is $5,364/yr = **2.68% of NAV** ($4,291 = 2.15% with annual billing).
   - The steady state (Stocks Starter $29 + Indices Starter $49) is $936/yr = **0.47% of NAV**.
   - **Break-even:** with the caps above, expected portfolio vol is about 1-2% of NAV. At Sharpe 0.5 that is an
     expected edge of about 0.5-1% of NAV ($1-2k/yr).
-  - Continuous Advanced subscriptions would therefore exceed the expected edge, and even the steady state uses
-    roughly a quarter to a half of it.
+  - Continuous Advanced subscriptions would therefore exceed the expected edge, and even the steady state ($936/yr) uses
+    about half to nearly all of it.
   - Advanced tiers are bought only for bounded backfill and research windows.
   - Owning Developer/Advanced continuously would need an expected net edge of at least 2.7% of NAV/yr.
 - Subscriptions are research overhead and are reported separately.
@@ -1042,19 +1053,25 @@ E_t, which is **$1,000 at $200,000**.
 |---|---|
 | Defined-risk credit vertical | `100 x width - credit + stressed lifecycle costs` (entry fees and crossing; exit costs unless held to cash settlement; contingent liquidation) |
 | Same-expiry iron condor | Larger wing width x 100 - net credit + costs (only one side can finish in the money) |
-| Debit spread or butterfly | Net debit + costs |
+| Debit vertical | Net debit + costs |
+| Butterfly / broken-wing butterfly / any other package | **Max loss = -(minimum expiry payoff over every strike breakpoint and both tails) + net debit (or - net credit) + costs.** A broken-wing butterfly can lose more than its debit: long 100C, short 2x 105C, long 115C pays -$500 above 115 before premium |
 | Equity/ETF position | `notional_unit x max(stop distance, G) + stressed slippage + fees` |
 | ETF pair (one unit = the complete hedge bundle) | `long-leg notional x G_rel + slippage + fees`, where G_rel is the adverse relative return of the bundle |
 
-**Stress values G** (planning values; WP9 calibrates them as the empirical worst observed x 1.25, and a stress is
-never changed to fit a lot size):
+These option bounds hold **only for intact packages** held through cash settlement or closed as packages. American legs (SPY,
+single names) also need assignment, gap, dividend and forced-liquidation scenarios, sized under the
+assignment-notional rule below.
 
-| Position | G planning | Empirical (to verify) |
+**Stress values G** (planning values. Before the holdout opening, WP9 calibrates the empirical value as the worst
+observed x 1.25 using **only 2003-2015 and 2022-onward data**; 2016-2021 is sealed. A stress is never changed to fit
+a lot size):
+
+| Position | G planning | Empirical **[unverified]** |
 |---|---|---|
-| Broad-index ETF long | 20% | about 13% |
+| Broad-index ETF long | 20% | about 13% [unverified] |
 | Sector/style ETF long-only | 25% | -- |
-| ETF pair bundle (G_rel) | 15% | e.g. 7% x 1.25 = 8.75% |
-| Single stock after the event (A4) | 20% | about 15% |
+| ETF pair bundle (G_rel) | 15% | e.g. 7% x 1.25 = 8.75% [unverified] |
+| Single stock after the event (A4) | 20% | about 15% [unverified] |
 
 **Sizing formula:**
 
@@ -1070,24 +1087,27 @@ if q < 1: skip the trade   # never round up past the cap, never alter a structur
 | A1 pair (WCL $1,000) | 0.15 x leg + costs | Legs about $6.6k | 2 pairs |
 | A4 name (WCL $400) | 0.20 x notional + costs | About $2k each | 5 names |
 | TOM long broad ETF | 0.20 x notional + costs | About $5k (about $7.7k at G = 13%) | Research only |
-| XSP $1-wide put spread | $77-87 | 11-12 | B1 |
-| XSP $3-wide / $5-wide | $227-257 / $402-442 | 3-4 / 2 | B1 |
-| SPX $5-wide / $10-wide | about $400-440 / about $800-850 + fees | about 2 / 1 | B1 alternative |
-| SPY spread (any width) | -- | **1 contract** (assignment rule below) | Limited |
-| Single-name B4 condor | Width-dependent | 1 contract per name (assignment rule) | Limited pilot |
+| XSP $1-wide put spread | $83-93 (stressed lifecycle) | 10-12 | B1 |
+| XSP $3-wide / $5-wide | $233-263 / $408-448 | 3-4 / 2 | B1 |
+| SPX $5-wide / $10-wide | about $408-448 / about $808-858 | about 2 / 1 | B1 alternative |
+| SPY **vertical only** | -- | **1 contract** (assignment rule below; a condor's two short legs breach it) | Limited |
+| Single-name B4 condor | Width-dependent | 1 contract per name, **share price <= $100** (two short legs x 100 x price <= $20k) | Limited pilot |
 
 #### Aggregate risk (proposals; the decision of record sets only the per-trade cap)
 1. **Aggregate open WCL <= 5% of E_t** ($10k), budgeted by sleeve as in Section 5: A6 1.5%, A1 1%, A4 1%,
    options 1.5%. A 10% aggregate is **not** adopted without portfolio stress evidence.
-2. **Joint stress-scenario loss limit:** registered scenarios (2008-10, 2018-02, 2020-03, 2022 H1, 2024-08-05,
-   2025-04; a 10% gap; a vol jump; failed hedges and pair dislocations) must each lose <= 5% of E_t. Hedges get
+2. **Joint stress-scenario loss limit:** registered scenarios (2008-10, 2022 H1, 2024-08-05, 2025-04 replayed;
+   **2018-02 and 2020-03 as parametric shocks only** until the holdout opening, because they fall in the sealed
+   2016-2021 window; a 10% gap; a vol jump; failed hedges and pair dislocations) must each lose <= 5% of E_t. Hedges get
    conservative recognition.
 3. **Crash cluster** (long ETF legs, short puts, A4 longs, failed pair hedges) <= 3% of E_t.
 
 **Assignment-notional rule (American options):**
 - The sum over all short American option positions of contracts x 100 x underlying price must be <= **50% of E_t**
   ($100k). One SPY contract is about $65k, so **SPY is limited to 1 contract**.
-- A single name is limited to <= 10% of E_t ($20k) per name; one contract of a $150 stock is $15k.
+- A single name is limited to <= 10% of E_t ($20k) per name. **Every short leg counts**: a condor has two short legs,
+  so a 1-contract single-name condor needs share price <= $100 (2 x 100 x $100 = $20k). For SPY, a condor's two
+  short legs (about $130k) breach the $100k aggregate, so **SPY trades verticals only**.
 - This is an operational policy, not proof of carryability. Settled cash, margin, simultaneous assignments and
   hedge-exercise timing are checked in the broker assignment drills before SPY or B4 trade on paper.
 
@@ -1126,7 +1146,7 @@ gap_allowance = max(0, G - stop_distance)        # so WCL_unit = max(stop_distan
 | A1 ETF pairs | Spread **z-score stop at abs(z) >= 3.5**, plus the hard dollar stop ($700 at a $1,000 budget), plus a time stop of 10 sessions; whichever comes first | Same as A6: pair-level, both legs together |
 | TOM overlay (long broad ETF) | Price stop at 2 x ATR(14) below entry, plus the window-end time exit | **Broker-native** stop (survives process death): a marketable stop-limit with the limit 1% beyond the trigger, plus an emergency market fallback after 60 s unfilled during regular hours |
 | A4 EAR (single names) | Price stop at 2.5 x ATR(14), plus the 20-session time stop. Entry is after the event, so G = 20% (outside earnings windows, *verify*) | Broker-native stop-limit as for TOM |
-| Options spreads (B1/B3/B4, when enabled) | Exit trigger when the spread's marked loss reaches 1.0 x credit, or the spread value reaches 2 x the entry credit. **The defined-risk max loss is the backstop and the sizing basis**, because spread stops gap and illiquid combos may not fill | **Software-monitored**: a regular-hours loop (60 s), marketable combo exit at the c = 1.5 stress price, escalation after 3 tries; a fail-safe alert if the loop dies. |
+| Options spreads (B1/B3/B4, when enabled) | Exit triggers, first hit: (a) spread value >= 2 x the entry credit (a marked loss of 1.0 x credit); (b) the underlying trades through the short strike. **The defined-risk max loss is the backstop and the sizing basis**, because spread stops gap and illiquid combos may not fill | **Software-monitored**: a regular-hours loop (60 s), marketable combo exit at the c = 1.5 stress price, escalation after 3 tries; a fail-safe alert if the loop dies. |
 
 #### 3. Honest limits of stops
 - **Gaps:** an overnight or event gap fills at the open or worse, not at the stop. That is why sizing uses G.
@@ -1155,10 +1175,12 @@ gap_allowance = max(0, G - stop_distance)        # so WCL_unit = max(stop_distan
   - average and worst loss on stopped trades vs the cap;
   - the distribution of (realised loss / cap);
   - **the number of cap breaches, which must be 0 in the 2x-stress backtest**.
-  - A breach means G was too low: G is raised as a registered change and the run repeats.
+  - **In development only:** a breach means G was too low. G is raised as a registered change counted in the
+    trial ledger, and the run repeats.
+  - **At the holdout opening:** a breach **fails the policy**. G cannot be changed and re-run on the holdout.
 
 #### 5. Viability at $1,000 per trade with stops (E = $200,000)
-| Position | Stop (typical) | G planning / empirical | Max notional per trade | Commission per round trip | Commission as % of notional |
+| Position | Stop (typical) | G planning / empirical [unverified] | Max notional per trade | Commission per round trip | Commission as % of notional |
 |---|---|---|---|---|---|
 | A6 pair, $500 budget | $350 pair stop | 15% / 8.75% | **about $3.3k / $5.7k per leg** | about $1.40 (4 orders) | < 2 bps of pair gross |
 | A1 pair, $1,000 budget | $700 pair stop + z-stop | 15% / 8.75% | **about $6.6k / $11.4k per leg** | about $1.40-2.00 | < 1.5 bps |
@@ -1248,8 +1270,11 @@ gap_allowance = max(0, G - stop_distance)        # so WCL_unit = max(stop_distan
 | Small live (separate maintainer approval) | Maintainer-set caps; this is where passive-fill evidence is collected |
 | Scale | Fresh approval |
 
-**A4 and B1** use prospective collection as their holdout: A4 needs 2 earnings seasons and >= 500 events; B1 needs
->= 52 cohorts.
+**A4 and B1** use prospective collection as their holdout.
+- **A4:** 2 earnings seasons and >= 500 **eligible events scored**: admission decisions logged, whether traded or
+  skipped for capacity. At 5 positions held 20 sessions, only about 30 of them are traded, so all admitted trades
+  must also have closed.
+- **B1:** >= 52 cohorts.
 
 ---
 
@@ -1644,8 +1669,9 @@ policy_version, reason_codes, data_source='derived'
 ## 14. Risk, delivery and work packages
 
 ### 14.1 Portfolio risk
-- **Stress replays:** 2018-02, 2020-03, 2022 H1, 2024-08-05 and 2025-04 replayed on current positions. A replay
-  may lose no more than 3% NAV for equities, and options stay within their caps.
+- **Stress tests:** 2022 H1, 2024-08-05 and 2025-04 replayed; 2018-02 and 2020-03 as parametric shocks until the
+  holdout opening. The limits are those of Section 10.1a: each joint scenario <= 5% of E_t, crash cluster <= 3%, and
+  entry WCL and aggregate approved risk within caps.
 - **ETF gaps:** a 10% SPY gap must stay <= 1% NAV per sleeve.
 - **Perps:** `perpetual_future` if ever used.
 
@@ -1669,7 +1695,7 @@ Tests, oracles and the required mutants for each work package are specified in S
 | **WP6** | Statistics harness (purging, simultaneous bound, SPA, sealed `open_holdout`) | `ml/harness/*` | Noise families reject at <= 5% + MC error; one-time open | As v2 |
 | WP7 | Residual falsification | `families/residual.yaml` | N >= 14 | Pass/park |
 | WP8-9 | Massive dividends; 2003+ history; sealed holdout | `etl/`, restricted schema | Manifest overlap rejection | Holdout sealed |
-| WP10-11 | A6; A1 + TOM | `a6_*.py`, `a1_*.py`, `a5_tom.py` | Lot rule; withholding by direction; schedule family | Gate report |
+| WP10-11 | A6; A1 + TOM | `a6_*.py`, `a1_*.py`, `a5_tom.py` | Lot rule; withholding by direction; frozen WP14 schedule | Gate report |
 | WP12-13 | EDGAR timing audit; A4 concentrated | `etl/`, `a4_ear.py` | Session mapping | 100-event audit |
 | WP14 | Execution study (minute bars/quotes) | `research/exec_study.py` | Scenario brackets | Report only |
 | WP15 | Options: quote reconstruction, event engine, B1 | `event_engine.py`, `b1_vrp.py` | As-of quote reconstruction (no future quotes); C_nat convention; settlement; assignment drill | Friction/credit at the approved cap |
@@ -1728,13 +1754,21 @@ Green coverage alone is never acceptance evidence.
 - **Options math (WP15):**
   - Vertical and **asymmetric-wing** condor payoff on a strike grid, with multiplier and quantity explicit.
   - Gross vs net premium; max loss = width x 100 x qty - credit; friction/credit.
-  - Net results may exceed gross payoff bounds only by fees, which is asserted.
+  - Net results may exceed gross payoff bounds only by fees, which is asserted, **for intact packages**. Broken-wing
+    butterfly fixture: long 100C / short 2x 105C / long 115C has payoff -$500 above 115.
+  - American legs (SPY, single names): assignment, gap, dividend and forced-liquidation fixtures.
 - **Risk sizer (WP16)**, cap 0.5%, E = $200,000 (cap $1,000):
-  - XSP $1-wide spread, $20 credit, $1.70 costs: WCL $81.70 -> q = **12** ($980.40). After equity falls to
-    $190,000 (cap $950): q = **11**.
+  - XSP $1-wide spread, $20 credit, **stressed lifecycle costs $6** (entry and stop-exit fees at $1.50/contract/side;
+    mandatory stops add exit fees): WCL $86 -> q = **11** ($946). After equity falls to $180,000 (cap $900):
+    q = **10**.
+  - **0DTE rejection:** an XSP entry whose expiry is the same session (e.g. a Friday entry into that Friday's
+    expiry) is rejected.
+  - **Assignment notional with two short legs:** a 1-contract condor on a $101 stock (2 x $10,100 = $20,200 >
+    $20k) is rejected; on a $100 stock it is allowed. A SPY condor is rejected; a SPY vertical (1 contract) is
+    allowed.
   - **Floor boundary:** WCL exactly $100.00 -> q = 10; WCL $100.01 -> q = **9**. The sizer never rounds up past the
     cap.
-  - SPX $10-wide, WCL $853 -> q = 1. At E = $170,000 (cap $850) -> q = **0**, so the trade is skipped.
+  - SPX $10-wide, WCL $858 (stressed lifecycle) -> q = 1. At E = $170,000 (cap $850) -> q = **0**, so the trade is skipped.
   - TOM broad ETF at G = 20% with $0.35 fees, priced $100: q = floor(999.65 / 20) = **49 shares** ($4,900).
     Notional $4,995 -> WCL $999.35, allowed; $5,000 -> $1,000.35, rejected.
   - A1 pair bundle at G_rel = 15% with $1.40 fees: $6,600 long leg -> $991.40, allowed; $6,700 -> $1,006.40,
@@ -1758,9 +1792,9 @@ Green coverage alone is never acceptance evidence.
 | Position and cash identities | Every change maps to a fill, fee or corporate-action event |
 | **No look-ahead** | Appending or perturbing data after t (by publication timestamp, including **revisions**) leaves signals and orders <= t unchanged |
 | Idempotent reruns | Same config, event order, injected clock, random stream and schema version -> identical canonical economic-state hash (incidental timestamps excluded) |
-| Options package P&L within [-max_loss - fees, credit - fees] | Per package, at expiry |
+| Options package P&L within [-(structure max loss) - costs, (structure max gain) - costs] | Per **intact** package at expiry; max loss/gain computed per structure from every strike breakpoint and both tails (not width - credit for butterflies); American-leg packages are tested separately under assignment, gap, dividend and liquidation scenarios |
 | Netting preserves sleeve attribution | Sum of sleeve allocations = net position |
-| **Per-trade cap: no generated order has WCL > 0.5% of E_t** | For random equity ($1k-$10M), prices, widths, credits, fees and gap stresses: WCL(order) <= 0.005 x E_t (+0 tolerance after contractual rounding); q < 1 means no order; q is always the floor (q+1 would breach) |
+| **Per-trade cap: no generated order has WCL > 0.5% of E_t** | For random equity ($1k-$10M), prices, widths, credits, fees and gap stresses: WCL(order) <= 0.005 x E_t (+0 tolerance after contractual rounding); q < 1 means no order; q is the floor of the minimum over all limits; q+1 would violate at least one binding limit, which need not be the per-trade cap |
 | **Cap tracks equity** | After a simulated loss sequence, the next permitted size is non-increasing as E_t falls; sizing never uses the high-water mark |
 | **No stop, no order** | Any generated intent without a valid stop (or with a stop on the wrong side) is rejected |
 | **Loss on stop <= 0.5% of E_t under the modelled gap** | For random gaps up to G and the stressed slippage, the realised stop-out loss including fees <= 0.005 x E_t |
@@ -1790,9 +1824,11 @@ Green coverage alone is never acceptance evidence.
   - overlapping labels across a split;
   - same-bar and same-minute execution;
   - a publication-time vs event-time swap;
-  - a month-end selection (the A4 admission rule).
+  - a month-end look-ahead selection, which must be **rejected** (A4 uses the causal admission threshold).
 
 ### 15.4 Golden, regression and differential tests
+- **Policy:** fixtures committed to the repository are **synthetic only**. No vendor data (Massive or otherwise) is
+  committed, because of the licensing terms.
 - **Frozen synthetic datasets** (Parquet + JSON expected outputs; regeneration requires explicit review):
   - 20 sessions x 4 symbols with one split, one dividend and one delisting;
   - an AR(1) pair with a known half-life;
@@ -1944,7 +1980,16 @@ Green coverage alone is never acceptance evidence.
 | WP16 OMS/monitoring | Stateful FakeBroker, crash matrix, clock injection | Resend on UNKNOWN; lose late fill; kill switch fails open; integrity breach does not cancel entries; stale-data halt bypassed |
 | WP-AG2 firewall/signer | Security boundary tests | Skip signature check; omit account/environment binding; accept a reused nonce; accept an expired target; execution skips its own risk re-check |
 | WP19 adapters | Shared contract suite | Unsupported capability defaults to true; wrong order-type mapping; partial fill reported as full; paper routed to a live endpoint; unknown field crashes instead of failing closed |
-
+| WP7 residual falsification | Registry count, frozen family | Run a 5th variant; reset N to 4 instead of >= 14; change costs after seeing results; skip the 2x-variable-cost check; mark the period unseen |
+| WP8-9 data + **holdout seal** | Manifest overlap, restricted-schema access, one-time open | Research snapshot reads 2016-2021; **calibrate G using 2016-2021 data before opening**; allow a second `open_holdout`; manifest hash ignores Delta version; dividends posted at pay date without ex-date entitlement |
+| WP10-11 A6 / A1 / TOM | Signal oracles, lot rule, withholding, frozen schedule | Use same-day close in the signal; size on the stop instead of G_rel; select the schedule inside the family; drop the withholding line; close only one pair leg on a stop |
+| WP12-13 **timing audit** + A4 | Session-mapping table, 100-event audit tool, causal admission | Map a post-16:00 release to the same session; enter before EAR completes; use month-end top-N selection; use acceptance time when an earlier wire time exists; count a skipped-for-capacity event as traded |
+| WP14 execution study | Scenario brackets, cost-only comparison | Use future minute bars to pick the schedule; count touch as fill; evaluate alpha instead of cost; select on the holdout window; omit the deadline crossing |
+| WP17 reporting | Typed report fields, citation resolver | Accept a fabricated `run_id`; render a number without an artifact hash; resolve file:line against the wrong commit; drop failed runs from the report; mark an illustrative number as measured |
+| WP18 red-team | Poisoned data, injection, forged targets | Accept x100 price; let instruction text change a field; accept a forged target; treat NaN as zero; skip quarantine |
+| WP20 extractor (shadow) | Locked temporal evaluation, cache key | Cache keyed by document hash only; timestamps taken from model prose; shadow output reaches orders; evaluate on the development split; omit abstentions |
+| WP-AG1 contracts/fixtures | Protected paths, evidence binding | Allow a test-weakening diff without review; accept stale evidence; skip the semantic diff; let a builder edit expected values; accept evidence from another commit |
+| WP-RG5 gate evaluation | Paired bootstrap, causal matched exposure | Use realised gate activity for the matched benchmark; evaluate on the holdout before freezing; ignore aggregate-cap interactions; drop missed-trade costs; per-variant instead of pre-registered endpoint |
 | WP-RG1 telemetry/health | PIT, revision, warm-up, restart tests | Use same-day unavailable VIX; full-sample scaling; permissive default on missing input; ignore revision timestamp; recompute past states on refit |
 | WP-RG2 decay monitors | CUSUM oracles, dependent-null calibration | Flip the CUSUM sign; drop the reset or refractory period; use in-sample backtest as baseline; omit the scale floor; per-trade instead of cohort observations; alarm changes orders |
 | WP-RG3 policy engine | Policy properties, fail-safe, recovery | Ceiling > 1 accepted; product instead of minimum; regime applied before caps/rounding; stale input treated as normal; dwell applied to a mechanical block; recovery above the approved ceiling; shadow row affects orders |
@@ -1970,10 +2015,10 @@ too).
    With open WCL <= 5%, a full simultaneous max loss from just under 4% could reach about 9%. That residual
    exceedance is accepted and stress-tested.
 3. **Gap stress G for sizing:** keep the planning values (20% broad ETF, 15% pair bundle, 20% single name) or adopt
-   the WP9 empirical worst x 1.25. This changes sizes about 1.5-2x (Section 10.1b).
+   the WP9 empirical worst x 1.25. This changes sizes about 1.3-1.7x (Section 10.1b).
 4. **Massive purchases** (Section 9.2):
    - step 0: entitlement check;
-   - step 1: Stocks Advanced 1-month backfill ($199), pending written licensing confirmation of retention;
+   - step 1: Stocks Advanced 1-month backfill ($199), pending written licensing confirmation (stocks and options: retention, storage, derived outputs, redistribution);
    - step 2: Options Advanced quote trial plus a research window ($199/mo, 2-3 months);
    - step 3: Indices Starter ($49/mo) if XSP/SPX proceed.
    Data costs are reported against the account (2.68% of NAV at list for everything).
@@ -2023,8 +2068,8 @@ re-keyed to this plan's work-package numbers.
 | 12 | Residual rescue | 6 weeks | 1 week, 4 runs | **Sol** |
 | 13 | PEAD timing | Entry at acceptance + 1 session | EAR leaks; XBRL arrives later | **Sol (R4)**: entry at session +2; SUE only after the 10-Q |
 | 14 | Holdout | Final 5y | 2022-26 already consumed | **Sol (R4)**: pre-2022 holdout + prospective shadow |
-| 15 | B1 cohorts and events | 7-45 DTE, exclude macro | 200 cohorts infeasible; the exclusion kills the sleeve | **Sol (R4)**: weekly 7-10 DTE primary; event feature, no blanket exclusion |
-| 16 | SPY options | Allowed | Assignment and pin risk | **Sol (R4)**: SPX/XSP only |
+| 15 | B1 cohorts and events | 7-45 DTE, exclude macro | 200 cohorts infeasible; the exclusion kills the sleeve | **Sol (R4)**: weekly 7-10 DTE primary; event feature, no blanket exclusion **Superseded** by the Monday-entry 4-DTE schedule (Section 5.5) |
+| 16 | SPY options | Allowed | Assignment and pin risk | **Sol (R4)**: SPX/XSP only **Superseded** at $200k by the assignment-notional rule (SPY 1-contract verticals; Section 10.1a) |
 | 17 | Spread estimator for ETFs | Abdi-Ranaldo + floor | Unusable at sub-bp; tick-aware scenarios | **Sol (R5)** |
 | 18 | Delay cost | 0.25 sigma sqrt(h) adverse | Zero unconditional drift; simulate delayed fills | **Sol (R5)**: simulation + 0/1/3 bps stress |
 | 19 | Options package fill | c = 0.35 base | c = 1 base | **Sol (R5)**: c = 1 base, 0.5 optimistic, 1.5 stress. Opus notes that SPX complex orders often fill inside the summed spreads; to be revisited only with real fills |
@@ -2060,7 +2105,7 @@ re-keyed to this plan's work-package numbers.
 | 49 | R13 testing strategy | 95% coverage target; literal oracles; fixed seeds | Coverage percentages invite denominator games; oracles need a versioned derivation; at least five curated mutants per WP, 100% killed | **Reviewer**: per-branch coverage of safety paths with a ratchet; oracle spec files; at least five mutants per WP (Section 15) |
 | 50 | Per-trade cap (0.5% of equity) | -- | -- | A decision of record added after R13 (an earlier 5% figure was corrected to 0.5%). It was not separately reviewed by Codex Sol. Section 10.1a and its tests follow the reviewed sizing and stress principles (size on stressed loss, skip instead of resize) |
 | 51 | Mandatory stop-losses | -- | -- | A decision of record added after R13. Section 10.1b was not separately reviewed by Codex Sol; it applies the reviewed principles (conservative fills, stop-first intrabar, size on gap, fail-closed) |
-| 52 | Account raised to $200k (R14) | 10% aggregate open WCL with sleeve budgets; "15% per leg" pair stress; impact about 0.6 bps for a thin ETF; SPX fee advantage about 8x | Keep 5% aggregate plus a joint stress-scenario limit; define the pair unit and G_rel explicitly (empirical 7% x 1.25 = 8.75%); impact is 6.1 bps at window volume; no width-based fee claim; Reg-T condor = larger wing; breaker levels must mandate actions | **Reviewer accepted on all points.** 5% aggregate, joint scenario limit, pair-bundle stress, corrected impact, matched-exposure SPX/XSP comparison, breaker 4/6/8% with mandatory actions |
+| 52 | Account raised to $200k (R14) | 10% aggregate open WCL with sleeve budgets; "15% per leg" pair stress; impact about 0.6 bps for a thin ETF; SPX fee advantage about 8x | Keep 5% aggregate plus a joint stress-scenario limit; define the pair unit and G_rel explicitly (empirical 7% x 1.25 = 8.75%); impact is 6.1 bps at window volume (later corrected to about 7.0 bps with the 15% window proxy); no width-based fee claim; Reg-T condor = larger wing; breaker levels must mandate actions | **Reviewer accepted on all points.** 5% aggregate, joint scenario limit, pair-bundle stress, corrected impact, matched-exposure SPX/XSP comparison, breaker 4/6/8% with mandatory actions |
 | 53 | Size-driven vs data-driven verdicts | -- | Size removes implementation barriers, never a failed edge, cost or data gate | **Agreed.** B1/B3/B4 become paper-eligible after gates; B5 moves to backlog; residual stays parked on cost; A2/A3/B2/A5b unchanged; TOM research-only |
 | 54 | Regime detection (R15) | Rule-based multi-dimension gates active; BOCPD alarm; HMM challenger; ARL0 >= 250; example multipliers per sleeve | Detector can be past-only yet the policy overfit; no evidence that gating helps; telemetry + mechanical safeguards first; gates shadow-only; system false-intervention budget; cohort CUSUM from causal OOS baseline; no automatic retirement | **Reviewer accepted.** Section 12 adopts the telemetry-first, shadow-gate design |
 | 55 | R16 review of Section 12 | -- | Holdout-dated replays, 2022-03-07 cutoff, advisory vs ceiling, cohort contract, mechanical blocks immediate, replay assertions vs realised losses, utility endpoint, budget definition, B1 variance causality | **All 9 fixed** |
