@@ -800,7 +800,7 @@ median ADV for a 50-minute window.
   ratio.
 - **Carry, unequal notionals:** `Pi_div = 0.7*N_L*y_L - N_S*y_S`.
   - Example: a $1,500 long at 3% yield loses **$13.50/yr** to withholding. That is 45 bps of $3k pair gross, or
-    13.5 bps of NAV.
+    0.675 bps of the $200k NAV.
   - Actual cash follows ex-dates, not smooth accrual.
 - **Signals:**
   - Signals and hedge ratios use **gross total returns**, because the market relationship is not account-specific.
