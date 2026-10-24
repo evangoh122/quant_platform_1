@@ -35,7 +35,7 @@
 | Decision | Effect on the plan |
 |---|---|
 | **Paper account, $200,000** (raised from $10,000) | Everything is sized for $200k, with integer shares and 100x option multipliers. Fixed fees become negligible; the per-trade and aggregate risk caps bind (Sections 7.6, 10.1a) |
-| **Data vendor: Massive** (S3 flat files at `files.massive.com`, bucket `flatfiles`, plus REST) | ORATS/ThetaData are dropped. First test whether Massive alone covers the options backtest (Section 9) |
+| **Data vendor: Massive** (S3 flat files at `files.massive.com`, bucket `flatfiles`, plus REST) | ORATS/ThetaData are dropped. **One-month bulk acquisition** (Stocks Advanced + Options Advanced + Indices Starter, $447 list, one-time), then cancel, with forward data from our own broker collection. Conditional on a mandatory licensing gate (Sections 9.2-9.3) |
 | **Options in scope, defined-risk only** | Allowed: verticals, iron condors, credit iron butterflies, long (debit) butterflies. **Not allowed:** naked legs, short straddles/strangles, delta-hedged short straddles, 1x2 ratios, risk reversals. Long straddles are replaced by defined-risk debit structures. **Calendars and diagonals are excluded for now** (Section 3.1) |
 | **Best-price execution** (replaces the earlier MOC decision) | Execution minimises implementation shortfall with limit, peg and midpoint-walking orders inside a window, falling back to a marketable limit at a deadline. Gates assume a conservative crossing policy (Section 6.3) |
 | **Per-trade risk cap: 0.5% of portfolio equity** | No single trade's worst-case loss (option max loss + fees, or the stressed gap for equity legs) may exceed 0.5% of current equity (**$1,000 at $200k**). Defined-risk options spreads now fit. Sized on stressed lifecycle costs (stop exits add exit fees): e.g. 10-12 XSP $1-wide (11 at a $20 credit) or 2 XSP $5-wide. Options are **paper-eligible once their research gates pass**; they are no longer backtest-only. Section 10.1a governs every sizing statement in this plan |
@@ -54,7 +54,8 @@ strategies.
   - Massive day-aggregate flat files start **2003-09-10 [verified]**.
   - Stocks **Developer ($79/mo) only gives a rolling 10 years [verified]**. On 2026-10-24 that reaches about
     2016-10, so it **misses Jan-Sep 2016**.
-  - **Stocks Advanced ($199/mo, full history) [verified]** is required (or the holdout shrinks to 2017-2021).
+  - **Stocks Advanced ($199/mo, full history) [verified]** is required, bought for **one month** (Section 9.2).
+    The 2016-2021 daily bars come in the same pull and are written to restricted storage and hashed at download.
 - **How it is sealed:**
   1. A restricted ingest writes the window to a separate UC table or volume that research snapshots cannot
      read.
@@ -149,9 +150,9 @@ Measured hurdle: residual reversion gross Sharpe 0.68, **net 0.12**, -0.45 at 2x
   using them is a **retrospective options evaluation under a frozen protocol**. It is not a clean holdout, because
   the economic hypotheses were chosen after seeing 2022-26 equities. Forward paper observations supply the
   independent evidence.
-- **Cost:** everything at list price is $447/mo (Stocks Adv + Options Adv + Indices Starter), which is **$5,364/yr =
-  2.68% of a $200k NAV**. That is more than the whole expected edge of a cap-limited portfolio (Section 9.2).
-  Section 9 gives a bounded purchase sequence.
+- **Cost:** a **one-time** one-month purchase of Stocks Advanced + Options Advanced + Indices Starter is **$447 at
+  list**. Storage, compute and broker data fees come on top. It is conditional on the licensing gate (Section 9.2).
+  No continuous subscription is planned.
 
 ---
 ## 3. Strategy assessment at $200k with Massive data
@@ -981,41 +982,199 @@ trades:           run_id, sleeve, trade_id, entry_ts, exit_ts, legs (struct list
 ### 9.1 Datasets and lineage
 | Need | Massive source | `data_source` / `source_dataset` | WP |
 |---|---|---|---|
-| Daily ETF/stock history 2003+ (development + sealed 2016-21 holdout) | `us_stocks_sip/day_aggs_v1` (Stocks Advanced) | `massive` / `massive:us_stocks_sip/day_aggs_v1` | WP9 |
+| Daily ETF/stock history 2003+ (development + sealed 2016-21 holdout) | `us_stocks_sip/day_aggs_v1` (Stocks Advanced, one-month bulk pull) | `massive` / `massive:us_stocks_sip/day_aggs_v1` | WP-D1, WP9 |
 | Dividends (ex, pay, amount, type) | REST dividends (2000+) | `massive` / `massive:rest/dividends` | WP8 |
 | Splits | REST splits (already used) | `massive` | held |
 | Minute bars / stock quotes (execution study) | `minute_aggs_v1`, `quotes_v1` (start dates *unverified*) | `massive` | WP14 |
-| Options quotes / trades / day aggregates | `us_options_opra/*` (quotes 2022-03-07+, trades and day 2014-06-02+; prefix *unverified*) | `massive` / `massive:us_options_opra/quotes_v1` | WP15 |
+| Options quotes / trades / day aggregates + historical contract reference | `us_options_opra/*` (quotes 2022-03-07+, trades and day 2014-06-02+; prefix *unverified*), one-month bulk pull | `massive` / `massive:us_options_opra/quotes_v1` | WP-D1, WP-D2, WP15 |
 | SPX values (XSP settlement, IV underlying) | Indices Starter (`us_indices/*`; depth *unverified*) | `massive` / `massive:us_indices/values_v1` | WP15 |
 | 8-K timing | EDGAR submissions (**non-Massive dependency**) | `sec_edgar` | WP12 |
-| Broker fills | IBKR / Schwab | `ibkr` / `schwab` (vocabulary PR at first ingest) | WP19 |
+| Broker forward quotes, orders and fills (Section 9.3) | IBKR / Schwab | `ibkr` / `schwab` (vocabulary PR at first ingest) | WP-D3, WP-D4, WP19 |
 
 - **Storage:** UC bronze/silver/gold. The sealed holdout lives in a restricted schema or volume.
 - **Research:** runs locally in Polars on manifest-pinned snapshots.
 - **Not adopted:** QuestDB, TimescaleDB, VectorBT.
 
-### 9.2 Bounded purchase sequence (list prices; each step is an maintainer decision)
-| Step | Purchase | Cost | Answers |
-|---|---|---|---|
-| 0 | Check the current entitlement: list the S3 prefixes for 2016 stocks and for options quotes (maintainer action) | $0 | What is already paid for |
-| 1 | **Stocks Advanced** for the 2003+ backfill. If written licensing confirms that retention after downgrade is permitted, run it for **1 month**, then downgrade to Starter ($29) for dividends and maintenance | $199 (+$29/mo) | A6, A1, TOM on long history; sealed holdout |
-| 2 | **Options Advanced**: first a bounded **XSP/SPX quote trial** (1 month), then bulk download for the B1/B3/B4 research window (2-3 months), then drop. Live quotes come from the broker | $199/mo while active | B1/B3/B4 economics at $200k |
-| 3 | **Indices Starter**, only if XSP proceeds and SPX history/timestamps are confirmed | $49/mo | XSP settlement and IV underlying |
+### 9.2 One-time bulk acquisition, then broker overlay (decision of record, 2026-10-24)
 
-- **First-quarter outlay** at list, three overlapping months: Stocks Advanced 1 month ($199) + Stocks Starter 2
-  months ($58) + Options Advanced 3 months ($597) + Indices Starter 3 months ($147) = **about $1,001**.
-- **Licensing:** written confirmation is required for **both stocks and options** data, covering retention after
-  downgrade, storage, derived outputs and redistribution.
-- **Data cost vs the account:**
-  - Everything at list is $5,364/yr = **2.68% of NAV** ($4,291 = 2.15% with annual billing).
-  - The steady state (Stocks Starter $29 + Indices Starter $49) is $936/yr = **0.47% of NAV**.
-  - **Break-even:** with the caps above, expected portfolio vol is about 1-2% of NAV. At Sharpe 0.5 that is an
-    expected edge of about 0.5-1% of NAV ($1-2k/yr).
-  - Continuous Advanced subscriptions would therefore exceed the expected edge, and even the steady state ($936/yr) uses
-    about half to nearly all of it.
-  - Advanced tiers are bought only for bounded backfill and research windows.
-  - Owning Developer/Advanced continuously would need an expected net edge of at least 2.7% of NAV/yr.
-- Subscriptions are research overhead and are reported separately.
+**Decision.** There is no continuous premium subscription. The plan buys the minimum tiers for **one month**,
+downloads the required history, verifies it before the month ends, and cancels. Forward data comes from our own
+broker collection (Section 9.3).
+
+This design is **conditional on the licensing gate** (Step 0b) and on a measured feasibility pilot.
+
+#### Sequence (each step is a maintainer decision)
+| Step | Action | Cost (list) | Gate to proceed |
+|---|---|---|---|
+| 0a | **Entitlement and feasibility check** (WP-D0): list the accessible S3 prefixes and dates under the current account; confirm that dataset start dates are actually *entitled* (stocks to 2003-09-10, options quotes from 2022-03-07, options day aggregates from 2014-06-02, index depth); confirm expired-contract and delisted-symbol reference access | $0 | Entitlement confirmed in writing or by listing |
+| 0b | **Licensing gate, mandatory, *unverified*.** Written answers from Massive (terms + support) covering: retention and use of downloaded data **after cancellation**; derived outputs; redistribution; personal vs business use for the actual account/entity; cloud processing, storage, backups and service providers; paper and possible live use; whether S3 flat-file downloads fall under the same terms. Broker-data storage rights are checked the same way (Section 9.3) | $0 | **If retention after cancellation is not permitted, this design stops.** Any fallback (e.g. a continuous cheaper tier) needs its own confirmed permissions and coverage, and a separately approved scope and budget. Options Starter cannot replace quote access |
+| 0c | **Start the broker forward collection** (Section 9.3) **at least 5 weeks before** the purchase date, so the fixed cutoff includes **>= 20 completed broker sessions** | Broker data fees (Section 9.3) | Collector running and reconciled daily; >= 20 sessions before the cutoff |
+| 1 | **One month:** Stocks Advanced ($199) + Options Advanced ($199) + Indices Starter ($49), all started on the same day. Renewal is switched off at purchase, and a calendar alert is set 7 days before the renewal date | **$447** | Pilot passes (below) |
+| 2 | Acquisition by priority, with incremental audits (below) | -- | Completeness sign-off >= 5 business days before the renewal date |
+| 3 | Cancel all three tiers. Keep the manifests and the licensing correspondence | -- | Cancellation confirmed in writing |
+| 4 (optional) | A second burst 12-18 months later (Options Advanced, $199) to extend options history | $199 | Only for data still entitled and licensed then. It cannot repair older gaps |
+
+#### Feasibility pilot (first days of the month, or earlier if access allows)
+- **Problem:** without server-side predicate filtering (none is documented), filtering OPRA quote files locally
+  still means **downloading the full compressed daily objects**. Filtering cuts retained storage, not inbound
+  bytes.
+- **Measure** on several representative sessions, including a busy expiry or event day:
+  - compressed bytes per day;
+  - download throughput;
+  - decompress and filter time;
+  - peak disk and RAM;
+  - output size;
+  - failure and retry cost.
+- **Extrapolate** to the full requested period against the remaining days, with 50% headroom.
+- **Stop or re-scope rule:** if the projection exceeds about 60% of the month, drop or reduce scope in this order
+  before starting the bulk pull: **P6, then P5, then P4, then P3, then P2**. P1 is never reduced. Mandatory
+  dependencies are preserved, and any strategy left short is declared incomplete. All sizes are *unverified* until measured.
+
+#### Pull manifest (priority order if the month is cut short)
+| Priority | Dataset | Range | Scope | Retention |
+|---|---|---|---|---|
+| P1 | Stocks day aggregates (full market, incl. delisted) | 2003-09-10 -> **fixed cutoff** (the last complete session before the pull starts; it must include >= 20 completed broker sessions) | All symbols | Raw files kept (small). 2016-2021 objects go **straight to restricted storage** |
+| P1 | Dividends, splits, ticker reference (type, list/delist dates, CIK) | 2000+ | ETF universe + A4 candidate universe | Raw JSON kept |
+| P2 | Options **quotes** for B1: XSP, SPX/SPXW | 2022-03-07 -> cutoff | Contracts selected **causally**: expiries <= 45 DTE, strikes within +/-15% of the **prior-session** close of the underlying (no intraday look-ahead), plus every contract an open position or exit would need | Filtered Parquet (a bounded research archive) |
+| P2 | **Historical contract reference** (expired contracts, roots, AM/PM settlement, adjustments) for **every** underlying whose quotes are retained (P2, P4, P5). It is a **mandatory dependency** of each quote pull and is checked in the completeness audit | 2022-03-07 -> cutoff | All retained contracts | Raw kept |
+| P3 | Index values/day aggregates: SPX, VIX, VIX3M (as deep as entitled) | Max available | -- | Raw kept |
+| P4 | Options quotes for SPY (1-contract verticals) and QQQ | 2022-03-07 -> cutoff | As P2 | Filtered |
+| P4 | Options day aggregates for the P2/P4 underlyings | 2014-06-02 -> cutoff | -- | Raw. **2016-2021 to restricted storage** |
+| P5 | Options quotes for about 50 B4 single names | 2022-03-07 -> cutoff | As P2 | Filtered |
+| P6 | Stock minute aggregates, only for ETFs with missing minute coverage in held bronze (e.g. RSP) | 2022+ | Execution study only | Raw |
+
+**A4 inputs not covered by Massive:**
+- EDGAR 8-K timing comes from the existing SEC pipeline (`sec_edgar`).
+- A historical liquid-universe membership is rebuilt from P1.
+- If either is incomplete when the month ends, A4's data requirements are recorded as incomplete.
+
+#### Integrity, lineage and holdout isolation
+- **Per downloaded object**, a row in an **append-only** bronze manifest table (`bronze_massive_pull_manifest`,
+  `data_source='massive'`):
+  - S3 key and ETag (the ETag is an identifier, not a content hash);
+  - size;
+  - **SHA-256 of the source compressed bytes**;
+  - pull timestamp;
+  - the fixed cutoff;
+  - entitlement tier.
+- **Per retained output**, a SHA-256 of the output plus:
+  - filter/code version, schema and contract-mapping version;
+  - source, output and **rejected** row counts;
+  - timestamp conventions.
+- **Codes:**
+  - Raw rows: `data_source='massive'` with a `source_dataset` (e.g. `massive:us_options_opra/quotes_v1`).
+  - Filtered or derived tables: `derived`, with lineage to manifest rows.
+- **Filtered-only retention** is a deliberately bounded research archive, not a reproducible full OPRA archive.
+  Discarded contracts and fields cannot be recovered after cancellation; source hashes cannot reconstruct them.
+- **Holdout isolation:**
+  - All 2016-2021 raw objects, volumes and derived copies (stocks day aggregates and options day aggregates) are
+    written **at download** into restricted storage.
+  - Research service identities have **no read grant** on them.
+  - Only development partitions (2003-2015, 2022+) are exported to research.
+  - Hashes prove that bytes did not change, not that nobody read them. Access logs plus the grant configuration
+    are the evidence.
+  - Holdout validation during acquisition is **mechanical only** (row counts, hashes). No strategy outcome is
+    inspected.
+
+#### Completeness audit (incremental during the pull, final before the lapse; gaps cannot be re-pulled later)
+- **Stocks:**
+  - per-symbol per-session row presence vs the **date-specific** NYSE calendar (holidays, early closes) between
+    listing and delisting dates;
+  - classified exceptions (no-trade days, halts, suspensions, listing-date semantics);
+  - duplicate and key checks;
+  - corporate-action consistency (split and dividend vs price jumps);
+  - sampled comparison against independent sources (held bronze 2022+, FRED SP500).
+  - **Economic checks** (price-jump vs corporate-action reconciliation, independent price comparisons) that a
+    researcher can see run **only on development partitions** (2003-2015, 2022+). For 2016-2021 the audit is
+    mechanical only (row presence, keys, hashes). Its economic validation is deferred to the authorised holdout
+    process.
+- **Options**, for the contracts the strategies actually need (both legs, entry, holding period and exit
+  observations):
+  - quote-row counts, quote age, two-sided markets, sizes;
+  - crossed or locked quotes; timestamp ordering;
+  - expected expiries from the **historical product calendar** (no hard-coded weekdays);
+  - session hours per product and date;
+  - an explicit stale-quote rule (Section 6.3).
+- **Indices:** per-session presence for the required series.
+- **Acceptance:** strategy-level criteria are defined **before** the pull, e.g. at most 1% of B1 cohort decisions
+  missing a usable entry quote. Missingness is reported by period, so stressed sessions are not silently excluded.
+- **Sign-off:** >= 5 business days before the renewal date, with time reserved for repair.
+
+#### Costs and break-even
+| Item | Cost |
+|---|---|
+| Subscriptions, one month, list | **$447** (one-time) |
+| Optional second burst | $199 |
+| Storage, compute and transfer | Measured in the pilot; ceiling set in Section 16 |
+| Broker market data for the forward collection | Section 9.3; *verify* |
+| Tax | If applicable |
+
+- **Against the edge:** $447 once is about 22-45% of one year's expected edge ($1-2k), and about 0.075% of NAV per
+  year amortised over three years. That assumes three years of permitted, useful retention.
+- The amortisation measures cost spread, not recovery of the expense.
+- **The continuous-subscription cost model is retired.**
+
+### 9.3 Broker forward collection and overlay
+**Purpose:**
+1. Calibrate fills and slippage on our own orders.
+2. Extend history **forward** from the bulk cutoff.
+
+It **cannot replace the bulk pull**: brokers generally do not serve historical quotes for expired option contracts
+*[unverified]*.
+
+**Route:**
+- Choose **one** broker (IBKR or Schwab) and verify before collecting:
+  - real-time OPRA and index entitlements on the account (a paper account does not establish them);
+  - retention rights;
+  - snapshot throughput and pacing limits *[unverified]*;
+  - whether quotes are fresh updates or cached or delayed values.
+- Market-data fees are counted in the budget.
+
+**Collection scope:**
+- **Contracts:** the same causal selection rule as P2, plus every contract held or needed to exit. The chain size
+  is measured before the cadence is fixed.
+- **Cadence:**
+  - every 1 minute in the Monday 14:55-15:45 ET entry window;
+  - every 1 minute in scheduled exit windows;
+  - stop triggers come from the **independent live stop monitor** (Section 10.1b: a 60-second regular-hours loop
+    for open packages), whose observations are retained. Stop-related conclusions are limited to what that cadence
+    can observe;
+  - every 15 minutes during the rest of regular hours across the **whole holding period**;
+  - settlement values and exercise/assignment events, recorded separately.
+- **Fields:**
+  - bid/ask and sizes, last;
+  - broker IV/greeks, labelled as **broker-model outputs**;
+  - underlying bid/ask;
+  - OCC symbol + broker contract id;
+  - exchange timestamp (where provided) and local receive timestamp;
+  - request id and a fresh-vs-cached flag;
+  - our own orders, acknowledgements and fills.
+- **Storage:** its own bronze tables with `data_source='ibkr'` or `'schwab'` (vocabulary PR at first ingest), and
+  append-only.
+- **What paper fills show:** paper-execution diagnostics only, not live slippage. Independent leg quotes do not
+  prove an executable complex-order price.
+
+**Reconciliation and join:**
+- **Overlap:** >= 20 completed sessions before the fixed cutoff (Step 0c) as a minimum, plus minimum matched-observation counts per product, expiry/DTE, moneyness
+  and liquidity bucket. Thresholds are set **before** the overlap is evaluated.
+  If the matched-count thresholds are not met, the join stays **unapproved**.
+- **Matching:**
+  - canonical OCC identifiers;
+  - exchange-event timestamps where available;
+  - quote ages and clock diagnostics;
+  - asynchronous-sampling analysis (a fixed 1-second match is not assumed);
+  - unmatched observations reported, never counted as agreement.
+- **Diagnostics:** stratified distributions of mid differences and spread widths in **product-specific ticks**,
+  and their **economic impact** on the selected spreads and on entry decisions.
+  - Comparisons of IV across sources use **our own** model on both feeds' quotes, never broker-model IV against
+    vendor data.
+  - A structural-break check at the join (CUSUM on the matched daily statistic) needs a baseline from the overlap.
+    It is reported, not trusted, while observations are few.
+- **Hard rule:** vendor (backtest) and broker (forward) series are **never silently mixed**. Every row carries
+  `data_source`. A joined series exists only as an explicit, **versioned join view** recording the join date,
+  diagnostics and thresholds.
+- Passing diagnostics does not make the sources interchangeable. Analyses state which source they use.
+
 
 ---
 
@@ -1642,11 +1801,12 @@ policy_version, reason_codes, data_source='derived'
 | 1-4 | WP1 contracts/registry; **WP2 metrics/tearsheet**; WP3 ledger + dividends/withholding/financing; WP4 costs v2 + $200k cost drag; WP5 daily engine + best-execution simulator (G/P1/P2) + legacy parity; WP6 statistics harness | CI green; mutation proofs; final gate |
 | 2-5 | **WP-AG1** spec contracts + protected fixtures; **WP-AG2** decision-path firewall design (no broker code) | Approved sleeve contracts |
 | 4-5 | WP7 residual falsification (4 runs) | Pass/park; not deployable |
-| 5-7 | Massive step 0-1; WP8 dividends; WP9 2003+ history + sealed holdout | Data QA; holdout manifest |
+| 1-3 | **WP-D0** entitlement + feasibility + **licensing gate**; **WP-D3** broker forward collection starts (>= 5 weeks before the purchase) | Written licensing answers; collector running |
+| 5-9 | **One purchase month:** WP-D1 bulk pull + manifest + completeness audit; WP-D2 contract reference; WP8 dividends; WP9 history + sealed holdout | Audit sign-off >= 5 business days before renewal; cancellation confirmed |
 | 7-11 | WP10 A6, WP11 A1 + TOM | Gate decisions, then shadow |
 | 9-13 | WP12 EDGAR timing audit -> WP13 A4 (concentrated) | Audit pass/fail |
 | 10-14 | WP14 execution study (minute bars/quotes) | Fill-scenario report |
-| 11-15 | Massive step 2-3 -> WP15 XSP/SPX quote trial + event engine + B1 | B1 gate decision at $200k |
+| 10-15 | WP-D4 reconciliation/join; WP15 event engine + B1 on the pulled quotes | B1 gate decision at $200k |
 | 13-17 | WP16 allocator + OMS + monitoring; WP17 evidence-backed reporting; WP18 red-team suite | Fault injection passes |
 | >= 17 | WP19 broker adapters (approval) -> paper | Section 10.5 |
 | 6-10 | **WP-RG1** regime telemetry + data-health service; **WP-RG3** policy-table engine (mechanical rows active, regime rows shadow) | Health rows active; telemetry published |
@@ -1662,7 +1822,9 @@ policy_version, reason_codes, data_source='derived'
   - If none of A6, A1 or TOM passes on long history, stop the equity sleeves.
   - If the XSP and SPX quote trials fail the friction/credit gate at 2x variable costs, **stop the options
     sleeves**.
-  - If subscriptions exceed the expected edge, keep only the steady-state tiers (Section 9.2).
+  - If the licensing gate fails, the one-month design stops. Any continuous tier needs a new approval.
+  - If the completeness audit fails a sleeve's acceptance criteria, that sleeve's data is declared incomplete.
+    It cannot be repaired after the lapse.
 
 ---
 
@@ -1674,6 +1836,12 @@ policy_version, reason_codes, data_source='derived'
   entry WCL and aggregate approved risk within caps.
 - **ETF gaps:** a 10% SPY gap must stay <= 1% NAV per sleeve.
 - **Perps:** `perpetual_future` if ever used.
+- **Data lapse risk:** after cancellation, nothing can be re-pulled.
+  - **Mitigations:** the pilot, priority order, incremental audits, sign-off >= 5 business days before renewal,
+    renewal switched off, an owner-visible daily progress and budget report, resumable checkpointed downloads with
+    retry limits, and disk-capacity alerts.
+  - **Residual risks:** credentials expiring mid-pull, partial or corrupt objects, rate limiting, vendor
+    corrections published after the pull, schema changes, and accidental renewal.
 
 ### 14.2 Delivery (per repo `AGENTS.md`)
 - **Chain:** coder (MiMo or DeepSeek by the peak rule) -> the other model validates -> **Codex Sol final gate**
@@ -1710,6 +1878,11 @@ Tests, oracles and the required mutants for each work package are specified in S
 | **WP-RG2** | Strategy decay monitors: per-trade lower CUSUM on `x_i`, execution-decay monitors | `strategies/mft/regime/decay.py` | Cohort contract (asynchronous closures, partial exits, marked open members); dependent-null calibration to the defined budget; pre-registered power targets | **Review-only** alarms; no order effect |
 | **WP-RG3** | Policy-table engine: rows, priorities, min-ceiling (not product), ACTIVE/SHADOW, recovery, counterfactual logging | `strategies/mft/regime/policy.py`, `config/regime_policy.yaml` | Ceilings <= 1.0; applied after caps and rounding; stale input -> immediate block + pending-entry cancel for that sleeve only; recovery only up to an approved ceiling | Cannot raise risk; shadow rows have no order effect |
 | **WP-RG4** | Stress-replay + synthetic regime generators | `tests/regime/`, `research/regime_replay.py` | Four replay types; options replays rejected before 2022-03-07; holdout-dated replays locked until the single opening; misspecified generators | Frozen assertions pass; overshoots reported |
+| **WP-D0** | Entitlement, feasibility pilot and **licensing gate** (maintainer action plus tooling) | `research/data_pilot.py`, `docs/data/LICENSING.md` | Pilot measurements; projection vs the month | Written licensing answers; pilot projection <= 60% of the month or re-scoped; all-in budget approved |
+| **WP-D1** | One-month bulk pull: resumable downloader, append-only manifest, causal contract filter, restricted holdout routing, incremental completeness audit | `etl/massive_bulk.py`, `etl/massive_manifest.py`, `etl/completeness_audit.py` | Calendar fixtures; resume after partial object; holdout routing; filter no-lookahead | Sign-off >= 5 business days before renewal; manifest complete |
+| **WP-D2** | Historical options contract reference (expired contracts, roots, settlement style, adjustments) | `etl/massive_contracts.py` | Reference-vs-quote coverage | Mandatory dependency of every retained quote pull |
+| **WP-D3** | Broker forward collection (one verified broker): chains, underlying, our orders and fills | `execution/collect_quotes.py` | Cadence, fresh-vs-cached flag, append-only, source flag | >= 20 completed sessions before the bulk cutoff |
+| **WP-D4** | Vendor-broker reconciliation and versioned join view | `research/overlay_reconcile.py`, `gold/overlay_join.sql` | Stratified diagnostics; pre-set thresholds | Join approved only if thresholds pass; no unflagged mixing |
 | WP-RG5 | (Optional) evaluate one pre-registered exposure gate per equity sleeve; HMM challenger research | `research/regime_gate_eval.py` | Paired block bootstrap vs ungated and matched-exposure | Promotion only via Section 12.3 + maintainer approval |
 
 ---
@@ -1965,6 +2138,31 @@ Green coverage alone is never acceptance evidence.
 - **Holdout lock:** any replay dated 2016-2021 fails before `open_holdout`.
 - **B1 entry features:** future realised returns cannot change entry-time features.
 
+### 15.8b Data acquisition and overlay tests
+- **Completeness audit known-answer fixtures:**
+  - a synthetic calendar with a holiday, an early close, a listing mid-period, a delisting, a halt and a
+    no-trade day must classify each exception correctly;
+  - a missing session must be flagged;
+  - an options fixture with a missing expiry, a crossed quote, a stale quote and a missing exit-window observation
+    must each be flagged.
+- **Integrity:**
+  - a truncated or corrupt object fails its SHA-256 check and is re-queued;
+  - resume after an interruption produces no duplicate manifest rows;
+  - manifest rows are append-only (an update or delete is rejected).
+- **Holdout routing:**
+  - any 2016-2021 object lands only in restricted storage;
+  - a research identity's read of it is **denied** (access test, not just a manifest check);
+  - development exports contain no 2016-2021 rows.
+- **Causal filter:**
+  - contract selection uses only the prior-session close;
+  - an intraday spike cannot change which contracts were kept that day;
+  - every contract needed for an exit is retained.
+- **Overlay:**
+  - every broker and vendor row carries `data_source`;
+  - an analysis reading a series without a declared source fails;
+  - a join view without an approved diagnostics record cannot be built;
+  - unmatched observations are counted, never treated as agreement.
+
 ### 15.9 Work package -> tests -> required mutants (minimum five per WP)
 | WP | Test classes | Curated mutants that must be killed |
 |---|---|---|
@@ -1994,6 +2192,9 @@ Green coverage alone is never acceptance evidence.
 | WP-RG2 decay monitors | CUSUM oracles, dependent-null calibration | Flip the CUSUM sign; drop the reset or refractory period; use in-sample backtest as baseline; omit the scale floor; per-trade instead of cohort observations; alarm changes orders |
 | WP-RG3 policy engine | Policy properties, fail-safe, recovery | Ceiling > 1 accepted; product instead of minimum; regime applied before caps/rounding; stale input treated as normal; dwell applied to a mechanical block; recovery above the approved ceiling; shadow row affects orders |
 | WP-RG4 replays/generators | Frozen behaviour assertions | Fabricate B1 fills from daily bars; accept a B1 replay before 2022-03-07; run a holdout-dated replay before opening; assert realised loss <= cap instead of recording overshoot; allow regime-driven risk increase |
+| WP-D1 bulk pull + audit | Calendar/exception fixtures, integrity, resume, holdout routing | Treat a missing session as OK; accept a truncated object (skip SHA-256); write a 2016-2021 object to research storage; allow a manifest update; use same-day close in the contract filter |
+| WP-D2 contract reference | Reference-vs-quote coverage | Pull quotes without reference; infer expiries from today's product list; drop expired contracts; ignore adjustments; skip P4/P5 underlyings |
+| WP-D3/D4 broker overlay + join | Source flags, fresh-vs-cached, join approval | Drop the `data_source` flag; mix broker rows into a vendor series silently; build the join without approved diagnostics; count unmatched as agreement; compare broker-model IV with vendor quotes |
 
 The test shape is specified in every BUILD request: literal oracles, named assertions and the mutant list.
 
@@ -2016,12 +2217,15 @@ too).
    exceedance is accepted and stress-tested.
 3. **Gap stress G for sizing:** keep the planning values (20% broad ETF, 15% pair bundle, 20% single name) or adopt
    the WP9 empirical worst x 1.25. This changes sizes about 1.3-1.7x (Section 10.1b).
-4. **Massive purchases** (Section 9.2):
-   - step 0: entitlement check;
-   - step 1: Stocks Advanced 1-month backfill ($199), pending written licensing confirmation (stocks and options: retention, storage, derived outputs, redistribution);
-   - step 2: Options Advanced quote trial plus a research window ($199/mo, 2-3 months);
-   - step 3: Indices Starter ($49/mo) if XSP/SPX proceed.
-   Data costs are reported against the account (2.68% of NAV at list for everything).
+4. **Data acquisition** (Section 9.2):
+   - **(a)** do the licensing check in writing **before** purchase (retention after cancellation, derived outputs,
+     redistribution, personal vs business use, S3 coverage, cloud storage). **Status: not verified.**
+   - **(b)** which month to buy: after the broker collector has >= 20 sessions, and with no conflicting travel or
+     other commitments.
+   - **(c)** tiers: Stocks Advanced + Options Advanced + Indices Starter, $447 list, one-time.
+   - **(d)** the all-in budget ceiling (subscriptions + storage/compute + broker data).
+   - **(e)** the retained options quote universe (P2-P5) and the broker route (IBKR or Schwab) with verified
+     entitlements.
 5. **Commission plan:** IBKR Pro tiered vs a $0-commission venue. This matters little at $200k sizes.
 6. **Paper venue:** IBKR paper (API-verified), or the internal simulator + paperMoney mirror if paperMoney has no
    API (*verify*). A margin account is needed for shorts and Reg-T spreads; options approval level for spreads.
@@ -2109,3 +2313,5 @@ re-keyed to this plan's work-package numbers.
 | 53 | Size-driven vs data-driven verdicts | -- | Size removes implementation barriers, never a failed edge, cost or data gate | **Agreed.** B1/B3/B4 become paper-eligible after gates; B5 moves to backlog; residual stays parked on cost; A2/A3/B2/A5b unchanged; TOM research-only |
 | 54 | Regime detection (R15) | Rule-based multi-dimension gates active; BOCPD alarm; HMM challenger; ARL0 >= 250; example multipliers per sleeve | Detector can be past-only yet the policy overfit; no evidence that gating helps; telemetry + mechanical safeguards first; gates shadow-only; system false-intervention budget; cohort CUSUM from causal OOS baseline; no automatic retirement | **Reviewer accepted.** Section 12 adopts the telemetry-first, shadow-gate design |
 | 55 | R16 review of Section 12 | -- | Holdout-dated replays, 2022-03-07 cutoff, advisory vs ceiling, cohort contract, mechanical blocks immediate, replay assertions vs realised losses, utility endpoint, budget definition, B1 variance causality | **All 9 fixed** |
+| 56 | One-month bulk acquisition (R17) | One-month Stocks Adv + Options Adv + Indices Starter; quotes "filtered at download"; 20-session overlap with 1-s matching and fixed tolerances | Filtering does not cut inbound bytes, so a feasibility pilot is needed; causal contract selection; restrict all holdout-bearing objects; product-calendar audits; licensing covers the actual use; verify the broker route; stratified, timestamp-aware reconciliation; resumability and renewal controls | **Agreed** (all nine amendments adopted). Sections 9.2-9.3 |
+| 57 | R18 agreement check | -- | Scope-reduction order; stop-trigger observation; calendar gate for >= 20 overlap sessions; contract reference for every retained underlying; economic audit checks only on development partitions | **Agreed with fixes; all 5 applied** |
