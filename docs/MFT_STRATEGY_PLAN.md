@@ -4,7 +4,7 @@
 |---|---|
 | **Date** | 2026-10-24 |
 | **Status** | Proposal. Nothing described here is built, scheduled, deployed or traded |
-| **Scope** | Retail mid-frequency research on the qp1 stack (Databricks, Unity Catalog, Lakebase, Polars) for a $10,000 paper account |
+| **Scope** | Retail mid-frequency research on the qp1 stack (Databricks, Unity Catalog, Lakebase, Polars) for a $200,000 paper account (raised from an initial $10,000 on 2026-10-24) |
 | **Verification** | Data counts for held data are taken from repository docs dated 2026-10-04 and are unverified against live tables. Vendor facts are marked **[verified]** (checked against vendor documentation on 2026-10-24) or **[unverified]**. Fees and prices are planning assumptions until entered in the effective-dated fee configuration |
 
 ## Contents
@@ -12,7 +12,7 @@
 - [0. Decisions of record and glossary](#0-decisions-of-record-2026-10-24-and-glossary)
 - [1. Goals and non-goals](#1-goals-and-non-goals)
 - [2. Data: what we hold and what Massive offers](#2-data-what-we-hold-and-what-massive-offers)
-- [3. Strategy assessment at $10k](#3-strategy-assessment-at-10k-with-massive-data)
+- [3. Strategy assessment at $200k](#3-strategy-assessment-at-200k-with-massive-data)
 - [4. ML and statistical methodology](#4-ml-and-statistical-methodology-shared-harness)
 - [5. Per-strategy specifications](#5-per-strategy-specs-shortlist-10k-sizing)
 - [6. Backtest architecture](#6-backtest-architecture)
@@ -33,11 +33,11 @@
 
 | Decision | Effect on the plan |
 |---|---|
-| **Paper account, $10,000** | Everything is sized for $10k, with integer shares and 100x option multipliers. Some sleeves die on lot size or fixed fees (Section 7.6) |
+| **Paper account, $200,000** (raised from $10,000) | Everything is sized for $200k, with integer shares and 100x option multipliers. Fixed fees become negligible; the per-trade and aggregate risk caps bind (Sections 7.6, 10.1a) |
 | **Data vendor: Massive** (S3 flat files at `files.massive.com`, bucket `flatfiles`, plus REST) | ORATS/ThetaData are dropped. First test whether Massive alone covers the options backtest (Section 9) |
 | **Options in scope, defined-risk only** | Allowed: verticals, iron condors, credit iron butterflies, long (debit) butterflies. **Not allowed:** naked legs, short straddles/strangles, delta-hedged short straddles, 1x2 ratios, risk reversals. Long straddles are replaced by defined-risk debit structures. **Calendars and diagonals are excluded for now** (Section 3.1) |
 | **Best-price execution** (replaces the earlier MOC decision) | Execution minimises implementation shortfall with limit, peg and midpoint-walking orders inside a window, falling back to a marketable limit at a deadline. Gates assume a conservative crossing policy (Section 6.3) |
-| **Per-trade risk cap: 0.5% of portfolio equity** | No single trade's worst-case loss (option max loss + fees, or the stressed gap for equity legs) may exceed 0.5% of current equity (**$50 at $10k**). At $10k **no planned options structure fits**, and equity positions shrink to about $140-330. Section 10.1a governs every sizing statement in this plan |
+| **Per-trade risk cap: 0.5% of portfolio equity** | No single trade's worst-case loss (option max loss + fees, or the stressed gap for equity legs) may exceed 0.5% of current equity (**$1,000 at $200k**). Defined-risk options spreads now fit (e.g. 11-12 XSP $1-wide or 2 XSP $5-wide). Options are **paper-eligible once their research gates pass**; they are no longer backtest-only. Section 10.1a governs every sizing statement in this plan |
 | **Mandatory stop-loss on every trade** | The 0.5% cap is built in through stops: no order without a pre-defined stop. Sizing = 0.5% equity / (stop distance + slippage + gap allowance). Section 10.1b |
 | **Paper host undecided (IBKR paper or Schwab paperMoney)** | Use a broker-adapter interface, and do not commit to either (Section 10.3) |
 | **Tax** | Capital gains are 0%. Dividend withholding is **30%** (maintainer figure), modelled in every backtest as a ledger cost; shorts pay 100% in lieu (Section 7.7). No other tax work |
@@ -91,12 +91,12 @@ binance_um, config, derived`.
 2. Build one shared harness: contracts, registry, **metrics/tearsheet**, ledger, costs, daily engine and a small
    options event engine.
 3. Statistics come first. ML is a challenger that must beat a frozen rule after costs.
-4. Promote at most 2-3 sleeves into the $10k paper account, only through frozen gates (Sections 8 and 11).
-5. Size for a real $10k account. Paper results must be achievable at that size: integer shares, contract
-   multipliers, fee minimums, margin.
+4. Promote at most 2-3 sleeves into the $200k paper account, only through frozen gates (Sections 8 and 11).
+5. Size for a real $200k account under the 0.5% per-trade cap. Paper results must be achievable at that size:
+   integer shares and contracts, margin, borrow, assignment funding.
 
 **Non-goals**
-- No latency games (L2/OFI, 0DTE, intraday stat-arb at $10k under PDT limits).
+- No latency games (L2/OFI, 0DTE, intraday stat-arb).
 - No undefined-risk options.
 - No Kelly sizing.
 - No broker connection, scheduling, live money, shared-signal writes or warehouse/app start without **separate
@@ -148,39 +148,43 @@ Measured hurdle: residual reversion gross Sharpe 0.68, **net 0.12**, -0.45 at 2x
   using them is a **retrospective options evaluation under a frozen protocol**. It is not a clean holdout, because
   the economic hypotheses were chosen after seeing 2022-26 equities. Forward paper observations supply the
   independent evidence.
-- **Cost:** everything at list price is $447/mo (Stocks Adv + Options Adv + Indices Starter), which is **53.6% of
-  a $10k NAV per year**. Section 9 gives a bounded purchase sequence.
+- **Cost:** everything at list price is $447/mo (Stocks Adv + Options Adv + Indices Starter), which is **$5,364/yr =
+  2.68% of a $200k NAV**. That is more than the whole expected edge of a cap-limited portfolio (Section 9.2).
+  Section 9 gives a bounded purchase sequence.
 
 ---
-## 3. Strategy assessment at $10k with Massive data
+## 3. Strategy assessment at $200k with Massive data
 
-Rank is for the $10k paper account.
+Rank is for the $200,000 paper account. The per-trade worst-case-loss cap is 0.5% ($1,000), and the proposed
+aggregate open-risk cap is 5% (Section 10.1a).
 - **G** = GO research.
 - **C** = conditional.
 - **B** = backlog.
 - **N** = NO-GO.
 
-| Rank | # | Strategy | Data (Massive) | $10k feasibility | Stats vs ML | Main risk | Verdict |
+| Rank | # | Strategy | Data (Massive) | $200k feasibility | Stats vs ML | Main risk | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1 | A6 | ETF relative strength, **at most 2 pairs live** from RSP/SPY-equivalent, IWM/SPY-eq, SPLV/SPHB, XLK/XLU, EFA/SPY-eq | Stocks Advanced (2003+) + dividends REST | **Feasible** if every leg's share price is <= leg notional / 20 (rounding <= 2.5%). Use a lower-priced S&P 500 share class instead of SPY (ticker, history and tracking to *verify*). About $1k per leg | Frozen rule; ridge challenger | A factor tilt; dividends omitted would cost ~0.2 Sharpe | **G** |
-| 2 | A5a | TOM overlay on an S&P 500 ETF | Same | **Feasible**: about 2 orders/month, fees negligible | Newey-West + block bootstrap; no ML | Weak, old effect | **C** |
-| 3 | A1 | ETF pairs (KRE/XLF, XHB/ITB, GDX/GLD, XLY/XRT, XLE vs XOP; GLD/IAU control), **1 live pair** ($1.5k legs) | Same | **Marginal**: integer-share hedge error, shorting on margin, minimum commissions (Section 7.6). Intraday variants are blocked by PDT (< $25k margin account; FINRA reform status *unverified*) | OLS z rule; Kalman challenger | Crowded; cointegration breaks | **C** |
-| 4 | B1 | Defined-risk VRP: **XSP first** (cash-settled European, PM-settled weeklies *unverified*); SPY blocked until the assignment controls pass (Section 5.5) | Options Advanced (quotes 2022-03+) + Indices Starter (SPX values for XSP) | **Blocked at $10k by the 0.5% per-trade cap** ($50 WCL): no planned spread fits. Backtest-only until equity is at least about $16-88k or a cap exception is explicitly approved (Section 10.1a) | HAR-RV + threshold rule | Tail-dominated; no 2018/2020 in the quotes | **C, backtest-only at $10k** |
-| 5 | A4 | EAR drift, **as a new concentrated policy** (10-20 names, about $500 each, SPY-hedged) | Stocks + EDGAR 8-K timestamps (SEC dependency) | **Marginal**: concentration; a broad-quintile result cannot transfer, so it is a new registration | Sorts / clustered regression; no ML | Timestamp audit | **C** |
-| 6 | B3 | Skew/term with **same-expiry defined-risk structures only** (call vertical vs put vertical, broken-wing 1:2:1 butterflies with explicit unequal-wing max loss) | Options Advanced quotes 2022-03+; IV computed from quotes | Blocked at $10k like B1 (0.5% cap) | Linear signal + one structure | Surfaces need synchronised quotes, rates and dividends | **B**, after B1 |
-| 7 | B4 | Earnings crush with an iron condor or **credit iron butterfly** | Options Advanced (all names, 2022-03+) + EDGAR timing | Blocked at $10k like B1 (0.5% cap). Single-name American legs bring assignment risk | Hierarchical shrinkage | Event timing; tails | **B**, after A4 audit and B1 |
-| 8 | A2 | Option-flow imbalance (quote-rule-signed trades 2022+) | Options Advanced | -- | Feature research only | Noisy signing | **Research feature only** |
-| 9 | -- | Residual-reversion rescue | Held | **Not deployable** at $10k (300 names, shorts, minimums) | Rule | Costs | Bounded falsification only, then park |
-| 10 | B5 | Dispersion (defined-risk version) | Data-feasible from 2022 | **Infeasible**: 10-20 option packages, fees, margin | -- | -- | **N** (size) |
-| 11 | B2 | GEX | No OI history; dealer sign unobservable | -- | -- | -- | **N** |
-| 12 | A3 | OFI / volume profile | Stock quotes need Advanced | -- | -- | Decays below retail latency | **N** |
-| 13 | A5b | Index reconstitution | No announcement data | -- | -- | -- | **N** |
+| 1 | A6 | ETF relative strength, up to **6 pairs** from RSP/SPY-equivalent, IWM/SPY-eq, SPLV/SPHB, XLK/XLU, EFA/SPY-eq | Stocks Advanced (2003+) + dividends REST | **Feasible.** Each pair is one trade unit at WCL about $500 (legs about $3.3k at planning G = 15%). Fees are negligible. ETF ADV floor $20m | Frozen rule; ridge challenger | A factor tilt; pair stress definition | **G** |
+| 2 | B1 | Defined-risk VRP on **XSP and SPX** (cash-settled European); SPY limited to 1 contract by the assignment rule | Options Advanced (quotes 2022-03+) + Indices Starter (SPX values) | **Contracts now fit**: XSP $1-wide 11-12, $3-wide 3-4, $5-wide 2; SPX $5-wide about 2, $10-wide 1. Executable economics remain unproven (friction gate at 2x costs, quote trial) | HAR-RV + threshold rule | Tail-dominated; no 2018/2020 in the quotes | **C**, paper-eligible once gates pass |
+| 3 | A1 | ETF pairs (KRE/XLF, XHB/ITB, GDX/GLD, XLY/XRT, XLE vs XOP; GLD/IAU control), **up to 2 pairs** at WCL about $1,000 | Same as A6 | **Feasible**: legs about $6.6k; borrow availability is checked daily | OLS z rule; Kalman challenger | Crowded; cointegration breaks; stop whipsaw | **C** |
+| 4 | A4 | EAR drift, concentrated: **about 5 names at WCL about $400** (about $2k each, beta-hedged) | Stocks + EDGAR 8-K timestamps (SEC dependency) | **Feasible small book** (about $2k sleeve WCL). A new registration | Sorts / clustered regression; no ML | Timestamp audit; event/hedge clustering | **C** |
+| 5 | B3 | Skew/term with **same-expiry defined-risk structures only** | Options Advanced quotes 2022-03+; IV computed from quotes | Contracts fit as for B1 | Linear signal + one structure | Synchronised surfaces; Reg-T structure recognition | **C**, after B1 |
+| 6 | B4 | Earnings crush (iron condor / credit iron butterfly), **single names, 1 contract** | Options Advanced + EDGAR timing | **Limited pilot**: 1 contract per name under the assignment-notional rule, after broker assignment drills | Hierarchical shrinkage | Event timing; tails; assignment funding | **C, limited**, after A4 audit and B1 |
+| 7 | A5a | TOM overlay | Stocks Advanced | **Trivial under the cap**: one long broad-ETF trade of about $5k (G = 20%) earns about $25-75/yr incrementally | Newey-West + block bootstrap | Weak, old effect | **Research only** |
+| 8 | A2 | Option-flow imbalance | Options Advanced | -- | Feature research only | Noisy signing | **Research feature only** |
+| 9 | -- | Residual-reversion rescue | Held | No longer size-blocked; its failure was **cost-driven** | Rule | Costs | Bounded falsification, then park |
+| 10 | B5 | Dispersion (defined-risk version) | Data-feasible from 2022 | Basket granularity and stress capacity are still insufficient | -- | Many legs | **B, feasibility backlog** (was NO-GO for size) |
+| 11 | B2 | GEX | No OI history; dealer sign unobservable | -- | -- | -- | **N** (data-driven, unchanged) |
+| 12 | A3 | OFI / volume profile | Stock quotes need Advanced | -- | -- | Decays below retail latency | **N** (unchanged) |
+| 13 | A5b | Index reconstitution | No announcement data | -- | -- | -- | **N** (unchanged) |
 
-**Effect of the 0.5% per-trade cap (Section 10.1a):**
-- At $10k, every options sleeve is backtest-only.
-- Equity positions are limited to about $140-330 per trade, where IBKR Pro minimum fees consume most of any
-  plausible edge.
-- The ranks above are **research priorities**, not deployable sizes.
+**What changed with size, and what did not:**
+- **Size removes implementation barriers, never a failed edge, cost or data gate.**
+- **Re-verdicted because they were size-driven:** B1/B3/B4 move from backtest-only to **paper-eligible after
+  their gates**. B5 moves from NO-GO to feasibility backlog. Residual is no longer size-blocked but stays parked
+  on cost.
+- **Unchanged because they were data- or edge-driven:** A2 stays a research feature; A3, B2 and A5b stay NO-GO.
+- **TOM** becomes research-only because the per-trade cap makes it economically trivial.
 
 ### 3.1 Defined-risk compliance check of the B-list (maintainer rule)
 - **B1:** put credit spreads and iron condors are fine. **Delta-hedged short straddles/strangles are removed.**
@@ -204,7 +208,7 @@ Rank is for the $10k paper account.
   - Assignment creates stock exposure, and the long leg does **not** auto-exercise to cover it.
   - Requirements:
     - assignment detection;
-    - capital or margin to carry 100 shares overnight (about $65k for SPY: impossible at $10k, so the broker
+    - capital or margin to carry 100 shares overnight (about $65k per SPY contract). At $200k, the assignment-notional rule (Section 10.1a) limits SPY to 1 contract, and the broker
       may force-liquidate);
     - a deterministic liquidation policy;
     - **close any short leg whose extrinsic value is below its next dividend before the ex-date**;
@@ -291,30 +295,38 @@ the implementation, not the alpha.
 ### 4.7 Sizing
 - **Vol targeting** with sigma = max(EWMA lambda=0.94, EWMA lambda=0.985, 1y 90th-percentile floor), reusing
   the `risk/` estimators.
-- **Initial budgets are standalone per sleeve**, as set in Section 5 for the $10k account.
+- **Initial budgets are standalone per sleeve**, as set in Section 5 for the $200k account.
 - **Portfolio check:** a Ledoit-Wolf constant-correlation covariance, with stress replays.
 - **No Kelly.**
 
 ---
 
-## 5. Per-strategy specs (shortlist, $10k sizing)
+## 5. Per-strategy specs (shortlist, $200k sizing)
 
 **Common to all sleeves:**
 - The decision is made at bar close t; daily data is available at 16:30 NY. **Execution is best-price on
   t+1** (Section 6.3): registered schedules S-open / S-close / S-part, gated on the conservative crossing scenario.
   A signal that uses day t's close can never fill at day t's close.
-- **Paper sizing = the intended live sizing for a $10k account:**
-  - portfolio vol ceiling 5% (= $500/yr);
-  - a standalone vol budget per sleeve: A6 1.5%, A1 1.5%, TOM 1%, A4 1% of NAV.
+- **Sizing at E = $200,000 (paper):** the binding limits are the **0.5% per-trade WCL cap ($1,000)**, enforced by
+  mandatory stops, and the **5% aggregate open-WCL cap ($10k, proposal)**. Both are in Section 10.1a.
+  - **Aggregate WCL budget by sleeve (proposal):**
+
+| Sleeve | Share of NAV | Dollars | Allocation |
+|---|---|---|---|
+| A6 | 1.5% | $3k | 6 pairs x $500 |
+| A1 | 1.0% | $2k | 2 pairs x $1,000 |
+| A4 | 1.0% | $2k | 5 names x $400 |
+| Options (B1/B3/B4) | 1.5% | $3k | 3 trades x <= $1,000 |
+| TOM | 0 | $0 | Research only |
+
+  - A **joint stress-scenario loss limit** also applies (Section 10.1a). The portfolio vol ceiling stays 5%
+    ($10k/yr). The caps bind well before it: expected portfolio vol is about 1-2% of NAV.
   - **Joint sizing, deterministic:**
-    1. Options risk is a **cash reserve equal to open max loss** (<= the aggregate cap). It is deducted first:
-       equity gross cap = NAV - options reserve (no leverage).
-    2. Each sleeve has a hard gross cap: **A6 $4k** (2 pairs x $1k legs), **TOM about $2.5k peak** ($1.25k base; superseded: the 0.5% per-trade cap limits TOM to about $248 at $10k, see Section 10.1a),
-       **A1 $3k** (1 pair x $1.5k legs, or 2 x $750), **A4 $2.5k** (only if registered; it displaces A1).
-    3. If the sum of targets exceeds the equity cap, scale sleeves in reverse priority (A4, then A1, then TOM,
-       then A6).
-    4. Then re-apply the lot rule (drop any pair failing `price <= leg/20`), hedge ratios, margin and stress
-       checks after scaling.
+    1. Options max loss is reserved first (Reg-T margin, Section 10.1a).
+    2. Each trade is sized by `q = floor(min(budgeted WCL, 0.005 x E) / WCL_unit, ...)`.
+    3. If targets exceed a sleeve's WCL budget, scale in reverse priority (A4, then A1, then A6).
+    4. Re-apply the lot preference (`price <= leg/20`, a granularity preference, not a risk rule), hedge ratios,
+       margin, borrow and stress checks after scaling.
   - Short legs are held in a margin account.
 - Costs per Section 7; metrics per Section 8; results go to `strategies/results/<sleeve>_rN.md` plus registry
   rows.
@@ -322,14 +334,19 @@ the implementation, not the alpha.
 **5.0 Residual rescue (bounded falsification)**
 - 4 runs: baseline, hysteresis 2.5/1.0, 2-day rebalance, combined.
 - The pass is turnover <= 14%/day with >= 75% of gross retained and net > 0 at 2x variable costs.
-- **Not deployable at $10k whatever the result.** A pass only informs the cost model and A1.
+- No longer size-blocked at $200k, but its failure was cost-driven: it stays parked unless the 4-run rescue passes.
 
 **5.1 A6 relative strength**
-- **Universe:** at most 2 pairs live (6 researched), chosen by a frozen priority order among the pairs that pass.
-  - Lot rule: every leg must satisfy `price <= leg_notional / 20`.
-  - At $1k legs that means ETFs at <= $50. Higher-priced ETFs are replaced by lower-priced equivalents with the
-    same index (each substitution gets a *verify* entry for ticker, inception and tracking), or the pair is
-    dropped.
+- **Universe:** up to 6 pairs live, each one trade unit with WCL <= $500 (its share of the sleeve budget).
+  - **Pair unit and stress:** the unit is the complete hedge bundle. G_rel is the **adverse relative return of the
+    bundle** (long-leg return minus beta x short-leg return) over the stress window. Planning G_rel = 15% of
+    long-leg notional gives about $3.3k legs. An empirical worst observed x 1.25 (e.g. 7% x 1.25 = 8.75%) gives
+    about $5.7k legs, to calibrate in WP9.
+  - A stress is never changed to accommodate a lot size.
+  - Lot preference `price <= leg/20` is a granularity preference. SPY at about $650 needs a lower-priced
+    equivalent or a fractional/smaller share count where permitted. Any substitute ETF needs its own liquidity,
+    tracking, borrow and history checks.
+  - ETF ADV floor: $20m.
   - SMH/SOXX is a diagnostic.
 - **Signal:** 60d/120d log-ratio TSMOM or the 100d MA on the ratio, rebalanced weekly at Friday 16:30 and
   executed on Monday (Section 6.3).
@@ -353,15 +370,21 @@ the implementation, not the alpha.
 - **Time stop:** 2x the training-fold median convergence time, capped at 10 sessions.
 - **CUSUM guard:** a 5% boundary closes the trade and suspends the pair; re-entry needs a passing 63-session
   refit.
-- **Family:** 6 pairs x {OLS-120, Kalman} = 12, with the schedule frozen as in A6. Live: 1 pair at $1.5k legs
-  (or 2 at $750 if ETF prices are <= $37.5), chosen by a frozen priority order.
+- **Family:** 6 pairs x {OLS-120, Kalman} = 12, with the schedule frozen as in A6. Live: up to 2 pairs at WCL about
+  $1,000 (legs about $6.6k at planning G_rel), chosen by a frozen priority order.
+- **Stops:** whichever triggers first of the z-stop (abs(z) >= 3.5), the $700 pair dollar stop and the 10-session
+  time stop. The remaining $300 covers gap overshoot and costs; stress sizing still governs.
 - **Execution:** synchronised two-leg best-price working with the imbalance bound B and the cancel-both rule
   (Section 6.3).
-- **Intraday or hourly variants are out of scope at $10k** because of PDT.
+- **PDT:** at $200k equity the PDT limit no longer binds (*verify* the broker rule). Hourly variants remain
+  registered research options only.
 
 **5.3 TOM overlay**
-- **Rule:** base holding $1.25k in the S&P 500 ETF, raised to $2.5k so that the position is held through the
-  closes of sessions **D-1, D+1, D+2 and D+3**, where D+1 is the first trading day of the month.
+- **Research only at $200k:** the per-trade cap limits a single long broad-ETF trade to about $5k (G = 20%), or
+  about $7.7k at an empirical 13%. The incremental edge is about $25-75/yr, so TOM is kept as a research
+  hypothesis, not a paper sleeve.
+- **Rule (research):** a base holding, raised so that the position is held through the closes of sessions **D-1,
+  D+1, D+2 and D+3**, where D+1 is the first trading day of the month.
 - **Timing:**
   - The add decision is at 16:30 on D-3, and the order fills in the **S-close window of D-2**, so the position is
     held from roughly the D-2 close.
@@ -375,7 +398,8 @@ the implementation, not the alpha.
   EAR = the [0, +1] abnormal return. **Entry is in the session +2 execution window.**
 - **Admission:** an event is admitted at its session +2 decision if
   |EAR| >= a **frozen threshold**. The threshold is the trailing-252-session 90th percentile of |EAR| over events
-  whose EAR completed before the decision. Capacity is at most 5 open positions of about $500 each, first come
+  whose EAR completed before the decision. Capacity is at most 5 open positions at WCL about $400 each (about $2k notional at G = 20%; sleeve WCL budget
+  $2k), first come
   first served; events arriving while capacity is full are skipped and logged. Positions are held 20 sessions in
   the PIT top-1,000 liquid names. Longs and shorts each have their own registered variant; short availability and borrow are modelled.
   A beta hedge uses the S&P 500 ETF.
@@ -386,13 +410,14 @@ the implementation, not the alpha.
 **5.5 B1 defined-risk VRP**
 - **Instrument order:**
   1. **XSP** quote trial first (European, cash-settled; liquidity and spreads *verify*).
-  2. **SPY: blocked** until broker-confirmed assignment, capital and forced-liquidation scenario tests
-     pass. A nominal spread max loss is not enough when assigned stock (about $65k) cannot be carried. Single-name
-     B4 packages (American) are blocked on the same condition.
-  3. SPX $5-wide (WCL about $300-400) needs about $60-80k equity under the 0.5% cap.
-- **Under the 0.5% per-trade cap ($50 at $10k), none of the planned structures fit.** B1 is **backtest-only at
-  $10k** until equity reaches about $16k (minimal $1-wide design) or about $45-88k ($3-5 widths), or the
-  maintainer explicitly approves a cap exception (Section 10.1a). The research below proceeds as a backtest.
+  2. **SPX** (same $100 multiplier; wider strikes): $5-wide about 2 contracts, $10-wide 1 contract under the
+     $1,000 cap. XSP and SPX are compared on **matched exposure under the 2x variable-cost crossing scenario**,
+     not on width.
+  3. **SPY: limited to 1 contract** by the assignment-notional rule (aggregate assignable notional <= 50% of
+     equity = $100k; one SPY contract is about $65k). The ex-dividend and T-1 controls also apply.
+- **Contract counts under the $1,000 cap:** XSP $1-wide 11-12, $3-wide 3-4, $5-wide 2; SPX $5-wide about 2,
+  $10-wide 1 (Section 10.1a).
+- **Status:** paper-eligible once the research gates, the friction gate and the quote trial pass.
 - **Cohorts:** enter in the **Monday 15:00-15:40 ET** window into **that week's
   Friday** expiry (4 DTE). Exit at XSP Friday cash settlement or the SPY Thursday 15:30 close. The next entry is
   the following Monday.
@@ -403,7 +428,8 @@ the implementation, not the alpha.
 - The cohort count is a **disclosure** (Section 8.5) and drives the power statement. It is not an eligibility
   gate.
 - **Exit variants:**
-  - **(a) Hold to cash settlement (XSP only):** saves the closing fees, which is decisive at $10k.
+  - **(a) Hold to cash settlement (XSP/SPX):** saves the closing fees and crossing; it does not remove the entry
+    costs or contingent liquidation costs.
   - **(b) T-1 15:30 close:** mandatory for SPY.
   - **(c) Close at 50% of max profit.**
 - **Signal:** IV^2 (computed from quotes) minus the HAR forecast of matched-horizon variance including overnight,
@@ -709,46 +735,60 @@ When actual fills are replayed, modelled impact is **not** charged again.
   - **Hard pause** only when cumulative excess IS exceeds the sleeve's registered dollar slippage budget (default
     25% of the backtest's expected monthly net P&L for that allocation).
 
-### 7.6 Cost drag at $10k
+### 7.6 Cost drag at $200k
 
 These are planning numbers. Every fee is *unverified* until it is in `fee_schedules.yaml`.
 
-**Commission scenarios:**
-- **IBKR Pro tiered** ($0.0035/sh, **$0.35 minimum per order**).
-- **$0-commission** (Schwab online, or IBKR Lite where offered to Singapore residents, *verify*).
-- At $10k the **per-order minimum dominates**: $0.35 on a $300 order is 11.7 bps.
+**Equities.** Fixed fees are now negligible; spread, impact and borrow dominate.
 
-**Equities:**
-
-| Sleeve (sizing) | Orders/yr | Fixed fees/yr, IBKR Pro | % NAV | Variable (spread+impact) | vs plausible gross edge (Sharpe 0.5 at the sleeve vol budget) | Verdict at $10k |
-|---|---|---|---|---|---|---|
-| A6: 2 pairs, $1k legs, weekly decisions, 10% band | ~60 | ~$21 | 0.21% | ~$2-4 (1-2 bps x ~$20k traded) | Budget 1.5% vol -> edge ~$75/yr; fees ~28% of it | **Feasible; cost-sensitive under IBKR Pro, fine at $0 commission** |
-| TOM: $1.25k incremental | 24 | ~$8 | 0.08% | ~$3-6 (24 x $1.25k = $30k traded at 1-2 bps; earlier "$1" was wrong) | Edge ~$25-75/yr | **Feasible**, but fees + variable costs are ~15-50% of edge |
-| A1: 1 pair, $1.5k legs, ~10 round trips | ~40 + legging hedges | ~$14-20 | 0.14-0.2% | ~$3-6 | Budget 1.5% -> edge ~$75/yr; fees ~20-27% of it | **Marginal under IBKR Pro**; acceptable at $0 commission |
-| A4: 10 events/month, $500 names + hedge | ~260 | ~$90 | 0.9% | ~$50-120 (4-10 bps single names) | Unknown, concentrated | **Marginal**; needs $0 commission |
-| Residual (300 names) | thousands | > $1,000 | > 10% | -- | -- | **Infeasible** |
-
-**Options (B1). Friction = round-trip fees + c=1 crossing, against credit.** Fees use a base all-in of $0.70/contract
-(SPY) or $0.85 (XSP, *verify*), stressed at $1.50/contract/side.
-
-| Structure | Credit (illustrative, *verify with quotes*) | Max loss | Base friction | Friction/credit | Verdict |
+| Sleeve (sizing) | Orders/yr | Commission/yr (IBKR tiered, $0.35 min) | % NAV | Variable costs | Notes |
 |---|---|---|---|---|---|
-| SPY $1-wide put spread, T-1 close | $15-20 | $80-85 | 4 x $0.70 + ~$2-4 crossing = $4.8-6.8 | **24-45%** | **Fails the 20% gate** |
-| XSP $1-wide put spread, **held to cash settlement** | $15-25 | $75-85 | 2 x $0.85 + crossing (2 legs x h x 100) | depends on h | **Arithmetic:** a 20% budget on a $15 credit leaves $3.00 - $1.70 fees = $1.30 for crossing, so **h <= $0.0065 per leg**; at a $25 credit, h <= $0.0165. Conditional on the quote trial |
-| XSP/SPY $1-wide iron condor | $30-40 | $60-70 | about 2x the above | similar ratios | Same as above |
-| XSP $3-wide put spread (needs about $45-51k equity under the 0.5% cap) | $45-75 | $225-255 | same fees per contract | ~7-15% if h <= $0.01 | **Conditional** on measured crossing costs |
-| XSP $5-wide put spread (needs about $80-88k equity) | $60-100 | $400-440 | same fees per contract | ~5-12% if h <= $0.01 | **Conditional** on measured crossing costs |
+| A6: 6 pairs, legs about $3.3k | about 180 | about $63 | 0.03% | Spread 1-2 bps; impact per Section 7.2 | A $3.3k order of a $60 ETF is about 55 shares, so the $0.35 minimum (about 1 bp) applies |
+| A1: 2 pairs, legs about $6.6k | about 80 | about $32 | 0.02% | As above | -- |
+| A4: 5 names about $2k + hedge | about 150 | about $55 | 0.03% | Single-name spreads 4-10 bps | -- |
 
-At the stressed $1.50/side, a $1-wide 2-leg round trip costs $6 in fees alone, which is **30-40% of the credit**.
+**Impact convention** (corrected): `I = 1e4 * Y * sigma_d * sqrt(Q / V_window)`, with V_window = the trailing
+median volume of the execution window. Where minute data is missing, the registered proxy is 15% of 20-day
+median ADV for a 50-minute window.
 
-**Conclusion:** friction/credit is plausible only for $3-5-wide XSP spreads with leg half-spreads about <= $0.01.
-Those need about $45-88k of equity under the 0.5% per-trade cap. **At $10k, options are backtest-only**
-(Section 10.1a).
+| Order | ETF ADV | Impact (Y = 0.5, sigma_d = 1.5%) |
+|---|---|---|
+| $6.6k | $5m (window about $1m) | **6.1 bps** |
+| $3.3k | $20m (window about $3m) | **about 2.5 bps** |
+| $3.3k | SPY-class | < 0.1 bps |
 
-**Data subscriptions** ($447/mo at list for everything) are tracked as **research overhead**, separate from
-trading P&L, but reported in the project economics. At $10k, a full-year subscription exceeds any plausible trading
-edge, so purchases are bounded in time (Section 9.2).
+**Rules:**
+- ADV floor $20m.
+- Participation <= 1% of window volume.
+- Impact is **charged**, never assumed negligible.
 
+**Borrow on the short leg:**
+- A daily broker snapshot of shortable shares and borrow fee.
+- Skip the pair if the name is hard to borrow (fee > 1%/yr) or unavailable.
+- Borrow accrues per calendar day (Section 7.2).
+
+**Options (B1). Friction = round-trip fees + c=1 crossing, against credit.**
+- Fees use a base all-in of $0.70/contract (SPY) or $0.85 (XSP), with SPX product fees *verify*.
+- The stress is $1.50/contract/side: **$3 to enter a 2-leg spread, $6 for a round trip** per spread.
+- Friction/credit does **not** depend on the contract count. The count only scales dollars.
+
+| Structure | Credit (illustrative, *verify*) | WCL/contract | Contracts at $1,000 | Friction/credit | Verdict |
+|---|---|---|---|---|---|
+| SPY $1-wide put spread, T-1 close | $15-20 | $80-85 + costs | **1** (assignment rule) | **24-45%** | Fails the 20% gate |
+| XSP $1-wide put spread, held to settlement | $15-25 | $77-87 | **11-12** | Needs h <= $0.0065 (on a $15 credit) to $0.0165 (on $25) | Conditional on the quote trial |
+| XSP $1-wide iron condor | $30-40 | $63-73 | 13-15 | Similar ratios | Conditional |
+| XSP $3-wide put spread | $45-75 | $227-257 | **3-4** | About 7-15% if h <= $0.01 | Conditional |
+| XSP $5-wide put spread | $60-100 | $402-442 | **2** | About 5-12% if h <= $0.01 | Conditional |
+| SPX $5-wide put spread | $60-100 | $400-440 + SPX fees | **about 2** | Depends on SPX fees and dollar spreads | Conditional, compared at matched exposure |
+| SPX $10-wide put spread | $150-200 | about $800-850 | **1** | As above | Conditional |
+
+**Conclusion:**
+- At $200k the **contract counts fit**.
+- Whether options pass depends on measured leg spreads and product fees in the quote trial, under the 2x
+  variable-cost gate.
+- The friction gate (<= 20%) is necessary, not sufficient.
+
+**Data subscriptions** are research overhead, reported separately from trading P&L (Section 9.2).
 
 ### 7.7 Dividend withholding (30%, maintainer figure; capital gains 0%)
 - **Ledger lines:** `dividend_gross`, `withholding_tax` (30%, effective-dated config), `dividend_net`,
@@ -779,6 +819,12 @@ edge, so purchases are bounded in time (Section 9.2).
 | GDX/GLD | GDX distributes cash, GLD does not, so the effect is asymmetric | Miners carry equity and operating risk | Research |
 | GLD/IAU | About zero dividend effect | Tiny spread; borrow and fees likely dominate | Control/diagnostic only |
 
+- **Dollar terms at $200k (planning; the ledger computes actual holding-period exposure):**
+  - A6 longs of about $20k at about 2% yield give about $400 in dividends, so about $120/yr is withheld.
+  - A1 longs of about $13k give about $24/yr withheld.
+  - A4 longs of about $10k give about $9/yr withheld.
+  - Total: about **$150/yr (about 0.08% NAV)**.
+  - Short-leg payments-in-lieu and financing are booked separately in pair economics.
 - **TOM:** the effect is computed from **actual holdings across ex-dates** (S&P 500 ETFs go ex quarterly). It is
   reported, not assumed negligible.
 - **Distribution classes:** ordinary dividends, capital-gain distributions, return of capital and later
@@ -798,7 +844,7 @@ edge, so purchases are bounded in time (Section 9.2).
 - **Continuous sleeves** (A6, A1, TOM, portfolio): **trading-session NAV returns**.
   - Zero-position sessions are included. Weekends are not inserted.
   - Returns include cash interest, dividends and payments-in-lieu, financing, fees, and marked open positions.
-  - All sleeves use one account-capital convention ($10k NAV, with the sleeve's allocated capital stated).
+  - All sleeves use one account-capital convention ($200k NAV, with the sleeve's allocated capital stated).
 - **Event and options sleeves** (B1, A4, later B3/B4): **per-trade/package metrics** *plus* the same daily
   marked-to-market NAV series, so drawdown and Sharpe compare across sleeves.
 
@@ -865,12 +911,14 @@ pass.
    documented.
 2. **Primary inference:** the family-simultaneous block-bootstrap **lower bound on net Sharpe > 0** at 1x costs
    (one-sided 95%). Cross-sleeve dependence is preserved by bootstrapping joint daily sleeve vectors.
-3. **Cost robustness:** point net Sharpe > 0 at **2x variable costs**, with fixed fees at their actual $10k values.
+3. **Cost robustness:** point net Sharpe > 0 at **2x variable costs**, with fixed fees at their actual $200k values. (Economic gates are not fully size-invariant: minimum
+   commissions, integer contracts and fixed data costs change realised returns.)
 4. **Challenger control:** a pre-specified SPA requirement before any challenger replaces the rule.
 5. **Approved risk limits:**
    - Every trade's worst-case loss (stressed gap for equities, contractual max loss + fees for options) is <= 0.5%
      of E_t (Section 10.1a).
-   - Aggregate open WCL <= 3% and a correlated cluster <= 1.5% (proposal).
+   - Aggregate open WCL <= 5%, a crash cluster <= 3%, a joint stress-scenario loss <= 5%, and assignable
+     notional <= 50% (proposals).
    - A trade that would exceed a cap is **skipped**, never resized upward.
 6. **Options economics:** base friction / credit <= 20% for credit structures.
 7. **Operational readiness (paper):**
@@ -942,11 +990,19 @@ trades:           run_id, sleeve, trade_id, entry_ts, exit_ts, legs (struct list
 |---|---|---|---|
 | 0 | Check the current entitlement: list the S3 prefixes for 2016 stocks and for options quotes (maintainer action) | $0 | What is already paid for |
 | 1 | **Stocks Advanced** for the 2003+ backfill. If written licensing confirms that retention after downgrade is permitted, run it for **1 month**, then downgrade to Starter ($29) for dividends and maintenance | $199 (+$29/mo) | A6, A1, TOM on long history; sealed holdout |
-| 2 | **Options Advanced**: first a bounded **XSP/SPY quote trial** (1 month), then bulk only if the trial passes | $199/mo while active | B1 feasibility at $10k |
+| 2 | **Options Advanced**: first a bounded **XSP/SPX quote trial** (1 month), then bulk download for the B1/B3/B4 research window (2-3 months), then drop. Live quotes come from the broker | $199/mo while active | B1/B3/B4 economics at $200k |
 | 3 | **Indices Starter**, only if XSP proceeds and SPX history/timestamps are confirmed | $49/mo | XSP settlement and IV underlying |
 
 - **First-quarter outlay:** about $430-700 if steps 1-3 run once.
-- A full-year subscription to everything is $5,364/yr list (**53.6% of NAV**).
+- **Data cost vs the account:**
+  - Everything at list is $5,364/yr = **2.68% of NAV** ($4,291 = 2.15% with annual billing).
+  - The steady state (Stocks Starter $29 + Indices Starter $49) is $936/yr = **0.47% of NAV**.
+  - **Break-even:** with the caps above, expected portfolio vol is about 1-2% of NAV. At Sharpe 0.5 that is an
+    expected edge of about 0.5-1% of NAV ($1-2k/yr).
+  - Continuous Advanced subscriptions would therefore exceed the expected edge, and even the steady state uses
+    roughly a quarter to a half of it.
+  - Advanced tiers are bought only for bounded backfill and research windows.
+  - Owning Developer/Advanced continuously would need an expected net edge of at least 2.7% of NAV/yr.
 - Subscriptions are research overhead and are reported separately.
 
 ---
@@ -960,8 +1016,8 @@ trades:           run_id, sleeve, trade_id, entry_ts, exit_ts, legs (struct list
   - Nets positions per instrument while keeping sleeve allocations.
   - Applies standalone sleeve vol budgets (Section 5), a 5% portfolio-vol ceiling and aggregate gross <= 100% NAV.
   - Enforces the lot rule (`price <= leg/20`) and per-sleeve no-trade bands in exposure units.
-- **Per-trade cap:** every trade's worst-case loss <= 0.5% of E_t (Section 10.1a). The aggregate open risk is <= 3%
-  and a correlated cluster <= 1.5% (proposal).
+- **Per-trade cap:** every trade's worst-case loss <= 0.5% of E_t (Section 10.1a). The aggregate open risk is <= 5%,
+  a crash cluster <= 3%, and assignable notional <= 50% of equity (proposals).
 - **Options limits:**
   - |net delta| <= 10% NAV equivalent. The sum of absolute package vegas <= 0.1% NAV per vol point.
   - Stress loss (spot +/-10%, vol +/-10pt) <= 3% NAV.
@@ -971,98 +1027,77 @@ trades:           run_id, sleeve, trade_id, entry_ts, exit_ts, legs (struct list
 ### 10.1a Per-trade risk cap: 0.5% of equity (decision of record, 2026-10-24)
 
 **Rule.** The **worst-case loss (WCL) of any single trade must not exceed 0.5% of current portfolio equity**
-E_t, which is **$50 at $10k**.
+E_t, which is **$1,000 at $200,000**.
 - E_t is the marked NAV at the decision time, recomputed every decision. After losses the cap shrinks; it is never
   measured from the high-water mark.
-- The order-generation path enforces the cap deterministically. Agents cannot override it.
-- **This cap binds before every other limit in this plan.** Where Sections 3, 5, 7.6 or 10.1 quote larger
-  sizes, this section governs.
+- The cap is enforced deterministically in order generation and through **mandatory stops** (Section 10.1b).
+  Agents cannot override it.
+- **It is a modelled loss budget, not a guaranteed realised-loss ceiling.** Gaps, halts and liquidity failures can
+  exceed it. Any exceedance is a registered event (Section 10.1b, item 4).
 
 **Worst-case loss per unit:**
 
 | Position type | WCL per unit |
 |---|---|
-| Defined-risk credit spread | `(width x 100 - net credit) + entry and exit fees`. For an iron condor, the larger wing loss + all fees |
-| Debit spread or butterfly | Net debit + fees |
-| Equity/ETF position | `notional_unit x max(stop distance + modelled slippage, G) + fees` |
+| Defined-risk credit vertical | `100 x width - credit + stressed lifecycle costs` (entry fees and crossing; exit costs unless held to cash settlement; contingent liquidation) |
+| Same-expiry iron condor | Larger wing width x 100 - net credit + costs (only one side can finish in the money) |
+| Debit spread or butterfly | Net debit + costs |
+| Equity/ETF position | `notional_unit x max(stop distance, G) + stressed slippage + fees` |
+| ETF pair (one unit = the complete hedge bundle) | `long-leg notional x G_rel + slippage + fees`, where G_rel is the adverse relative return of the bundle |
 
-**Size on the stressed gap G, not on the stop.** Registered planning values, *verify* against 2003-2026 history in
-WP9:
+**Stress values G** (planning values; WP9 calibrates them as the empirical worst observed x 1.25, and a stress is
+never changed to fit a lot size):
 
-| Position | G | Sensitivity |
+| Position | G planning | Empirical (to verify) |
 |---|---|---|
-| Broad-index ETF held long | 20% | 12%: worst post-2003 broad-ETF day is about -11%, *verify* |
-| Sector/style ETF held long-only | 25% | -- |
-| Beta-hedged ETF pair, per leg notional | 15% relative divergence | -- |
-| Single stock through or after earnings | 35% | -- |
+| Broad-index ETF long | 20% | about 13% |
+| Sector/style ETF long-only | 25% | -- |
+| ETF pair bundle (G_rel) | 15% | e.g. 7% x 1.25 = 8.75% |
+| Single stock after the event (A4) | 20% | about 15% |
 
 **Sizing formula:**
 
 ```text
-q = floor( min( 0.005 * E_t / WCL_unit,
-                q_vol_budget, q_gross_cap, q_lot_and_margin,
-                q_aggregate_open_risk_remaining ) )
-if q < 1: skip the trade   # never round up, never alter a structure to fit
+q = floor( min( budgeted_WCL_for_trade, 0.005 * E_t ) / WCL_unit , other limits )
+if q < 1: skip the trade   # never round up past the cap, never alter a structure to fit
 ```
 
-#### Options at $10k: no planned structure fits
-
-| Structure (credits illustrative, *verify*) | WCL, 1 contract | Fits under $50? | Equity needed for 1 contract (WCL / 0.005) |
+#### Fit at E = $200,000 (cap $1,000)
+| Position | WCL per unit | Units at the cap | Planned size |
 |---|---|---|---|
-| XSP $1-wide 15-delta put spread (credit $15-25) | about $77-87 | **No** | **about $15.4k-17.4k** |
-| XSP $1-wide iron condor (credit $30-40) | about $63-73 | **No** | about $12.6k-14.6k |
-| XSP $3-wide put spread | about $227-257 | No | about $45k-51k |
-| XSP $5-wide put spread | about $402-442 | No | about $80k-88k |
-| SPX $5-wide put spread | about $300-400 | No | about $60k-80k |
-| XSP $1-wide **credit iron butterfly** at the money (credit about $85-95) | about $9-19 | Yes, 2-5 contracts | -- |
-| XSP $1-wide **debit** vertical (debit <= about $48) | debit + fees | Yes | -- |
+| A6 pair (WCL budget $500) | 0.15 x leg + costs | Legs about $3.3k | 6 pairs |
+| A1 pair (WCL $1,000) | 0.15 x leg + costs | Legs about $6.6k | 2 pairs |
+| A4 name (WCL $400) | 0.20 x notional + costs | About $2k each | 5 names |
+| TOM long broad ETF | 0.20 x notional + costs | About $5k (about $7.7k at G = 13%) | Research only |
+| XSP $1-wide put spread | $77-87 | 11-12 | B1 |
+| XSP $3-wide / $5-wide | $227-257 / $402-442 | 3-4 / 2 | B1 |
+| SPX $5-wide / $10-wide | about $400-440 / about $800-850 + fees | about 2 / 1 | B1 alternative |
+| SPY spread (any width) | -- | **1 contract** (assignment rule below) | Limited |
+| Single-name B4 condor | Width-dependent | 1 contract per name (assignment rule) | Limited pilot |
 
-**What fits is not the planned strategy.**
-- A credit spread fits only when its credit is >= width x 100 + fees - $50. For a $1-wide spread that means a
-  credit of at least about $52, which puts the short strike near or in the money. That is a different
-  (directional / pin) strategy, not 15-delta variance-risk-premium harvesting.
-- The ATM iron butterfly and debit verticals fit mechanically. They are different hypotheses and would need
-  their own registration and evidence.
-- **B1, B3 and B4 as designed are therefore blocked at $10k.** They stay **backtest-only research** until one of
-  three things happens:
-  1. equity reaches the threshold above (at least about $16k for the minimal $1-wide design, about $45-90k for
-     the $3-5 widths that pass the friction gate);
-  2. the maintainer **explicitly approves** a cap exception for options (none is assumed);
-  3. the strategy is re-registered as a structure that fits.
-- Paper trading of options is likewise blocked without that explicit exception.
+#### Aggregate risk (proposals; the decision of record sets only the per-trade cap)
+1. **Aggregate open WCL <= 5% of E_t** ($10k), budgeted by sleeve as in Section 5: A6 1.5%, A1 1%, A4 1%,
+   options 1.5%. A 10% aggregate is **not** adopted without portfolio stress evidence.
+2. **Joint stress-scenario loss limit:** registered scenarios (2008-10, 2018-02, 2020-03, 2022 H1, 2024-08-05,
+   2025-04; a 10% gap; a vol jump; failed hedges and pair dislocations) must each lose <= 5% of E_t. Hedges get
+   conservative recognition.
+3. **Crash cluster** (long ETF legs, short puts, A4 longs, failed pair hedges) <= 3% of E_t.
 
-#### Equities and ETFs at $10k: small positions and fixed-fee drag
+**Assignment-notional rule (American options):**
+- The sum over all short American option positions of contracts x 100 x underlying price must be <= **50% of E_t**
+  ($100k). One SPY contract is about $65k, so **SPY is limited to 1 contract**.
+- A single name is limited to <= 10% of E_t ($20k) per name; one contract of a $150 stock is $15k.
+- This is an operational policy, not proof of carryability. Settled cash, margin, simultaneous assignments and
+  hedge-exercise timing are checked in the broker assignment drills before SPY or B4 trade on paper.
 
-| Position | Max notional at $50 WCL (fees included) | Orders/yr | Fees/yr, IBKR Pro ($0.35 min) | Plausible gross edge/yr (Sharpe 0.5 at position vol) | Verdict |
-|---|---|---|---|---|---|
-| TOM increment, broad ETF, G=20% (12% sensitivity) | **about $248** (about $413) | 24 | $8.40 | about $2-6 | **Dead under IBKR Pro; about $0 economic value even at $0 commission.** The base holding is also a trade, so total TOM exposure <= about $248 |
-| A6 pair, per leg at G=15% | **about $325 per leg** | about 30 per pair | about $10.50 per pair | about $16 per pair (10% spread vol x $325) | **Dead under IBKR Pro** (fees about 65% of edge); marginal at $0 commission. Integer-share rounding up to about 8% per leg unless ETFs are priced <= $16 |
-| A1 pair, per leg at G=15% | about $325 per leg | about 40 | about $14 | about $16 | **Dead under IBKR Pro**; marginal at $0 commission |
-| A4 single name, G=35% | **about $142** | about 2 per event | $0.70 per event | about $1.4-2.8 per event (1-2% drift) | **Marginal** (fees 25-50% of gross at IBKR Pro); names priced > $142 are impossible |
+**Reg-T margin:**
+- A defined-risk vertical's requirement is about its max loss.
+- A qualifying same-expiry iron condor uses the larger wing width less net credit.
+- Broker recognition, house rules and expiration handling are *verified* in the paper drills.
+- Different expiries invalidate condor treatment.
 
-**Equity needed for the originally planned sizes:**
-- A6/A1 $1k legs: $150 WCL -> **about $30k**.
-- TOM $2.5k peak at G=20%: $500 WCL -> **about $100k** (about $60k at G=12%).
-
-**Consequence for the shortlist at $10k with a 0.5% cap:**
-- The program is **research plus paper validation of process** (data, harness, execution plumbing, gates).
-- Dollar P&L at these sizes carries almost no economic or statistical information. Sleeve rankings stand as
-  *research* rankings.
-- Any live-capital deployment needs higher equity or a different cap.
-
-**Aggregate open-risk cap (proposal; the decision of record sets only the per-trade cap):**
-- Total open WCL <= **3% of E_t** (6 max-size trades).
-- A **correlated cluster** (same underlying or expiry, or exposure to the same equity-crash factor) <= **1.5%**.
-
-**Ruin arithmetic.** With fixed-fraction 0.5% sizing, k consecutive max losses leave 0.995^k of equity:
-
-| k | Equity remaining |
-|---|---|
-| 10 | 95.1% |
-| 20 | 90.5% |
-| 50 | 77.8% |
-
-The binding scenario is a clustered event that hits the aggregate cap (-3%).
+**Ruin arithmetic.** With 0.5% per trade, k consecutive max losses leave 0.995^k: 95.1% at k = 10 and 90.5% at
+k = 20. The binding scenario is a clustered event at the aggregate cap (-5%).
 
 ### 10.1b Mandatory stop-losses (decision of record: the 0.5% cap is built in through stops)
 
@@ -1086,11 +1121,11 @@ gap_allowance = max(0, G - stop_distance)        # so WCL_unit = max(stop_distan
 #### 2. Stop types by strategy
 | Sleeve | Stop design | Execution |
 |---|---|---|
-| A6 ETF relative strength (pairs) | **Pair-level hard dollar stop** at 70% of the per-trade cap ($35 at $10k), leaving 30% for slippage and gap. Plus a ratio stop at 2 x ATR(14) of the ratio against the position, and a time review at each weekly decision | Software-monitored on combined pair P&L. **Both legs exit together** (cancel-both, then complete or flatten). A broker-native catastrophe stop on each leg sits at the level where pair loss equals the cap; if one fires, software closes the other leg immediately |
-| A1 ETF pairs | Spread **z-score stop at abs(z) >= 3.5**, plus the hard dollar stop ($35), plus a time stop of 10 sessions; whichever comes first | Same as A6: pair-level, both legs together |
+| A6 ETF relative strength (pairs) | **Pair-level hard dollar stop** at 70% of the trade's WCL budget ($350 for an A6 pair at a $500 budget), leaving 30% for slippage and gap. Plus a ratio stop at 2 x ATR(14) of the ratio against the position, and a time review at each weekly decision | Software-monitored on combined pair P&L. **Both legs exit together** (cancel-both, then complete or flatten). A broker-native catastrophe stop on each leg sits at the level where pair loss equals the cap; if one fires, software closes the other leg immediately |
+| A1 ETF pairs | Spread **z-score stop at abs(z) >= 3.5**, plus the hard dollar stop ($700 at a $1,000 budget), plus a time stop of 10 sessions; whichever comes first | Same as A6: pair-level, both legs together |
 | TOM overlay (long broad ETF) | Price stop at 2 x ATR(14) below entry, plus the window-end time exit | **Broker-native** stop (survives process death): a marketable stop-limit with the limit 1% beyond the trigger, plus an emergency market fallback after 60 s unfilled during regular hours |
 | A4 EAR (single names) | Price stop at 2.5 x ATR(14), plus the 20-session time stop. Entry is after the event, so G = 20% (outside earnings windows, *verify*) | Broker-native stop-limit as for TOM |
-| Options spreads (B1/B3/B4, when enabled) | Exit trigger when the spread's marked loss reaches 1.0 x credit, or the spread value reaches 2 x the entry credit. **The defined-risk max loss is the backstop and the sizing basis**, because spread stops gap and illiquid combos may not fill | **Software-monitored**: a regular-hours loop (60 s), marketable combo exit at the c = 1.5 stress price, escalation after 3 tries; a fail-safe alert if the loop dies. Options remain blocked at $10k (Section 10.1a) |
+| Options spreads (B1/B3/B4, when enabled) | Exit trigger when the spread's marked loss reaches 1.0 x credit, or the spread value reaches 2 x the entry credit. **The defined-risk max loss is the backstop and the sizing basis**, because spread stops gap and illiquid combos may not fill | **Software-monitored**: a regular-hours loop (60 s), marketable combo exit at the c = 1.5 stress price, escalation after 3 tries; a fail-safe alert if the loop dies. |
 
 #### 3. Honest limits of stops
 - **Gaps:** an overnight or event gap fills at the open or worse, not at the stop. That is why sizing uses G.
@@ -1121,23 +1156,16 @@ gap_allowance = max(0, G - stop_distance)        # so WCL_unit = max(stop_distan
   - **the number of cap breaches, which must be 0 in the 2x-stress backtest**.
   - A breach means G was too low: G is raised as a registered change and the run repeats.
 
-#### 5. Viability at $50 per trade with stops (E = $10,000)
-The planning G values are from Section 10.1a. The empirical G is the worst observed gap since 2003 x 1.25 (*to
-verify in WP9*).
-
-| Position | Stop distance (typical) | G planning / empirical | Max notional at $50 | Fees per round trip at $0.35 minimum | Fees as % of notional |
+#### 5. Viability at $1,000 per trade with stops (E = $200,000)
+| Position | Stop (typical) | G planning / empirical | Max notional per trade | Commission per round trip | Commission as % of notional |
 |---|---|---|---|---|---|
-| TOM, broad ETF | 2 x ATR, about 2.5% | 20% / about 13% | **about $248 / about $380** | $0.70 | 28 / 18 bps |
-| A6 or A1 pair (per leg) | $35 pair stop | 15% / about 7% relative | **about $325 / about $680 per leg** | $1.40 (4 orders) | 22 / 10 bps of pair gross |
-| A4 single name, post-event | 2.5 x ATR, about 5% | 20% / about 15% | **about $245 / about $330** | $0.70 | 29 / 21 bps |
+| A6 pair, $500 budget | $350 pair stop | 15% / 8.75% | **about $3.3k / $5.7k per leg** | about $1.40 (4 orders) | < 2 bps of pair gross |
+| A1 pair, $1,000 budget | $700 pair stop + z-stop | 15% / 8.75% | **about $6.6k / $11.4k per leg** | about $1.40-2.00 | < 1.5 bps |
+| A4 name, $400 budget | 2.5 x ATR | 20% / 15% | **about $2k / $2.7k** | $0.70 | about 3.5 bps |
+| TOM broad ETF | 2 x ATR | 20% / 13% | about $5k / $7.7k | $0.70 | about 1.4 bps |
 
-- **Reading the table:** the stop distance is never the binding term; the gap stress is. Under IBKR Pro, fees of
-  10-29 bps per round trip consume most of a plausible edge on positions this small.
-- **Viability:**
-  - **Only with a $0-commission venue and the empirical G** (if WP9 supports it) do A6/A1 legs reach about
-    $680, where spread costs (1-2 bps) dominate and the process is economically meaningful.
-  - Even then, dollar P&L is small.
-  - **The sleeve verdicts at $10k stay "process validation, not economics"** (Section 10.1a).
+- The gap stress, not the stop distance, sets the size.
+- **At $200k, fixed fees no longer decide viability.** Spread, impact, borrow and the signal itself do.
 
 #### 6. Stop monitoring and the kill switch
 - **Missed stop:** a stop condition was detected but there is no exit fill within 2 minutes (regular hours), or a
@@ -1202,7 +1230,7 @@ verify in WP9*).
 |---|---|
 | Sleeve loss > its budget | Block new risk |
 | Portfolio daily loss > 1.5% NAV | Block new risk |
-| Portfolio drawdown from the high-water mark: **proposed** >= 5% blocks new risk; >= 7.5% cancels entries and goes reduce-only with review; >= 10% liquidates and stops pending re-validation (open decision, Section 15 item 2) | As listed |
+| Portfolio drawdown from the high-water mark: **proposed** >= 4% blocks new risk; >= 6% mandatory reduction of open WCL to <= 2.5%; >= 8% liquidates and stops pending re-validation (open decision, Section 15 item 2) | As listed |
 | Integrity breach (reconciliation, stale input, duplicate, exposure) | Block new risk **and cancel working entries**; resume only after full reconciliation |
 
 - **Kill switch:** a Lakebase flag **or** a local file, failing closed. A tested `halt --all` / `reduce-only` CLI
@@ -1210,7 +1238,7 @@ verify in WP9*).
 - **Audit:** immutable linked records (decision -> target -> intent -> order events -> fills -> allocation ->
   cash), carrying input hashes and versions. A daily broker-vs-ledger-vs-sleeve reconciliation report.
 
-### 10.5 Promotion ladder ($10k paper)
+### 10.5 Promotion ladder ($200k paper)
 | Stage | Gate |
 |---|---|
 | Research | Section 8.5 gates 1-6 and 8 |
@@ -1350,14 +1378,14 @@ This is an **open question** for the maintainer (Section 15).
 ### 12.1 Timeline
 | Weeks | Work | Exit |
 |---|---|---|
-| 1-4 | WP1 contracts/registry; **WP2 metrics/tearsheet**; WP3 ledger + dividends/withholding/financing; WP4 costs v2 + $10k fee drag; WP5 daily engine + best-execution simulator (G/P1/P2) + legacy parity; WP6 statistics harness | CI green; mutation proofs; final gate |
+| 1-4 | WP1 contracts/registry; **WP2 metrics/tearsheet**; WP3 ledger + dividends/withholding/financing; WP4 costs v2 + $200k cost drag; WP5 daily engine + best-execution simulator (G/P1/P2) + legacy parity; WP6 statistics harness | CI green; mutation proofs; final gate |
 | 2-5 | **WP-AG1** spec contracts + protected fixtures; **WP-AG2** decision-path firewall design (no broker code) | Approved sleeve contracts |
 | 4-5 | WP7 residual falsification (4 runs) | Pass/park; not deployable |
 | 5-7 | Massive step 0-1; WP8 dividends; WP9 2003+ history + sealed holdout | Data QA; holdout manifest |
 | 7-11 | WP10 A6, WP11 A1 + TOM | Gate decisions, then shadow |
 | 9-13 | WP12 EDGAR timing audit -> WP13 A4 (concentrated) | Audit pass/fail |
 | 10-14 | WP14 execution study (minute bars/quotes) | Fill-scenario report |
-| 11-15 | Massive step 2-3 -> WP15 XSP/SPY quote trial + event engine + B1 | B1 feasibility at $10k |
+| 11-15 | Massive step 2-3 -> WP15 XSP/SPX quote trial + event engine + B1 | B1 gate decision at $200k |
 | 13-17 | WP16 allocator + OMS + monitoring; WP17 evidence-backed reporting; WP18 red-team suite | Fault injection passes |
 | >= 17 | WP19 broker adapters (approval) -> paper | Section 10.5 |
 | Later, conditional | WP20 A4 text-extractor experiment (shadow) | Section 11.3 |
@@ -1367,8 +1395,9 @@ This is an **open question** for the maintainer (Section 15).
 - **Live:** the Section 10.4 breakers.
 - **Program:**
   - If none of A6, A1 or TOM passes on long history, stop the equity sleeves.
-  - If the XSP quote trial fails the friction/credit gate under the approved cap, **stop options at $10k**.
-  - If NAV stays at $10k and subscriptions exceed the expected edge, keep only the Starter tier.
+  - If the XSP and SPX quote trials fail the friction/credit gate at 2x variable costs, **stop the options
+    sleeves**.
+  - If subscriptions exceed the expected edge, keep only the steady-state tiers (Section 9.2).
 
 ---
 
@@ -1395,7 +1424,7 @@ Tests, oracles and the required mutants for each work package are specified in S
 | **WP1** | Contracts + immutable run registry + family registry | `strategies/mft/contracts.py`, `registry.py`, `families/*.yaml` | Invalid `data_source`/instrument_type rejected; duplicate runs rejected; future inputs rejected; cap of 12; consumed-period flag. **Mutations:** availability check, cap | Offline; 2022-26 cannot be marked unseen |
 | **WP2** | **Metrics + tearsheet library** (Section 8): daily and per-trade metrics, options metrics, gate statuses, Polars schemas | `strategies/mft/metrics.py`, `tearsheet.py`, `tests/mft/test_metrics.py` | Hand-computed fixtures (Sharpe, Sortino with all-period DD, MDD/TUW with censoring, ES, tail-ratio N/A, PSR/MinTRL, profit factor UNDEFINED); status enums. **Mutations:** downside deviation over negatives only; tail ratio with abs on both sides; Calmar window mismatch | Matches hand values; UNDEFINED/CENSORED/INSUFFICIENT emitted correctly; PENDING never renders as PASS |
 | **WP3** | Ledger: ex-date dividends, **30% withholding**, payments-in-lieu, financing, calendar, assignment booking | `ledger.py`, `corporate_actions.py`, `calendar.py` | Ex/pay settlement across an exit; withholding lines; short payment-in-lieu at 100%; split wealth; DST/early close. **Mutations:** withholding off; short dividend sign; split quantity | Exact reconciliation |
-| **WP4** | Costs v2: effective-dated fees, per-order minimums, $10k drag report, options friction/credit | `costs.py`, `fees.py`, `config/fee_schedules.yaml` | $50/$500 tick cases; $0.35 minimum on small orders; friction/credit for $1 and $3 spreads. **Mutations:** full spread per side; minimum ignored | Section 7.6 tables reproducible from config |
+| **WP4** | Costs v2: effective-dated fees, per-order minimums, $200k cost-drag and impact report, options friction/credit | `costs.py`, `fees.py`, `config/fee_schedules.yaml` | $50/$500 tick cases; $0.35 minimum on small orders; friction/credit for $1 and $3 spreads. **Mutations:** full spread per side; minimum ignored | Section 7.6 tables reproducible from config |
 | **WP5** | Polars daily engine + **best-execution simulator** (G/P1/P2 on minute bars) + legacy parity | `daily_engine.py`, `exec_sim.py`, `legacy_adapter.py` | Trade-through only on subsequent complete minutes; deadline crossing; A1 imbalance B bound and cancel-both; legacy parity. **Mutations:** touch counted as fill; same-minute fill; skip deadline crossing | Invariants pass; gate uses G |
 | **WP6** | Statistics harness (purging, simultaneous bound, SPA, sealed `open_holdout`) | `ml/harness/*` | Noise families reject at <= 5% + MC error; one-time open | As v2 |
 | WP7 | Residual falsification | `families/residual.yaml` | N >= 14 | Pass/park |
@@ -1455,14 +1484,20 @@ Green coverage alone is never acceptance evidence.
   - Vertical and **asymmetric-wing** condor payoff on a strike grid, with multiplier and quantity explicit.
   - Gross vs net premium; max loss = width x 100 x qty - credit; friction/credit.
   - Net results may exceed gross payoff bounds only by fees, which is asserted.
-- **Risk sizer (WP16)**, cap 0.5%:
-  - E = $10,000 (cap $50): an XSP $1-wide spread with a $20 credit and $1.70 fees has WCL $81.70, so q = 0 and the
-    trade is skipped.
-  - An ATM $1-wide iron butterfly with a $90 credit and $3.40 fees has WCL $13.40, so q = 3.
-  - A $0.40-debit vertical has WCL $41.70, so q = 1. At E = $8,000 (cap $40) the same vertical gives q = 0.
-  - TOM at a 20% gap with $0.35 fees: $248 -> WCL $49.95, allowed; $250 -> WCL $50.35, rejected.
-  - An ETF pair at 15% with $0.70 fees: $325 legs -> $49.45, allowed; $330 -> $50.20, rejected.
-  - The equity threshold helper returns `WCL / 0.005` (an $81.70 WCL needs $16,340).
+- **Risk sizer (WP16)**, cap 0.5%, E = $200,000 (cap $1,000):
+  - XSP $1-wide spread, $20 credit, $1.70 costs: WCL $81.70 -> q = **12** ($980.40). After equity falls to
+    $190,000 (cap $950): q = **11**.
+  - **Floor boundary:** WCL exactly $100.00 -> q = 10; WCL $100.01 -> q = **9**. The sizer never rounds up past the
+    cap.
+  - SPX $10-wide, WCL $853 -> q = 1. At E = $170,000 (cap $850) -> q = **0**, so the trade is skipped.
+  - TOM broad ETF at G = 20% with $0.35 fees, priced $100: q = floor(999.65 / 20) = **49 shares** ($4,900).
+    Notional $4,995 -> WCL $999.35, allowed; $5,000 -> $1,000.35, rejected.
+  - A1 pair bundle at G_rel = 15% with $1.40 fees: $6,600 long leg -> $991.40, allowed; $6,700 -> $1,006.40,
+    rejected.
+  - **Aggregate:** with $9,500 of open WCL, a new $1,000-WCL trade is rejected under the 5% cap ($10,000); a
+    $500 trade is allowed.
+  - **Assignment notional:** an open SPY short contract ($65k) plus a second one ($130k > $100k) -> the second is
+    rejected.
 - **Ledger (WP3):**
   - Explicit ex-date entitlements and pay-date postings. Example: a $45 gross distribution -> $13.50 withheld at
     30% -> $31.50 net.
@@ -1480,12 +1515,12 @@ Green coverage alone is never acceptance evidence.
 | Idempotent reruns | Same config, event order, injected clock, random stream and schema version -> identical canonical economic-state hash (incidental timestamps excluded) |
 | Options package P&L within [-max_loss - fees, credit - fees] | Per package, at expiry |
 | Netting preserves sleeve attribution | Sum of sleeve allocations = net position |
-| **Per-trade cap: no generated order has WCL > 0.5% of E_t** | For random equity, prices, widths, credits, fees and gap stresses: WCL(order) <= 0.005 x E_t (+0 tolerance after contractual rounding); q < 1 means no order |
+| **Per-trade cap: no generated order has WCL > 0.5% of E_t** | For random equity ($1k-$10M), prices, widths, credits, fees and gap stresses: WCL(order) <= 0.005 x E_t (+0 tolerance after contractual rounding); q < 1 means no order; q is always the floor (q+1 would breach) |
 | **Cap tracks equity** | After a simulated loss sequence, the next permitted size is non-increasing as E_t falls; sizing never uses the high-water mark |
 | **No stop, no order** | Any generated intent without a valid stop (or with a stop on the wrong side) is rejected |
 | **Loss on stop <= 0.5% of E_t under the modelled gap** | For random gaps up to G and the stressed slippage, the realised stop-out loss including fees <= 0.005 x E_t |
 | **Stops only tighten** | Any sequence of stop updates is monotone in the protective direction |
-| **Aggregate and cluster caps** | Sum of open WCL <= 3% of E_t; cluster <= 1.5%; a new order that would breach them is rejected |
+| **Aggregate, cluster and assignment caps** | Sum of open WCL <= 5% of E_t; crash cluster <= 3%; assignable notional <= 50% of E_t; a new order that would breach any of them is rejected |
 
 **Hypothesis settings:**
 - `derandomize=True` in the CI gate, plus explicit `@example` boundary cases.
@@ -1622,7 +1657,7 @@ Green coverage alone is never acceptance evidence.
 | WP6 statistics harness | Procedure tests, MC calibration | Disable purge; per-variant instead of max-stat bound; undercount trials; allow second `open_holdout`; ignore label overlap |
 | WP15 options engine | Payoff grid, lifecycle, settlement | Wrong multiplier; cash-settle SPY; ignore assigned stock; credit inequality reversed; future quote used for synchronisation |
 | Stop manager (WP5 backtest stop rules; WP16 live stop manager) | Stop oracle fixtures (gap-through fill at open, stop-first intrabar, pair delay), stateful stop lifecycle, broker reconciliation | Accept an order without a stop; fill a gapped stop at the stop price; target-first intrabar ordering; loosen a stop; close only one pair leg; skip stop reconciliation after restart |
-| Risk sizer (WP16, `portfolio.py`) | Oracle units (Section 10.1a fit table), cap properties, gap-vs-stop fixture | Size on the stop instead of the stressed gap; round q up; size from the high-water mark; omit fees from WCL; use 5% instead of 0.5% (a unit or percent slip); condor WCL summed over both wings or computed from credit only |
+| Risk sizer (WP16, `portfolio.py`) | Oracle units (Section 10.1a fit table), cap properties, gap-vs-stop fixture | Size on the stop instead of the stressed gap; round q up; size from the high-water mark; omit fees from WCL; use 5% instead of 0.5% (a unit or percent slip); round q instead of floor; ignore the assignment-notional cap; condor WCL summed over both wings or computed from credit only |
 | WP16 OMS/monitoring | Stateful FakeBroker, crash matrix, clock injection | Resend on UNKNOWN; lose late fill; kill switch fails open; integrity breach does not cancel entries; stale-data halt bypassed |
 | WP-AG2 firewall/signer | Security boundary tests | Skip signature check; omit account/environment binding; accept a reused nonce; accept an expired target; execution skips its own risk re-check |
 | WP19 adapters | Shared contract suite | Unsupported capability defaults to true; wrong order-type mapping; partial fill reported as full; paper routed to a live endpoint; unknown field crashes instead of failing closed |
@@ -1631,46 +1666,42 @@ The test shape is specified in every BUILD request: literal oracles, named asser
 
 ---
 ## 15. Open questions and decisions
-1. **Options under the 0.5% per-trade cap.** At $10k no planned options structure fits. Choose one:
-   - (a) keep options as **backtest-only research** (recommended default);
-   - (b) raise the account size (at least about $16k for 1 contract of the minimal $1-wide design; about
-     $45-88k for the $3-5 widths that pass the friction gate);
-   - (c) approve an explicit options-only cap exception for paper research.
-   No exception is assumed.
-2. **Aggregate open-risk cap** (the decision of record covers only the per-trade cap). Proposed: total open WCL
-   <= 3% of equity, correlated cluster <= 1.5%.
-3. **Portfolio-level drawdown circuit breaker.** Recommended, measured from the high-water mark:
-   - **5%**: block new risk (10 max-size losses).
-   - **7.5%**: cancel entries, reduce-only, review.
-   - **10%**: liquidate and stop until re-validation.
-4. **Gap stress G for sizing:** keep the conservative planning values (20% broad ETF, 15% pair) or adopt the
-   empirical worst-gap x 1.25 calibrated in WP9. This roughly doubles position sizes; see Section 10.1b, item 5.
-5. **Equity sleeves at $10k:** accept about $140-330 positions as process validation, choose a $0-commission venue
-   (IBKR Pro's $0.35 minimum makes A1, A6 and TOM uneconomic at these sizes), or wait for larger equity
-   (about $30k for the planned $1k ETF legs).
-6. **Massive purchases:**
-   - step 0: an entitlement check (maintainer lists the S3 prefixes);
-   - step 1: Stocks Advanced 1-month backfill ($199), pending **written licensing confirmation of retention**;
-   - step 2: Options Advanced XSP/SPY quote trial ($199/mo);
-   - step 3: Indices Starter ($49/mo) only if XSP proceeds.
-7. **Commission plan:** IBKR Pro tiered ($0.35 minimum, which kills A1 at $10k) vs a $0-commission venue (Schwab;
-   IBKR Lite eligibility for Singapore *verify*).
-8. **Paper venue:**
-   - IBKR paper (API-verified), or
-   - the internal simulator + paperMoney mirror, if paperMoney has no API (*verify*).
-   - Also: a margin account (needed for shorts) vs cash.
-9. **Execution schedule preference** among S-open, S-close and S-part. All three are tested; the maintainer may
-   restrict them.
-10. **Holdout:** approve 2016-2021 (needs Stocks Advanced) or shrink it to 2017-2021. Authorise the restricted
+
+**Resolved and removed:** account size ($200,000 paper) and the options cap (0.5% per trade applies to options
+too).
+
+1. **Aggregate open-risk cap.** Recommended: sum of open WCL <= **5%** of equity ($10k), budgeted A6 1.5%,
+   A1 1%, A4 1%, options 1.5%. A joint stress-scenario loss limit <= 5% and a crash cluster <= 3% also apply. A
+   10% aggregate is not recommended without portfolio stress evidence.
+2. **Portfolio drawdown circuit breaker.** Recommended, from the high-water mark of marked daily NAV, with every
+   action mandatory:
+   - **4%**: block new risk.
+   - **6%**: reduce open WCL to <= 2.5% (half).
+   - **8%**: liquidate and stop pending re-validation.
+
+   With open WCL <= 5%, a full simultaneous max loss from just under 4% could reach about 9%. That residual
+   exceedance is accepted and stress-tested.
+3. **Gap stress G for sizing:** keep the planning values (20% broad ETF, 15% pair bundle, 20% single name) or adopt
+   the WP9 empirical worst x 1.25. This changes sizes about 1.5-2x (Section 10.1b).
+4. **Massive purchases** (Section 9.2):
+   - step 0: entitlement check;
+   - step 1: Stocks Advanced 1-month backfill ($199), pending written licensing confirmation of retention;
+   - step 2: Options Advanced quote trial plus a research window ($199/mo, 2-3 months);
+   - step 3: Indices Starter ($49/mo) if XSP/SPX proceed.
+   Data costs are reported against the account (2.68% of NAV at list for everything).
+5. **Commission plan:** IBKR Pro tiered vs a $0-commission venue. This matters little at $200k sizes.
+6. **Paper venue:** IBKR paper (API-verified), or the internal simulator + paperMoney mirror if paperMoney has no
+   API (*verify*). A margin account is needed for shorts and Reg-T spreads; options approval level for spreads.
+7. **SPY and single-name options:** approve the assignment-notional rule (<= 50% of equity in aggregate; <= 10%
+   per name) and the broker assignment drills that unlock them.
+8. **Execution schedule preference** among S-open, S-close and S-part.
+9. **Holdout:** approve 2016-2021 (needs Stocks Advanced) or shrink it to 2017-2021. Authorise the restricted
    `open_holdout` job.
-11. **Withholding details:** confirm 30% on ordinary dividends, the treatment of capital-gain distributions and
-   return of capital, and the broker's substitute-payment behaviour (W-8BEN on file?).
-12. **A4 at $10k:** is a concentrated 10-20 name policy worth registering?
-13. **Agent policy:** approve the Section 11 verdict (no SLM/LLM in decisions; shadow-only extractor later).
-14. **"jev":** what did the maintainer mean (Section 11.3)?
-
----
-
+10. **Withholding details:** confirm 30% on ordinary dividends, capital-gain distributions, return of capital,
+    and substitute payments (W-8BEN on file?).
+11. **A4 book:** confirm the concentrated 5-name design at about $400 WCL each.
+12. **Agent policy:** approve the Section 11 verdict (no SLM/LLM in decisions; shadow-only extractor later).
+13. **"jev":** what did the maintainer mean (Section 11.3)?
 
 ---
 
@@ -1734,3 +1765,5 @@ re-keyed to this plan's work-package numbers.
 | 49 | R13 testing strategy | 95% coverage target; literal oracles; fixed seeds | Coverage percentages invite denominator games; oracles need a versioned derivation; at least five curated mutants per WP, 100% killed | **Reviewer**: per-branch coverage of safety paths with a ratchet; oracle spec files; at least five mutants per WP (Section 14) |
 | 50 | Per-trade cap (0.5% of equity) | -- | -- | A decision of record added after R13 (an earlier 5% figure was corrected to 0.5%). It was not separately reviewed by Codex Sol. Section 10.1a and its tests follow the reviewed sizing and stress principles (size on stressed loss, skip instead of resize) |
 | 51 | Mandatory stop-losses | -- | -- | A decision of record added after R13. Section 10.1b was not separately reviewed by Codex Sol; it applies the reviewed principles (conservative fills, stop-first intrabar, size on gap, fail-closed) |
+| 52 | Account raised to $200k (R14) | 10% aggregate open WCL with sleeve budgets; "15% per leg" pair stress; impact about 0.6 bps for a thin ETF; SPX fee advantage about 8x | Keep 5% aggregate plus a joint stress-scenario limit; define the pair unit and G_rel explicitly (empirical 7% x 1.25 = 8.75%); impact is 6.1 bps at window volume; no width-based fee claim; Reg-T condor = larger wing; breaker levels must mandate actions | **Reviewer accepted on all points.** 5% aggregate, joint scenario limit, pair-bundle stress, corrected impact, matched-exposure SPX/XSP comparison, breaker 4/6/8% with mandatory actions |
+| 53 | Size-driven vs data-driven verdicts | -- | Size removes implementation barriers, never a failed edge, cost or data gate | **Agreed.** B1/B3/B4 become paper-eligible after gates; B5 moves to backlog; residual stays parked on cost; A2/A3/B2/A5b unchanged; TOM research-only |
