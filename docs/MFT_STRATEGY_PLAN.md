@@ -38,8 +38,8 @@
 | **Data vendor: Massive** (S3 flat files at `files.massive.com`, bucket `flatfiles`, plus REST) | ORATS/ThetaData are dropped. **One-month bulk acquisition** (Stocks Advanced + Options Advanced + Indices Starter, $447 list, one-time), then cancel, with forward data from our own broker collection. Conditional on a mandatory licensing gate (Sections 9.2-9.3) |
 | **Options in scope, defined-risk only** | Allowed: verticals, iron condors, credit iron butterflies, long (debit) butterflies. **Not allowed:** naked legs, short straddles/strangles, delta-hedged short straddles, 1x2 ratios, risk reversals. Long straddles are replaced by defined-risk debit structures. **Calendars and diagonals are excluded for now** (Section 3.1) |
 | **Best-price execution** (replaces the earlier MOC decision) | Execution minimises implementation shortfall with limit, peg and midpoint-walking orders inside a window, falling back to a marketable limit at a deadline. Gates assume a conservative crossing policy (Section 6.3) |
-| **Per-trade risk cap: 0.5% of portfolio equity** | No single trade's worst-case loss (option max loss + fees, or the stressed gap for equity legs) may exceed 0.5% of current equity (**$1,000 at $200k**). Defined-risk options spreads now fit. Sized on stressed lifecycle costs (stop exits add exit fees): e.g. 10-12 XSP $1-wide (11 at a $20 credit) or 2 XSP $5-wide. Options are **paper-eligible once their research gates pass**; they are no longer backtest-only. Section 10.1a governs every sizing statement in this plan |
-| **Mandatory stop-loss on every trade** | The 0.5% cap is built in through stops: no order without a pre-defined stop. Sizing = 0.5% equity / (stop distance + slippage + gap allowance). Section 10.1b |
+| **Per-trade risk cap: 0.5% of portfolio equity** | No single trade's modelled worst-case loss (option max loss + fees, or the equity stressed-gap allowance) is sized above 0.5% of current equity (**$1,000 at $200k**); this is a modelled loss budget, not a guaranteed realised-loss ceiling (Section 10.1a). Defined-risk options spreads now fit. Sized on stressed lifecycle costs (stop exits add exit fees): e.g. 10-12 XSP $1-wide (11 at a $20 credit) or 2 XSP $5-wide. Options are **paper-eligible once their research gates pass**; they are no longer backtest-only. Section 10.1a governs every sizing statement in this plan |
+| **Mandatory stop-loss on every trade** | The 0.5% budget is sized into every trade through a pre-defined stop: no order without a stop. Sizing = 0.5% equity / (stop distance + slippage + gap allowance). Stops cut routine losses but cannot guarantee execution through gaps, halts or liquidity failures, so realised losses can exceed the budget (Sections 10.1a, 10.1b) |
 | **Paper host undecided (IBKR paper or Schwab paperMoney)** | Use a broker-adapter interface, and do not commit to either (Section 10.3) |
 | **Tax** | Capital gains are 0%. Dividend withholding is **30%** (maintainer figure), modelled in every backtest as a ledger cost; shorts pay 100% in lieu (Section 7.7). No other tax work |
 
@@ -157,8 +157,8 @@ Measured hurdle: residual reversion gross Sharpe 0.68, **net 0.12**, -0.45 at 2x
 ---
 ## 3. Strategy assessment at $200k with Massive data
 
-Rank is for the $200,000 paper account. The per-trade worst-case-loss cap is 0.5% ($1,000), and the proposed
-aggregate open-risk cap is 5% (Section 10.1a).
+Rank is for the $200,000 paper account. The per-trade modelled worst-case-loss cap is 0.5% ($1,000), a loss budget
+rather than a guaranteed loss ceiling, and the proposed aggregate open-risk cap is 5% (Section 10.1a).
 - **G** = GO research.
 - **C** = conditional.
 - **B** = backlog.
@@ -925,8 +925,8 @@ pass.
    commissions, integer contracts and fixed data costs change realised returns.)
 4. **Challenger control:** a pre-specified SPA requirement before any challenger replaces the rule.
 5. **Approved risk limits:**
-   - Every trade's worst-case loss (stressed gap for equities, contractual max loss + fees for options) is <= 0.5%
-     of E_t (Section 10.1a).
+   - Every trade's modelled worst-case loss (stressed gap for equities, contractual max loss + fees for options) is
+     sized to <= 0.5% of E_t as a loss budget, not a realised-loss ceiling (Section 10.1a).
    - Aggregate open WCL <= 5%, a crash cluster <= 3%, a joint stress-scenario loss <= 5%, and assignable
      notional <= 50% (proposals).
    - A trade that would exceed a cap is **skipped**, never resized upward.
@@ -1187,7 +1187,8 @@ It **cannot replace the bulk pull**: brokers generally do not serve historical q
   - Nets positions per instrument while keeping sleeve allocations.
   - Applies standalone sleeve vol budgets (Section 5), a 5% portfolio-vol ceiling and aggregate gross <= 100% NAV.
   - Enforces the lot rule (`price <= leg/20`) and per-sleeve no-trade bands in exposure units.
-- **Per-trade cap:** every trade's worst-case loss <= 0.5% of E_t (Section 10.1a). The aggregate open risk is <= 5%,
+- **Per-trade cap:** every trade's modelled worst-case loss (WCL) is sized to <= 0.5% of E_t, a loss budget rather
+  than a realised-loss ceiling (Section 10.1a). The aggregate open risk is <= 5%,
   a crash cluster <= 3%, and assignable notional <= 50% of equity (proposals).
 - **Options limits:**
   - |net delta| <= 10% NAV equivalent. The sum of absolute package vegas <= 0.1% NAV per vol point.
@@ -1197,14 +1198,15 @@ It **cannot replace the bulk pull**: brokers generally do not serve historical q
 
 ### 10.1a Per-trade risk cap: 0.5% of equity (decision of record, 2026-10-24)
 
-**Rule.** The **worst-case loss (WCL) of any single trade must not exceed 0.5% of current portfolio equity**
+**Rule.** The **modelled worst-case loss (WCL) of any single trade must not exceed 0.5% of current portfolio equity**
 E_t, which is **$1,000 at $200,000**.
 - E_t is the marked NAV at the decision time, recomputed every decision. After losses the cap shrinks; it is never
   measured from the high-water mark.
 - The cap is enforced deterministically in order generation and through **mandatory stops** (Section 10.1b).
   Agents cannot override it.
-- **It is a modelled loss budget, not a guaranteed realised-loss ceiling.** Gaps, halts and liquidity failures can
-  exceed it. Any exceedance is a registered event (Section 10.1b, item 4).
+- **It is a modelled loss budget, not a guaranteed realised-loss ceiling.** Stops cannot guarantee execution through
+  gaps, halts or liquidity failures, so those events can exceed it. Any exceedance is a registered event
+  (Section 10.1b, item 4).
 
 **Worst-case loss per unit:**
 
@@ -1279,7 +1281,7 @@ if q < 1: skip the trade   # never round up past the cap, never alter a structur
 **Ruin arithmetic.** With 0.5% per trade, k consecutive max losses leave 0.995^k: 95.1% at k = 10 and 90.5% at
 k = 20. The binding scenario is a clustered event at the aggregate cap (-5%).
 
-### 10.1b Mandatory stop-losses (decision of record: the 0.5% cap is built in through stops)
+### 10.1b Mandatory stop-losses (decision of record: the 0.5% budget is sized into trades through stops)
 
 #### 1. Every trade carries a stop at entry
 - **No stop, no order:** an order intent without a pre-defined stop is **rejected by code**. This is enforced in
