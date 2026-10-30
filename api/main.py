@@ -71,14 +71,40 @@ def _resolve_client_ip_source() -> str:
 _CLIENT_IP_SOURCE = _resolve_client_ip_source()
 
 
-def _apply_security_headers(response: Response, *, cache_control: bool = True) -> Response:
-    """Apply the standard security header set to *response* in-place."""
+# `/api` responses are JSON only, so nothing needs loading: lock them down.
+_API_CSP = "default-src 'none'; frame-ancestors 'none'"
+
+# The SPA HTML and its `/assets/*` bundle need to load their own JS/CSS and call
+# the same-origin API. `connect-src` also allows PostHog analytics (the only
+# third-party origin frontend/src loads — see frontend/src/utils/posthog.ts).
+_SPA_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "connect-src 'self' https://us.i.posthog.com; "
+    "frame-ancestors 'none'"
+)
+
+
+def _csp_for_path(norm_path: str) -> str:
+    """Return the CSP that applies to *norm_path* (already normalised)."""
+    return _API_CSP if norm_path.startswith("/api") else _SPA_CSP
+
+
+def _apply_security_headers(
+    response: Response, *, cache_control: bool = True, csp: str = _API_CSP
+) -> Response:
+    """Apply the standard security header set to *response* in-place.
+
+    *csp* defaults to the strict API policy; the demo middleware passes the
+    permissive SPA policy for non-``/api`` paths so the built frontend can load
+    its own bundles.
+    """
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; frame-ancestors 'none'"
-    )
+    response.headers["Content-Security-Policy"] = csp
     if cache_control:
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -519,7 +545,7 @@ def _register_demo_middleware(application: FastAPI) -> None:
                     content={"detail": "rate limit exceeded"},
                 )
                 resp.headers["Retry-After"] = str(retry_after)
-                _apply_security_headers(resp)
+                _apply_security_headers(resp, csp=_csp_for_path(norm_path))
                 return resp
 
         # ── reject non-GET/HEAD/OPTIONS on /api ──────────────────────────
@@ -529,7 +555,7 @@ def _register_demo_middleware(application: FastAPI) -> None:
                     status_code=405,
                     content={"detail": "method not allowed in public demo"},
                 )
-                _apply_security_headers(resp)
+                _apply_security_headers(resp, csp=_csp_for_path(norm_path))
                 return resp
 
             # ── body size (Content-Length) ────────────────────────────────
@@ -540,7 +566,7 @@ def _register_demo_middleware(application: FastAPI) -> None:
                         status_code=413,
                         content={"detail": "request body too large"},
                     )
-                    _apply_security_headers(resp)
+                    _apply_security_headers(resp, csp=_csp_for_path(norm_path))
                     return resp
 
         # ── request timeout ──────────────────────────────────────────────
@@ -555,7 +581,11 @@ def _register_demo_middleware(application: FastAPI) -> None:
             )
 
         # ── security headers ─────────────────────────────────────────────
-        _apply_security_headers(response, cache_control=norm_path.startswith("/api"))
+        _apply_security_headers(
+            response,
+            cache_control=norm_path.startswith("/api"),
+            csp=_csp_for_path(norm_path),
+        )
 
         return response
 

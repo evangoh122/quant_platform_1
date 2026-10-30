@@ -277,6 +277,13 @@ Market Spreads is live-only for now: `/api/spreads` is not mounted in demo mode
 have no demo snapshot export yet — a separate, later PR), so the destination is
 hidden when `/api/health` reports `demo: true`.
 
+Demo mode sets a per-path Content-Security-Policy: `/api` responses stay locked
+down (`default-src 'none'`), while the SPA HTML and `/assets/*` bundle get
+`default-src 'self'` so the app can load its own JS/CSS and call the same-origin
+API (plus `https://us.i.posthog.com` for analytics). Without the split the demo
+page loads but its JavaScript and CSS are blocked. See
+`tests/api/test_public_demo_security.py` for the pinned policies.
+
 ## Engineering process
 
 Changes are implemented by the scheduled coder — MiMo or DeepSeek, selected by UTC peak hours — and independently

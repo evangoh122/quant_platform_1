@@ -43,12 +43,18 @@ def _strip_ambient_secrets(monkeypatch):
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _make_demo_app(monkeypatch, extra_env: dict[str, str] | None = None):
+def _make_demo_app(
+    monkeypatch,
+    extra_env: dict[str, str] | None = None,
+    frontend_dist=None,
+):
     """Build a fresh app under PUBLIC_DEMO=1 with a clean environment.
 
     Uses the application factory (``create_app()``) directly without touching
     ``sys.modules``, so the conftest ``client`` fixture's ``app`` reference
     (from the original ``api.main`` import) is never invalidated.
+
+    Pass *frontend_dist* to serve a temporary SPA bundle from that directory.
     """
     monkeypatch.setenv("PUBLIC_DEMO", "1")
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
@@ -57,7 +63,44 @@ def _make_demo_app(monkeypatch, extra_env: dict[str, str] | None = None):
 
     from api.main import create_app
 
+    if frontend_dist is not None:
+        with patch("api.main.FRONTEND_DIST", frontend_dist):
+            return create_app()
     return create_app()
+
+
+@pytest.fixture()
+def demo_app_with_dist(monkeypatch, tmp_path):
+    """Demo app whose ``frontend/dist`` holds a minimal built SPA.
+
+    The patch stays active for the whole test: the SPA route resolves
+    ``FRONTEND_DIST`` at request time, not at app-construction time.
+    """
+    dist = tmp_path / "frontend" / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (dist / "index.html").write_text(
+        "<html><body><div id=root></div>"
+        "<script type=module src=/assets/app.js></script></body></html>"
+    )
+    (assets / "app.js").write_text("console.log('ok')")
+    (assets / "app.css").write_text("body{margin:0}")
+    monkeypatch.setenv("PUBLIC_DEMO", "1")
+    with patch("api.main.FRONTEND_DIST", dist):
+        yield _make_demo_app(monkeypatch)
+
+
+# Per-path CSP policies. Kept as literals so a policy change has to be made
+# deliberately here as well as in api/main.py.
+_API_CSP = "default-src 'none'; frame-ancestors 'none'"
+_SPA_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "connect-src 'self' https://us.i.posthog.com; "
+    "frame-ancestors 'none'"
+)
 
 
 def _client(app):
@@ -1688,3 +1731,88 @@ def test_render_defaults_not_rejected_by_url_check(monkeypatch):
 
     # Must not raise.
     validate_public_demo_environment()
+
+# ── per-path CSP: strict for /api, SPA policy for HTML + assets ──────────────
+#
+# The public demo serves the built SPA from the same origin. The strict
+# ``default-src 'none'`` policy is correct for JSON-only /api responses, but
+# applied to index.html or /assets/* it blocks the bundle's own JS/CSS (and the
+# same-origin /api calls), leaving the demo blank. These tests pin the split.
+
+
+def test_api_response_uses_strict_csp(monkeypatch):
+    """JSON API responses keep the lock-down policy."""
+    app = _make_demo_app(monkeypatch)
+    resp = _client(app).get("/api/analytics")
+
+    assert resp.status_code == 200
+    assert resp.headers["Content-Security-Policy"] == _API_CSP
+    assert resp.headers.get("Cache-Control") == "no-store"
+
+
+def test_spa_root_uses_spa_csp(demo_app_with_dist):
+    """GET / serves index.html with a policy that allows same-origin assets."""
+    resp = _client(demo_app_with_dist).get("/")
+
+    assert resp.status_code == 200
+    assert "<html>" in resp.text
+    assert resp.headers["Content-Security-Policy"] == _SPA_CSP
+    assert "default-src 'none'" not in resp.headers["Content-Security-Policy"]
+
+
+def test_spa_deep_link_uses_spa_csp(demo_app_with_dist):
+    """Client-side routes fall back to index.html and keep the SPA policy."""
+    resp = _client(demo_app_with_dist).get("/research/aapl")
+
+    assert resp.status_code == 200
+    assert "<html>" in resp.text
+    assert resp.headers["Content-Security-Policy"] == _SPA_CSP
+
+
+def test_spa_assets_use_spa_csp(demo_app_with_dist):
+    """/assets/* must be loadable by the page (JS and CSS)."""
+    client = _client(demo_app_with_dist)
+
+    for path in ("/assets/app.js", "/assets/app.css"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert resp.headers["Content-Security-Policy"] == _SPA_CSP
+
+
+def test_spa_csp_allows_only_expected_origins(demo_app_with_dist):
+    """Allow-list stays tight: self for code/style/images, PostHog for events."""
+    csp = _client(demo_app_with_dist).get("/").headers["Content-Security-Policy"]
+
+    assert "script-src 'self'" in csp
+    assert "style-src 'self'" in csp
+    assert "img-src 'self' data:" in csp
+    assert "connect-src 'self' https://us.i.posthog.com" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "unsafe-inline" not in csp
+    assert "unsafe-eval" not in csp
+
+
+def test_api_method_rejection_keeps_strict_csp(monkeypatch):
+    """Early 405 responses under /api still carry the strict policy."""
+    app = _make_demo_app(monkeypatch)
+    resp = _client(app).post("/api/analytics", content=b"test")
+
+    assert resp.status_code == 405
+    assert resp.headers["Content-Security-Policy"] == _API_CSP
+
+
+def test_static_rate_limit_keeps_spa_csp(monkeypatch, demo_app_with_dist):
+    """A 429 on a page request must not block the SPA with the API policy."""
+    import api.main as main_mod
+
+    _freeze_limiter_clock(monkeypatch, main_mod)
+    client = _client(demo_app_with_dist)
+
+    for _ in range(60):
+        client.get("/")
+
+    resp = client.get("/")
+    assert resp.status_code == 429
+    assert resp.headers["Content-Security-Policy"] == _SPA_CSP
+
+    main_mod._limiter.reset()
