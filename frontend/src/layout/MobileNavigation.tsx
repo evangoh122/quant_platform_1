@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import type { NavGroup } from './AppShell';
+import { NavItemButton } from './NavItemButton';
 
 interface MobileNavigationProps {
   groups: NavGroup[];
@@ -101,19 +102,14 @@ export function MobileNavigation({ groups, currentId, onNavigate, open, onToggle
                   <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {group.label}
                   </div>
-                  {group.items.map((item) => {
-                    const active = item.id === currentId;
-                    return (
-                      <button
-                        key={item.id}
-                        onClick={() => onNavigate(item.id)}
-                        aria-current={active ? 'page' : undefined}
-                        className={`nav-item ${active ? 'active' : ''}`}
-                      >
-                        {item.label}
-                      </button>
-                    );
-                  })}
+                  {group.items.map((item) => (
+                    <NavItemButton
+                      key={item.id}
+                      item={item}
+                      active={item.id === currentId}
+                      onNavigate={onNavigate}
+                    />
+                  ))}
                 </div>
               ))}
             </nav>

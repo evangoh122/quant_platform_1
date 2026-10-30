@@ -313,6 +313,20 @@ code,
   background: var(--accent);
 }
 
+/* Placeholder destinations: visible, keyboard-focusable (so the "Coming soon"
+   hint is announced), but inert. --text-muted at 95% still clears 4.5:1 on
+   --surface, so greying out never costs label legibility. */
+.nav-item.nav-item-disabled,
+.nav-item.nav-item-disabled:hover {
+  color: var(--text-muted);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.nav-item.nav-item-disabled {
+  opacity: 0.95;
+}
+
 /* ---------- Site-matched layout primitives (evangoh.com design language) ---------- */
 
 /* App shell guard: mirrors the document-level overflow-x guard so the shell

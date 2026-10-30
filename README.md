@@ -226,8 +226,11 @@ deliberately dark-only — that brand match is the documented trade-off against
 HIG `dark-mode.md`. One brand mark is shown per view: the top-bar `Q` monogram,
 with the sidebar and the mobile drawer kept navigation-only, and each eyebrow
 names its section's category instead of repeating the title
-(`frontend/src/layout/brand-and-eyebrows.test.tsx` guards both). Text never
-renders below 12 px (13 px `text-xs` captions), including inside the scaled SVG
+(`frontend/src/layout/brand-and-eyebrows.test.tsx` guards both). Two upcoming
+destinations, Quant Research Project and Prediction Markets Analysis, appear in
+the Strategy group as greyed-out `aria-disabled` placeholders with a "Coming
+soon" hint and no navigation (`frontend/src/layout/nav-disabled.test.tsx`).
+Text never renders below 12 px (13 px `text-xs` captions), including inside the scaled SVG
 price chart, the Market Spreads line charts and the architecture diagram: each
 declares a minimum render width equal to its viewBox width, so a 12-unit label is
 never smaller than 12 CSS px and narrow viewports scroll inside the chart or
