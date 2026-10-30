@@ -5,11 +5,12 @@
 # Format: --ignore-vuln <ID>  (one per line, comments start with #)
 
 # PYSEC-2026-4114 / CVE-2026-49265 — oauthlib PKCE timing side-channel
-# Fix requires oauthlib>=4.0.0, but databricks-sql-connector pins
-# oauthlib ^3.1.0 (<4). Exploitability is limited: timing oracle
-# requires repeated authorization_code interception with controlled
-# network conditions. Accepted as transitive-dependency risk until
-# databricks-sql-connector supports oauthlib 4.x.
+# Fix requires oauthlib>=4.0.0, but this project pins oauthlib<4 directly at
+# pyproject.toml:70 (a cap carried over from the historical requirements.txt;
+# databricks-sql-connector itself allows oauthlib>=3.1.0,<5.0.0). Exploitability
+# is limited: the timing oracle requires repeated authorization_code
+# interception with controlled network conditions. Accepted until the oauthlib<4
+# pin is lifted and oauthlib 4.x is tested.
 PYSEC-2026-4114
 
 # CVE-2026-49272 — oauthlib device-code grant missing device_code validation
