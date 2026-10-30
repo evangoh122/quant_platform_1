@@ -430,3 +430,58 @@ describe('PaperPortfolio', () => {
     expect(screen.getByText(/1 realized unpriced/)).toBeInTheDocument();
   });
 });
+describe('PaperPortfolio null numeric fields', () => {
+  it('renders em dashes instead of throwing when avg cost and order notional are null', async () => {
+    const nullNumbers = {
+      positions: {
+        data: [
+          {
+            account_id: 'default',
+            symbol: 'AAPL',
+            quantity: 100,
+            avg_cost: null,
+            market_price: null,
+            realized_pnl: null,
+            unrealized_pnl: null,
+            updated_at: '2026-10-07',
+          },
+        ],
+        count: 1,
+        empty: false,
+        source: 'positions',
+        freshness: { state: 'fresh', table: 'positions', detail: '1 row' },
+      },
+      orders: {
+        data: [
+          {
+            order_id: 'ord-1',
+            symbol: 'AAPL',
+            side: 'BUY',
+            quantity: 1,
+            notional: null,
+            order_type: 'MARKET',
+            limit_price: null,
+            status: 'PENDING_APPROVAL',
+            signal_id: null,
+            idempotency_key: 'key-1',
+            created_at: '2026-10-07T00:00:00Z',
+          },
+        ],
+        count: 1,
+        empty: false,
+        source: 'orders',
+        freshness: { state: 'fresh', table: 'orders', detail: '1 row' },
+      },
+    };
+    mockFetch(nullNumbers);
+    render(<PaperPortfolio />);
+
+    await waitFor(() => {
+      expect(screen.getByText('IBKR Paper Portfolio')).toBeInTheDocument();
+    });
+
+    // avg cost, market, realized, unrealized and order notional are all em dashes.
+    expect(screen.getAllByText('\u2014').length).toBeGreaterThanOrEqual(5);
+    expect(document.body.textContent).not.toContain('null');
+  });
+});

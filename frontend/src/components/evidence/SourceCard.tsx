@@ -1,3 +1,5 @@
+import { safeHttpUrl } from '../../utils/url';
+
 interface SourceCardProps {
   ticker?: string;
   formType?: string;
@@ -6,19 +8,6 @@ interface SourceCardProps {
   section?: string;
   sourceUrl?: string;
   retrievalMode?: string;
-}
-
-function safeUrl(url: string | undefined): string | undefined {
-  if (!url || typeof url !== 'string') return undefined;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      return url;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 export function SourceCard({
@@ -30,7 +19,7 @@ export function SourceCard({
   sourceUrl,
   retrievalMode,
 }: SourceCardProps) {
-  const validUrl = safeUrl(sourceUrl);
+  const validUrl = safeHttpUrl(sourceUrl);
   return (
     <div
       data-testid="source-card"

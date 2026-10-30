@@ -231,7 +231,7 @@ renders below 12 px (13 px `text-xs` captions), including inside the scaled SVG
 price chart, the Market Spreads line charts and the architecture diagram: each
 declares a minimum render width equal to its viewBox width, so a 12-unit label is
 never smaller than 12 CSS px and narrow viewports scroll inside the chart or
-diagram card instead.
+diagram card instead. API-supplied links are restricted to http(s) (`frontend/src/utils/url.ts`), untrusted numbers render an em dash (`frontend/src/utils/number.ts`), and a top-level `ErrorBoundary` shows a reload prompt without leaking stacks.
 `frontend/src/layout/layout-overflow.test.tsx` asserts the shell, column,
 wrapping and type-size guards on all 19 destinations at the four widths it
 covers — 320, 375, 390 and 768 px — and re-derives the rendered type floor from

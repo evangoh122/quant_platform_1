@@ -9,11 +9,12 @@ import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingState } from '../components/LoadingState';
 import { FreshnessBadge } from '../components/FreshnessBadge';
+import { formatNumber } from '../utils/number';
 
 const positionColumns: Column<Position>[] = [
   { key: 'symbol', header: 'Symbol', render: (r) => r.symbol },
   { key: 'qty', header: 'Quantity', render: (r) => r.quantity.toString() },
-  { key: 'avg', header: 'Avg Cost', render: (r) => r.avg_cost.toFixed(2) },
+  { key: 'avg', header: 'Avg Cost', render: (r) => formatNumber(r.avg_cost) },
   { key: 'mkt', header: 'Market', render: (r) => (r.market_price == null ? '—' : r.market_price.toFixed(2)) },
   { key: 'realized', header: 'Realized P&L', render: (r) => (r.realized_pnl == null ? '—' : r.realized_pnl.toFixed(2)) },
   { key: 'unrealized', header: 'Unrealized P&L', render: (r) => (r.unrealized_pnl == null ? '—' : r.unrealized_pnl.toFixed(2)) },
@@ -24,7 +25,7 @@ const orderColumns: Column<Order>[] = [
   { key: 'symbol', header: 'Symbol', render: (r) => r.symbol },
   { key: 'side', header: 'Side', render: (r) => r.side },
   { key: 'qty', header: 'Qty', render: (r) => r.quantity.toString() },
-  { key: 'notional', header: 'Notional', render: (r) => r.notional.toFixed(2) },
+  { key: 'notional', header: 'Notional', render: (r) => formatNumber(r.notional) },
   { key: 'status', header: 'Status', render: (r) => r.status },
 ];
 
