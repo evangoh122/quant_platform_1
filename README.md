@@ -284,7 +284,9 @@ Opus 5.5 only as a recorded fallback when Sol cannot run because of a token limi
 Every PR also updates this README (or states in the PR why no change is needed) and, when it changes tables, terms, joins
 or knowledge-graph node/edge types, its slice of `ontology/` in the same commit (see root `AGENTS.md`).
 Security: dependency audit (`pip-audit`, `npm audit`) and secret scanning run in CI —
-see [`docs/SECURITY.md`](docs/SECURITY.md).
+see [`docs/SECURITY.md`](docs/SECURITY.md). The oauthlib advisories fixed in 4.0.0
+(CVE-2026-49265, CVE-2026-49272) are accepted risks while this project pins
+`oauthlib<4` at `pyproject.toml:70`; adopting the fix requires lifting that pin and testing.
 
 ## Known limitations
 
