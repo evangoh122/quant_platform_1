@@ -7,13 +7,17 @@ import { Card } from '../components/Card';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingState } from '../components/LoadingState';
+import { safeHttpUrl } from '../utils/url';
 
 const LINK_KEYS = ['edgar_url', 'url', 'source_url', 'href'];
 
 function rowLink(row: Record<string, unknown>): string | null {
   for (const key of LINK_KEYS) {
     const value = row[key];
-    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === 'string' && value.length > 0) {
+      const safe = safeHttpUrl(value);
+      if (safe) return safe;
+    }
   }
   return null;
 }

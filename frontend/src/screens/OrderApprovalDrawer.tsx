@@ -8,6 +8,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { LoadingState } from '../components/LoadingState';
 import { FreshnessBadge } from '../components/FreshnessBadge';
+import { formatNumber } from '../utils/number';
 
 function timeAgo(iso: string): string {
   const then = Date.parse(iso);
@@ -73,7 +74,7 @@ function ApprovalRow({ order, busy, result, onApprove, onReject }: { order: Orde
       <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm md:grid-cols-3">
         <div>
           <dt className="text-xs text-[var(--text-muted)]">Notional</dt>
-          <dd>${order.notional.toFixed(2)}</dd>
+          <dd>${formatNumber(order.notional)}</dd>
         </div>
         <div>
           <dt className="text-xs text-[var(--text-muted)]">Order type</dt>

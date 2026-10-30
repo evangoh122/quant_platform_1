@@ -696,3 +696,72 @@ describe('SecFilingExplorer', () => {
     expect(screen.queryByText(/iPhone revenue/i)).not.toBeInTheDocument();
   });
 });
+describe('SecFilingExplorer source link safety', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    mockChat.mockReset();
+    mockSecCoverage.mockReset();
+  });
+
+  async function renderWithLink(url: string) {
+    mockSecCoverage.mockResolvedValue({
+      data: [
+        { ticker: 'AAPL', cik: '1', n_filings: 42, n_chunks: 500, first_filed: null, last_filed: '2025-09-30' },
+      ],
+      count: 1,
+      status: 'ok',
+    });
+    mockChat.mockResolvedValue(
+      mockChatResponse({
+        tool_calls: [
+          {
+            name: 'search_sec_filings',
+            arguments: { symbol: 'AAPL' },
+            result: {
+              rows: [{ chunk_text: 'filing body text', section: 'MD&A', edgar_url: url }],
+            },
+            ok: true,
+          },
+        ],
+      }),
+    );
+
+    render(<SecFilingExplorer />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 equity/i)).toBeInTheDocument();
+    });
+
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    const option = screen.getByRole('listbox').querySelector('[role="option"]');
+    expect(option).toBeTruthy();
+    fireEvent.mouseDown(option!);
+
+    await waitFor(() => {
+      expect(screen.getByText(/filing body text/i)).toBeInTheDocument();
+    });
+  }
+
+  it('renders an anchor for a valid https source URL', async () => {
+    await renderWithLink('https://www.sec.gov/Archives/edgar/data/1/filing.htm');
+    const link = screen.getByRole('link', { name: /View source/i });
+    expect(link).toHaveAttribute('href', 'https://www.sec.gov/Archives/edgar/data/1/filing.htm');
+    expect(link).toHaveAttribute('rel', 'noreferrer');
+  });
+
+  it('does not render a javascript: source URL', async () => {
+    await renderWithLink('javascript:alert(1)');
+    expect(screen.queryByRole('link', { name: /View source/i })).not.toBeInTheDocument();
+  });
+
+  it('does not render a data: source URL', async () => {
+    await renderWithLink('data:text/html,<script>alert(1)</script>');
+    expect(screen.queryByRole('link', { name: /View source/i })).not.toBeInTheDocument();
+  });
+
+  it('does not render a relative source URL', async () => {
+    await renderWithLink('/filings/1');
+    expect(screen.queryByRole('link', { name: /View source/i })).not.toBeInTheDocument();
+  });
+});
