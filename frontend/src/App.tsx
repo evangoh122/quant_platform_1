@@ -64,6 +64,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'signals', label: 'Signal Explorer' },
       { id: 'strategy-lab', label: 'Strategy Lab' },
+      { id: 'quant-research-project', label: 'Quant Research Project', disabled: true },
+      { id: 'prediction-markets-analysis', label: 'Prediction Markets Analysis', disabled: true },
     ],
   },
   {

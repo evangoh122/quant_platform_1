@@ -7,7 +7,7 @@ import { StatusBanner } from './StatusBanner';
 
 export interface NavGroup {
   label: string;
-  items: { id: string; label: string }[];
+  items: { id: string; label: string; disabled?: boolean }[];
 }
 
 interface AppShellProps {

@@ -1,4 +1,5 @@
 import type { NavGroup } from './AppShell';
+import { NavItemButton } from './NavItemButton';
 
 interface SidebarProps {
   groups: NavGroup[];
@@ -40,21 +41,15 @@ export function Sidebar({ groups, currentId, onNavigate, collapsed, onToggle }: 
                 {group.label}
               </div>
             )}
-            {group.items.map((item) => {
-              const active = item.id === currentId;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => onNavigate(item.id)}
-                  aria-current={active ? 'page' : undefined}
-                  aria-label={collapsed ? item.label : undefined}
-                  className={`nav-item ${active ? 'active' : ''} ${collapsed ? 'justify-center' : ''}`}
-                  title={collapsed ? item.label : undefined}
-                >
-                  {collapsed ? item.label.charAt(0) : item.label}
-                </button>
-              );
-            })}
+            {group.items.map((item) => (
+              <NavItemButton
+                key={item.id}
+                item={item}
+                active={item.id === currentId}
+                collapsed={collapsed}
+                onNavigate={onNavigate}
+              />
+            ))}
           </div>
         ))}
       </nav>
