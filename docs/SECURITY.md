@@ -27,6 +27,7 @@ will **fail the build**.
 | ID | Package | Reason |
 |----|---------|--------|
 | PYSEC-2026-4114 (CVE-2026-49265) | oauthlib 3.x | PKCE timing side-channel; fix requires >=4.0.0 but `databricks-sql-connector` pins `oauthlib ^3.1.0` (<4). Exploitability limited: requires repeated authorization_code interception under controlled network conditions. |
+| CVE-2026-49272 (GHSA-3jp2-3mrg-2vxc) | oauthlib 3.x | Device-code grant (RFC 8628) does not validate `device_code`; fix requires >=4.0.0 but `databricks-sql-connector` pins `oauthlib ^3.1.0` (<4). Exploitability limited: needs a valid client ID enrolled in the device workflow, which the connector does not use. |
 
 To add a new accepted risk:
 

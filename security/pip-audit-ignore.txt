@@ -11,3 +11,12 @@
 # network conditions. Accepted as transitive-dependency risk until
 # databricks-sql-connector supports oauthlib 4.x.
 PYSEC-2026-4114
+
+# CVE-2026-49272 — oauthlib device-code grant missing device_code validation
+# Fix requires oauthlib>=4.0.0, but databricks-sql-connector pins
+# oauthlib ^3.1.0 (<4). Exploitability is limited: the RFC 8628
+# device-code grant is not exercised by databricks-sql-connector, and
+# exploitation requires a valid client ID enrolled in the device
+# workflow. Accepted as transitive-dependency risk until
+# databricks-sql-connector supports oauthlib 4.x.
+CVE-2026-49272
