@@ -288,7 +288,7 @@ or knowledge-graph node/edge types, its slice of `ontology/` in the same commit 
 Security: dependency audit (`pip-audit`, `npm audit`) and secret scanning run in CI —
 see [`docs/SECURITY.md`](docs/SECURITY.md). The oauthlib advisories fixed in 4.0.0
 (CVE-2026-49265, CVE-2026-49272) are accepted risks while this project pins
-`oauthlib<4` at `pyproject.toml:70`; adopting the fix requires lifting that pin and testing.
+`oauthlib<4` in `pyproject.toml`; adopting the fix requires lifting that pin and testing.
 
 ## Known limitations
 

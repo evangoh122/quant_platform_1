@@ -26,8 +26,8 @@ will **fail the build**.
 
 | ID | Package | Reason |
 |----|---------|--------|
-| PYSEC-2026-4114 (CVE-2026-49265) | oauthlib 3.x | PKCE timing side-channel; fix requires >=4.0.0 but this project pins `oauthlib>=3.1.0,<4` directly at `pyproject.toml:70` (`databricks-sql-connector` itself allows `<5.0.0`). Exploitability limited: requires repeated authorization_code interception under controlled network conditions. Upgrading to 4.0.0 requires lifting that pin and testing. |
-| CVE-2026-49272 (GHSA-3jp2-3mrg-2vxc) | oauthlib 3.x | Device-code grant (RFC 8628) does not validate `device_code`; fix requires >=4.0.0 but this project pins `oauthlib>=3.1.0,<4` directly at `pyproject.toml:70` (`databricks-sql-connector` itself allows `<5.0.0`). Exploitability limited: needs a valid client ID enrolled in the device workflow, which the connector does not use. Upgrading to 4.0.0 requires lifting that pin and testing. |
+| PYSEC-2026-4114 (CVE-2026-49265) | oauthlib 3.x | PKCE timing side-channel; fix requires >=4.0.0 but this project pins `oauthlib>=3.1.0,<4` directly in `pyproject.toml` (`databricks-sql-connector` itself allows `<5.0.0`). Exploitability limited: requires repeated authorization_code interception under controlled network conditions. Upgrading to 4.0.0 requires lifting that pin and testing. |
+| CVE-2026-49272 (GHSA-3jp2-3mrg-2vxc) | oauthlib 3.x | Device-code grant (RFC 8628) does not validate `device_code`; fix requires >=4.0.0 but this project pins `oauthlib>=3.1.0,<4` directly in `pyproject.toml` (`databricks-sql-connector` itself allows `<5.0.0`). Exploitability limited: needs a valid client ID enrolled in the device workflow, which the connector does not use. Upgrading to 4.0.0 requires lifting that pin and testing. |
 
 To add a new accepted risk:
 
