@@ -7,20 +7,37 @@ for other test suites.
 """
 import os
 import sys
+import types
+from unittest.mock import MagicMock
+
+
+def _is_mock_module(mod):
+    """True when ``mod`` is a MagicMock stand-in rather than a real module."""
+    return isinstance(mod, MagicMock)
 
 
 def test_databricks_connect_not_polluted():
     """databricks.connect must not be a MagicMock after rag tests finish."""
     mod = sys.modules.get("databricks.connect")
-    assert mod is None or not isinstance(mod, type(__import__("unittest.mock").MagicMock())), (
+    assert mod is None or not _is_mock_module(mod), (
         "databricks.connect is still a MagicMock in sys.modules after rag tests. "
         "This pollutes downstream test suites (e.g. tests/bronze/)."
     )
 
 
+def test_mock_guard_handles_real_and_mock_modules():
+    """Regression: the guard must classify a real module without raising.
+
+    The old guard evaluated ``__import__("unittest.mock").MagicMock`` (which
+    returns the top-level ``unittest`` package, so AttributeError) whenever
+    databricks.connect was a real, restored module.
+    """
+    assert not _is_mock_module(types.ModuleType("databricks.connect"))
+    assert _is_mock_module(MagicMock())
+
+
 def test_pyspark_not_polluted():
     """pyspark must not be a MagicMock after rag tests finish."""
-    from unittest.mock import MagicMock
     mod = sys.modules.get("pyspark")
     assert mod is None or not isinstance(mod, MagicMock), (
         "pyspark is still a MagicMock in sys.modules after rag tests."
@@ -37,7 +54,6 @@ def test_pyspark_connect_mode_not_leaked():
     will get MagicMock Columns instead of real Connect Columns, causing
     isinstance failures in pyspark.sql.connect.functions.builtin._invoke_function.
     """
-    from unittest.mock import MagicMock
 
     # pyspark.sql.functions must be a real module, not a MagicMock
     mod = sys.modules.get("pyspark.sql.functions")

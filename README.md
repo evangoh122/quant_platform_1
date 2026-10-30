@@ -51,6 +51,7 @@ Volume evidence: live `COUNT(*)` of every table at 2026-10-05 03:41 UTC in
 | Trading strategies (residual reversion, options, technical) | Partial | Yes | Research only — no profitability claim |
 | Volatility and risk-sizing layer (`risk/`: EWMA estimators, four sizers, pair backtest) | Yes | Yes | Offline research only; seeded synthetic comparison, no real-data run, no profitability claim; no gold tables yet |
 | IBKR paper execution | Scaffold | Partial | Not live |
+| Mid-frequency strategy research plan (`docs/MFT_STRATEGY_PLAN.md`) | Document only | n/a | **Proposal, 2026-10-24; no code, no backtest, no edge claim.** Data counts are from repo docs and unverified live; plan assumes a $200k paper account and a 0.5% per-trade modelled loss budget with mandatory stops; options strategies are paper-eligible only after their gates pass |
 | Weekend perps research (planned) | Loader, calendar and measurement tooling only (flat-file reader is design only) | Yes (offline) | Not deployed — no ingestion job, no shared tables, no signals |
 
 Dates are the last recorded verification; this repository does not assert the current state of the app, Lakebase, or the warehouse.
@@ -177,6 +178,7 @@ destination is hidden (the frontend reads `demo` from `/api/health`); a demo sna
 | `sec_kg/contracts/` | KG-A executable contracts (identity and ids, bitemporal events, fact linking, join/edge registry, publication CAS, perp Instruments); pure Python with offline tests — no table or job yet |
 | `resources/`, `databricks.yml`, `app.yaml` | Databricks Asset Bundle: jobs, app, resources |
 | `strategies/`, `ml/` | Research code (backtests, evidence, models) |
+| `docs/MFT_STRATEGY_PLAN.md` | Proposed mid-frequency strategy, backtest, cost/slippage, risk and testing plan (not implemented) |
 | `config/`, `scripts/perps/` | Perp universe/calendar config; probe, closed-market liquidity measurement and the flat-file reader design (research scaffolding) |
 | `risk/` | Volatility estimators, sizing methods and pair backtest (Polars); research code |
 | `evals/` | RAG evaluation harness |
